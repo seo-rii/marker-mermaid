@@ -31,6 +31,15 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 | Radar | `radar` 또는 `flowchart` | non-negative native domain, 음수 domain은 tabular fallback |
 | Treemap | `treemap` 또는 `flowchart` | leaf value 필수, internal-node value는 fallback에서 보존 |
 | Venn | `venn` 또는 `flowchart` | 모든 크기가 관측되면 native, 누락 시 숫자 합성 없는 set graph |
+| Journey | `timeline` | strict SVG에서 금지된 `foreignObject`를 피하고 score/actor를 event text로 보존 |
+| Kanban, GitGraph | 동일 | card/branch/commit/merge ID와 reference evidence 필수 |
+| Packet | `packet` 또는 `flowchart` | 명시적 contiguous bit range만 native; gap을 임의 field로 채우지 않음 |
+| Ishikawa, TreeView | 동일 | cycle/duplicate ID/depth를 검증한 hierarchy |
+| Event Modeling | `flowchart` | Mermaid 11.16 renderer 불안정으로 lane-aware fallback |
+| Wardley, Cynefin, Railroad | 동일 | 좌표/domain/rule AST evidence가 완전할 때 experimental native |
+| ZenUML | `sequence` | pinned runtime에 ZenUML extension이 없어 명시적 fallback |
+| Organization | `treeview` | reporting hierarchy 보존, organization 전용 notation 없음 |
+| Data Lineage | `flowchart` | dataset/process endpoint를 모두 확인한 portable graph |
 
 State/Class/ER serializer는 provenance 없는 구조를 문법적으로 만들 수 있어도 거부합니다. unknown
 endpoint, 추측 cardinality, ER의 identifying flag 누락도 `SerializationError`입니다. Requirement/Block과

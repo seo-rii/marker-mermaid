@@ -316,10 +316,13 @@ def _ensure_extended_serializers() -> None:
     from marker_mermaid.serializers_charts_core import serialize_chart_core
     from marker_mermaid.serializers_charts_flow import serialize_chart_flow
     from marker_mermaid.serializers_charts_sets import serialize_chart_set
+    from marker_mermaid.serializers_experimental import serialize_experimental
     from marker_mermaid.serializers_phase2 import (
         BLOCK_ACCESSIBILITY_LIMITATION,
         serialize_phase2,
     )
+    from marker_mermaid.serializers_planning import serialize_planning
+    from marker_mermaid.serializers_special import serialize_special
     from marker_mermaid.serializers_uml import UML_SERIALIZERS
 
     for diagram_type, serializer in UML_SERIALIZERS.items():
@@ -436,6 +439,61 @@ def _ensure_extended_serializers() -> None:
             requested_type,
             serialize_flow_chart_result,
         )
+
+    for requested_type in ("journey", "kanban", "gitgraph"):
+
+        def serialize_planning_result(
+            ir: dict[str, Any],
+            *,
+            experimental: bool = False,
+            _requested_type: str = requested_type,
+        ) -> SerializationResult:
+            return serialize_planning(
+                _requested_type,
+                ir,
+                experimental=experimental,
+            )
+
+        SERIALIZATION_REGISTRY.register_result(requested_type, serialize_planning_result)
+
+    for requested_type in ("packet", "ishikawa", "treeview", "eventmodeling"):
+
+        def serialize_special_result(
+            ir: dict[str, Any],
+            *,
+            experimental: bool = False,
+            _requested_type: str = requested_type,
+        ) -> SerializationResult:
+            return serialize_special(
+                _requested_type,
+                ir,
+                experimental=experimental,
+            )
+
+        SERIALIZATION_REGISTRY.register_result(requested_type, serialize_special_result)
+
+    for requested_type in (
+        "wardley",
+        "cynefin",
+        "railroad",
+        "zenuml",
+        "organization",
+        "data_lineage",
+    ):
+
+        def serialize_experimental_result(
+            ir: dict[str, Any],
+            *,
+            experimental: bool = False,
+            _requested_type: str = requested_type,
+        ) -> SerializationResult:
+            return serialize_experimental(
+                _requested_type,
+                ir,
+                experimental=experimental,
+            )
+
+        SERIALIZATION_REGISTRY.register_result(requested_type, serialize_experimental_result)
     _EXTENDED_SERIALIZERS_REGISTERED = True
 
 

@@ -18,7 +18,7 @@ network route는 차단되어 있습니다.
 
 - config/model: budget, 원본 불변조건, ID/reference integrity, 등급 경계
 - security: click/directive/URL/HTML/style 악성 corpus
-- serializer: Phase 1 모든 serializer의 실제 Mermaid parse/render
+- serializer: core/software/chart/planning/special serializer의 실제 Mermaid parse/render와 fallback 계약
 - pipeline: engine failure isolation, candidate budget, deterministic selection
 - sidecar/Markdown: 원본 우선, manifest/hash, alternatives
 - Marker compatibility: Reference/BlankPage 사이 processor 순서와 exact version
@@ -34,7 +34,8 @@ fixture manifest에 기록해야 합니다.
 
 1. `ALL_TYPES`에 canonical type이 있는지 확인합니다.
 2. typed IR의 필수 값과 “모르면 생성하지 않음” 규칙을 정합니다.
-3. `serializers.py`에 deterministic serializer를 추가합니다.
+3. family별 `serializers_*.py`에 deterministic serializer를 두고 `serializers.py` registry에
+   result-aware closure를 등록합니다.
 4. strict security profile에서 real Mermaid parse/render fixture를 추가합니다.
 5. native syntax가 아니면 fallback type과 원 type을 metadata/warning에 모두 남깁니다.
 6. 숫자 유형은 OCR evidence가 없을 때 임의 값을 만들지 않습니다.
@@ -44,4 +45,3 @@ fixture manifest에 기록해야 합니다.
 Mermaid/Playwright를 함께 갱신하고 `package-lock.json`을 재생성한 뒤 모든 diagram grammar와 악성
 input test를 실행합니다. Marker version 변경은 processor ordering, Block image/metadata API,
 renderer image naming을 다시 조사한 별도 compatibility change로 다룹니다.
-

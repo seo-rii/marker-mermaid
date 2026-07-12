@@ -24,6 +24,9 @@
 - Atomic Mermaid/Scene IR/render revisions, optimistic concurrency, and undo/redo.
 - Alternative selection, approval/rejection audit history, and conservative Korean/English patches.
 - Same-origin review API with CSRF, body limits, path confinement, and strict revalidation.
+- Evidence-strict Journey, Kanban, GitGraph, Packet, Ishikawa, TreeView, and Event Modeling serializers.
+- Native Wardley, Cynefin, and Railroad serializers plus explicit ZenUML, organization, and lineage fallbacks.
+- Bounded pre-validation source repair with audit events, diagnostics, idempotence, and AST adapter seam.
 
 ### Changed
 

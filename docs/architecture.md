@@ -15,9 +15,10 @@ flowchart TB
     F --> T["Typed IR serializer"]
     F --> S["Scene IR fallback"]
     F --> R["Direct Mermaid"]
-    T --> G["Security / parse / render / SVG gate"]
-    S --> G
-    R --> G
+    T --> A["Bounded deterministic source repair"]
+    S --> A
+    R --> A
+    A --> G["Security / parse / render / SVG gate"]
     G --> Q["Reference-free scoring"]
     Q --> X["Deterministic selection"]
     X --> P["Publish policy"]
@@ -38,6 +39,7 @@ flowchart TB
 | `views.py` | thumbnail, edge, Hough, detected-arrow, OCR/vector/color overlay, tile 생성 |
 | `engines.py` | Marker BaseService adapter와 offline fixture engine |
 | `serializers*.py`, `serialization.py` | software/chart typed IR, requested/emitted type와 fallback 계약 |
+| `ast_repair.py` | 의미를 추가하지 않는 bounded lexical/structural repair와 AST adapter seam |
 | `security.py` | active/external Mermaid syntax의 fail-closed 검사 |
 | `validation.py` | reusable Chromium worker, parse/render, SVG 재검사, process 정리 |
 | `scoring.py` | OCR/numeric score, available-weight aggregation, 게시 결정 |

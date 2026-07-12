@@ -4,7 +4,7 @@
 Mermaid 후보로 복원하는 `marker-pdf 1.10.2` 확장입니다. 원본 이미지를 항상 보존하고,
 보안 검사와 실제 Mermaid parse/render를 통과한 코드만 Markdown에 넣습니다.
 
-이 저장소는 MMX-001 v0.3의 Phase 1~4를 실행 가능한 기준선으로
+이 저장소는 MMX-001 v0.3의 Phase 1~5를 실행 가능한 기준선으로
 구현합니다. Core/계획 serializer에 더해 State, Class, ER, Requirement, Block을 native 문법으로
 생성하며 BPMN/Swimlane/C4/Deployment/Component/Use-case는 검증된 portable grammar로 명시적으로
 fallback합니다. Pie, XY, Quadrant, Sankey, Radar, Treemap, Venn도 explicit numeric/set IR을
@@ -116,6 +116,8 @@ output/document/
 - [품질 평가와 점수 availability](docs/quality.md)
 - [Typed serializer와 fallback 계약](docs/serialization.md)
 - [차트 serializer와 숫자 안전성](docs/charts.md)
+- [계획·특수 다이어그램 serializer](docs/specialized-diagrams.md)
+- [결정적 source repair](docs/source-repair.md)
 - [설정 레퍼런스](docs/configuration.md)
 - [Marker 1.10.2 통합](docs/marker-integration.md)
 - [보안 모델](docs/security.md)

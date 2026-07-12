@@ -8,6 +8,7 @@ from typing import Literal
 
 from PIL import Image, ImageChops, ImageFilter, ImageOps
 
+from marker_mermaid.ast_repair import DeterministicMermaidRepair
 from marker_mermaid.candidate_scene import typed_ir_to_scene
 from marker_mermaid.config import MermaidConfig, Mode
 from marker_mermaid.fusion import FusionEngine, FusionInput
@@ -32,6 +33,7 @@ from marker_mermaid.scoring import (
     numeric_consistency,
     ocr_recall,
 )
+from marker_mermaid.security import MermaidSecurityScanner
 from marker_mermaid.serialization import SerializationContractError, SerializationResult
 from marker_mermaid.serializers import (
     SerializationError,
@@ -129,6 +131,12 @@ class ReconstructionPipeline:
         self.engines = engines
         self.validator = validator
         self.repair_engine = repair_engine
+        self.source_repair = DeterministicMermaidRepair(
+            event_budget=8,
+            max_source_chars=config.max_mermaid_chars,
+            max_lines=config.max_mermaid_lines,
+            security_scanner=MermaidSecurityScanner(config.security_profile),
+        )
 
     def reconstruct(
         self,
@@ -379,6 +387,37 @@ class ReconstructionPipeline:
             "packet",
         }
         for index, draft in enumerate(drafts, start=1):
+            source_repair = self.source_repair.repair(draft.code)
+            repair_accepted = bool(
+                source_repair.changed
+                and source_repair.security_preserved
+                and source_repair.idempotent
+                and not source_repair.budget_exhausted
+            )
+            candidate_code = source_repair.source if repair_accepted else draft.code
+            source_repair_history = [
+                RepairEvent(
+                    iteration=0,
+                    operation=event.operation,
+                    accepted=repair_accepted,
+                    details={
+                        "line": event.line,
+                        "before": event.before,
+                        "after": event.after,
+                        "reason": event.reason,
+                        "stage": "pre_validation",
+                    },
+                )
+                for event in source_repair.events
+            ]
+            source_repair_warnings = [
+                f"source repair {issue.code}: {issue.message}" for issue in source_repair.issues
+            ]
+            if source_repair.changed and not repair_accepted:
+                source_repair_warnings.append(
+                    "deterministic source repairs were discarded because the bounded pass "
+                    "was not complete and idempotent"
+                )
             candidate = MermaidCandidate(
                 candidate_id=f"candidate-{index}",
                 generation_method=draft.method,
@@ -390,11 +429,19 @@ class ReconstructionPipeline:
                 scene_ir=draft.observation.scene_ir,
                 typed_ir=draft.typed_ir,
                 raw_mermaid=draft.raw_mermaid,
-                mermaid_code=draft.code,
-                warnings=[*view_warnings, *draft.observation.warnings, *(draft.warnings or [])],
+                mermaid_code=candidate_code,
+                warnings=[
+                    *view_warnings,
+                    *draft.observation.warnings,
+                    *(draft.warnings or []),
+                    *source_repair_warnings,
+                ],
+                repair_history=source_repair_history,
             )
             try:
-                outcome = self.validator.validate(draft.code, self.config.render_timeout_seconds)
+                outcome = self.validator.validate(
+                    candidate_code, self.config.render_timeout_seconds
+                )
                 runtime = outcome.runtime
                 validation_warnings = outcome.warnings
             except Exception as exc:
@@ -438,10 +485,10 @@ class ReconstructionPipeline:
                 "syntax": float(candidate.syntax_valid),
                 "render": float(candidate.render_valid),
             }
-            recall = ocr_recall(reference_texts, draft.code)
+            recall = ocr_recall(reference_texts, candidate_code)
             if recall is not None:
                 scores["ocr_recall"] = recall
-            numeric = numeric_consistency(reference_texts, draft.code)
+            numeric = numeric_consistency(reference_texts, candidate_code)
             if numeric is not None and draft.diagram_type in numeric_types:
                 scores["numeric_consistency"] = numeric
             prediction_scores = dict(
