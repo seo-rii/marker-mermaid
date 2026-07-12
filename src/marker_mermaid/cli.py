@@ -232,7 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument("--llm-service", default="marker.services.gemini.GoogleGeminiService")
     convert.set_defaults(handler=command_convert)
 
-    review = subparsers.add_parser("review", help="serve the local read-only review workspace")
+    review = subparsers.add_parser("review", help="serve the interactive local review workspace")
     review.add_argument("output")
     review.add_argument("--host", default="127.0.0.1")
     review.add_argument("--port", type=int, default=8765)

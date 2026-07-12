@@ -4,11 +4,13 @@
 Mermaid 후보로 복원하는 `marker-pdf 1.10.2` 확장입니다. 원본 이미지를 항상 보존하고,
 보안 검사와 실제 Mermaid parse/render를 통과한 코드만 Markdown에 넣습니다.
 
-이 저장소는 MMX-001 v0.3의 Phase 1과 Phase 2 software modeling을 실행 가능한 기준선으로
+이 저장소는 MMX-001 v0.3의 Phase 1~4를 실행 가능한 기준선으로
 구현합니다. Core/계획 serializer에 더해 State, Class, ER, Requirement, Block을 native 문법으로
 생성하며 BPMN/Swimlane/C4/Deployment/Component/Use-case는 검증된 portable grammar로 명시적으로
 fallback합니다. Pie, XY, Quadrant, Sankey, Radar, Treemap, Venn도 explicit numeric/set IR을
-native 또는 loss-disclosed fallback으로 처리합니다. 아직 구현하지 않은 v0.3 범위는
+native 또는 loss-disclosed fallback으로 처리합니다. 대화형 workspace에서는 검증된 code/IR
+편집, provenance overlay, 대안 선택, 제한된 자연어 patch, undo/redo, 승인/거절을 제공합니다.
+아직 구현하지 않은 v0.3 범위는
 [스펙 대응표](docs/spec-coverage.md)에 숨김없이 구분했습니다.
 
 ## 핵심 보장
@@ -68,14 +70,15 @@ Mermaid 파일만 검증할 수도 있습니다.
 marker-mermaid validate diagram.mmd
 ```
 
-생성 결과를 읽기 전용 local workspace에서 나란히 확인합니다.
+생성 결과를 local workspace에서 검토하고 수정합니다.
 
 ```bash
 marker-mermaid review output/document
 ```
 
-현재 review workspace는 원본·SVG·IR·provenance·score 탐색만 제공합니다. 스펙의 code/IR
-편집, drag-and-drop, 자연어 수정, undo/redo는 후속 Phase 4 범위입니다.
+수정 Mermaid는 strict security scan과 실제 parse/render를 다시 통과해야 저장됩니다. Scene IR,
+SVG/PNG, 이력, immutable revision도 같은 commit으로 갱신됩니다. 자세한 사용법과 지원되는
+자연어 명령은 [Review Workspace](docs/review-workspace.md)를 참고하세요.
 
 ## 출력
 
@@ -97,6 +100,8 @@ output/document/
         ├── source-map.json
         ├── scores.json
         ├── review-history.json
+        ├── review-state.json        # 첫 review 수정 후
+        ├── versions/                # immutable review revisions
         └── alternatives/
 ```
 
@@ -115,6 +120,7 @@ output/document/
 - [Marker 1.10.2 통합](docs/marker-integration.md)
 - [보안 모델](docs/security.md)
 - [출력 형식](docs/output-format.md)
+- [Review Workspace](docs/review-workspace.md)
 - [스펙 대응표와 로드맵](docs/spec-coverage.md)
 - [개발 및 테스트](docs/development.md)
 - [연구 배경](docs/references.md)

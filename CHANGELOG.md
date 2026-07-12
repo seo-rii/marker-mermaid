@@ -20,6 +20,10 @@
 - Requested/emitted/runtime diagram type and fallback-chain metadata.
 - Evidence-strict Pie, XY, Quadrant, Sankey, Radar, Treemap, and Venn serializers.
 - Numeric multiset precision/recall scoring and no-evidence publication guard.
+- Interactive source/render/provenance review workspace with external CSP-safe assets.
+- Atomic Mermaid/Scene IR/render revisions, optimistic concurrency, and undo/redo.
+- Alternative selection, approval/rejection audit history, and conservative Korean/English patches.
+- Same-origin review API with CSRF, body limits, path confinement, and strict revalidation.
 
 ### Changed
 

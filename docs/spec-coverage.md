@@ -37,8 +37,9 @@
 | arrow/layout/path score | 구현 | explicit-arrow/path F1, relative layout; 근거 부족 시 unavailable |
 | render-and-compare repair | 기반 | injected repair engine, strict improvement adoption |
 | atomic sidecars | 구현 | preflight, manifest/hash/alternatives/provenance/source affine map |
-| Review Workspace | 기반 | read-only source/render/artifact viewer |
-| code/IR edit, DnD, NL patch | 후속 | Phase 4 |
+| Review Workspace | 구현 | source/render/provenance 비교, 대안 선택, 승인/거절, 이력 API |
+| code/IR edit, NL patch | 구현 | strict 재검증, atomic revision, 명시 ID 기반 한·영 deterministic patch |
+| drag-and-drop | 후속 | overlay/IR editor는 구현, canvas direct manipulation은 미구현 |
 
 ## 릴리스 해석
 

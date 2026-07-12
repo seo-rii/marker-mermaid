@@ -48,7 +48,13 @@ directory에 모두 쓴 뒤 `os.replace`로 최종 directory를 공개합니다.
 
 `files`의 값은 content SHA-256입니다. `final.*`은 hard gate를 통과해 selected가 된 candidate에만
 생성됩니다. 실패하거나 선택되지 않은 후보는 `alternatives/`에 JSON과 가능한 `.mmd`로 남습니다.
-`review-history.json`은 현재 빈 배열로 시작하며 향후 review editor와 같은 schema를 공유합니다.
+`review-history.json`은 빈 배열로 시작하며 review edit, candidate 선택, 자연어 patch, 승인·거절,
+undo/redo를 append-only `ReviewHistoryEntry`로 기록합니다. 첫 mutation은 `review-state.json`과
+`versions/r000000.*` 초기 snapshot을 만들고 이후 revision을 immutable하게 추가합니다. Mermaid,
+Scene IR, SVG/PNG, manifest hash, state, history는 한 review commit으로 교체되며 I/O 실패 시 기존
+artifact를 복원합니다. 낙관적 `version`과 code SHA-256이 stale browser write를 차단합니다.
+대안 후보를 선택한 뒤에는 생성 시점 manifest를 덮어쓰지 않고
+`review-state.json.selected_candidate_id`가 현재 review 선택을 나타냅니다.
 `source-map.json`은 serialized `DiscoveredSource`, fragment crop/page bbox, canvas placement,
 source→canvas/page→canvas affine을 보존하여 canvas provenance를 PDF page와 source block으로 역추적합니다.
 requested type과 emitted/runtime type을 분리하므로 portable fallback을 native 복원처럼 표시하지 않습니다.

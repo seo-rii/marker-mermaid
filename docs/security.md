@@ -30,9 +30,19 @@ native C4는 Mermaid 11.16에서 parse/render되지만 생성 SVG가 undeclared 
 `style-only`은 마지막 세 Mermaid style statement만 허용하고 외부 URL/CSS는 계속 거부합니다.
 `trusted-local`은 자동 Markdown에 게시할 수 없습니다.
 
-현재 read-only review workspace에는 local callback 실행기가 없으므로 `trusted-local`에서도
-`click`과 callback은 계속 거부됩니다. callback allowlist는 편집 기능과 sandbox가 함께 구현되는
-Phase 4 이후에만 열 수 있습니다.
+대화형 review workspace도 저장 전 strict scanner와 parse/render/SVG 검사를 동일하게 적용합니다.
+`trusted-local` callback 실행기는 제공하지 않으므로 `click`과 callback은 계속 거부됩니다.
+
+## Review HTTP 경계
+
+review server는 기본적으로 `127.0.0.1`에만 bind합니다. mutation API는 session별 CSRF token,
+same-origin `Origin` 검사, JSON content type, 1 MB body limit, optimistic version/digest를 요구합니다.
+HTML은 inline script/style 없이 제공하며 CSP는 `script-src 'self'`, `connect-src 'self'`,
+`frame-ancestors 'none'`을 적용합니다. artifact server는 원본 image와 `final.svg/png`만 공개하고
+revision/state 파일은 HTTP로 노출하지 않습니다.
+
+이 서버에는 사용자 인증이 없습니다. `--host 0.0.0.0` 같은 non-loopback bind는 신뢰하는 격리망에서만
+사용해야 하며 CLI가 경고를 출력합니다. CSRF token은 인증을 대신하지 않습니다.
 
 ## SVG 검사
 

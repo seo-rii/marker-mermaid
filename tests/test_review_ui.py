@@ -1,0 +1,72 @@
+import html
+import json
+
+import pytest
+
+from marker_mermaid.review_ui import build_review_workspace_assets
+
+
+def test_review_workspace_escapes_bootstrap_json_and_uses_external_assets():
+    attack = '</script><img src=x onerror="alert(1)">&'
+    assets = build_review_workspace_assets(
+        {"diagrams": [{"id": "d1", "label": attack}], "csrf_token": attack},
+        title=f"Review {attack}",
+    )
+
+    assert attack not in assets.html
+    assert "&lt;/script&gt;&lt;img" in assets.html
+    assert "<img src=x onerror=" not in assets.html
+    assert '<script src="/assets/review.js" defer></script>' in assets.html
+    assert '<link rel="stylesheet" href="/assets/review.css">' in assets.html
+    assert "<script>" not in assets.html
+    assert "onclick=" not in assets.html
+
+    marker = 'data-bootstrap="'
+    encoded = assets.html.split(marker, 1)[1].split('"', 1)[0]
+    assert json.loads(html.unescape(encoded))["diagrams"][0]["label"] == attack
+
+
+def test_review_workspace_contains_required_controls_and_same_origin_api_routes():
+    assets = build_review_workspace_assets({"diagrams": []})
+
+    for control_id in (
+        "source-stage",
+        "source-image",
+        "render-image",
+        "provenance-overlay",
+        "mermaid-editor",
+        "ir-editor",
+        "issue-list",
+        "alternative-list",
+        "approve",
+        "reject",
+        "undo",
+        "redo",
+        "command-form",
+    ):
+        assert f'id="{control_id}"' in assets.html
+
+    for route in ("/edits", "/history", "/candidate", "/commands", "/decision"):
+        assert f'route("{route}")' in assets.javascript
+    assert "/api/diagrams/" in assets.javascript
+    assert "target.origin !== window.location.origin" in assets.javascript
+    assert 'credentials: "same-origin"' in assets.javascript
+    assert 'redirect: "error"' in assets.javascript
+    assert "expected_version" in assets.javascript
+    assert "expected_digest" in assets.javascript
+    assert "eval(" not in assets.javascript
+    assert "innerHTML" not in assets.javascript
+
+
+def test_asset_base_must_be_same_origin_path():
+    with pytest.raises(ValueError, match="same-origin"):
+        build_review_workspace_assets({}, asset_base="https://cdn.example/assets")
+    with pytest.raises(ValueError, match="same-origin"):
+        build_review_workspace_assets({}, asset_base="//cdn.example/assets")
+    with pytest.raises(ValueError, match="query"):
+        build_review_workspace_assets({}, asset_base="/assets?v=1")
+
+
+def test_bootstrap_rejects_non_standard_json_numbers():
+    with pytest.raises(ValueError):
+        build_review_workspace_assets({"score": float("nan")})
