@@ -133,6 +133,43 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert "createObjectURL" not in assets.javascript
 
 
+def test_review_workspace_edge_drag_reuses_validated_reconnect_operation():
+    assets = build_review_workspace_assets({"diagrams": []})
+
+    assert 'class", "layout-edge"' in assets.javascript
+    assert '`edge-handle ${endpoint}`' in assets.javascript
+    assert "function nearestLayoutNode(clientX, clientY)" in assets.javascript
+    assert "bounds.left + position[0] * bounds.width" in assets.javascript
+    assert "bounds.top + position[1] * bounds.height" in assets.javascript
+    assert "candidates[1].distance - candidates[0].distance <= .5" in assets.javascript
+    assert "completed.diagramId === diagramId()" in assets.javascript
+    assert "completed.version === Number(state.current?.version)" in assets.javascript
+    assert "completed.digest === text(state.current?.digest)" in assets.javascript
+    assert 'completed.endpoint === "source" ? nodeId' in assets.javascript
+    assert 'completed.endpoint === "target" ? nodeId' in assets.javascript
+    assert "sourceId === targetId" in assets.javascript
+    assert 'addEventListener("lostpointercapture"' in assets.javascript
+    assert "event.pointerId === edgeDrag.pointerId" in assets.javascript
+    assert 'event.key === "Escape" && edgeDrag' in assets.javascript
+    assert "handle.focus()" in assets.javascript
+    assert (
+        'handle.setAttribute("r", ".018"); handle.setAttribute("tabindex", "-1")'
+        in assets.javascript
+    )
+    assert "requestAnimationFrame" in assets.javascript
+    assert "cancelAnimationFrame" in assets.javascript
+    reconnect = assets.javascript.split("async function saveEdgeReconnect", 1)[1].split(
+        "controls.layout.addEventListener", 1
+    )[0]
+    assert 'operation: "reconnect_edge"' in reconnect
+    assert "position" not in reconnect
+    assert "bbox" not in reconnect
+    assert "provenance" not in reconnect
+    assert ".layout-edge" in assets.css
+    assert ".edge-handle" in assets.css
+    assert "drag a selected relation endpoint onto a node" in assets.html
+
+
 def test_asset_base_must_be_same_origin_path():
     with pytest.raises(ValueError, match="same-origin"):
         build_review_workspace_assets({}, asset_base="https://cdn.example/assets")

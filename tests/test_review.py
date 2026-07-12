@@ -671,7 +671,21 @@ def test_group_command_persists_member_bbox_union_through_scene_schema(tmp_path)
 
 def test_structured_edge_operation_is_validated_rendered_and_audited(tmp_path):
     diagram_path = make_bundle(tmp_path)
+    source_before = (tmp_path / "images" / "source.png").read_bytes()
     with running_server(tmp_path) as (base, store):
+        current = store.load_bundle("diagram-a")
+        provenance_before = [item.model_dump(mode="json") for item in current.provenance]
+        moved, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/operations",
+            {
+                **expected(current),
+                "operation": {
+                    "operation": "move_node",
+                    "node_id": "A",
+                    "position": [0.2, 0.8],
+                },
+            },
+        )
         current = store.load_bundle("diagram-a")
         payload = {
             **expected(current),
@@ -691,6 +705,9 @@ def test_structured_edge_operation_is_validated_rendered_and_audited(tmp_path):
     assert diagram["scene_ir"]["relations"][0]["source_id"] == "B"
     assert diagram["scene_ir"]["relations"][0]["target_id"] == "A"
     assert "B --> A" in diagram["mermaid_code"]
+    assert diagram["provenance"] == provenance_before
+    assert diagram["layout_hints"] == moved["diagram"]["layout_hints"]
+    assert (tmp_path / "images" / "source.png").read_bytes() == source_before
     assert stale.value.code == HTTPStatus.CONFLICT
     entries = json.loads((diagram_path / "review-history.json").read_text())
     reconnect = next(entry for entry in entries if entry["operation"] == "reconnect_edge")

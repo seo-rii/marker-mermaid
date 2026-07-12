@@ -134,8 +134,9 @@ def build_review_workspace_assets(
       <section id="structure-operations" aria-labelledby="structure-heading">
         <h2 id="structure-heading">Validated structure operations</h2>
         <p class="muted">
-          Select source-backed nodes and relations by stable ID. Drag nodes on the advisory
-          layout canvas without changing source bounding boxes or claiming exact Mermaid placement.
+          Select source-backed nodes and relations by stable ID. Drag nodes on the advisory layout
+          canvas to record intent, or drag a selected relation endpoint onto a node to reconnect it.
+          Neither gesture changes source bounding boxes or claims exact Mermaid placement.
         </p>
         <div class="structure-grid">
           <form id="add-node-form">
@@ -287,6 +288,19 @@ figcaption, label { font-weight: 650; }
   fill: #24113d; font-size: .035px; font-weight: 700; pointer-events: none;
   text-anchor: middle; dominant-baseline: central;
 }
+.layout-edge {
+  fill: none; stroke: #68707c; stroke-width: 2; vector-effect: non-scaling-stroke;
+  cursor: pointer; outline: none; pointer-events: stroke;
+}
+.layout-edge.selected, .layout-edge:hover, .layout-edge:focus {
+  stroke: #b1440e; stroke-width: 3;
+}
+.edge-handle {
+  fill: #fff; stroke: #b1440e; stroke-width: 2; vector-effect: non-scaling-stroke;
+  cursor: crosshair; outline: none;
+}
+.edge-handle:hover, .edge-handle:focus { fill: #ffd8c2; stroke: #7c2d0c; }
+.edge-handle.source { stroke-dasharray: 3 2; }
 .editor-grid { margin-top: 1rem; }
 .editor-grid label { display: grid; gap: .4rem; }
 textarea {
@@ -571,7 +585,33 @@ REVIEW_JAVASCRIPT = r"""
 
   function renderLayout(diagram) {
     controls.layout.replaceChildren();
-    for (const { node, position } of layoutPositions(diagram)) {
+    const positionedNodes = layoutPositions(diagram);
+    const positionById = new Map(
+      positionedNodes.map(({ node, position }) => [text(node.id), position]),
+    );
+    const relations = Array.isArray(diagram.scene_ir?.relations)
+      ? diagram.scene_ir.relations.filter(
+        (item) => item?.id && positionById.has(text(item.source_id))
+          && positionById.has(text(item.target_id)),
+      ) : [];
+    for (const relation of relations) {
+      const source = positionById.get(text(relation.source_id));
+      const target = positionById.get(text(relation.target_id));
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("class", "layout-edge");
+      line.setAttribute("x1", String(source[0])); line.setAttribute("y1", String(source[1]));
+      line.setAttribute("x2", String(target[0])); line.setAttribute("y2", String(target[1]));
+      line.setAttribute("tabindex", "0"); line.setAttribute("role", "button");
+      line.setAttribute(
+        "aria-label",
+        `Select relation ${text(relation.id)}: ${text(relation.source_id)}`
+          + ` to ${text(relation.target_id)}`,
+      );
+      line.dataset.edgeId = text(relation.id);
+      if (text(relation.id) === controls.edge.value) line.classList.add("selected");
+      controls.layout.append(line);
+    }
+    for (const { node, position } of positionedNodes) {
       const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
       group.setAttribute("class", "layout-node");
       group.setAttribute("transform", `translate(${position[0]} ${position[1]})`);
@@ -586,6 +626,23 @@ REVIEW_JAVASCRIPT = r"""
       const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
       label.textContent = text(node.id).slice(0, 12);
       group.append(circle, label); controls.layout.append(group);
+    }
+    const selected = relations.find((item) => text(item.id) === controls.edge.value);
+    if (!selected) return;
+    for (const endpoint of ["source", "target"]) {
+      const nodeId = text(selected[`${endpoint}_id`]);
+      const position = positionById.get(nodeId);
+      const handle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      handle.setAttribute("class", `edge-handle ${endpoint}`);
+      handle.setAttribute("cx", String(position[0]));
+      handle.setAttribute("cy", String(position[1]));
+      handle.setAttribute("r", ".018"); handle.setAttribute("tabindex", "-1");
+      handle.setAttribute(
+        "aria-label",
+        `Drag ${endpoint} endpoint of relation ${text(selected.id)} from node ${nodeId}`,
+      );
+      handle.dataset.edgeId = text(selected.id); handle.dataset.endpoint = endpoint;
+      controls.layout.append(handle);
     }
   }
 
@@ -784,8 +841,10 @@ REVIEW_JAVASCRIPT = r"""
     renderStructure(state.current || {}); renderOverlay(state.current || {});
     renderLayout(state.current || {});
   });
-  controls.edge.addEventListener("change", () => renderStructure(state.current || {}));
-  let layoutDrag = null;
+  controls.edge.addEventListener("change", () => {
+    renderStructure(state.current || {}); renderLayout(state.current || {});
+  });
+  let layoutDrag = null; let edgeDrag = null;
   function normalizedPointer(event) {
     const bounds = controls.layout.getBoundingClientRect();
     if (bounds.width <= 0 || bounds.height <= 0) return null;
@@ -796,7 +855,8 @@ REVIEW_JAVASCRIPT = r"""
   }
   controls.layout.addEventListener("pointerdown", (event) => {
     const node = event.target.closest(".layout-node[data-node-id]");
-    if (!node || state.busy || event.button !== 0 || event.isPrimary === false) return;
+    if (!node || layoutDrag || edgeDrag || state.busy
+      || event.button !== 0 || event.isPrimary === false) return;
     event.preventDefault(); controls.layout.setPointerCapture(event.pointerId);
     layoutDrag = {
       node, nodeId: node.dataset.nodeId, pointerId: event.pointerId,
@@ -837,7 +897,8 @@ REVIEW_JAVASCRIPT = r"""
       [Number(completed.node.dataset.x), Number(completed.node.dataset.y)],
     );
   });
-  controls.layout.addEventListener("pointercancel", () => {
+  controls.layout.addEventListener("pointercancel", (event) => {
+    if (!layoutDrag || event.pointerId !== layoutDrag.pointerId) return;
     layoutDrag = null; renderLayout(state.current || {});
   });
   controls.layout.addEventListener("keydown", (event) => {
@@ -851,6 +912,132 @@ REVIEW_JAVASCRIPT = r"""
       Math.min(1, Math.max(0, Number(node.dataset.y) + delta[1])),
     ];
     saveLayoutPosition(node.dataset.nodeId, position);
+  });
+  function selectOverlayEdge(edgeId) {
+    controls.edge.value = text(edgeId);
+    renderStructure(state.current || {}); renderLayout(state.current || {});
+  }
+  controls.layout.addEventListener("click", (event) => {
+    const edge = event.target.closest(".layout-edge[data-edge-id]");
+    if (edge && !edgeDrag) selectOverlayEdge(edge.dataset.edgeId);
+  });
+  function nearestLayoutNode(clientX, clientY) {
+    const bounds = controls.layout.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) return null;
+    const candidates = layoutPositions(state.current || {}).map(({ node, position }) => ({
+      nodeId: text(node.id),
+      distance: Math.hypot(
+        clientX - (bounds.left + position[0] * bounds.width),
+        clientY - (bounds.top + position[1] * bounds.height),
+      ),
+    })).sort((left, right) => left.distance - right.distance);
+    const radius = Math.min(48, Math.max(24, Math.min(bounds.width, bounds.height) * .08));
+    if (!candidates.length || candidates[0].distance > radius) return null;
+    if (candidates.length > 1 && candidates[1].distance - candidates[0].distance <= .5) return null;
+    return candidates[0].nodeId;
+  }
+  function cancelEdgeDrag() {
+    if (edgeDrag?.frame) cancelAnimationFrame(edgeDrag.frame);
+    edgeDrag = null; renderLayout(state.current || {});
+  }
+  function previewEdgeEndpoint(position) {
+    if (!edgeDrag) return;
+    const axis = edgeDrag.endpoint === "source" ? ["x1", "y1"] : ["x2", "y2"];
+    edgeDrag.line.setAttribute(axis[0], String(position[0]));
+    edgeDrag.line.setAttribute(axis[1], String(position[1]));
+    edgeDrag.handle.setAttribute("cx", String(position[0]));
+    edgeDrag.handle.setAttribute("cy", String(position[1]));
+  }
+  controls.layout.addEventListener("pointerdown", (event) => {
+    const handle = event.target.closest(".edge-handle[data-edge-id][data-endpoint]");
+    if (!handle || edgeDrag || layoutDrag || state.busy
+      || event.button !== 0 || event.isPrimary === false) return;
+    const relations = Array.isArray(state.current?.scene_ir?.relations)
+      ? state.current.scene_ir.relations : [];
+    const relation = relations.find((item) => text(item.id) === handle.dataset.edgeId);
+    const line = [...controls.layout.querySelectorAll(".layout-edge[data-edge-id]")]
+      .find((item) => item.dataset.edgeId === handle.dataset.edgeId);
+    if (!relation || !line || !["source", "target"].includes(handle.dataset.endpoint)) return;
+    event.preventDefault(); controls.layout.setPointerCapture(event.pointerId);
+    handle.focus();
+    edgeDrag = {
+      handle, line, endpoint: handle.dataset.endpoint, edgeId: text(relation.id),
+      sourceId: text(relation.source_id), targetId: text(relation.target_id),
+      pointerId: event.pointerId, startClientX: event.clientX, startClientY: event.clientY,
+      moved: false, frame: 0, pendingPosition: null,
+      diagramId: diagramId(), version: Number(state.current.version),
+      digest: text(state.current.digest),
+    };
+  });
+  controls.layout.addEventListener("pointermove", (event) => {
+    if (!edgeDrag || event.pointerId !== edgeDrag.pointerId) return;
+    const position = normalizedPointer(event);
+    if (!position) return;
+    const movement = Math.hypot(
+      event.clientX - edgeDrag.startClientX, event.clientY - edgeDrag.startClientY,
+    );
+    if (movement > 3) {
+      edgeDrag.moved = true;
+    }
+    edgeDrag.pendingPosition = position;
+    if (!edgeDrag.frame) edgeDrag.frame = requestAnimationFrame(() => {
+      if (!edgeDrag) return;
+      edgeDrag.frame = 0;
+      if (edgeDrag.pendingPosition) previewEdgeEndpoint(edgeDrag.pendingPosition);
+    });
+  });
+  async function saveEdgeReconnect(edgeId, sourceId, targetId, focusEndpoint = "") {
+    await perform(
+      route("/operations"),
+      { operation: { operation: "reconnect_edge", edge_id: edgeId, source_id: sourceId,
+        target_id: targetId } },
+      "Edge reconnected.",
+    );
+    const handle = [...controls.layout.querySelectorAll(".edge-handle[data-endpoint]")]
+      .find((item) => item.dataset.edgeId === edgeId && item.dataset.endpoint === focusEndpoint);
+    if (handle) handle.focus();
+  }
+  controls.layout.addEventListener("pointerup", (event) => {
+    if (!edgeDrag || event.pointerId !== edgeDrag.pointerId) return;
+    const completed = edgeDrag; edgeDrag = null;
+    if (completed.frame) cancelAnimationFrame(completed.frame);
+    if (controls.layout.hasPointerCapture(event.pointerId)) {
+      controls.layout.releasePointerCapture(event.pointerId);
+    }
+    const relation = (Array.isArray(state.current?.scene_ir?.relations)
+      ? state.current.scene_ir.relations : [])
+      .find((item) => text(item.id) === completed.edgeId);
+    const unchangedRevision = completed.diagramId === diagramId()
+      && completed.version === Number(state.current?.version)
+      && completed.digest === text(state.current?.digest);
+    const unchangedRelation = relation && text(relation.source_id) === completed.sourceId
+      && text(relation.target_id) === completed.targetId;
+    const nodeId = nearestLayoutNode(event.clientX, event.clientY);
+    if (!completed.moved || !unchangedRevision || !unchangedRelation || !nodeId) {
+      renderLayout(state.current || {}); return;
+    }
+    const sourceId = completed.endpoint === "source" ? nodeId : completed.sourceId;
+    const targetId = completed.endpoint === "target" ? nodeId : completed.targetId;
+    if (sourceId === targetId
+      || (sourceId === completed.sourceId && targetId === completed.targetId)) {
+      renderLayout(state.current || {}); return;
+    }
+    saveEdgeReconnect(completed.edgeId, sourceId, targetId, completed.endpoint);
+  });
+  controls.layout.addEventListener("pointercancel", (event) => {
+    if (edgeDrag && event.pointerId === edgeDrag.pointerId) cancelEdgeDrag();
+  });
+  controls.layout.addEventListener("lostpointercapture", (event) => {
+    if (edgeDrag && event.pointerId === edgeDrag.pointerId) cancelEdgeDrag();
+  });
+  controls.layout.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && edgeDrag) {
+      event.preventDefault(); cancelEdgeDrag(); return;
+    }
+    const edge = event.target.closest(".layout-edge[data-edge-id]");
+    if (edge && ["Enter", " "].includes(event.key)) {
+      event.preventDefault(); selectOverlayEdge(edge.dataset.edgeId);
+    }
   });
   byId("save-editors").addEventListener("click", async () => {
     let sceneIr;
@@ -904,13 +1091,8 @@ REVIEW_JAVASCRIPT = r"""
   });
   byId("reconnect-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    await perform(
-      route("/operations"),
-      { operation: {
-        operation: "reconnect_edge", edge_id: controls.edge.value,
-        source_id: controls.edgeSource.value, target_id: controls.edgeTarget.value,
-      } },
-      "Edge reconnected.",
+    await saveEdgeReconnect(
+      controls.edge.value, controls.edgeSource.value, controls.edgeTarget.value,
     );
   });
   byId("add-node-form").addEventListener("submit", async (event) => {

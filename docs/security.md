@@ -75,6 +75,12 @@ ID와 finite/non-boolean `0..1` center만 허용하며 bbox/style/URL/evidence f
 않습니다. source bbox를 Mermaid layout 좌표로 재사용하는 이동과 provenance 없는 자유 배치 추가는
 제공하지 않습니다.
 
+advisory canvas의 endpoint drag도 별도 mutation 권한을 만들지 않습니다. client는 화면 좌표로 유일한
+최근접 node를 선택한 뒤 기존 `reconnect_edge` schema의 relation/source/target ID만 전송합니다. 좌표,
+polyline, bbox, provenance, layout field는 payload에 없으며 server는 current revision의 stable ID와
+Scene↔Mermaid 1:1 mapping을 다시 해석합니다. 반대 endpoint 보존과 self-loop/no-op 거부도 server에서
+재검사되고, select form과 drag는 동일한 optimistic lock·strict render·atomic revision 경계를 씁니다.
+
 Review의 read-only difference blend는 새 endpoint, canvas readback, pixel upload 또는 server artifact를
 만들지 않습니다. 안전한 source URL과 실제 존재하는 current `final.png`에 대해서만 digest-bound
 descriptor를 만들고, 기존 same-origin static allowlist를 사용하며 off-by-default입니다. 두 image는

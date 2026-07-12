@@ -44,6 +44,7 @@
 - Evidence-backed PDF vector bold-label recovery with source-to-candidate attribution.
 - Off-by-default, bounds-normalized source/render difference blend in the Review Workspace.
 - Optimistically locked active-timeline revision restore with complete artifact rollback and audit.
+- Advisory Review edge endpoint drag with screen-space snapping and validated reconnect reuse.
 
 ### Changed
 

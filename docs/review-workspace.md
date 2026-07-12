@@ -88,6 +88,15 @@ pointerup에서 한 번만 commit하며, 실패하면 저장된 위치로 되돌
 선택하면 hint를 clear하고, node 삭제/직접 Scene 편집은 남은 node ID와 교집합만 보존합니다. undo/redo는
 layout artifact의 존재와 내용을 함께 복원합니다.
 
+canvas의 relation 선을 선택하면 source/target endpoint handle이 나타납니다. handle을 다른 node에
+놓으면 browser가 화면 CSS pixel 거리로 고정 반경 안의 유일한 최근접 node를 찾고, 기존
+`reconnect_edge`에 relation ID와 양 endpoint node ID만 한 번 전달합니다. source handle은 target을,
+target handle은 source를 그대로 보존합니다. 좌표, polyline, bbox, provenance, layout hint는 이 요청에
+포함하지 않습니다. 동률, 반경 밖, 자기 loop, 기존 endpoint, 미이동, pointer cancel/capture 손실,
+bundle·version·digest·relation endpoint 변경은 preview만 폐기합니다. select 기반 reconnect form은
+키보드와 보조 기술용 경로로 계속 제공되며, 실제 저장은 어느 입력 방식이든 동일한 1:1 edge mapping,
+strict render, optimistic concurrency, revision/audit transaction을 통과해야 합니다.
+
 ### Read-only visual difference
 
 `Difference blend`는 현재 source와 revision의 validated `final.png`를 같은 viewport에 각각 aspect
