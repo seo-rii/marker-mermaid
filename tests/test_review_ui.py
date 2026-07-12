@@ -48,6 +48,8 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
         "reject",
         "undo",
         "redo",
+        "revision-select",
+        "checkout-revision",
         "command-form",
         "structure-operations",
         "reconnect-form",
@@ -103,6 +105,10 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert "node.focus()" in assets.javascript
     assert "touch-action: none" in assets.css
     assert "ArrowLeft" in assets.javascript
+    assert 'action: "checkout"' in assets.javascript
+    assert "A later edit will branch the active timeline" in assets.javascript
+    assert "diagram.revision_navigation" in assets.javascript
+    assert "navigation.current_revision" in assets.javascript
     assert "renderDifference" in assets.javascript
     assert 'mix-blend-mode: difference' in assets.css
     assert 'object-fit: contain' in assets.css

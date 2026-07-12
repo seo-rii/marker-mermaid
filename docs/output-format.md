@@ -64,7 +64,9 @@ undo/redo에서 함께 생성·삭제합니다. Layout은 normalized node center
 `mmx-review-0.4.1` state는 current/legacy provenance와 advisory layout digest를 기록합니다. 0.4
 snapshot provenance와 0.3 정적 provenance timeline도 기존 snapshot을 재작성하지 않고 lazy
 migration과 undo/redo가 가능합니다. 낙관적 `version`과 code SHA-256이 stale
-browser write를 차단합니다.
+browser write를 차단합니다. Review API는 state가 검증한 active `timeline`과 `cursor`만 노출하며,
+`checkout_revision`은 기존 snapshot을 새로 만들지 않고 target root artifacts와 manifest hash를
+복원합니다. 이후 편집은 cursor 뒤 active timeline을 분기하지만 기존 immutable snapshot은 유지합니다.
 대안 후보를 선택한 뒤에는 생성 시점 manifest를 덮어쓰지 않고
 `review-state.json.selected_candidate_id`가 현재 review 선택을 나타냅니다.
 `source-map.json`은 serialized `DiscoveredSource`, fragment crop/page bbox, canvas placement,

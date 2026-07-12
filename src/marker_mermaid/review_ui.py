@@ -72,6 +72,9 @@ def build_review_workspace_assets(
         <p id="workspace-summary" class="muted">Loading review data…</p>
       </div>
       <nav class="history-actions" aria-label="Edit history">
+        <label for="revision-select">Revision</label>
+        <select id="revision-select" disabled></select>
+        <button id="checkout-revision" type="button" disabled>Restore revision</button>
         <button id="undo" type="button" disabled>Undo</button>
         <button id="redo" type="button" disabled>Redo</button>
       </nav>
@@ -353,6 +356,7 @@ REVIEW_JAVASCRIPT = r"""
     diffOpacity: byId("diff-opacity"), diffNote: byId("diff-note"),
     issues: byId("issue-list"), alternatives: byId("alternative-list"), message: byId("message"),
     saveState: byId("save-state"), undo: byId("undo"), redo: byId("redo"),
+    revision: byId("revision-select"), checkoutRevision: byId("checkout-revision"),
     node: byId("node-select"), edge: byId("edge-select"),
     edgeSource: byId("edge-source"), edgeTarget: byId("edge-target"),
     edgeCount: byId("node-edge-count"), reconnect: byId("reconnect-edge"),
@@ -697,6 +701,26 @@ REVIEW_JAVASCRIPT = r"""
     controls.ir.value = JSON.stringify(diagram.scene_ir || {}, null, 2);
     controls.undo.disabled = !diagram.can_undo || state.busy;
     controls.redo.disabled = !diagram.can_redo || state.busy;
+    const navigation = diagram.revision_navigation
+      && typeof diagram.revision_navigation === "object" ? diagram.revision_navigation : {};
+    const timeline = Array.isArray(navigation.timeline)
+      ? navigation.timeline.map(text).filter(Boolean) : [];
+    const selectedRevision = controls.revision.value;
+    controls.revision.replaceChildren();
+    for (const [index, revision] of timeline.entries()) {
+      const option = document.createElement("option");
+      option.value = revision;
+      option.textContent = index === 0
+        ? `${revision} · automated baseline` : revision;
+      controls.revision.append(option);
+    }
+    const currentRevision = text(navigation.current_revision);
+    controls.revision.value = timeline.some(
+      (revision) => revision === selectedRevision,
+    ) ? selectedRevision : currentRevision;
+    controls.revision.disabled = state.busy || !timeline.length;
+    controls.checkoutRevision.disabled = state.busy || !timeline.length
+      || controls.revision.value === currentRevision;
     controls.saveState.textContent = [
       text(diagram.status || "review"), `grade ${text(diagram.grade || "U")}`,
     ].join(" · ");
@@ -843,6 +867,24 @@ REVIEW_JAVASCRIPT = r"""
   });
   controls.redo.addEventListener("click", () => {
     perform(route("/history"), { action: "redo" }, "Redid edit.");
+  });
+  controls.revision.addEventListener("change", () => {
+    const navigation = state.current?.revision_navigation || {};
+    controls.checkoutRevision.disabled = state.busy
+      || controls.revision.value === text(navigation.current_revision);
+  });
+  controls.checkoutRevision.addEventListener("click", () => {
+    const revision = controls.revision.value;
+    const currentRevision = text(state.current?.revision_navigation?.current_revision);
+    if (!revision || revision === currentRevision) return;
+    if (!window.confirm(
+      `Restore ${revision}? A later edit will branch the active timeline from this point.`,
+    )) return;
+    perform(
+      route("/history"),
+      { action: "checkout", revision, reason: `restored revision ${revision}` },
+      `Restored ${revision}.`,
+    );
   });
   controls.alternatives.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-candidate-id]");

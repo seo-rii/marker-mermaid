@@ -620,6 +620,95 @@ def test_undo_and_redo_restore_code_and_decision_without_deleting_history(tmp_pa
     ]
 
 
+def test_checkout_revision_jumps_within_active_timeline_and_is_audited(tmp_path):
+    make_bundle(tmp_path)
+    store = ReviewStore(tmp_path, validator=lambda code: True)
+    baseline = store.load_bundle("diagram-a")
+    edited = store.apply_mermaid_edit(
+        "diagram-a",
+        "flowchart LR\n  A --> C\n",
+        expected_version=baseline.state.version,
+        expected_digest=baseline.state.code_digest,
+    )
+    approved = store.approve(
+        "diagram-a",
+        expected_version=edited.state.version,
+        expected_digest=edited.state.code_digest,
+    )
+
+    restored = store.checkout_revision(
+        "diagram-a",
+        "r000000",
+        expected_version=approved.state.version,
+        expected_digest=approved.state.code_digest,
+        reason="compare with baseline",
+    )
+
+    assert restored.state.version == 3
+    assert restored.state.current_revision == "r000000"
+    assert restored.state.cursor == 0
+    assert restored.state.timeline == ["r000000", "r000001", "r000002"]
+    assert restored.mermaid_code == baseline.mermaid_code
+    assert restored.state.decision == "pending"
+    assert restored.history[-1].operation == "checkout_revision"
+    assert restored.history[-1].target == "r000000"
+    assert restored.history[-1].reason == "compare with baseline"
+
+    forward = store.checkout_revision(
+        "diagram-a",
+        "r000002",
+        expected_version=restored.state.version,
+        expected_digest=restored.state.code_digest,
+    )
+    assert forward.state.version == 4
+    assert forward.state.cursor == 2
+    assert forward.state.decision == "approved"
+
+    with pytest.raises(ReviewConflictError, match="already current"):
+        store.checkout_revision(
+            "diagram-a",
+            "r000002",
+            expected_version=forward.state.version,
+            expected_digest=forward.state.code_digest,
+        )
+    with pytest.raises(ReviewValidationError, match="active timeline"):
+        store.checkout_revision(
+            "diagram-a",
+            "r999999",
+            expected_version=forward.state.version,
+            expected_digest=forward.state.code_digest,
+        )
+    with pytest.raises(ReviewValidationError, match="invalid ID"):
+        store.checkout_revision(
+            "diagram-a",
+            "../../r000000",
+            expected_version=forward.state.version,
+            expected_digest=forward.state.code_digest,
+        )
+    with pytest.raises(ReviewConflictError, match="stale review state"):
+        store.checkout_revision(
+            "diagram-a",
+            "../../r000000",
+            expected_version=restored.state.version,
+            expected_digest=restored.state.code_digest,
+        )
+
+    branch_point = store.checkout_revision(
+        "diagram-a",
+        "r000001",
+        expected_version=forward.state.version,
+        expected_digest=forward.state.code_digest,
+    )
+    branched = store.apply_mermaid_edit(
+        "diagram-a",
+        "flowchart LR\n  A --> D\n",
+        expected_version=branch_point.state.version,
+        expected_digest=branch_point.state.code_digest,
+    )
+    assert branched.state.timeline == ["r000000", "r000001", "r000006"]
+    assert (tmp_path / "diagrams/diagram-a/versions/r000002.json").exists()
+
+
 def test_new_edit_after_undo_retains_old_snapshots_and_audit_history(tmp_path):
     make_bundle(tmp_path)
     store = ReviewStore(tmp_path)

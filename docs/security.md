@@ -83,6 +83,12 @@ descriptor를 만들고, 기존 same-origin static allowlist를 사용하며 off
 render layer도 decoded bounds와 descriptor URL을 재확인하며 stale/error event는 현재 diff에 적용하지
 않습니다.
 
+Revision restore는 `r` 뒤 6자리 이상 숫자인 ID만 받고, optimistic version/code digest를 bundle lock
+안에서 먼저 확인한 뒤 validated active timeline membership을 검사합니다. revision file path나 cursor
+index, 분기 탈락 snapshot은 API로 받거나 노출하지 않습니다. 복원은 undo/redo와 같은 snapshot digest,
+optional artifact 삭제, provenance/layout content digest, manifest hash, rollback 경계를 사용하며
+`checkout_revision` user audit를 append합니다. History payload의 알 수 없는 field도 거부합니다.
+
 review provenance/layout은 root artifact의 sidecar manifest hash와 `mmx-review-0.4.1` current digest를
 검사합니다. 각 revision은 content-addressed provenance digest를 참조하며 code/IR/render와 같은
 rollback 및 undo/redo 경계에서 root artifact와 manifest hash를 교체합니다. legacy 0.3 state는 기존

@@ -41,7 +41,7 @@
 | render-and-compare repair | 기반 | 기본 evidence-backed Flowchart label repair와 공통 재평가; edge/direction/layout semantic patch 후속 |
 | atomic sidecars | 구현 | preflight, manifest/hash/alternatives/provenance/source affine map |
 | Review Workspace | 구현 | source/render/provenance/node 비교, bounds-normalized difference blend, 실패 bundle bootstrap, 대안 선택, 승인/거절, 이력 API |
-| code/IR/provenance revision | 구현 | strict code/Scene/evidence schema, content-addressed provenance, 0.3 lazy migration, rollback/undo |
+| code/IR/provenance revision | 구현 | strict code/Scene/evidence schema, content-addressed provenance, 0.3 lazy migration, rollback/undo/redo와 active timeline restore |
 | NL patch | 구현 | 품질 invalidation, 명시 ID 기반 patch와 구조화 audit history |
 | structured operations | 구현 | exact-ID edge 재연결/node 삭제, IR↔Mermaid 1:1 gate, pre-interpretation optimistic lock |
 | source-anchored node add | 구현 | bounded canvas bbox, server-created user_edit evidence, code/IR/provenance transaction |

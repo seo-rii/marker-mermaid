@@ -252,13 +252,39 @@ class ReviewHandler(SimpleHTTPRequestHandler):
                 )
             elif action == "/history":
                 operation = payload.get("action")
-                if operation not in {"undo", "redo"}:
-                    raise ReviewValidationError("history action must be undo or redo")
-                bundle = getattr(self.store, operation)(
-                    bundle_id,
-                    expected_version=expected_version,
-                    expected_digest=expected_digest,
-                )
+                allowed_history_fields = {
+                    "action",
+                    "expected_version",
+                    "expected_digest",
+                    "reason",
+                }
+                if operation == "checkout":
+                    allowed_history_fields.add("revision")
+                unknown_fields = set(payload) - allowed_history_fields
+                if unknown_fields:
+                    raise ReviewValidationError(
+                        "history request contains unsupported fields: "
+                        + ", ".join(sorted(unknown_fields))
+                    )
+                if operation in {"undo", "redo"}:
+                    bundle = getattr(self.store, operation)(
+                        bundle_id,
+                        expected_version=expected_version,
+                        expected_digest=expected_digest,
+                        reason=payload.get("reason"),
+                    )
+                elif operation == "checkout":
+                    bundle = self.store.checkout_revision(
+                        bundle_id,
+                        payload.get("revision"),
+                        expected_version=expected_version,
+                        expected_digest=expected_digest,
+                        reason=payload.get("reason"),
+                    )
+                else:
+                    raise ReviewValidationError(
+                        "history action must be undo, redo, or checkout"
+                    )
             elif action == "/candidate":
                 bundle = self._select_candidate(
                     bundle_id,
@@ -605,6 +631,11 @@ class ReviewHandler(SimpleHTTPRequestHandler):
             "digest": bundle.state.code_digest,
             "can_undo": bundle.state.cursor > 0,
             "can_redo": bundle.state.cursor + 1 < len(bundle.state.timeline),
+            "revision_navigation": {
+                "timeline": list(bundle.state.timeline),
+                "cursor": bundle.state.cursor,
+                "current_revision": bundle.state.current_revision,
+            },
         }
 
     @staticmethod

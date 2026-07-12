@@ -589,7 +589,7 @@ def test_candidate_command_decision_and_undo_flow(tmp_path):
         current = store.load_bundle("diagram-a")
         undone, _ = post_json(
             f"{base}/api/diagrams/diagram-a/history",
-            {**expected(current), "action": "undo"},
+            {**expected(current), "action": "undo", "reason": "step back for comparison"},
         )
 
     assert selected["diagram"]["selected_candidate_id"] == "candidate-b"
@@ -601,6 +601,58 @@ def test_candidate_command_decision_and_undo_flow(tmp_path):
     assert reverse["target"] == "E1"
     assert reverse["before"] == {"source": "B", "target": "A"}
     assert reverse["after"] == {"source": "A", "target": "B"}
+    undo = next(entry for entry in entries if entry["operation"] == "undo")
+    assert undo["reason"] == "step back for comparison"
+
+
+def test_history_api_can_restore_an_active_timeline_revision(tmp_path):
+    make_bundle(tmp_path)
+    with running_server(tmp_path) as (base, store):
+        baseline = store.load_bundle("diagram-a")
+        edited = store.apply_mermaid_edit(
+            "diagram-a",
+            "flowchart LR\n  A --> C\n",
+            expected_version=baseline.state.version,
+            expected_digest=baseline.state.code_digest,
+        )
+        with pytest.raises(urllib.error.HTTPError) as extra_field:
+            post_json(
+                f"{base}/api/diagrams/diagram-a/history",
+                {
+                    **expected(edited),
+                    "action": "checkout",
+                    "revision": "r000000",
+                    "artifact_path": "versions/r000000.mmd",
+                },
+            )
+        restored, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/history",
+            {**expected(edited), "action": "checkout", "revision": "r000000"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as stale_invalid:
+            post_json(
+                f"{base}/api/diagrams/diagram-a/history",
+                {**expected(edited), "action": "checkout", "revision": "../../r000000"},
+            )
+        current = store.load_bundle("diagram-a")
+        with pytest.raises(urllib.error.HTTPError) as invalid_revision:
+            post_json(
+                f"{base}/api/diagrams/diagram-a/history",
+                {**expected(current), "action": "checkout", "revision": "../../r000000"},
+            )
+
+    diagram = restored["diagram"]
+    assert diagram["revision_navigation"]["current_revision"] == "r000000"
+    assert diagram["mermaid_code"] == baseline.mermaid_code
+    assert diagram["revision_navigation"]["timeline"] == [
+        "r000000",
+        "r000001",
+    ]
+    assert diagram["revision_navigation"]["cursor"] == 0
+    assert store.load_bundle("diagram-a").history[-1].operation == "checkout_revision"
+    assert extra_field.value.code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert stale_invalid.value.code == HTTPStatus.CONFLICT
+    assert invalid_revision.value.code == HTTPStatus.UNPROCESSABLE_ENTITY
 
 
 def test_group_command_persists_member_bbox_union_through_scene_schema(tmp_path):

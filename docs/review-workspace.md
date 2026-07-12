@@ -29,7 +29,14 @@ normalized schema와 content-addressed snapshot으로 revision됩니다. code, I
 `versions/r000000.*`을 만들며 각 변경은 `review-history.json`에 사용자 작업과 사유를 남깁니다.
 자연어 patch는 generic edit로 축약하지 않고 `reverse_edge`, `relabel_node`, `group_nodes`의 target과
 구조화된 before/after를 그대로 commit history에 보존합니다.
-undo 뒤 새 편집을 하면 활성 timeline은 분기하지만 기존 snapshot과 audit entry는 삭제하지 않습니다.
+Undo/Redo 옆의 `Restore revision`은 서버가 검증한 active timeline ID만 표시합니다. 선택 시 현재 working
+copy의 code, IR, SVG/PNG, provenance, layout, decision, candidate와 manifest hash를 그 snapshot으로
+원자적으로 복원하고 `checkout_revision` audit를 append합니다. 이는 read-only preview가 아니며 version이
+한 번 증가합니다. 임의 path, cursor index, active timeline에서 이미 분기 탈락한 snapshot은 요청할 수
+없고, optimistic version/digest를 target membership 검사 전에 확인합니다.
+
+restore/undo 뒤 새 편집을 하면 선택 cursor 이후 active timeline은 분기하지만 기존 immutable snapshot과
+audit entry는 디스크에서 삭제하지 않습니다. UI는 restore 전에 이 동작을 명시적으로 경고합니다.
 모든 자동 후보가 실패해 `final.mmd`가 없는 bundle도 첫 번째 bounded alternative를 편집 baseline으로
 불러옵니다. 저장 전 validation은 동일하며, 최초 성공 편집 때만 `final.mmd`를 공개합니다.
 
@@ -126,7 +133,7 @@ review server는 인증 시스템이 아닙니다. 기본 loopback bind를 권�
 
 ## 현재 제한
 
-provenance/node overlay와 bounds-normalized read-only difference blend, JSON editor, source-anchored node
-추가, advisory node drag-and-drop, ID 기반 edge 재연결/node 삭제는 제공합니다. Mermaid render의 실제 좌표 강제와 edge endpoint를
+provenance/node overlay와 bounds-normalized read-only difference blend, active timeline revision restore,
+JSON editor, source-anchored node 추가, advisory node drag-and-drop, ID 기반 edge 재연결/node 삭제는 제공합니다. Mermaid render의 실제 좌표 강제와 edge endpoint를
 canvas에서 직접 끌어 놓는 조작은 아직 구현하지 않았습니다. version history는 undo/redo timeline으로 제공하며
-과거 revision을 임의 선택하는 UI와 VLM 기반 자유 형식 명령도 후속 범위입니다.
+분기 탈락 snapshot preview와 VLM 기반 자유 형식 명령은 후속 범위입니다.

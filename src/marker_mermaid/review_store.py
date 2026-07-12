@@ -709,7 +709,7 @@ class ReviewStore:
     ) -> ReviewBundle:
         return self._move_cursor(
             bundle_id,
-            -1,
+            delta=-1,
             expected_version=expected_version,
             expected_digest=expected_digest,
             reason=reason,
@@ -725,7 +725,24 @@ class ReviewStore:
     ) -> ReviewBundle:
         return self._move_cursor(
             bundle_id,
-            1,
+            delta=1,
+            expected_version=expected_version,
+            expected_digest=expected_digest,
+            reason=reason,
+        )
+
+    def checkout_revision(
+        self,
+        bundle_id: str,
+        target_revision: str,
+        *,
+        expected_version: int,
+        expected_digest: str,
+        reason: str | None = None,
+    ) -> ReviewBundle:
+        return self._move_cursor(
+            bundle_id,
+            target_revision=target_revision,
             expected_version=expected_version,
             expected_digest=expected_digest,
             reason=reason,
@@ -787,8 +804,9 @@ class ReviewStore:
     def _move_cursor(
         self,
         bundle_id: str,
-        delta: int,
         *,
+        delta: int | None = None,
+        target_revision: str | None = None,
         expected_version: int,
         expected_digest: str,
         reason: str | None,
@@ -797,10 +815,27 @@ class ReviewStore:
         with self._locked_bundle(bundle_id):
             bundle = self.load_bundle(bundle_id)
             self._check_expected(bundle, expected_version, expected_digest)
-            next_cursor = bundle.state.cursor + delta
-            if not 0 <= next_cursor < len(bundle.state.timeline):
-                action = "undo" if delta < 0 else "redo"
-                raise ReviewConflictError(f"nothing to {action}")
+            if delta is None:
+                if not isinstance(target_revision, str) or not re.fullmatch(
+                    r"r[0-9]{6,}", target_revision
+                ):
+                    raise ReviewValidationError("target revision has an invalid ID")
+                try:
+                    next_cursor = bundle.state.timeline.index(target_revision)
+                except ValueError as exc:
+                    raise ReviewValidationError(
+                        "target revision is not in the active timeline"
+                    ) from exc
+                if next_cursor == bundle.state.cursor:
+                    raise ReviewConflictError("target revision is already current")
+                operation = "checkout_revision"
+            else:
+                if delta not in {-1, 1}:
+                    raise ReviewValidationError("history cursor delta is invalid")
+                next_cursor = bundle.state.cursor + delta
+                operation = "undo" if delta < 0 else "redo"
+                if not 0 <= next_cursor < len(bundle.state.timeline):
+                    raise ReviewConflictError(f"nothing to {operation}")
             revision = bundle.state.timeline[next_cursor]
             bundle_path = self._bundle_path(bundle_id)
             code = self._read_code(bundle_path, f"versions/{revision}.mmd")
@@ -872,8 +907,8 @@ class ReviewStore:
             after = self._state_value(state, code, scene_ir, provenance, layout_hints)
             history = self._append_history(
                 bundle.history,
-                operation="undo" if delta < 0 else "redo",
-                target=bundle_id,
+                operation=operation,
+                target=(target_revision if operation == "checkout_revision" else bundle_id),
                 before=before,
                 after=after,
                 reason=reason,
