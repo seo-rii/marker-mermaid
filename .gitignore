@@ -1,0 +1,9 @@
+/.testdeps/
+/.venv/
+/.pytest_cache/
+/.ruff_cache/
+/dist/
+**/__pycache__/
+**/*.py[cod]
+src/marker_mermaid/runtime/node_modules/
+/output/

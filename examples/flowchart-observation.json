@@ -1,0 +1,72 @@
+{
+  "prediction": {
+    "candidates": ["flowchart", "architecture"],
+    "scores": [0.92, 0.08],
+    "visual_signals": ["directed arrows", "rectangular process nodes"],
+    "negative_signals": ["no architecture groups"]
+  },
+  "scene_ir": {
+    "elements": [
+      {
+        "id": "N1",
+        "role": "start",
+        "text": "결제 요청",
+        "bbox": [20, 30, 160, 90],
+        "shape": "round",
+        "confidence": 0.95,
+        "evidence_ids": ["vlm-1"]
+      },
+      {
+        "id": "N2",
+        "role": "decision",
+        "text": "승인 여부",
+        "bbox": [220, 25, 360, 100],
+        "shape": "diamond",
+        "confidence": 0.9,
+        "evidence_ids": ["vlm-2"]
+      }
+    ],
+    "relations": [
+      {
+        "id": "E1",
+        "source_id": "N1",
+        "target_id": "N2",
+        "relation_type": "arrow",
+        "semantic_relation": "sequence",
+        "polyline": [[160, 60], [220, 60]],
+        "arrow_at_start": false,
+        "arrow_at_end": true,
+        "confidence": 0.9,
+        "evidence_ids": ["vlm-3"]
+      }
+    ],
+    "groups": [],
+    "reading_direction": "LR",
+    "diagram_type_candidates": ["flowchart"],
+    "coordinate_space": "pixels",
+    "canvas_size": [400, 140]
+  },
+  "typed_candidates": [
+    {
+      "diagram_type": "flowchart",
+      "confidence": 0.92,
+      "ir": {
+        "title": "결제 승인 프로세스",
+        "description": "결제 요청이 승인 여부 판단으로 이어지는 흐름",
+        "direction": "LR",
+        "nodes": [
+          {"id": "N1", "label": "결제 요청", "shape": "round"},
+          {"id": "N2", "label": "승인 여부", "shape": "diamond"}
+        ],
+        "edges": [{"source": "N1", "target": "N2"}]
+      }
+    }
+  ],
+  "direct_candidates": [],
+  "evidence": [
+    {"id": "vlm-1", "kind": "vlm_observation", "score": 0.95, "source_block_ids": []},
+    {"id": "vlm-2", "kind": "vlm_observation", "score": 0.9, "source_block_ids": []},
+    {"id": "vlm-3", "kind": "vlm_observation", "score": 0.9, "source_block_ids": []}
+  ],
+  "warnings": []
+}

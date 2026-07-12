@@ -1,0 +1,49 @@
+# MMX-001 v0.3 대응표
+
+이 문서는 기술 스펙 v0.3을 구현 상태별로 구분합니다. `구현`은 test가 있는 실행 경로,
+`기반`은 model/protocol/config가 있으나 전체 자동화가 없는 상태, `후속`은 아직 제공하지 않는
+기능입니다.
+
+| 스펙 영역 | 상태 | 현재 구현 |
+| --- | --- | --- |
+| strict/extended/maximal | 구현 | mode-derived top-k/candidate/repair budget |
+| 4개 게시 정책 | 구현 | hard gate와 등급/threshold truth table |
+| Figure/Picture/ComplexRegion | 구현 | Marker discovery와 원본 추출 |
+| full-page candidate | 기반 | Marker가 Figure/Picture로 분류한 경우 포함 |
+| page missed detector | 후속 | config 예약 |
+| composite split | 후속 | config 예약 |
+| fragment/multi-page merge | 후속 | source mapping model만 존재 |
+| Scene IR/provenance | 구현 | Pydantic 무결성, OCR/source/VLM evidence, sidecar |
+| edge/Hough/arrow/OCR view | 구현 | Pillow/OpenCV best-effort priors |
+| color cluster/vector primitive | 후속 | config 예약 |
+| structured Marker VLM | 구현 | response schema adapter |
+| Direct Mermaid | 구현 | extended/maximal, 동일 hard gate |
+| Fusion engine | 기반 | deterministic candidate selection; primitive fusion은 후속 |
+| Flowchart | 구현 | typed serializer + real render fixture |
+| Architecture | 구현 | `architecture-beta` serializer + real render fixture |
+| Sequence | 구현 | typed serializer + real render fixture |
+| Mindmap | 구현 | typed serializer; Mermaid 11.16 accessibility 제한 문서화 |
+| Timeline/Gantt | 구현 | typed serializer + real render fixture |
+| BPMN/Swimlane | 구현 | portable flowchart subgraph fallback |
+| Phase 2 software types | 기반 | direct Mermaid와 Scene fallback; typed serializer 후속 |
+| Phase 3 charts | 기반 | direct Mermaid, numeric OCR consistency; typed extraction 후속 |
+| Phase 5 special types | 기반 | direct Mermaid/security gate; typed extraction 후속 |
+| AST repair/mermaid-ast | 후속 | Protocol/repair history만 존재 |
+| style recovery | 기반 | profile/security allowlist; visual style fusion 후속 |
+| OCR recall | 구현 | Unicode token coverage |
+| numeric consistency | 구현 | source에 존재하는 숫자만 비교 |
+| edge agreement | 구현 | source/render edge IoU baseline |
+| visual entailment | 기반 | evidence coverage proxy; model scorer 후속 |
+| arrow/layout/path score | 후속 | score slots/config 예약 |
+| render-and-compare repair | 기반 | injected repair engine, strict improvement adoption |
+| atomic sidecars | 구현 | manifest/hash/alternatives/provenance |
+| Review Workspace | 기반 | read-only source/render/artifact viewer |
+| code/IR edit, DnD, NL patch | 후속 | Phase 4 |
+
+## 릴리스 해석
+
+현재 버전은 Phase 1 engineering baseline이지 MMX-001의 모든 기능 gate를 달성한 production
+`extended` 릴리스가 아닙니다. 특히 연구 데이터셋 규모의 precision/recall 목표와 유형별 최소
+fixture 수량은 별도 평가 corpus가 필요합니다. 자동 게시 hard gate, 원본 보존, candidate failure
+isolation, budget, sidecar/review 가능성은 현재 test 대상으로 삼습니다.
+

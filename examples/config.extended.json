@@ -1,0 +1,28 @@
+{
+  "use_llm": true,
+  "extract_images": true,
+  "MermaidDiagramProcessor_mode": "extended",
+  "MermaidDiagramProcessor_publish_policy": "best_effort_validated",
+  "MermaidDiagramProcessor_enabled_types": [
+    "flowchart",
+    "swimlane",
+    "bpmn",
+    "sequence",
+    "architecture",
+    "mindmap",
+    "timeline",
+    "gantt"
+  ],
+  "MermaidDiagramProcessor_candidate_count": 3,
+  "MermaidDiagramProcessor_type_candidate_count": 2,
+  "MermaidDiagramProcessor_max_repair_iterations": 3,
+  "MermaidDiagramProcessor_publish_min_score": 0.5,
+  "MermaidDiagramProcessor_review_below_score": 0.7,
+  "MermaidDiagramProcessor_security_profile": "strict",
+  "MermaidDiagramProcessor_compatibility_profile": "portable-rich",
+  "MermaidMarkdownRenderer_include_original_image": true,
+  "MermaidMarkdownRenderer_include_mermaid_code": true,
+  "MermaidMarkdownRenderer_show_quality_warning": true,
+  "MermaidMarkdownRenderer_show_quality_score": false
+}
+

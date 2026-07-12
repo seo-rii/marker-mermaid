@@ -1,0 +1,380 @@
+"""Budgeted, failure-isolated reconstruction orchestration."""
+
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass
+
+from PIL import Image, ImageChops, ImageFilter, ImageOps
+
+from marker_mermaid.config import MermaidConfig, Mode
+from marker_mermaid.models import (
+    CandidateFailure,
+    EngineObservation,
+    MermaidCandidate,
+    ReconstructionResult,
+    RepairEvent,
+    VisualEvidence,
+)
+from marker_mermaid.protocols import CandidateEngine, RepairEngine, RuntimeResult, SourceContext
+from marker_mermaid.scoring import (
+    aggregate_scores,
+    decide_publication,
+    numeric_consistency,
+    ocr_recall,
+)
+from marker_mermaid.serializers import SerializationError, scene_to_flowchart, serialize_typed_ir
+from marker_mermaid.validation import CandidateValidator
+from marker_mermaid.views import build_visual_priors
+
+
+@dataclass(slots=True)
+class _Draft:
+    method: str
+    diagram_type: str
+    code: str
+    observation: EngineObservation
+    typed_ir: dict | None = None
+    raw_mermaid: str | None = None
+    warnings: list[str] | None = None
+
+
+def _edge_iou(source: Image.Image, rendered: bytes | None) -> float | None:
+    if rendered is None:
+        return None
+    from io import BytesIO
+
+    try:
+        generated = Image.open(BytesIO(rendered)).convert("L")
+    except OSError:
+        return None
+    source_edges = ImageOps.grayscale(source).filter(ImageFilter.FIND_EDGES)
+    generated_edges = generated.filter(ImageFilter.FIND_EDGES)
+    generated_edges = generated_edges.resize(source_edges.size)
+    source_mask = source_edges.point(lambda value: 255 if value > 80 else 0).convert("1")
+    generated_mask = generated_edges.point(lambda value: 255 if value > 80 else 0).convert("1")
+    intersection = ImageChops.logical_and(source_mask, generated_mask).histogram()[1]
+    union = ImageChops.logical_or(source_mask, generated_mask).histogram()[1]
+    return intersection / union if union else None
+
+
+def _provenance_score(candidate: MermaidCandidate, evidence: list[VisualEvidence]) -> float | None:
+    if candidate.scene_ir is None or not candidate.scene_ir.elements:
+        return None
+    known = {item.id for item in evidence}
+    supported = sum(
+        1 for element in candidate.scene_ir.elements if known.intersection(element.evidence_ids)
+    )
+    return supported / len(candidate.scene_ir.elements)
+
+
+class ReconstructionPipeline:
+    """Generate, validate, score, select, and optionally repair Mermaid candidates."""
+
+    def __init__(
+        self,
+        config: MermaidConfig,
+        engines: list[CandidateEngine],
+        validator: CandidateValidator,
+        repair_engine: RepairEngine | None = None,
+    ):
+        self.config = config
+        self.engines = engines
+        self.validator = validator
+        self.repair_engine = repair_engine
+
+    def reconstruct(
+        self,
+        source_id: str,
+        source_image_name: str,
+        image: Image.Image,
+        *,
+        source_block_ids: list[str] | None = None,
+        evidence: list[VisualEvidence] | None = None,
+        ocr_texts: list[str] | None = None,
+        source_block: object | None = None,
+    ) -> ReconstructionResult:
+        failures: list[CandidateFailure] = []
+        all_evidence = list(evidence or [])
+        try:
+            views, view_warnings = build_visual_priors(image, all_evidence, self.config)
+        except Exception as exc:
+            views = {"original": image.convert("RGB")}
+            view_warnings = [f"visual prior generation failed: {exc}"]
+        context = SourceContext(
+            source_id=source_id,
+            source_block_ids=source_block_ids or [source_id],
+            source_image_name=source_image_name,
+            image=image,
+            views=views,
+            evidence=all_evidence,
+            ocr_texts=list(ocr_texts or []),
+            source_block=source_block,
+        )
+
+        drafts: list[_Draft] = []
+        code_hashes: set[str] = set()
+        candidate_budget = int(self.config.candidate_count or 1)
+        for engine in self.engines:
+            if len(drafts) >= candidate_budget:
+                break
+            try:
+                observation = engine.observe(context)
+            except Exception as exc:  # Candidate failures never fail the document.
+                failures.append(
+                    CandidateFailure(
+                        stage="generation",
+                        engine=engine.name,
+                        error_type=type(exc).__name__,
+                        message=str(exc),
+                    )
+                )
+                continue
+            top_types = [
+                item
+                for item in observation.prediction.candidates[: self.config.type_candidate_count]
+                if item in self.config.enabled_types
+            ]
+            for item in observation.evidence:
+                if item.id not in {existing.id for existing in all_evidence}:
+                    all_evidence.append(item)
+            generated: list[_Draft] = []
+            if self.config.enable_typed_ir:
+                for typed in observation.typed_candidates:
+                    if typed.diagram_type not in top_types:
+                        continue
+                    try:
+                        code = serialize_typed_ir(
+                            typed.diagram_type,
+                            typed.ir,
+                            experimental=self.config.mode != Mode.STRICT,
+                        )
+                    except SerializationError as exc:
+                        failures.append(
+                            CandidateFailure(
+                                stage="serialization",
+                                engine=engine.name,
+                                error_type=type(exc).__name__,
+                                message=str(exc),
+                            )
+                        )
+                        continue
+                    generated.append(
+                        _Draft("typed_ir", typed.diagram_type, code, observation, typed_ir=typed.ir)
+                    )
+            if (
+                self.config.enable_generic_scene_ir
+                and observation.scene_ir is not None
+                and observation.scene_ir.elements
+            ):
+                code = scene_to_flowchart(
+                    observation.scene_ir, experimental=self.config.mode != Mode.STRICT
+                )
+                fallback_from = top_types[0] if top_types else "unknown"
+                generated.append(
+                    _Draft(
+                        "scene_ir_fallback",
+                        "flowchart",
+                        code,
+                        observation,
+                        warnings=[f"portable flowchart fallback from {fallback_from}"],
+                    )
+                )
+            if self.config.enable_direct_mermaid:
+                for direct in observation.direct_candidates:
+                    if direct.diagram_type in top_types:
+                        generated.append(
+                            _Draft(
+                                "direct_mermaid",
+                                direct.diagram_type,
+                                direct.code,
+                                observation,
+                                raw_mermaid=direct.code,
+                            )
+                        )
+            for draft in generated:
+                digest = hashlib.sha256(draft.code.encode()).hexdigest()
+                if digest in code_hashes:
+                    continue
+                code_hashes.add(digest)
+                drafts.append(draft)
+                if len(drafts) >= candidate_budget:
+                    break
+
+        candidates: list[MermaidCandidate] = []
+        for index, draft in enumerate(drafts, start=1):
+            candidate = MermaidCandidate(
+                candidate_id=f"candidate-{index}",
+                generation_method=draft.method,
+                diagram_type=draft.diagram_type,
+                scene_ir=draft.observation.scene_ir,
+                typed_ir=draft.typed_ir,
+                raw_mermaid=draft.raw_mermaid,
+                mermaid_code=draft.code,
+                warnings=[*view_warnings, *draft.observation.warnings, *(draft.warnings or [])],
+            )
+            try:
+                outcome = self.validator.validate(draft.code, self.config.render_timeout_seconds)
+                runtime = outcome.runtime
+                validation_warnings = outcome.warnings
+            except Exception as exc:
+                runtime = RuntimeResult(False, False, error=f"validator failed: {exc}")
+                validation_warnings = []
+                failures.append(
+                    CandidateFailure(
+                        stage="validation",
+                        engine=draft.method,
+                        error_type=type(exc).__name__,
+                        message=str(exc),
+                    )
+                )
+            candidate.syntax_valid = runtime.syntax_valid
+            candidate.render_valid = runtime.render_valid
+            candidate.svg = runtime.svg
+            candidate.png = runtime.png
+            candidate.warnings.extend(validation_warnings)
+            if runtime.error:
+                candidate.warnings.append(runtime.error)
+            scores: dict[str, float] = {
+                "syntax": float(runtime.syntax_valid),
+                "render": float(runtime.render_valid),
+            }
+            recall = ocr_recall(context.ocr_texts, draft.code)
+            if recall is not None:
+                scores["ocr_recall"] = recall
+            numeric = numeric_consistency(context.ocr_texts, draft.code)
+            if numeric is not None and draft.diagram_type in {
+                "gantt",
+                "pie",
+                "xychart",
+                "quadrant",
+                "sankey",
+                "radar",
+                "treemap",
+                "packet",
+            }:
+                scores["numeric_consistency"] = numeric
+            prediction_scores = dict(
+                zip(
+                    draft.observation.prediction.candidates,
+                    draft.observation.prediction.scores,
+                    strict=True,
+                )
+            )
+            if draft.diagram_type in prediction_scores:
+                scores["type_fitness"] = prediction_scores[draft.diagram_type]
+            provenance = _provenance_score(candidate, all_evidence)
+            if provenance is not None:
+                scores["visual_entailment_precision"] = provenance
+                if provenance < 0.8:
+                    candidate.warnings.append("more than 20% of scene nodes lack provenance")
+            if self.config.enable_render_compare:
+                edge = _edge_iou(context.image, runtime.png)
+                if edge is not None:
+                    scores["edge_agreement"] = edge
+            candidate.scores = scores
+            candidate.aggregate_score = aggregate_scores(scores, self.config)
+            candidates.append(candidate)
+
+        selected = self._select(candidates)
+        if selected is not None and self.repair_engine is not None:
+            selected = self._repair(context, selected)
+            if selected not in candidates:
+                candidates.append(selected)
+        decision = decide_publication(selected, self.config)
+        status = "success" if decision.publish else "review_required"
+        if selected is None:
+            status = "failed"
+        return ReconstructionResult(
+            source_id=source_id,
+            source_image_name=source_image_name,
+            selected=selected,
+            alternatives=[item for item in candidates if item is not selected],
+            evidence=all_evidence,
+            failures=failures,
+            grade=decision.grade,
+            publish=decision.publish,
+            review_required=decision.review_required,
+            status=status,
+        )
+
+    @staticmethod
+    def _select(candidates: list[MermaidCandidate]) -> MermaidCandidate | None:
+        eligible = [item for item in candidates if item.syntax_valid and item.render_valid]
+        if not eligible:
+            return None
+        priority = {"typed_ir": 3, "scene_ir_fallback": 2, "direct_mermaid": 1}
+        return max(
+            eligible,
+            key=lambda item: (
+                item.aggregate_score if item.aggregate_score is not None else -1,
+                item.scores.get("ocr_recall", -1),
+                priority.get(item.generation_method, 0),
+                item.candidate_id,
+            ),
+        )
+
+    def _repair(self, context: SourceContext, selected: MermaidCandidate) -> MermaidCandidate:
+        current = selected
+        for iteration in range(1, int(self.config.max_repair_iterations or 0) + 1):
+            try:
+                code = self.repair_engine.repair(context, current)  # type: ignore[union-attr]
+            except Exception as exc:
+                current.warnings.append(f"repair engine failed: {exc}")
+                break
+            if not code or code == current.mermaid_code:
+                break
+            try:
+                outcome = self.validator.validate(code, self.config.render_timeout_seconds)
+            except Exception as exc:
+                current.warnings.append(f"repair validation failed: {exc}")
+                break
+            if not outcome.runtime.render_valid:
+                current.repair_history.append(
+                    RepairEvent(iteration=iteration, operation="repair", accepted=False)
+                )
+                continue
+            recall = ocr_recall(context.ocr_texts, code)
+            scores = dict(current.scores)
+            scores["syntax"] = 1.0
+            scores["render"] = 1.0
+            if recall is not None:
+                scores["ocr_recall"] = recall
+            numeric = numeric_consistency(context.ocr_texts, code)
+            if numeric is not None and current.diagram_type in {
+                "gantt",
+                "pie",
+                "xychart",
+                "quadrant",
+                "sankey",
+                "radar",
+                "treemap",
+                "packet",
+            }:
+                scores["numeric_consistency"] = numeric
+            if self.config.enable_render_compare:
+                edge = _edge_iou(context.image, outcome.runtime.png)
+                if edge is not None:
+                    scores["edge_agreement"] = edge
+            aggregate = aggregate_scores(scores, self.config)
+            improved = aggregate is not None and (
+                current.aggregate_score is None or aggregate > current.aggregate_score
+            )
+            event = RepairEvent(
+                iteration=iteration,
+                operation="repair",
+                before_score=current.aggregate_score,
+                after_score=aggregate,
+                accepted=improved,
+            )
+            current.repair_history.append(event)
+            if improved:
+                current = current.model_copy(deep=True)
+                current.candidate_id = f"{selected.candidate_id}-repair-{iteration}"
+                current.mermaid_code = code
+                current.svg = outcome.runtime.svg
+                current.png = outcome.runtime.png
+                current.scores = scores
+                current.aggregate_score = aggregate
+                current.warnings.extend(outcome.warnings)
+        return current

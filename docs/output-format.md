@@ -1,0 +1,45 @@
+# 출력 형식
+
+## Markdown 불변조건
+
+원본 image가 항상 먼저 나오고, 같은 source의 Mermaid fence는 최대 한 번만 삽입됩니다.
+`syntax_valid && render_valid`가 아니거나 policy가 게시를 거부하면 image만 남습니다. C 등급은
+`Experimental reconstruction` warning을 동반합니다.
+
+## Sidecar bundle
+
+각 source는 `diagrams/<safe-source-id>/`에 독립 bundle을 가집니다. writer는 같은 parent의 임시
+directory에 모두 쓴 뒤 `os.replace`로 최종 directory를 공개합니다. 이미 존재하는 bundle은
+자동 덮어쓰지 않습니다. path component는 allowlist로 정규화하며 absolute path와 `..`를
+허용하지 않습니다.
+
+`manifest.json`의 `schema_version`은 `mmx-sidecar-0.3`입니다.
+
+```json
+{
+  "schema_version": "mmx-sidecar-0.3",
+  "source_id": "_page_4_Figure_2",
+  "source_image": "images/_page_4_Figure_2.jpeg",
+  "status": "success",
+  "grade": "B",
+  "publish": true,
+  "review_required": false,
+  "selected_candidate_id": "candidate-1",
+  "files": {
+    "final.mmd": "sha256...",
+    "final.svg": "sha256..."
+  },
+  "failures": []
+}
+```
+
+`files`의 값은 content SHA-256입니다. `final.*`은 hard gate를 통과해 selected가 된 candidate에만
+생성됩니다. 실패하거나 선택되지 않은 후보는 `alternatives/`에 JSON과 가능한 `.mmd`로 남습니다.
+`review-history.json`은 현재 빈 배열로 시작하며 향후 review editor와 같은 schema를 공유합니다.
+
+## JSON 직렬화
+
+PNG bytes와 SVG text는 candidate JSON에 중복으로 넣지 않습니다. 각각 artifact file로 저장하고
+candidate JSON에는 validation, score, warning, IR, code를 둡니다. document metadata는 source별
+summary와 sidecar path를 제공합니다.
+
