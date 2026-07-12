@@ -81,6 +81,26 @@ pointerup에서 한 번만 commit하며, 실패하면 저장된 위치로 되돌
 선택하면 hint를 clear하고, node 삭제/직접 Scene 편집은 남은 node ID와 교집합만 보존합니다. undo/redo는
 layout artifact의 존재와 내용을 함께 복원합니다.
 
+### Read-only visual difference
+
+`Difference blend`는 현재 source와 revision의 validated `final.png`를 같은 viewport에 각각 aspect
+ratio를 유지한 `contain + center` 방식으로 배치하고 CSS `difference` blend를 적용합니다. PNG가 없거나
+source URL이 안전한 output image 경로가 아니면 control을 비활성화합니다. PNG IHDR의 각 축이 8,192를
+넘거나 총 5천만 pixel을 넘는 경우에도 browser decode 전에 비활성화합니다. 기본값은 꺼짐이며 slider는
+source layer의 강도만 10% 단위로 바꿉니다. 켠 경우에만 실제 표시할 source image와 digest-bound PNG
+layer를 hidden 상태로 load하고 두 layer의 URL·decoded size를 모두 확인한 뒤 같은 요소를 reveal합니다.
+bundle/revision이 바뀐 뒤 도착한 stale load event는 descriptor key가 다르면 버립니다. load 실패 시
+토글을 끄고 live status로 원인을 알립니다. URL은 기존 same-origin static allowlist를 그대로 사용합니다.
+
+`bounds-contain-center-v1`에서 viewport가 `(Vw, Vh)`, decoded image가 `(Iw, Ih)`이면 각 layer를
+`scale = min(Vw/Iw, Vh/Ih)`로 독립 scaling하고, 남은 공간을 양쪽에 절반씩 두어 중앙 정렬합니다. 즉
+display size는 `(Iw*scale, Ih*scale)`, offset은 `((Vw-Iw*scale)/2, (Vh-Ih*scale)/2)`입니다.
+
+이 보기는 bounds-normalized 수동 검토 보조 기능입니다. crop, rotation, translation, feature registration,
+semantic alignment 또는 pixel alignment를 수행하거나 주장하지 않습니다. 서버 artifact를 만들지 않고
+quality score, 승인, revision, history, provenance, layout hint를 바꾸지 않습니다. 따라서 시각적 겹침은
+자동 `EdgeAgreement`나 `LayoutSimilarity` 결과로 해석하면 안 됩니다.
+
 ## HTTP 및 파일 안전성
 
 브라우저 mutation에는 page bootstrap에 포함된 CSRF token과 same-origin 요청이 필요합니다.
@@ -106,7 +126,7 @@ review server는 인증 시스템이 아닙니다. 기본 loopback bind를 권�
 
 ## 현재 제한
 
-provenance/node overlay와 JSON editor, source-anchored node 추가, advisory node drag-and-drop,
-ID 기반 edge 재연결/node 삭제는 제공합니다. Mermaid render의 실제 좌표 강제와 edge endpoint를
+provenance/node overlay와 bounds-normalized read-only difference blend, JSON editor, source-anchored node
+추가, advisory node drag-and-drop, ID 기반 edge 재연결/node 삭제는 제공합니다. Mermaid render의 실제 좌표 강제와 edge endpoint를
 canvas에서 직접 끌어 놓는 조작은 아직 구현하지 않았습니다. version history는 undo/redo timeline으로 제공하며
 과거 revision을 임의 선택하는 UI와 VLM 기반 자유 형식 명령도 후속 범위입니다.

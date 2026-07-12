@@ -34,6 +34,10 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
         "source-image",
         "render-image",
         "render-stage",
+        "diff-layers",
+        "diff-enabled",
+        "diff-opacity",
+        "diff-note",
         "layout-overlay",
         "provenance-overlay",
         "mermaid-editor",
@@ -99,6 +103,28 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert "node.focus()" in assets.javascript
     assert "touch-action: none" in assets.css
     assert "ArrowLeft" in assets.javascript
+    assert "renderDifference" in assets.javascript
+    assert 'mix-blend-mode: difference' in assets.css
+    assert 'object-fit: contain' in assets.css
+    assert "controls.diffLayers.hidden = !active" in assets.javascript
+    assert "controls.diffLayers.replaceChildren(renderLayer, sourceLayer)" in assets.javascript
+    assert "diagram.diff_view" in assets.javascript
+    assert 'descriptor.render_kind === "png"' in assets.javascript
+    assert 'descriptor.alignment_profile === "bounds-contain-center-v1"' in assets.javascript
+    assert "Bounds-normalized visual aid only" in assets.html
+    assert "semantic, or pixel" in assets.html
+    assert 'id="diff-layers" hidden aria-hidden="true"' in assets.html
+    assert 'id="diff-note" class="muted" role="status" aria-live="polite"' in assets.html
+    assert "failDifference" in assets.javascript
+    assert "sourceLayer.onerror" in assets.javascript
+    assert "renderLayer.onerror" in assets.javascript
+    assert "image.currentSrc || image.src" in assets.javascript
+    assert "state.diffLoad?.key !== key" in assets.javascript
+    assert "state.diffFailure?.key === descriptorKey" in assets.javascript
+    assert "controls.diffNote.textContent !== diffStatus" in assets.javascript
+    assert "getImageData" not in assets.javascript
+    assert "DOMParser" not in assets.javascript
+    assert "createObjectURL" not in assets.javascript
 
 
 def test_asset_base_must_be_same_origin_path():

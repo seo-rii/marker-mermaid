@@ -42,6 +42,7 @@
 - Hash-bound MMX-001 corpus manifests, fixed release gates, auditable reports, and `evaluate` CLI.
 - Revisioned advisory Review layout hints with pointer and keyboard node movement.
 - Evidence-backed PDF vector bold-label recovery with source-to-candidate attribution.
+- Off-by-default, bounds-normalized source/render difference blend in the Review Workspace.
 
 ### Changed
 

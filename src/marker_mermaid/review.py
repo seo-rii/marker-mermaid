@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import ipaddress
 import json
 import mimetypes
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -26,6 +28,7 @@ from marker_mermaid.review_commands import apply_review_command, apply_review_op
 from marker_mermaid.review_layout import MoveNodeLayoutOperation
 from marker_mermaid.review_store import (
     MAX_JSON_BYTES,
+    MAX_RENDER_BYTES,
     ReviewBundle,
     ReviewConflictError,
     ReviewStore,
@@ -38,6 +41,8 @@ from marker_mermaid.review_ui import ReviewWorkspaceAssets, build_review_workspa
 from marker_mermaid.validation import CandidateValidator, NodeMermaidRuntime
 
 MAX_REQUEST_BYTES = min(MAX_JSON_BYTES, 1_000_000)
+MAX_DIFF_IMAGE_DIMENSION = 8_192
+MAX_DIFF_IMAGE_PIXELS = 50_000_000
 REVIEW_CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self'; "
     "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
@@ -134,7 +139,8 @@ class ReviewHandler(SimpleHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 - stdlib handler API
         if not self._authorized_host():
             return
-        path = urllib.parse.urlsplit(self.path).path
+        request_url = urllib.parse.urlsplit(self.path)
+        path = request_url.path
         if path in {"", "/"}:
             self._send_bytes(self.assets.html.encode(), "text/html; charset=utf-8")
             return
@@ -159,6 +165,57 @@ class ReviewHandler(SimpleHTTPRequestHandler):
         static_artifact = self._open_static_artifact(path)
         if static_artifact is not None:
             descriptor, filename, size = static_artifact
+            try:
+                query = urllib.parse.parse_qs(
+                    request_url.query,
+                    keep_blank_values=True,
+                    max_num_fields=8,
+                )
+            except ValueError:
+                os.close(descriptor)
+                self._send_json(
+                    {"error": "invalid static artifact query"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            digest_values = query.get("digest", [])
+            if digest_values:
+                if size > MAX_RENDER_BYTES:
+                    os.close(descriptor)
+                    self._send_json(
+                        {"error": "static render exceeds the artifact size limit"},
+                        status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    )
+                    return
+                expected_digest = digest_values[0] if len(digest_values) == 1 else ""
+                if filename != "final.png" or not re.fullmatch(
+                    r"[0-9a-f]{64}", expected_digest
+                ):
+                    os.close(descriptor)
+                    self._send_json(
+                        {"error": "invalid static artifact digest"},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+                actual_digest = hashlib.sha256()
+                try:
+                    while chunk := os.read(descriptor, 64 * 1024):
+                        actual_digest.update(chunk)
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                except OSError:
+                    os.close(descriptor)
+                    self._send_json(
+                        {"error": "static artifact became unavailable"},
+                        status=HTTPStatus.NOT_FOUND,
+                    )
+                    return
+                if not hmac.compare_digest(actual_digest.hexdigest(), expected_digest):
+                    os.close(descriptor)
+                    self._send_json(
+                        {"error": "static artifact digest changed"},
+                        status=HTTPStatus.CONFLICT,
+                    )
+                    return
             self._send_static_file(descriptor, filename, size)
             return
         self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
@@ -474,6 +531,39 @@ class ReviewHandler(SimpleHTTPRequestHandler):
 
     def _bundle_payload(self, bundle: ReviewBundle) -> dict[str, Any]:
         manifest = bundle.manifest
+        source_url = _safe_source_url(manifest.get("source_image"))
+        png_dimensions: tuple[int, int] | None = None
+        if (
+            bundle.png is not None
+            and len(bundle.png) >= 24
+            and bundle.png[:8] == b"\x89PNG\r\n\x1a\n"
+            and bundle.png[8:12] == b"\x00\x00\x00\r"
+            and bundle.png[12:16] == b"IHDR"
+        ):
+            width = int.from_bytes(bundle.png[16:20], "big")
+            height = int.from_bytes(bundle.png[20:24], "big")
+            if (
+                0 < width <= MAX_DIFF_IMAGE_DIMENSION
+                and 0 < height <= MAX_DIFF_IMAGE_DIMENSION
+                and width * height <= MAX_DIFF_IMAGE_PIXELS
+            ):
+                png_dimensions = (width, height)
+        diff_available = bool(
+            source_url and png_dimensions is not None and bundle.state.png_digest is not None
+        )
+        diff_view = {
+            "available": diff_available,
+            "alignment_profile": "bounds-contain-center-v1",
+            "render_kind": "png" if diff_available else None,
+            "render_dimensions": list(png_dimensions) if diff_available else None,
+            "source_url": source_url if diff_available else None,
+            "render_url": (
+                f"/diagrams/{urllib.parse.quote(bundle.bundle_id, safe='')}/final.png"
+                f"?digest={bundle.state.png_digest}"
+                if diff_available
+                else None
+            ),
+        }
         scores = self._optional_json(bundle.bundle_id, "scores.json", {})
         provenance = (
             [item.model_dump(mode="json") for item in bundle.provenance]
@@ -489,7 +579,7 @@ class ReviewHandler(SimpleHTTPRequestHandler):
             "id": bundle.bundle_id,
             "source_id": str(manifest.get("source_id", bundle.bundle_id)),
             "label": str(manifest.get("source_id", bundle.bundle_id)),
-            "source_url": _safe_source_url(manifest.get("source_image")),
+            "source_url": source_url,
             "rendered_url": (
                 f"/diagrams/{urllib.parse.quote(bundle.bundle_id, safe='')}/final.svg"
                 f"?v={bundle.state.version}"
@@ -506,6 +596,7 @@ class ReviewHandler(SimpleHTTPRequestHandler):
                 if bundle.layout_hints is not None
                 else None
             ),
+            "diff_view": diff_view,
             "provenance": provenance,
             "issues": issues,
             "alternatives": self._alternatives(bundle.bundle_id),

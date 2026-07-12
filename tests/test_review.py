@@ -11,14 +11,22 @@ import urllib.request
 from functools import partial
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 
 import pytest
+from PIL import Image
 
 from marker_mermaid.review import BoundedThreadingHTTPServer, ReviewHandler
 from marker_mermaid.review_store import MAX_RENDER_BYTES, ReviewStore, ReviewValidationResult
 
 
-def make_bundle(tmp_path, *, source_id="source-a"):
+def _png_bytes(size=(1, 1)):
+    output = BytesIO()
+    Image.new("RGB", size, "white").save(output, format="PNG")
+    return output.getvalue()
+
+
+def make_bundle(tmp_path, *, source_id="source-a", with_png=False):
     diagram = tmp_path / "diagrams" / "diagram-a"
     alternatives = diagram / "alternatives"
     alternatives.mkdir(parents=True)
@@ -41,6 +49,8 @@ def make_bundle(tmp_path, *, source_id="source-a"):
     )
     (diagram / "final.mmd").write_text("flowchart LR\n  A --> B\n", encoding="utf-8")
     (diagram / "final.svg").write_text("<svg viewBox='0 0 1 1'/>", encoding="utf-8")
+    if with_png:
+        (diagram / "final.png").write_bytes(_png_bytes())
     (diagram / "scene-ir.json").write_text(
         json.dumps(
             {
@@ -106,7 +116,7 @@ def running_server(tmp_path, *, token="test-token"):
     validator = lambda code: ReviewValidationResult(  # noqa: E731
         valid="INVALID" not in code,
         svg=f"<svg viewBox='0 0 1 1'><title>{len(code)}</title></svg>",
-        png=b"rendered-png",
+        png=_png_bytes(),
     )
     store = ReviewStore(tmp_path, validator=validator)
     server = ThreadingHTTPServer(
@@ -321,10 +331,60 @@ def test_api_loads_complete_bundle_without_exposing_revision_files(tmp_path):
     assert listing["diagrams"][0]["id"] == "diagram-a"
     diagram = loaded["diagram"]
     assert diagram["source_url"] == "/images/source.png"
+    assert diagram["diff_view"]["available"] is False
     assert diagram["scene_ir"]["relations"][0]["target_id"] == "B"
     assert diagram["alternatives"][0]["candidate_id"] == "candidate-b"
     assert diagram["issues"] == ["check edge direction"]
     assert error.value.code == 404
+
+
+def test_diff_descriptor_requires_current_png_and_safe_source_url(tmp_path):
+    diagram_path = make_bundle(tmp_path, with_png=True)
+    with running_server(tmp_path) as (base, _):
+        loaded, _ = read_json(f"{base}/api/diagrams/diagram-a")
+        descriptor = loaded["diagram"]["diff_view"]
+
+        manifest_path = diagram_path / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["source_image"] = "../secret.png"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        unsafe, _ = read_json(f"{base}/api/diagrams/diagram-a")
+
+    assert descriptor["available"] is True
+    assert descriptor["source_url"] == "/images/source.png"
+    assert descriptor["render_kind"] == "png"
+    assert descriptor["render_dimensions"] == [1, 1]
+    assert descriptor["alignment_profile"] == "bounds-contain-center-v1"
+    assert descriptor["render_url"].startswith("/diagrams/diagram-a/final.png?digest=")
+    assert unsafe["diagram"]["diff_view"]["available"] is False
+    assert unsafe["diagram"]["diff_view"]["source_url"] is None
+
+
+def test_diff_descriptor_rejects_oversized_png_dimensions(tmp_path):
+    diagram_path = make_bundle(tmp_path, with_png=True)
+    (diagram_path / "final.png").write_bytes(_png_bytes((8_193, 1)))
+
+    with running_server(tmp_path) as (base, _):
+        loaded, _ = read_json(f"{base}/api/diagrams/diagram-a")
+
+    assert loaded["diagram"]["diff_view"]["available"] is False
+    assert loaded["diagram"]["diff_view"]["render_dimensions"] is None
+
+
+def test_diff_render_url_rejects_stale_digest_after_png_replacement(tmp_path):
+    diagram_path = make_bundle(tmp_path, with_png=True)
+    with running_server(tmp_path) as (base, _):
+        loaded, _ = read_json(f"{base}/api/diagrams/diagram-a")
+        render_url = loaded["diagram"]["diff_view"]["render_url"]
+        with urllib.request.urlopen(f"{base}{render_url}", timeout=3) as response:
+            initial = response.read()
+
+        (diagram_path / "final.png").write_bytes(_png_bytes((2, 1)))
+        with pytest.raises(urllib.error.HTTPError) as stale:
+            urllib.request.urlopen(f"{base}{render_url}", timeout=3)
+
+    assert initial == _png_bytes()
+    assert stale.value.code == HTTPStatus.CONFLICT
 
 
 def test_static_artifacts_never_follow_file_or_directory_symlinks(tmp_path):
@@ -402,10 +462,14 @@ def test_edit_requires_csrf_and_atomically_updates_code_ir_render_and_history(tm
     assert missing_token.value.code == 403
     assert result["diagram"]["version"] == 1
     assert result["diagram"]["can_undo"]
+    assert result["diagram"]["diff_view"]["available"] is True
+    assert result["diagram"]["diff_view"]["render_url"].startswith(
+        "/diagrams/diagram-a/final.png?digest="
+    )
     assert (diagram_path / "final.mmd").read_text().endswith("A --> C\n")
     assert json.loads((diagram_path / "scene-ir.json").read_text())["elements"][1]["id"] == "C"
     assert "<title>" in (diagram_path / "final.svg").read_text()
-    assert (diagram_path / "final.png").read_bytes() == b"rendered-png"
+    assert (diagram_path / "final.png").read_bytes() == _png_bytes()
     assert (
         json.loads((diagram_path / "review-history.json").read_text())[0]["operation"]
         == "edit_mermaid"

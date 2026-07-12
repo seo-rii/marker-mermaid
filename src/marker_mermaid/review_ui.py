@@ -93,10 +93,23 @@ def build_review_workspace_assets(
           </div>
         </figure>
         <figure>
-          <figcaption>Mermaid render and advisory layout</figcaption>
+          <figcaption>Mermaid render, advisory layout, and visual difference</figcaption>
           <p class="muted">Drag hints to record intent; Mermaid may choose a different layout.</p>
+          <div class="diff-controls" aria-label="Visual difference controls">
+            <label for="diff-enabled">
+              <input id="diff-enabled" type="checkbox"> Difference blend
+            </label>
+            <label for="diff-opacity">Source strength</label>
+            <input id="diff-opacity" type="range" min="0" max="10" step="1" value="5"
+              disabled aria-describedby="diff-note">
+          </div>
+          <p id="diff-note" class="muted" role="status" aria-live="polite">
+            Bounds-normalized visual aid only; no crop, rotation, feature, semantic, or pixel
+            registration is claimed.
+          </p>
           <div id="render-stage" class="image-stage">
             <img id="render-image" alt="Rendered Mermaid reconstruction">
+            <div id="diff-layers" hidden aria-hidden="true"></div>
             <svg id="layout-overlay" viewBox="0 0 1 1"
               preserveAspectRatio="none" aria-label="Advisory node layout canvas"></svg>
           </div>
@@ -209,6 +222,9 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .history-actions, .selection-bar, .editor-actions, .command-row, .decision-actions {
   display: flex; align-items: center; gap: .6rem;
 }
+.diff-controls { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+.diff-controls label { font-weight: 500; }
+.diff-controls input[type="range"] { width: min(16rem, 45%); }
 .selection-bar { border-block: 1px solid GrayText; padding-block: .8rem; }
 .selection-bar select { min-width: 18rem; }
 .visual-grid, .editor-grid, .review-grid {
@@ -219,6 +235,27 @@ figcaption, label { font-weight: 650; }
 .image-stage { position: relative; display: grid; place-items: center; min-height: 18rem;
   border: 1px solid GrayText; overflow: auto; background: #fff; }
 .image-stage img { display: block; max-width: 100%; max-height: 65vh; }
+#diff-layers {
+  position: absolute; inset: 0; display: grid; background: #fff; pointer-events: none;
+}
+#diff-layers[hidden] { display: none; }
+#diff-layers .diff-layer-image {
+  grid-area: 1 / 1; display: block;
+  width: 100%; height: 100%; max-width: none; max-height: none;
+  object-fit: contain; object-position: center;
+}
+.diff-source-image { mix-blend-mode: difference; }
+.diff-source-image.diff-opacity-0 { opacity: 0; }
+.diff-source-image.diff-opacity-1 { opacity: .1; }
+.diff-source-image.diff-opacity-2 { opacity: .2; }
+.diff-source-image.diff-opacity-3 { opacity: .3; }
+.diff-source-image.diff-opacity-4 { opacity: .4; }
+.diff-source-image.diff-opacity-5 { opacity: .5; }
+.diff-source-image.diff-opacity-6 { opacity: .6; }
+.diff-source-image.diff-opacity-7 { opacity: .7; }
+.diff-source-image.diff-opacity-8 { opacity: .8; }
+.diff-source-image.diff-opacity-9 { opacity: .9; }
+.diff-source-image.diff-opacity-10 { opacity: 1; }
 #provenance-overlay, #layout-overlay {
   position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: auto;
 }
@@ -304,12 +341,16 @@ REVIEW_JAVASCRIPT = r"""
     current: null,
     csrfToken: typeof bootstrap.csrf_token === "string" ? bootstrap.csrf_token : "",
     busy: false,
+    diffFailure: null,
+    diffLoad: null,
   };
   const byId = (id) => document.getElementById(id);
   const controls = {
     diagram: byId("diagram-select"), source: byId("source-image"), render: byId("render-image"),
     overlay: byId("provenance-overlay"), mermaid: byId("mermaid-editor"), ir: byId("ir-editor"),
-    layout: byId("layout-overlay"),
+    layout: byId("layout-overlay"), renderStage: byId("render-stage"),
+    diffLayers: byId("diff-layers"), diffEnabled: byId("diff-enabled"),
+    diffOpacity: byId("diff-opacity"), diffNote: byId("diff-note"),
     issues: byId("issue-list"), alternatives: byId("alternative-list"), message: byId("message"),
     saveState: byId("save-state"), undo: byId("undo"), redo: byId("redo"),
     node: byId("node-select"), edge: byId("edge-select"),
@@ -371,6 +412,97 @@ REVIEW_JAVASCRIPT = r"""
     if (!value) return "";
     const parsed = new URL(String(value), window.location.origin);
     return parsed.origin === window.location.origin ? parsed.pathname + parsed.search : "";
+  }
+
+  function renderDifference(diagram) {
+    const descriptor = diagram.diff_view && typeof diagram.diff_view === "object"
+      ? diagram.diff_view : {};
+    const sourceUrl = imageUrl(descriptor.source_url);
+    const diffRenderUrl = imageUrl(descriptor.render_url);
+    const available = descriptor.available === true
+      && descriptor.alignment_profile === "bounds-contain-center-v1"
+      && descriptor.render_kind === "png" && Boolean(sourceUrl && diffRenderUrl);
+    const descriptorKey = `${sourceUrl}|${diffRenderUrl}`;
+    const failed = state.diffFailure?.key === descriptorKey;
+    if ((!available || failed) && controls.diffEnabled.checked) {
+      controls.diffEnabled.checked = false;
+    }
+    const requested = available && !failed && controls.diffEnabled.checked;
+    if (requested && state.diffLoad?.key !== descriptorKey) {
+      const sourceLayer = new Image(); const renderLayer = new Image();
+      sourceLayer.alt = ""; sourceLayer.setAttribute("aria-hidden", "true");
+      renderLayer.alt = ""; renderLayer.setAttribute("aria-hidden", "true");
+      sourceLayer.className = "diff-layer-image diff-source-image";
+      renderLayer.className = "diff-layer-image diff-render-image";
+      state.diffLoad = {
+        key: descriptorKey, sourceUrl, renderUrl: diffRenderUrl,
+        source: false, render: false, sourceLayer, renderLayer,
+      };
+      sourceLayer.onload = () => markDifferenceLoaded(
+        descriptorKey, "source", sourceLayer, sourceUrl,
+      );
+      renderLayer.onload = () => markDifferenceLoaded(
+        descriptorKey, "render", renderLayer, diffRenderUrl,
+      );
+      sourceLayer.onerror = () => failDifference(
+        descriptorKey,
+        "Difference blend unavailable: the source comparison image failed to load.",
+      );
+      renderLayer.onerror = () => failDifference(
+        descriptorKey,
+        "Difference blend unavailable: the current PNG render failed to load.",
+      );
+      controls.diffLayers.replaceChildren(renderLayer, sourceLayer);
+      controls.diffLayers.hidden = true;
+      sourceLayer.src = sourceUrl; renderLayer.src = diffRenderUrl;
+    } else if (!requested) {
+      state.diffLoad = null;
+      controls.diffLayers.replaceChildren();
+    }
+    const active = requested && state.diffLoad?.source === true
+      && state.diffLoad?.render === true;
+    const opacity = Math.min(10, Math.max(0, Math.round(Number(controls.diffOpacity.value))));
+    const sourceLayer = state.diffLoad?.sourceLayer;
+    for (const className of [...(sourceLayer?.classList || [])]) {
+      if (className.startsWith("diff-opacity-")) sourceLayer.classList.remove(className);
+    }
+    if (sourceLayer) sourceLayer.classList.add(`diff-opacity-${opacity}`);
+    controls.diffLayers.hidden = !active;
+    controls.renderStage.classList.toggle("diff-active", active);
+    controls.diffEnabled.disabled = state.busy || !available || failed;
+    controls.diffOpacity.disabled = state.busy || !active;
+    const diffStatus = failed
+      ? state.diffFailure.message
+      : (requested && !active
+        ? "Loading source and PNG layers for the bounds-normalized preview…"
+        : (available
+        ? "Bounds-normalized preview; no node, feature, rotation, or pixel registration is applied."
+        : "Difference blend unavailable: this revision has no safe bounded PNG comparison."));
+    if (controls.diffNote.textContent !== diffStatus) {
+      controls.diffNote.textContent = diffStatus;
+    }
+  }
+
+  function failDifference(key, message) {
+    if (!controls.diffEnabled.checked || state.diffLoad?.key !== key) return;
+    state.diffFailure = { key, message };
+    controls.diffEnabled.checked = false;
+    renderDifference(state.current || {});
+  }
+
+  function markDifferenceLoaded(key, layer, image, expectedUrl) {
+    if (!controls.diffEnabled.checked || state.diffLoad?.key !== key) return;
+    if (imageUrl(image.currentSrc || image.src) !== expectedUrl) return;
+    const width = Number(image.naturalWidth); const height = Number(image.naturalHeight);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0
+      || width > 8192 || height > 8192 || width * height > 50000000) {
+      failDifference(
+        key, `Difference blend unavailable: the ${layer} image exceeds decode bounds.`,
+      );
+      return;
+    }
+    state.diffLoad[layer] = true;
+    renderDifference(state.current || {});
   }
 
   function renderOverlay(diagram) {
@@ -555,7 +687,12 @@ REVIEW_JAVASCRIPT = r"""
     if (!diagram) return;
     controls.diagram.value = text(diagram.id);
     controls.source.src = imageUrl(diagram.source_url || diagram.source_image);
-    controls.render.src = imageUrl(diagram.rendered_url || diagram.render_url || diagram.final_svg);
+    const regularRenderUrl = imageUrl(
+      diagram.rendered_url || diagram.render_url || diagram.final_svg,
+    );
+    if (regularRenderUrl) controls.render.setAttribute("src", regularRenderUrl);
+    else controls.render.removeAttribute("src");
+    renderDifference(diagram);
     controls.mermaid.value = text(diagram.mermaid_code);
     controls.ir.value = JSON.stringify(diagram.scene_ir || {}, null, 2);
     controls.undo.disabled = !diagram.can_undo || state.busy;
@@ -602,6 +739,8 @@ REVIEW_JAVASCRIPT = r"""
 
   controls.source.addEventListener("load", () => renderOverlay(state.current || {}));
   controls.render.addEventListener("load", () => renderLayout(state.current || {}));
+  controls.diffEnabled.addEventListener("change", () => renderDifference(state.current || {}));
+  controls.diffOpacity.addEventListener("input", () => renderDifference(state.current || {}));
   function selectOverlayNode(nodeId) {
     controls.node.value = text(nodeId);
     renderStructure(state.current || {}); renderOverlay(state.current || {});

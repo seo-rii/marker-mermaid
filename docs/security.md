@@ -75,6 +75,14 @@ ID와 finite/non-boolean `0..1` center만 허용하며 bbox/style/URL/evidence f
 않습니다. source bbox를 Mermaid layout 좌표로 재사용하는 이동과 provenance 없는 자유 배치 추가는
 제공하지 않습니다.
 
+Review의 read-only difference blend는 새 endpoint, canvas readback, pixel upload 또는 server artifact를
+만들지 않습니다. 안전한 source URL과 실제 존재하는 current `final.png`에 대해서만 digest-bound
+descriptor를 만들고, 기존 same-origin static allowlist를 사용하며 off-by-default입니다. 두 image는
+독립적인 `contain + center`로 합성될 뿐 정렬·점수 근거가 되지 않습니다. PNG IHDR은 browser load 전에
+각 축 8,192 및 5천만 pixel budget을 검사하며 기존 16 MB artifact budget도 그대로 적용됩니다. source와
+render layer도 decoded bounds와 descriptor URL을 재확인하며 stale/error event는 현재 diff에 적용하지
+않습니다.
+
 review provenance/layout은 root artifact의 sidecar manifest hash와 `mmx-review-0.4.1` current digest를
 검사합니다. 각 revision은 content-addressed provenance digest를 참조하며 code/IR/render와 같은
 rollback 및 undo/redo 경계에서 root artifact와 manifest hash를 교체합니다. legacy 0.3 state는 기존
