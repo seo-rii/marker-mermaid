@@ -28,7 +28,8 @@ data-lineage, Venn까지 포함하며 typed record의 evidence ID를 보존합�
 - syntax/render는 게시 hard gate이면서 score input입니다.
 - OCR recall은 원 OCR token coverage입니다.
 - numeric consistency는 source/generated 숫자 multiset의 precision·recall F1입니다. source에 실제
-  숫자가 있을 때만 사용하며 추가 생성한 숫자도 precision을 낮춥니다.
+  숫자가 있을 때만 사용하며 추가 생성한 숫자도 precision을 낮춥니다. `accTitle`/`accDescr`/title
+  metadata 안의 숫자는 chart data multiset에서 제외합니다.
 - visual entailment precision은 생성된 node를 source node ID 또는 유일한 정규화 label로 정렬한
   evidence coverage proxy입니다. source scene 자체를 후보 precision으로 재사용하지 않습니다. model scorer는 후속입니다.
 - 구조 edge를 평가할 수 없고 render PNG가 있으면 raster edge IoU를 fallback으로 사용합니다.

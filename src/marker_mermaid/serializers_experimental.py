@@ -13,6 +13,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from marker_mermaid.accessibility import enrich_accessibility_ir, resolve_accessibility
 from marker_mermaid.serialization import SerializationResult
 from marker_mermaid.serializers import SerializationError, serialize_flowchart
 
@@ -43,20 +44,12 @@ def _identifier(value: Any, field: str) -> str:
     return text
 
 
-def _accessibility(ir: Mapping[str, Any], *, experimental: bool) -> list[str]:
-    lines: list[str] = []
-    title = ir.get("acc_title") or ir.get("title")
-    description = ir.get("acc_description") or ir.get("description")
-    if title is not None:
-        lines.append(f"accTitle: {_text(title, 'accessible title')}")
-    if experimental:
-        suffix = "This reconstruction is experimental and requires review."
-        description = (
-            f"{_text(description, 'accessible description')} {suffix}" if description else suffix
-        )
-    if description is not None:
-        lines.append(f"accDescr: {_text(description, 'accessible description')}")
-    return lines
+def _accessibility(ir: Mapping[str, Any], diagram_type: str, *, experimental: bool) -> list[str]:
+    resolved = resolve_accessibility(ir, diagram_type, experimental=experimental)
+    return [
+        f"accTitle: {_text(resolved.title, 'accessible title')}",
+        f"accDescr: {_text(resolved.description, 'accessible description')}",
+    ]
 
 
 def _coordinate(value: Any, field: str) -> str:
@@ -77,7 +70,7 @@ def serialize_wardley(ir: Mapping[str, Any], *, experimental: bool = False) -> S
         raise SerializationError("wardley IR requires components")
     if len(components) > MAX_ITEMS:
         raise SerializationError("wardley component limit exceeded")
-    lines = ["wardley-beta", *_accessibility(ir, experimental=experimental)]
+    lines = ["wardley-beta", *_accessibility(ir, "wardley", experimental=experimental)]
     if ir.get("title") is not None:
         lines.append(f"title {_text(ir['title'], 'title')}")
     tokens: dict[str, str] = {}
@@ -128,7 +121,7 @@ def serialize_cynefin(ir: Mapping[str, Any], *, experimental: bool = False) -> S
         raise SerializationError("cynefin IR requires domains")
     if len(domains) > len(_DOMAINS):
         raise SerializationError("cynefin has at most five domains")
-    lines = ["cynefin-beta", *_accessibility(ir, experimental=experimental)]
+    lines = ["cynefin-beta", *_accessibility(ir, "cynefin", experimental=experimental)]
     defined: set[str] = set()
     item_count = 0
     for index, domain in enumerate(domains):
@@ -230,7 +223,7 @@ def serialize_railroad(ir: Mapping[str, Any], *, experimental: bool = False) -> 
         names.append(_identifier(rule.get("name"), f"rules[{index}].name"))
     if len(names) != len(set(names)):
         raise SerializationError("railroad rule names must be unique")
-    lines = ["railroad-beta", *_accessibility(ir, experimental=experimental)]
+    lines = ["railroad-beta", *_accessibility(ir, "railroad", experimental=experimental)]
     if ir.get("title") is not None:
         lines.append(f"title {_text(ir['title'], 'title')}")
     counter = [0]
@@ -254,7 +247,7 @@ def serialize_zenuml(ir: Mapping[str, Any], *, experimental: bool = False) -> Se
         raise SerializationError("zenuml IR requires messages")
     if len(participants) + len(messages) > MAX_ITEMS:
         raise SerializationError("zenuml IR exceeds the item limit")
-    lines = ["sequenceDiagram", *_accessibility(ir, experimental=experimental)]
+    lines = ["sequenceDiagram", *_accessibility(ir, "zenuml", experimental=experimental)]
     participant_ids: set[str] = set()
     for index, participant in enumerate(participants):
         if isinstance(participant, Mapping):
@@ -292,7 +285,8 @@ def serialize_organization(
 
     from marker_mermaid.serializers_special import serialize_special
 
-    tree = serialize_special("treeview", ir, experimental=experimental)
+    enriched = enrich_accessibility_ir(ir, "organization", experimental=experimental)
+    tree = serialize_special("treeview", enriched, experimental=experimental)
     return SerializationResult.fallback(
         "organization",
         tree.emitted_type,
@@ -367,6 +361,8 @@ def serialize_data_lineage(
             "direction": ir.get("direction", "LR"),
             "title": ir.get("title"),
             "description": ir.get("description"),
+            "acc_title": ir.get("acc_title"),
+            "acc_description": ir.get("acc_description"),
         },
         experimental=experimental,
     )

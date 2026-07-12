@@ -29,7 +29,12 @@ def numeric_consistency(source_texts: list[str], mermaid_code: str) -> float | N
     source = Counter(number_pattern.findall(" ".join(source_texts)))
     if not source:
         return None
-    generated = Counter(number_pattern.findall(mermaid_code))
+    semantic_code = "\n".join(
+        line
+        for line in mermaid_code.splitlines()
+        if not re.match(r"\s*(?:accTitle|accDescr|title)\s*:", line, re.IGNORECASE)
+    )
+    generated = Counter(number_pattern.findall(semantic_code))
     if not generated:
         return 0.0
     overlap = sum((source & generated).values())

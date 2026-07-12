@@ -13,6 +13,7 @@ import re
 from collections.abc import Callable
 from typing import Any, TypeAlias
 
+from marker_mermaid.accessibility import resolve_accessibility
 from marker_mermaid.serializers import (
     SerializationError,
     serialize_architecture,
@@ -97,18 +98,12 @@ def _text(value: Any) -> str:
     )
 
 
-def _accessibility(ir: dict[str, Any], *, experimental: bool) -> list[str]:
-    title = ir.get("acc_title") or ir.get("title")
-    description = ir.get("acc_description") or ir.get("description")
-    if experimental:
-        suffix = "This reconstruction is experimental and requires review."
-        description = f"{description} {suffix}" if description else suffix
-    lines: list[str] = []
-    if title:
-        lines.append(f"accTitle: {_text(title)}")
-    if description:
-        lines.append(f"accDescr: {_text(description)}")
-    return lines
+def _accessibility(ir: dict[str, Any], diagram_type: str, *, experimental: bool) -> list[str]:
+    resolved = resolve_accessibility(ir, diagram_type, experimental=experimental)
+    return [
+        f"accTitle: {_text(resolved.title)}",
+        f"accDescr: {_text(resolved.description)}",
+    ]
 
 
 def _records_with_ids(
@@ -171,7 +166,10 @@ def serialize_requirement(ir: dict[str, Any], *, experimental: bool = False) -> 
         ]
         element_ids = {source_id: output_id for _, source_id, output_id in elements}
     id_map = {**requirement_ids, **element_ids}
-    lines = ["requirementDiagram", *_accessibility(ir, experimental=experimental)]
+    lines = [
+        "requirementDiagram",
+        *_accessibility(ir, "requirement", experimental=experimental),
+    ]
     direction = str(ir.get("direction") or "TB").upper()
     if direction in {"TB", "BT", "LR", "RL"}:
         lines.append(f"direction {direction}")
@@ -326,7 +324,7 @@ def serialize_c4_native(ir: dict[str, Any], *, experimental: bool = False) -> Ph
             suffix += 1
         used_ids.add(output_id)
         boundary_map[source_id] = (boundary, output_id)
-    lines = [header, *_accessibility(ir, experimental=experimental)]
+    lines = [header, *_accessibility(ir, "c4", experimental=experimental)]
     if ir.get("title"):
         lines.append(f"title {_text(ir['title'])}")
     grouped: dict[str, list[tuple[dict[str, Any], str, str]]] = {

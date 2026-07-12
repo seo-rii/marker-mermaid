@@ -18,6 +18,7 @@ from collections.abc import Callable
 from numbers import Real
 from typing import Any, TypeAlias
 
+from marker_mermaid.accessibility import resolve_accessibility
 from marker_mermaid.serializers import SerializationError, serialize_flowchart
 
 ChartSetSerialization: TypeAlias = tuple[str, str, str | None]
@@ -73,19 +74,11 @@ def _format_number(value: float | int) -> str:
 
 
 def _accessibility(ir: dict[str, Any], *, experimental: bool) -> list[str]:
-    title = ir.get("acc_title") or ir.get("title")
-    description = ir.get("acc_description") or ir.get("description")
-    if experimental:
-        suffix = "This reconstruction is experimental and requires review."
-        description = f"{description} {suffix}" if description else suffix
-    lines: list[str] = []
-    if title:
-        lines.append(f"    accTitle: {_text(title, context='treemap accessible title')}")
-    if description:
-        lines.append(
-            f"    accDescr: {_text(description, context='treemap accessible description')}"
-        )
-    return lines
+    resolved = resolve_accessibility(ir, "treemap", experimental=experimental)
+    return [
+        f"    accTitle: {_text(resolved.title, context='treemap accessible title')}",
+        f"    accDescr: {_text(resolved.description, context='treemap accessible description')}",
+    ]
 
 
 def _treemap_structure(

@@ -38,6 +38,7 @@ import re
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from marker_mermaid.accessibility import resolve_accessibility
 from marker_mermaid.serialization import SerializationResult
 from marker_mermaid.serializers import SerializationError
 
@@ -103,18 +104,12 @@ def _required_id(value: Any, *, field: str) -> tuple[str, str]:
     return source_id, output_id
 
 
-def _accessibility(ir: Mapping[str, Any], *, experimental: bool) -> list[str]:
-    title = ir.get("acc_title") or ir.get("title")
-    description = ir.get("acc_description") or ir.get("description")
-    if experimental:
-        suffix = "This reconstruction is experimental and requires review."
-        description = f"{description} {suffix}" if description else suffix
-    lines: list[str] = []
-    if title:
-        lines.append(f"    accTitle: {_text(title)}")
-    if description:
-        lines.append(f"    accDescr: {_text(description)}")
-    return lines
+def _accessibility(ir: Mapping[str, Any], diagram_type: str, *, experimental: bool) -> list[str]:
+    resolved = resolve_accessibility(ir, diagram_type, experimental=experimental)
+    return [
+        f"    accTitle: {_text(resolved.title)}",
+        f"    accDescr: {_text(resolved.description)}",
+    ]
 
 
 def _native_result(diagram_type: str, code: str) -> SerializationResult:
@@ -132,7 +127,7 @@ def serialize_journey(ir: Mapping[str, Any], *, experimental: bool = False) -> S
     sections = ir.get("sections")
     if not isinstance(sections, list) or not sections:
         raise SerializationError("journey IR requires a non-empty sections list")
-    lines = ["timeline", *_accessibility(ir, experimental=experimental)]
+    lines = ["timeline"]
     if ir.get("title"):
         lines.append(f"    title {_text(ir['title'])}")
     for section_index, section in enumerate(sections, start=1):
@@ -248,7 +243,7 @@ def serialize_kanban(ir: Mapping[str, Any], *, experimental: bool = False) -> Se
         )
         cards_by_column[column_id].append((output_id, label))
 
-    lines = ["kanban", *_accessibility(ir, experimental=experimental)]
+    lines = ["kanban"]
     for source_id, output_id, label in column_records:
         lines.append(f"    {output_id}[{label}]")
         for card_id, card_label in cards_by_column[source_id]:
@@ -287,7 +282,7 @@ def serialize_gitgraph(ir: Mapping[str, Any], *, experimental: bool = False) -> 
         if direction not in {"LR", "TB", "BT"}:
             raise SerializationError("gitgraph direction must be LR, TB, or BT")
     header = f"gitGraph {direction}:" if direction else "gitGraph"
-    lines = [header, *_accessibility(ir, experimental=experimental)]
+    lines = [header, *_accessibility(ir, "gitgraph", experimental=experimental)]
 
     branch_ids = {initial_source: initial_output}
     normalized_branches = {initial_output}

@@ -95,6 +95,8 @@ def test_pipeline_selects_valid_candidate_and_respects_budget(fake_runtime):
     assert result.selected.scores["path_consistency"] == 1
     assert result.selected.scores["visual_entailment_precision"] == 1
     assert "layout_similarity" not in result.selected.scores
+    assert result.selected.typed_ir["acc_title"] == "Process"
+    assert "Start" in result.selected.typed_ir["acc_description"]
 
 
 def test_generated_node_provenance_gate_holds_unattributed_typed_nodes(fake_runtime):
@@ -225,7 +227,54 @@ def test_candidate_budget_is_shared_fairly_across_engines(fake_runtime):
     }
     assert methods == {"typed_ir", "direct_mermaid"}
     assert result.selected.generation_engine == "deterministic_fusion"
-    assert len(fake_runtime.calls) == 2
+    assert len(fake_runtime.calls) == 3
+    assert "accTitle:" in fake_runtime.calls[-1]
+    direct = next(
+        item
+        for item in [result.selected, *result.alternatives]
+        if item.generation_method == "direct_mermaid"
+    )
+    assert "accDescr:" in direct.mermaid_code
+
+
+def test_direct_accessibility_augmentation_is_discarded_on_runtime_type_drift():
+    class DirectEngine:
+        name = "direct"
+
+        def observe(self, context):
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[0.9]),
+                direct_candidates=[
+                    DirectMermaidCandidate(
+                        diagram_type="flowchart",
+                        code='flowchart LR\n    A["One"] --> B["Two"]\n',
+                    )
+                ],
+            )
+
+    class TypeDriftRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            diagram_type = "sequence" if "accTitle:" in code else "flowchart-v2"
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type=diagram_type,
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [DirectEngine()],
+        CandidateValidator(TypeDriftRuntime(), config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is not None
+    assert "accTitle:" not in result.selected.mermaid_code
+    assert any("augmentation was discarded" in warning for warning in result.selected.warnings)
 
 
 def test_pipeline_preserves_requested_type_when_serializer_falls_back(fake_runtime):

@@ -32,6 +32,7 @@ from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from typing import Any, TypeAlias
 
+from marker_mermaid.accessibility import resolve_accessibility
 from marker_mermaid.serializers import SerializationError
 
 ChartCoreSerialization: TypeAlias = tuple[str, str, str | None]
@@ -57,18 +58,12 @@ def _required_text(value: Any, *, field: str) -> str:
     return text
 
 
-def _accessibility(ir: dict[str, Any], *, experimental: bool) -> list[str]:
-    title = ir.get("acc_title") or ir.get("title")
-    description = ir.get("acc_description") or ir.get("description")
-    if experimental:
-        warning = "This reconstruction is experimental and requires review."
-        description = f"{description} {warning}" if description else warning
-    lines: list[str] = []
-    if title:
-        lines.append(f"    accTitle: {_text(title)}")
-    if description:
-        lines.append(f"    accDescr: {_text(description)}")
-    return lines
+def _accessibility(ir: dict[str, Any], diagram_type: str, *, experimental: bool) -> list[str]:
+    resolved = resolve_accessibility(ir, diagram_type, experimental=experimental)
+    return [
+        f"    accTitle: {_text(resolved.title)}",
+        f"    accDescr: {_text(resolved.description)}",
+    ]
 
 
 def _number(value: Any, *, field: str) -> tuple[Decimal, str]:
@@ -117,7 +112,7 @@ def serialize_pie(ir: dict[str, Any], *, experimental: bool = False) -> ChartCor
     if not isinstance(show_data, bool):
         raise SerializationError("pie show_data must be a boolean")
     lines = ["pie showData" if show_data else "pie"]
-    lines.extend(_accessibility(ir, experimental=experimental))
+    lines.extend(_accessibility(ir, "pie", experimental=experimental))
     lines.extend(_title_line(ir))
     labels: set[str] = set()
     total = Decimal(0)
@@ -212,7 +207,11 @@ def serialize_xychart(ir: dict[str, Any], *, experimental: bool = False) -> Char
     x_label = x_axis.get("label")
     y_axis = ir["y_axis"]
     y_label = y_axis.get("label")
-    lines = ["xychart-beta", *_accessibility(ir, experimental=experimental), *_title_line(ir)]
+    lines = [
+        "xychart-beta",
+        *_accessibility(ir, "xychart", experimental=experimental),
+        *_title_line(ir),
+    ]
     x_label_prefix = f'"{_text(x_label)}" ' if x_label else ""
     y_label_prefix = f'"{_text(y_label)}" ' if y_label else ""
     lines.append(f"    x-axis {x_label_prefix}{x_spec}")
@@ -294,7 +293,7 @@ def serialize_quadrant(ir: dict[str, Any], *, experimental: bool = False) -> Cha
 
     lines = [
         "quadrantChart",
-        *_accessibility(ir, experimental=experimental),
+        *_accessibility(ir, "quadrant", experimental=experimental),
         *_title_line(ir),
         *axis_lines,
     ]

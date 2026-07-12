@@ -220,6 +220,45 @@ def test_project_dispatch_records_native_and_portable_fallback_grammars() -> Non
     assert block.emitted_type == "block" and "accTitle" in block.warnings[0]
 
 
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        ("mindmap", {"root": {"label": "Root"}}),
+        ("timeline", {"events": [{"time": "Q1", "label": "Launch"}]}),
+        (
+            "kanban",
+            {
+                "columns": [{"id": "todo", "label": "Todo"}],
+                "cards": [{"id": "ship", "label": "Ship", "column_id": "todo"}],
+            },
+        ),
+        (
+            "venn",
+            {
+                "sets": [
+                    {"id": "a", "label": "A", "value": 2},
+                    {"id": "b", "label": "B", "value": 2},
+                ],
+                "intersections": [{"sets": ["a", "b"], "value": 1}],
+            },
+        ),
+        (
+            "ishikawa",
+            {
+                "effect": {"id": "late", "label": "Late"},
+                "categories": [{"id": "people", "label": "People"}],
+            },
+        ),
+    ],
+)
+def test_unsupported_native_grammars_retain_accessibility_text_without_directives(diagram_type, ir):
+    result = serialize_typed_ir_result(diagram_type, ir)
+
+    assert "accTitle:" not in result.code
+    assert "accDescr:" not in result.code
+    assert any("resolved accessibility text remains" in warning for warning in result.warnings)
+
+
 def test_chart_dispatch_records_numeric_native_and_fallback_grammars() -> None:
     pie = serialize_typed_ir_result(
         "pie",

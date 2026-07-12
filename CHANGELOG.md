@@ -32,6 +32,7 @@
 - Enabled-type typed IR root contracts shared by Structured VLM prompts and response validation.
 - Type-aware grayscale, adaptive-threshold, contour, and source-resolution tile visual priors.
 - Candidate Scene adapters for planning, hierarchy, event, Wardley, lineage, Venn, and ZenUML structures.
+- Requested-type accessibility enrichment with emitted-grammar limitations and validated direct-code augmentation.
 
 ### Changed
 
@@ -60,6 +61,7 @@
 - Review HTTP sockets have header deadlines, explicit wildcard Host allowlists, descriptor-based static serving, and bounded lightweight listing.
 - Scene/evidence/VLM inputs reject oversized identifiers, collections, paths, text, non-finite coordinates, and non-finite JSON.
 - Hostile or decompression-bomb Marker previews are omitted without failing document conversion.
+- Numeric consistency ignores accessibility/title metadata so repeated descriptive numbers do not reduce chart agreement.
 
 ## 0.1.0
 

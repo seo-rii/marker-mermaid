@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from marker_mermaid.accessibility import supports_accessibility_directives
 from marker_mermaid.config import SecurityProfile
 from marker_mermaid.serializers import (
     serialize_architecture,
@@ -86,6 +87,9 @@ def test_phase_one_serializers_parse_and_render_in_real_mermaid():
             outcome = validator.validate(code, 20)
             assert outcome.runtime.syntax_valid, (code, outcome.runtime.error)
             assert outcome.runtime.render_valid, (code, outcome.runtime.error, outcome.warnings)
+            if supports_accessibility_directives(outcome.runtime.diagram_type):
+                assert "<title" in outcome.runtime.svg
+                assert "<desc" in outcome.runtime.svg
     finally:
         process = runtime._process
         runtime.close()

@@ -4,8 +4,15 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
+from marker_mermaid.accessibility import (
+    accessibility_limitation_warning,
+    enrich_accessibility_ir,
+    resolve_accessibility,
+    supports_accessibility_directives,
+)
 from marker_mermaid.models import DiagramSceneIR
 from marker_mermaid.serialization import SerializationResult, registry_from_string_serializers
 
@@ -27,19 +34,14 @@ def _text(value: Any) -> str:
     return str(value).replace("\\", "\\\\").replace('"', "&quot;").replace("\n", " ").strip()
 
 
-def _accessibility(ir: dict[str, Any], experimental: bool = False) -> list[str]:
-    title = ir.get("acc_title") or ir.get("title")
-    description = ir.get("acc_description") or ir.get("description")
-    if experimental and description:
-        description = f"{description} This reconstruction is experimental."
-    elif experimental:
-        description = "This diagram is an experimental reconstruction and requires review."
-    lines: list[str] = []
-    if title:
-        lines.append(f"    accTitle: {_text(title)}")
-    if description:
-        lines.append(f"    accDescr: {_text(description)}")
-    return lines
+def _accessibility(
+    ir: dict[str, Any], experimental: bool = False, *, diagram_type: str
+) -> list[str]:
+    resolved = resolve_accessibility(ir, diagram_type, experimental=experimental)
+    return [
+        f"    accTitle: {_text(resolved.title)}",
+        f"    accDescr: {_text(resolved.description)}",
+    ]
 
 
 def serialize_flowchart(ir: dict[str, Any], *, experimental: bool = False) -> str:
@@ -50,7 +52,10 @@ def serialize_flowchart(ir: dict[str, Any], *, experimental: bool = False) -> st
     direction = ir.get("direction", "TB")
     if direction not in {"TB", "BT", "LR", "RL"}:
         direction = "TB"
-    lines = [f"flowchart {direction}", *_accessibility(ir, experimental)]
+    lines = [
+        f"flowchart {direction}",
+        *_accessibility(ir, experimental, diagram_type="flowchart"),
+    ]
     ids: set[str] = set()
     id_map: dict[str, str] = {}
     shapes = {
@@ -116,9 +121,16 @@ def serialize_swimlane(ir: dict[str, Any], *, experimental: bool = False) -> str
     flat_nodes: list[dict[str, Any]] = []
     for lane in lanes:
         flat_nodes.extend(lane.get("nodes", []))
-    flow_ir = {**ir, "nodes": flat_nodes, "edges": ir.get("edges", [])}
+    accessibility = resolve_accessibility(ir, "swimlane", experimental=experimental)
+    flow_ir = {
+        **ir,
+        "acc_title": accessibility.title,
+        "acc_description": accessibility.description,
+        "nodes": flat_nodes,
+        "edges": ir.get("edges", []),
+    }
     base = serialize_flowchart(flow_ir, experimental=experimental).splitlines()
-    declaration = base[: 1 + len(_accessibility(ir, experimental))]
+    declaration = base[:3]
     node_lines = {
         re.match(r"\s+([A-Za-z0-9_]+)", line).group(1): line
         for line in base[len(declaration) :]
@@ -142,7 +154,10 @@ def serialize_sequence(ir: dict[str, Any], *, experimental: bool = False) -> str
     messages = ir.get("messages", [])
     if not isinstance(participants, list) or not participants:
         raise SerializationError("sequence IR requires participants")
-    lines = ["sequenceDiagram", *_accessibility(ir, experimental)]
+    lines = [
+        "sequenceDiagram",
+        *_accessibility(ir, experimental, diagram_type="sequence"),
+    ]
     id_map: dict[str, str] = {}
     for index, participant in enumerate(participants, start=1):
         if isinstance(participant, str):
@@ -204,7 +219,7 @@ def serialize_timeline(ir: dict[str, Any], *, experimental: bool = False) -> str
     events = ir.get("events")
     if not isinstance(events, list) or not events:
         raise SerializationError("timeline IR requires events")
-    lines = ["timeline", *_accessibility(ir, experimental)]
+    lines = ["timeline"]
     if ir.get("title"):
         lines.append(f"    title {_text(ir['title'])}")
     for event in events:
@@ -218,7 +233,7 @@ def serialize_gantt(ir: dict[str, Any], *, experimental: bool = False) -> str:
     sections = ir.get("sections")
     if not isinstance(sections, list) or not sections:
         raise SerializationError("gantt IR requires sections")
-    lines = ["gantt", *_accessibility(ir, experimental)]
+    lines = ["gantt", *_accessibility(ir, experimental, diagram_type="gantt")]
     if ir.get("title"):
         lines.append(f"    title {_text(ir['title'])}")
     if ir.get("date_format"):
@@ -243,7 +258,10 @@ def serialize_architecture(ir: dict[str, Any], *, experimental: bool = False) ->
     services = ir.get("services")
     if not isinstance(services, list) or not services:
         raise SerializationError("architecture IR requires services")
-    lines = ["architecture-beta", *_accessibility(ir, experimental)]
+    lines = [
+        "architecture-beta",
+        *_accessibility(ir, experimental, diagram_type="architecture"),
+    ]
     ids: set[str] = set()
     for index, group in enumerate(ir.get("groups", []), start=1):
         group_id = _identifier(str(group.get("id") or f"G{index}"))
@@ -506,11 +524,22 @@ def serialize_typed_ir_result(
     """Serialize typed IR while retaining native/fallback grammar metadata."""
 
     _ensure_extended_serializers()
-    return SERIALIZATION_REGISTRY.dispatch(
-        diagram_type,
+    enriched_ir = enrich_accessibility_ir(
         ir,
+        diagram_type,
         experimental=experimental,
     )
+    result = SERIALIZATION_REGISTRY.dispatch(
+        diagram_type,
+        enriched_ir,
+        experimental=experimental,
+    )
+    if supports_accessibility_directives(result.emitted_type):
+        return result
+    warning = accessibility_limitation_warning(result.emitted_type)
+    if warning in result.warnings:
+        return result
+    return replace(result, warnings=(*result.warnings, warning))
 
 
 def serialize_runtime_fallback_result(
@@ -569,7 +598,12 @@ def serialize_typed_ir(diagram_type: str, ir: dict[str, Any], *, experimental: b
         raise SerializationError(str(exc)) from exc
 
 
-def scene_to_flowchart(scene: DiagramSceneIR, *, experimental: bool = False) -> str:
+def scene_to_flowchart(
+    scene: DiagramSceneIR,
+    *,
+    experimental: bool = False,
+    accessibility_type: str = "flowchart",
+) -> str:
     """Losslessly map resolvable scene nodes/edges to the portable flowchart subset."""
 
     nodes = [
@@ -587,12 +621,13 @@ def scene_to_flowchart(scene: DiagramSceneIR, *, experimental: bool = False) -> 
         for relation in scene.relations
         if relation.source_id is not None and relation.target_id is not None
     ]
-    return serialize_flowchart(
+    ir = enrich_accessibility_ir(
         {
             "nodes": nodes,
             "edges": edges,
             "direction": scene.reading_direction,
-            "description": "A reconstruction generated from geometry-aware scene evidence.",
         },
+        accessibility_type,
         experimental=experimental,
     )
+    return serialize_flowchart(ir, experimental=experimental)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from marker_mermaid.accessibility import resolve_accessibility
 from marker_mermaid.serializers import SerializationError
 
 
@@ -80,18 +81,12 @@ def _id_map(items: list[dict[str, Any]], *, context: str) -> dict[str, str]:
     return result
 
 
-def _accessibility(ir: dict[str, Any], *, experimental: bool) -> list[str]:
-    title = ir.get("acc_title") or ir.get("title")
-    description = ir.get("acc_description") or ir.get("description")
-    if experimental:
-        suffix = "This reconstruction is experimental and requires review."
-        description = f"{description} {suffix}" if description else suffix
-    lines: list[str] = []
-    if title:
-        lines.append(f"    accTitle: {_text(title)}")
-    if description:
-        lines.append(f"    accDescr: {_text(description)}")
-    return lines
+def _accessibility(ir: dict[str, Any], diagram_type: str, *, experimental: bool) -> list[str]:
+    resolved = resolve_accessibility(ir, diagram_type, experimental=experimental)
+    return [
+        f"    accTitle: {_text(resolved.title)}",
+        f"    accDescr: {_text(resolved.description)}",
+    ]
 
 
 def serialize_state(ir: dict[str, Any], *, experimental: bool = False) -> str:
@@ -104,7 +99,7 @@ def serialize_state(ir: dict[str, Any], *, experimental: bool = False) -> str:
     states = _objects(ir.get("states"), context="state IR", required=True)
     transitions = _objects(ir.get("transitions", []), context="state transitions")
     id_map = _id_map(states, context="state")
-    lines = ["stateDiagram-v2", *_accessibility(ir, experimental=experimental)]
+    lines = ["stateDiagram-v2", *_accessibility(ir, "state", experimental=experimental)]
     direction = ir.get("direction")
     if direction is not None:
         if direction not in {"TB", "BT", "LR", "RL"}:
@@ -200,7 +195,7 @@ def serialize_class(ir: dict[str, Any], *, experimental: bool = False) -> str:
     classes = _objects(ir.get("classes"), context="class IR", required=True)
     relations = _objects(ir.get("relations", []), context="class relations")
     id_map = _id_map(classes, context="class")
-    lines = ["classDiagram", *_accessibility(ir, experimental=experimental)]
+    lines = ["classDiagram", *_accessibility(ir, "class", experimental=experimental)]
     direction = ir.get("direction")
     if direction is not None:
         if direction not in {"TB", "BT", "LR", "RL"}:
@@ -290,7 +285,7 @@ def serialize_er(ir: dict[str, Any], *, experimental: bool = False) -> str:
     entities = _objects(ir.get("entities"), context="ER IR", required=True)
     relationships = _objects(ir.get("relationships", []), context="ER relationships")
     id_map = _id_map(entities, context="ER entity")
-    lines = ["erDiagram", *_accessibility(ir, experimental=experimental)]
+    lines = ["erDiagram", *_accessibility(ir, "er", experimental=experimental)]
     direction = ir.get("direction")
     if direction is not None:
         if direction not in {"TB", "BT", "LR", "RL"}:

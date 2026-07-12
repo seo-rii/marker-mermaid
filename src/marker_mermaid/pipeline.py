@@ -9,6 +9,12 @@ from typing import Literal
 
 from PIL import Image, ImageChops, ImageFilter, ImageOps
 
+from marker_mermaid.accessibility import (
+    accessibility_limitation_warning,
+    augment_accessibility_directives,
+    enrich_accessibility_ir,
+    supports_accessibility_directives,
+)
 from marker_mermaid.ast_repair import DeterministicMermaidRepair
 from marker_mermaid.candidate_scene import typed_ir_to_scene
 from marker_mermaid.config import MermaidConfig, Mode
@@ -191,6 +197,36 @@ def _canonical_runtime_type(value: str | None) -> str | None:
     return aliases.get(normalized, normalized)
 
 
+def _scene_accessibility_ir(
+    scene: DiagramSceneIR | None,
+    evidence: list[VisualEvidence],
+) -> dict:
+    if scene is not None and scene.elements:
+        return {
+            "nodes": [
+                {"id": element.id, "label": element.text or element.id}
+                for element in scene.elements
+            ],
+            "edges": [
+                {"source": relation.source_id, "target": relation.target_id}
+                for relation in scene.relations
+                if relation.source_id is not None and relation.target_id is not None
+            ],
+        }
+    labels = list(
+        dict.fromkeys(
+            item.text.strip()
+            for item in evidence
+            if item.text and item.kind in {"ocr_token", "vector_text"} and item.text.strip()
+        )
+    )
+    return {
+        "nodes": [
+            {"id": f"evidence_{index}", "label": label} for index, label in enumerate(labels[:5], 1)
+        ]
+    }
+
+
 class ReconstructionPipeline:
     """Generate, validate, score, select, and optionally repair Mermaid candidates."""
 
@@ -354,9 +390,14 @@ class ReconstructionPipeline:
                     if typed.diagram_type not in top_types:
                         continue
                     try:
+                        enriched_ir = enrich_accessibility_ir(
+                            typed.ir,
+                            typed.diagram_type,
+                            experimental=self.config.mode != Mode.STRICT,
+                        )
                         serialized = serialize_typed_ir_result(
                             typed.diagram_type,
-                            typed.ir,
+                            enriched_ir,
                             experimental=self.config.mode != Mode.STRICT,
                         )
                     except (SerializationError, SerializationContractError) as exc:
@@ -379,7 +420,7 @@ class ReconstructionPipeline:
                             emitted_diagram_type=serialized.emitted_type,
                             fallback_chain=list(serialized.fallback_chain),
                             serialization_stability=serialized.stability,
-                            typed_ir=typed.ir,
+                            typed_ir=enriched_ir,
                             warnings=list(serialized.warnings),
                         )
                     )
@@ -388,11 +429,13 @@ class ReconstructionPipeline:
                 and observation.scene_ir is not None
                 and observation.scene_ir.elements
             ):
-                code = scene_to_flowchart(
-                    observation.scene_ir, experimental=self.config.mode != Mode.STRICT
-                )
                 fallback_from = top_types[0] if top_types else "unknown"
                 requested_type = fallback_from if fallback_from != "unknown" else "flowchart"
+                code = scene_to_flowchart(
+                    observation.scene_ir,
+                    experimental=self.config.mode != Mode.STRICT,
+                    accessibility_type=requested_type,
+                )
                 serialized = (
                     SerializationResult.native("flowchart", code)
                     if requested_type == "flowchart"
@@ -618,6 +661,66 @@ class ReconstructionPipeline:
                             )
                 except (SerializationError, SerializationContractError) as exc:
                     candidate.warnings.append(f"runtime fallback unavailable: {exc}")
+            if draft.method == "direct_mermaid" and runtime.render_valid:
+                detected_type = _canonical_runtime_type(runtime.diagram_type)
+                if detected_type is not None:
+                    if not supports_accessibility_directives(detected_type):
+                        candidate.warnings.append(accessibility_limitation_warning(detected_type))
+                    augmented_code = augment_accessibility_directives(
+                        candidate_code,
+                        detected_type,
+                        _scene_accessibility_ir(
+                            draft.observation.scene_ir,
+                            draft.observation.evidence,
+                        ),
+                        semantic_type=draft.diagram_type,
+                        experimental=True,
+                    )
+                    if augmented_code is not None:
+                        try:
+                            augmented_outcome = self.validator.validate(
+                                augmented_code,
+                                self.config.render_timeout_seconds,
+                            )
+                        except Exception as exc:
+                            candidate.warnings.append(
+                                f"direct accessibility augmentation failed validation: {exc}"
+                            )
+                        else:
+                            augmented_type = _canonical_runtime_type(
+                                augmented_outcome.runtime.diagram_type
+                            )
+                            if (
+                                augmented_outcome.runtime.render_valid
+                                and augmented_type == detected_type
+                            ):
+                                candidate_code = augmented_code
+                                candidate.mermaid_code = augmented_code
+                                runtime = augmented_outcome.runtime
+                                validation_warnings = list(
+                                    dict.fromkeys(
+                                        [
+                                            *validation_warnings,
+                                            *augmented_outcome.warnings,
+                                        ]
+                                    )
+                                )
+                                candidate.repair_history.append(
+                                    RepairEvent(
+                                        iteration=0,
+                                        operation="augment_accessibility",
+                                        accepted=True,
+                                        details={
+                                            "emitted_type": detected_type,
+                                            "stage": "post_validation",
+                                        },
+                                    )
+                                )
+                            else:
+                                candidate.warnings.append(
+                                    "direct accessibility augmentation was discarded because "
+                                    "revalidation failed or changed diagram type"
+                                )
             candidate.syntax_valid = runtime.syntax_valid
             candidate.render_valid = runtime.render_valid
             candidate.svg = runtime.svg

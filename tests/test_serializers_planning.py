@@ -90,7 +90,11 @@ def test_planning_serializers_return_explicit_experimental_results(
             "This planning diagram uses an experimental Mermaid reconstruction "
             "and requires review.",
         )
-    assert "experimental and requires review" in result.code
+    if diagram_type == "gitgraph":
+        assert "experimental and requires review" in result.code
+    else:
+        assert "accTitle:" not in result.code
+        assert "accDescr:" not in result.code
     assert MermaidSecurityScanner(SecurityProfile.STRICT).scan(result.code).safe
 
 

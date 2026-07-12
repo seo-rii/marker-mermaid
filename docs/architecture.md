@@ -46,6 +46,7 @@ flowchart TB
 | `scoring.py` | OCR/numeric score, available-weight aggregation, 게시 결정 |
 | `quality.py` | edge/arrow/layout/path 구조 점수와 unavailable 판정 |
 | `candidate_scene.py` | typed serializer가 실제 방출한 구조를 평가 Scene으로 변환 |
+| `accessibility.py` | requested type 기반 bounded 설명과 emitted grammar 지원 판정 |
 | `pipeline.py` | budget, failure isolation, selection, 개선 시에만 repair 채택 |
 | `marker_integration.py` | processor 순서, Marker OCR provenance, 전용 renderer/converter |
 | `sidecars.py`, `output.py` | atomic diagram bundle과 문서 출력 |

@@ -42,6 +42,13 @@ def test_reference_free_text_scores_do_not_invent_numbers():
     assert ocr_recall(["결제 승인 거절"], 'flowchart LR\nA["결제 승인"]') == pytest.approx(2 / 3)
     assert numeric_consistency(["1.5 20% 99"], "pie\n X : 20%") == pytest.approx(0.5)
     assert numeric_consistency(["20"], "pie\n X : 20\n Y : 999") == pytest.approx(2 / 3)
+    assert (
+        numeric_consistency(
+            ["20"],
+            'pie\n    accDescr: 20 was observed\n    "Approved" : 20\n',
+        )
+        == 1
+    )
 
 
 def test_aggregate_requires_a_semantic_metric():

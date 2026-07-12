@@ -15,6 +15,7 @@ from collections.abc import Callable, Mapping, Sequence
 from decimal import Decimal
 from typing import Any
 
+from marker_mermaid.accessibility import resolve_accessibility
 from marker_mermaid.config import SecurityProfile
 from marker_mermaid.security import MermaidSecurityScanner
 from marker_mermaid.serialization import SerializationResult
@@ -203,10 +204,11 @@ def _sankey_flowchart(
     *,
     experimental: bool,
 ) -> str:
+    accessibility = resolve_accessibility(ir, "sankey", experimental=experimental)
     return serialize_flowchart(
         {
-            "title": ir.get("acc_title") or ir.get("title"),
-            "description": ir.get("acc_description") or ir.get("description"),
+            "acc_title": accessibility.title,
+            "acc_description": accessibility.description,
             "direction": ir.get("direction", "LR"),
             "nodes": [{"id": node_id, "label": label} for node_id, label in nodes],
             "edges": [
@@ -237,15 +239,10 @@ def serialize_sankey(ir: Mapping[str, Any], *, experimental: bool = False) -> Se
         f"{_csv_field(labels[source])},{_csv_field(labels[target])},{value}\n"
         for source, target, value, _ in flows
     )
-    warnings = ()
-    if experimental or any(
-        ir.get(field) for field in ("title", "description", "acc_title", "acc_description")
-    ):
-        warnings = (SANKEY_ACCESSIBILITY_LIMITATION,)
     return SerializationResult.native(
         "sankey",
         _strict_source(code),
-        warnings=warnings,
+        warnings=(SANKEY_ACCESSIBILITY_LIMITATION,),
         stability="experimental",
     )
 
@@ -342,16 +339,16 @@ def _radar_flowchart(
     ir: Mapping[str, Any],
     dimensions: Sequence[RadarDimension],
     series: Sequence[RadarSeries],
+    *,
+    experimental: bool,
 ) -> str:
     dimension_labels = [label for _, label in dimensions]
     series_ids = _unique_output_ids([source_id for source_id, _, _, _ in series], prefix="S")
     lines = ["flowchart TB"]
-    title = ir.get("acc_title") or ir.get("title")
-    description = ir.get("acc_description") or ir.get("description")
-    if title:
-        lines.append(f"    accTitle: {_flow_text(_plain_text(title))}")
+    accessibility = resolve_accessibility(ir, "radar", experimental=experimental)
+    lines.append(f"    accTitle: {_flow_text(accessibility.title)}")
     suffix = "This radar reconstruction uses a tabular flowchart fallback."
-    description = f"{_plain_text(description)} {suffix}" if description else suffix
+    description = f"{accessibility.description} {suffix}"
     lines.append(f"    accDescr: {_flow_text(description)}")
     for source_id, label, rendered_values, _ in series:
         output_id = series_ids[source_id]
@@ -374,7 +371,7 @@ def serialize_radar(ir: Mapping[str, Any], *, experimental: bool = False) -> Ser
         return SerializationResult.fallback(
             "radar",
             "flowchart",
-            _strict_source(_radar_flowchart(ir, dimensions, series)),
+            _strict_source(_radar_flowchart(ir, dimensions, series, experimental=experimental)),
             warnings=(RADAR_FALLBACK_WARNING,),
             stability="experimental",
         )
@@ -384,14 +381,9 @@ def serialize_radar(ir: Mapping[str, Any], *, experimental: bool = False) -> Ser
     lines = ["radar-beta"]
     if ir.get("title"):
         lines.append(f"title {_plain_text(ir['title'])}")
-    if ir.get("acc_title") or ir.get("title"):
-        lines.append(f"accTitle: {_plain_text(ir.get('acc_title') or ir['title'])}")
-    description = ir.get("acc_description") or ir.get("description")
-    if experimental:
-        suffix = "This radar reconstruction is experimental and requires review."
-        description = f"{_plain_text(description)} {suffix}" if description else suffix
-    if description:
-        lines.append(f"accDescr: {_plain_text(description)}")
+    accessibility = resolve_accessibility(ir, "radar", experimental=experimental)
+    lines.append(f"accTitle: {_plain_text(accessibility.title)}")
+    lines.append(f"accDescr: {_plain_text(accessibility.description)}")
     lines.append(
         "axis "
         + ", ".join(

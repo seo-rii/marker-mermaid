@@ -17,6 +17,7 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
+from marker_mermaid.accessibility import resolve_accessibility
 from marker_mermaid.serialization import SerializationResult
 from marker_mermaid.serializers import SerializationError, serialize_flowchart
 
@@ -94,18 +95,12 @@ def _register_id(
     return output_id
 
 
-def _accessibility(ir: dict[str, Any], *, experimental: bool) -> list[str]:
-    title = ir.get("acc_title") or ir.get("title")
-    description = ir.get("acc_description") or ir.get("description")
-    if experimental:
-        suffix = "This reconstruction is experimental and requires review."
-        description = f"{description} {suffix}" if description else suffix
-    lines: list[str] = []
-    if title:
-        lines.append(f"    accTitle: {_text(title, context='accessible title')}")
-    if description:
-        lines.append(f"    accDescr: {_text(description, context='accessible description')}")
-    return lines
+def _accessibility(ir: dict[str, Any], diagram_type: str, *, experimental: bool) -> list[str]:
+    resolved = resolve_accessibility(ir, diagram_type, experimental=experimental)
+    return [
+        f"    accTitle: {_text(resolved.title, context='accessible title')}",
+        f"    accDescr: {_text(resolved.description, context='accessible description')}",
+    ]
 
 
 def _integer(value: Any, *, context: str) -> int:
@@ -215,7 +210,7 @@ def _serialize_packet(
             experimental=experimental,
             reason="CandidateValidator rejected the native Mermaid packet candidate.",
         )
-    lines = ["packet-beta", *_accessibility(ir, experimental=experimental)]
+    lines = ["packet-beta", *_accessibility(ir, "packet", experimental=experimental)]
     if ir.get("title"):
         lines.append(f"    title {_text(ir['title'], context='packet title')}")
     lines.extend(f'{field["start"]}-{field["end"]}: "{field["label"]}"' for field in fields)
@@ -342,7 +337,7 @@ def _serialize_treeview(
                 "Tree indentation was reduced to directed hierarchy edges.",
             ),
         )
-    lines = ["treeView-beta", *_accessibility(ir, experimental=experimental)]
+    lines = ["treeView-beta", *_accessibility(ir, "treeview", experimental=experimental)]
     lines.extend(f'{"  " * depth}"{label}"' for _, _, _, label, depth, _ in rows)
     return SerializationResult.native("treeview", "\n".join(lines) + "\n", stability="experimental")
 
@@ -460,7 +455,10 @@ def _serialize_eventmodeling(ir: dict[str, Any], *, experimental: bool) -> Seria
             connector = f"-->|{_edge_text(label, context='eventmodeling relation')}|"
         edge_lines.append(f"    {source} {connector} {target}")
 
-    lines = ["flowchart LR", *_accessibility(ir, experimental=experimental)]
+    lines = [
+        "flowchart LR",
+        *_accessibility(ir, "eventmodeling", experimental=experimental),
+    ]
     frames_by_id = {frame["output_id"]: frame for frame in frames}
     for lane in lanes:
         lines.append(f'    subgraph {lane["output_id"]}["{lane["label"]}"]')

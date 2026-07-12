@@ -118,6 +118,7 @@ output/document/
 - [Page-level missed diagram detector](docs/page-detector.md)
 - [Vector extraction과 fusion](docs/vector-fusion.md)
 - [품질 평가와 점수 availability](docs/quality.md)
+- [접근성 title/description 생성](docs/accessibility.md)
 - [Typed serializer와 fallback 계약](docs/serialization.md)
 - [Typed extraction 계약과 평가 Scene](docs/typed-extraction.md)
 - [차트 serializer와 숫자 안전성](docs/charts.md)

@@ -14,6 +14,7 @@
 | composite split | 구현 | proposal, raw-fragment crop, virtual 원본/결과 출력 |
 | fragment/multi-page merge | 구현 | caption/continued proposal, canvas assembly, first-fragment anchor 출력 |
 | Scene IR/provenance | 구현 | Pydantic 무결성, 생성 node attribution, Extended 80% 게시 gate, sidecar |
+| accessibility | 구현 | requested type 기반 title/description 파생, direct revalidation, 비지원 grammar warning/IR 보존 |
 | type-aware visual priors | 구현 | edge/Hough/arrow/OCR/contour/threshold/grayscale, source-resolution tile과 view manifest |
 | color cluster/vector primitive | 구현 | PIL color map, Marker PyMuPDF/duck-typed provider와 page→canvas affine |
 | structured Marker VLM | 구현 | enabled-type root contract prompt/validation과 bounded response schema adapter |

@@ -36,15 +36,18 @@ def test_pipeline_applies_complete_idempotent_source_repair_before_validation(fa
     ).reconstruct("source", "source.png", Image.new("RGB", (20, 20), "white"))
 
     assert result.selected is not None
-    assert result.selected.mermaid_code == 'flowchart LR\n    bad_id["Start"]\n'
+    assert result.selected.mermaid_code.startswith("flowchart LR\n    accTitle:")
+    assert 'bad_id["Start"]' in result.selected.mermaid_code
     assert result.selected.raw_mermaid == source
-    assert fake_runtime.calls == [result.selected.mermaid_code]
+    assert len(fake_runtime.calls) == 2
+    assert fake_runtime.calls[-1] == result.selected.mermaid_code
     assert [event.operation for event in result.selected.repair_history] == [
         "remove_bom",
         "unwrap_markdown_fence",
         "close_unambiguous_label_quote",
         "normalize_identifier",
         "add_terminal_newline",
+        "augment_accessibility",
     ]
     assert all(event.accepted for event in result.selected.repair_history)
 
