@@ -15,6 +15,9 @@
 - Deterministic vector/geometry/OCR/VLM observation fusion.
 - Conservative topology, arrow, relative-layout, and path quality metrics.
 - Vector, detected-arrow, and color-cluster visual priors.
+- Native State, Class, ER, Requirement, and Block typed serializers.
+- Strict-safe C4, Deployment, Component, and Use-case portable fallbacks.
+- Requested/emitted/runtime diagram type and fallback-chain metadata.
 
 ### Changed
 

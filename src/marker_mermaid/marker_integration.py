@@ -54,6 +54,8 @@ def _result_summary(result: ReconstructionResult) -> dict[str, Any]:
         "status": result.status,
         "stability": "experimental" if result.grade in {"C", "D", "U"} else "stable",
         "diagram_type": selected.diagram_type if selected else None,
+        "emitted_diagram_type": selected.emitted_diagram_type if selected else None,
+        "fallback_chain": selected.fallback_chain if selected else [],
         "quality_score": selected.aggregate_score if selected else None,
         "selected_candidate_id": selected.candidate_id if selected else None,
         "sidecar_dir": result.sidecar_dir,

@@ -13,6 +13,10 @@ SVG에 남을 수 있으므로 다음의 중첩 방어를 사용합니다.
 5. SVG XML 재검사
 6. 게시 정책 평가
 
+native C4는 Mermaid 11.16에서 parse/render되지만 생성 SVG가 undeclared `xlink` prefix를 사용한
+`data:` image를 포함합니다. strict SVG/XML gate를 완화하지 않고 `architecture-beta` fallback을
+사용합니다. 이 손실은 candidate warning과 fallback chain에 기록됩니다.
+
 ## strict에서 금지되는 입력
 
 - `click`, callback, JavaScript

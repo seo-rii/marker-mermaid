@@ -135,6 +135,11 @@ class SidecarStore:
                 "publish": result.publish,
                 "review_required": result.review_required,
                 "selected_candidate_id": selected.candidate_id if selected else None,
+                "requested_diagram_type": selected.diagram_type if selected else None,
+                "emitted_diagram_type": selected.emitted_diagram_type if selected else None,
+                "runtime_diagram_type": selected.runtime_diagram_type if selected else None,
+                "fallback_chain": selected.fallback_chain if selected else [],
+                "serialization_stability": (selected.serialization_stability if selected else None),
                 "files": hashes,
                 "failures": [item.model_dump(mode="json") for item in result.failures],
             }

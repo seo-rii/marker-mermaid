@@ -32,7 +32,12 @@ from marker_mermaid.scoring import (
     numeric_consistency,
     ocr_recall,
 )
-from marker_mermaid.serializers import SerializationError, scene_to_flowchart, serialize_typed_ir
+from marker_mermaid.serialization import SerializationContractError, SerializationResult
+from marker_mermaid.serializers import (
+    SerializationError,
+    scene_to_flowchart,
+    serialize_typed_ir_result,
+)
 from marker_mermaid.validation import CandidateValidator
 from marker_mermaid.views import build_visual_priors
 
@@ -44,6 +49,9 @@ class _Draft:
     diagram_type: str
     code: str
     observation: EngineObservation
+    emitted_diagram_type: str | None = None
+    fallback_chain: list[str] | None = None
+    serialization_stability: str = "stable"
     typed_ir: dict | None = None
     raw_mermaid: str | None = None
     warnings: list[str] | None = None
@@ -76,6 +84,28 @@ def _provenance_score(candidate: MermaidCandidate, evidence: list[VisualEvidence
         1 for element in candidate.scene_ir.elements if known.intersection(element.evidence_ids)
     )
     return supported / len(candidate.scene_ir.elements)
+
+
+def _canonical_runtime_type(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.casefold()
+    aliases = {
+        "flowchart-v2": "flowchart",
+        "flowchart": "flowchart",
+        "statediagram": "state",
+        "class": "class",
+        "er": "er",
+        "architecture": "architecture",
+        "requirement": "requirement",
+        "block": "block",
+        "sequence": "sequence",
+        "mindmap": "mindmap",
+        "timeline": "timeline",
+        "gantt": "gantt",
+        "c4": "c4",
+    }
+    return aliases.get(normalized, normalized)
 
 
 class ReconstructionPipeline:
@@ -220,12 +250,12 @@ class ReconstructionPipeline:
                     if typed.diagram_type not in top_types:
                         continue
                     try:
-                        code = serialize_typed_ir(
+                        serialized = serialize_typed_ir_result(
                             typed.diagram_type,
                             typed.ir,
                             experimental=self.config.mode != Mode.STRICT,
                         )
-                    except SerializationError as exc:
+                    except (SerializationError, SerializationContractError) as exc:
                         failures.append(
                             CandidateFailure(
                                 stage="serialization",
@@ -240,9 +270,13 @@ class ReconstructionPipeline:
                             "typed_ir",
                             engine_name,
                             typed.diagram_type,
-                            code,
+                            serialized.code,
                             observation,
+                            emitted_diagram_type=serialized.emitted_type,
+                            fallback_chain=list(serialized.fallback_chain),
+                            serialization_stability=serialized.stability,
                             typed_ir=typed.ir,
+                            warnings=list(serialized.warnings),
                         )
                     )
             if (
@@ -254,14 +288,29 @@ class ReconstructionPipeline:
                     observation.scene_ir, experimental=self.config.mode != Mode.STRICT
                 )
                 fallback_from = top_types[0] if top_types else "unknown"
+                requested_type = fallback_from if fallback_from != "unknown" else "flowchart"
+                serialized = (
+                    SerializationResult.native("flowchart", code)
+                    if requested_type == "flowchart"
+                    else SerializationResult.fallback(
+                        requested_type,
+                        "flowchart",
+                        code,
+                        warnings=(f"Portable flowchart fallback from {requested_type} Scene IR.",),
+                        stability="experimental",
+                    )
+                )
                 generated.append(
                     _Draft(
                         "scene_ir_fallback",
                         engine_name,
-                        "flowchart",
-                        code,
+                        requested_type,
+                        serialized.code,
                         observation,
-                        warnings=[f"portable flowchart fallback from {fallback_from}"],
+                        emitted_diagram_type=serialized.emitted_type,
+                        fallback_chain=list(serialized.fallback_chain),
+                        serialization_stability=serialized.stability,
+                        warnings=list(serialized.warnings),
                     )
                 )
             if self.config.enable_direct_mermaid:
@@ -274,6 +323,9 @@ class ReconstructionPipeline:
                                 direct.diagram_type,
                                 direct.code,
                                 observation,
+                                emitted_diagram_type=direct.diagram_type,
+                                fallback_chain=[direct.diagram_type],
+                                serialization_stability="experimental",
                                 raw_mermaid=direct.code,
                             )
                         )
@@ -303,6 +355,9 @@ class ReconstructionPipeline:
                 generation_method=draft.method,
                 generation_engine=draft.engine_name,
                 diagram_type=draft.diagram_type,
+                emitted_diagram_type=draft.emitted_diagram_type or draft.diagram_type,
+                fallback_chain=draft.fallback_chain or [draft.diagram_type],
+                serialization_stability=draft.serialization_stability,
                 scene_ir=draft.observation.scene_ir,
                 typed_ir=draft.typed_ir,
                 raw_mermaid=draft.raw_mermaid,
@@ -328,12 +383,31 @@ class ReconstructionPipeline:
             candidate.render_valid = runtime.render_valid
             candidate.svg = runtime.svg
             candidate.png = runtime.png
+            candidate.runtime_diagram_type = runtime.diagram_type
+            runtime_type = _canonical_runtime_type(runtime.diagram_type)
+            contract_mismatch = bool(
+                runtime.syntax_valid
+                and runtime_type is not None
+                and runtime_type != candidate.emitted_diagram_type
+            )
+            if contract_mismatch:
+                candidate.warnings.append(
+                    "serializer emitted type mismatch: "
+                    f"declared {candidate.emitted_diagram_type}, runtime detected {runtime_type}"
+                )
+                if draft.method == "direct_mermaid":
+                    candidate.emitted_diagram_type = runtime_type
+                    candidate.fallback_chain = list(
+                        dict.fromkeys([candidate.diagram_type, runtime_type])
+                    )
+                else:
+                    candidate.render_valid = False
             candidate.warnings.extend(validation_warnings)
             if runtime.error:
                 candidate.warnings.append(runtime.error)
             scores: dict[str, float] = {
-                "syntax": float(runtime.syntax_valid),
-                "render": float(runtime.render_valid),
+                "syntax": float(candidate.syntax_valid),
+                "render": float(candidate.render_valid),
             }
             recall = ocr_recall(context.ocr_texts, draft.code)
             if recall is not None:
@@ -358,7 +432,9 @@ class ReconstructionPipeline:
                 )
             )
             if draft.diagram_type in prediction_scores:
-                scores["type_fitness"] = prediction_scores[draft.diagram_type]
+                scores["type_fitness"] = (
+                    0.0 if contract_mismatch else prediction_scores[draft.diagram_type]
+                )
             provenance = _provenance_score(candidate, all_evidence)
             if provenance is not None:
                 scores["visual_entailment_precision"] = provenance

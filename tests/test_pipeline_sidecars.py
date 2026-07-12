@@ -21,6 +21,7 @@ from marker_mermaid.models import (
     VisualEvidence,
 )
 from marker_mermaid.pipeline import ReconstructionPipeline
+from marker_mermaid.protocols import RuntimeResult
 from marker_mermaid.sidecars import SidecarStore
 from marker_mermaid.validation import CandidateValidator
 
@@ -123,6 +124,95 @@ def test_candidate_budget_is_shared_fairly_across_engines(fake_runtime):
     assert methods == {"typed_ir", "direct_mermaid"}
     assert result.selected.generation_engine == "deterministic_fusion"
     assert len(fake_runtime.calls) == 2
+
+
+def test_pipeline_preserves_requested_type_when_serializer_falls_back(fake_runtime):
+    fallback_observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["bpmn"], scores=[0.9]),
+        typed_candidates=[
+            TypedIRCandidate(
+                diagram_type="bpmn",
+                ir={
+                    "lanes": [
+                        {
+                            "id": "customer",
+                            "label": "Customer",
+                            "nodes": [{"id": "pay", "label": "Pay"}],
+                        }
+                    ]
+                },
+            )
+        ],
+    )
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(fallback_observation)],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is not None
+    assert result.selected.diagram_type == "bpmn"
+    assert result.selected.emitted_diagram_type == "flowchart"
+    assert result.selected.fallback_chain == ["bpmn", "swimlane", "flowchart"]
+    assert result.selected.serialization_stability == "extended"
+
+
+def test_direct_mermaid_is_reclassified_when_runtime_detects_another_type(fake_runtime):
+    class MislabeledDirectEngine:
+        name = "mislabeled"
+
+        def observe(self, context):
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["architecture"], scores=[0.9]),
+                direct_candidates=[
+                    DirectMermaidCandidate(
+                        diagram_type="architecture",
+                        code='flowchart LR\n    A["API"] --> B["DB"]\n',
+                    )
+                ],
+            )
+
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [MislabeledDirectEngine()],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is not None
+    assert result.selected.diagram_type == "architecture"
+    assert result.selected.emitted_diagram_type == "flowchart"
+    assert result.selected.fallback_chain == ["architecture", "flowchart"]
+    assert result.selected.scores["type_fitness"] == 0
+    assert any("emitted type mismatch" in item for item in result.selected.warnings)
+
+
+def test_typed_serializer_runtime_type_mismatch_fails_the_render_gate():
+    class WrongTypeRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="sequence",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation())],
+        CandidateValidator(WrongTypeRuntime(), config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is None
+    assert result.status == "failed"
+    assert not result.alternatives[0].render_valid
+    assert result.alternatives[0].scores["render"] == 0
 
 
 def test_geometry_evidence_is_available_to_later_engines(fake_runtime):
@@ -246,6 +336,9 @@ def test_sidecar_tree_and_markdown(tmp_path, fake_runtime):
     assert manifest["source_block_ids"] == ["/page/1/Figure/1"]
     assert manifest["page_ids"] == [1]
     assert manifest["anchor_block_id"] == "/page/1/Figure/1"
+    assert manifest["requested_diagram_type"] == "flowchart"
+    assert manifest["emitted_diagram_type"] == "flowchart"
+    assert manifest["fallback_chain"] == ["flowchart"]
     assert json.loads((bundle / "source-map.json").read_text())["assembly"]["canvas_size"] == [
         100,
         60,

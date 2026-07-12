@@ -63,3 +63,7 @@ GeometryEngine과 duck-typed VectorPrimitiveEngine이 구현되어 있습니다.
 `get_drawings()`, `get_text()`, `vector_primitives`, `vector_texts`를 노출하는 provider에서만 추출하며
 없으면 fail-closed empty observation을 반환합니다. page-level missed detector는 아직 예약 상태입니다.
 자세한 구분은 [스펙 대응표](spec-coverage.md)를 참고하세요.
+
+State/Class/ER/Requirement/Block typed serializer와 C4/Deployment/Component/Use-case fallback은
+`enabled_types` allowlist에 포함할 때 활성화됩니다. 요청 type과 실제 grammar가 다를 수 있으므로
+[serializer 계약](serialization.md)의 emitted type과 fallback chain을 함께 확인해야 합니다.

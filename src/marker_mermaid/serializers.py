@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from marker_mermaid.models import DiagramSceneIR
+from marker_mermaid.serialization import SerializationResult, registry_from_string_serializers
 
 
 class SerializationError(ValueError):
@@ -286,12 +287,119 @@ SERIALIZERS: dict[str, Callable[..., str]] = {
     "architecture": serialize_architecture,
 }
 
+SERIALIZATION_REGISTRY = registry_from_string_serializers(
+    SERIALIZERS,
+    emitted_types={
+        "generic_network": "flowchart",
+        "swimlane": "flowchart",
+        "bpmn": "flowchart",
+    },
+    fallback_paths={"bpmn": ("swimlane",)},
+    warnings={
+        "generic_network": ("Generic network was emitted as a portable flowchart.",),
+        "swimlane": ("Swimlane was emitted as flowchart subgraphs.",),
+        "bpmn": ("BPMN was emitted through swimlane flowchart subgraphs.",),
+    },
+    stabilities={
+        "generic_network": "extended",
+        "swimlane": "extended",
+        "bpmn": "extended",
+    },
+)
+_EXTENDED_SERIALIZERS_REGISTERED = False
+
+
+def _ensure_extended_serializers() -> None:
+    global _EXTENDED_SERIALIZERS_REGISTERED
+    if _EXTENDED_SERIALIZERS_REGISTERED:
+        return
+    from marker_mermaid.serializers_phase2 import (
+        BLOCK_ACCESSIBILITY_LIMITATION,
+        serialize_phase2,
+    )
+    from marker_mermaid.serializers_uml import UML_SERIALIZERS
+
+    for diagram_type, serializer in UML_SERIALIZERS.items():
+        SERIALIZERS[diagram_type] = serializer
+        SERIALIZATION_REGISTRY.register_string(diagram_type, serializer)
+
+    stabilities = {
+        "requirement": "extended",
+        "block": "experimental",
+        "c4": "experimental",
+        "deployment": "extended",
+        "component": "extended",
+        "usecase": "experimental",
+    }
+    for requested_type in (
+        "requirement",
+        "block",
+        "c4",
+        "deployment",
+        "component",
+        "usecase",
+    ):
+
+        def serialize_result(
+            ir: dict[str, Any],
+            *,
+            experimental: bool = False,
+            _requested_type: str = requested_type,
+        ) -> SerializationResult:
+            code, emitted_type, fallback_reason = serialize_phase2(
+                _requested_type,
+                ir,
+                experimental=experimental,
+            )
+            stability = stabilities[_requested_type]
+            if emitted_type == _requested_type:
+                return SerializationResult.native(
+                    _requested_type,
+                    code,
+                    warnings=(
+                        (BLOCK_ACCESSIBILITY_LIMITATION,) if _requested_type == "block" else ()
+                    ),
+                    stability=stability,
+                )
+            return SerializationResult.fallback(
+                _requested_type,
+                emitted_type,
+                code,
+                warnings=(fallback_reason or f"Portable fallback from {_requested_type}.",),
+                stability=stability,
+            )
+
+        SERIALIZATION_REGISTRY.register_result(requested_type, serialize_result)
+    _EXTENDED_SERIALIZERS_REGISTERED = True
+
+
+def serialize_typed_ir_result(
+    diagram_type: str,
+    ir: dict[str, Any],
+    *,
+    experimental: bool = False,
+) -> SerializationResult:
+    """Serialize typed IR while retaining native/fallback grammar metadata."""
+
+    _ensure_extended_serializers()
+    return SERIALIZATION_REGISTRY.dispatch(
+        diagram_type,
+        ir,
+        experimental=experimental,
+    )
+
 
 def serialize_typed_ir(diagram_type: str, ir: dict[str, Any], *, experimental: bool = False) -> str:
-    serializer = SERIALIZERS.get(diagram_type)
-    if serializer is None:
-        raise SerializationError(f"no typed serializer for {diagram_type}")
-    return serializer(ir, experimental=experimental)
+    try:
+        return serialize_typed_ir_result(
+            diagram_type,
+            ir,
+            experimental=experimental,
+        ).code
+    except ValueError as exc:
+        if isinstance(exc, SerializationError):
+            raise
+        raise SerializationError(str(exc)) from exc
 
 
 def scene_to_flowchart(scene: DiagramSceneIR, *, experimental: bool = False) -> str:

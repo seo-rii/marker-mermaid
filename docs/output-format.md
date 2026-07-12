@@ -32,6 +32,11 @@ directory에 모두 쓴 뒤 `os.replace`로 최종 directory를 공개합니다.
   "publish": true,
   "review_required": false,
   "selected_candidate_id": "candidate-1",
+  "requested_diagram_type": "c4",
+  "emitted_diagram_type": "architecture",
+  "runtime_diagram_type": "architecture",
+  "fallback_chain": ["c4", "architecture"],
+  "serialization_stability": "experimental",
   "files": {
     "final.mmd": "sha256...",
     "final.svg": "sha256...",
@@ -46,6 +51,7 @@ directory에 모두 쓴 뒤 `os.replace`로 최종 directory를 공개합니다.
 `review-history.json`은 현재 빈 배열로 시작하며 향후 review editor와 같은 schema를 공유합니다.
 `source-map.json`은 serialized `DiscoveredSource`, fragment crop/page bbox, canvas placement,
 source→canvas/page→canvas affine을 보존하여 canvas provenance를 PDF page와 source block으로 역추적합니다.
+requested type과 emitted/runtime type을 분리하므로 portable fallback을 native 복원처럼 표시하지 않습니다.
 
 writer는 파일을 만들기 전에 source/image/sidecar/alternative 이름 충돌, 누락 source image, 기존 bundle,
 metadata JSON 직렬화를 검사합니다. source별 bundle은 임시 directory에서 원자적으로 공개합니다.

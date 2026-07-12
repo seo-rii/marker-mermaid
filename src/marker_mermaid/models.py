@@ -217,6 +217,10 @@ class MermaidCandidate(BaseModel):
     generation_method: str
     generation_engine: str | None = None
     diagram_type: str
+    emitted_diagram_type: str | None = None
+    runtime_diagram_type: str | None = None
+    fallback_chain: list[str] = Field(default_factory=list)
+    serialization_stability: Literal["stable", "extended", "experimental"] = "stable"
     scene_ir: DiagramSceneIR | None = None
     typed_ir: dict[str, Any] | None = None
     raw_mermaid: str | None = None
@@ -240,6 +244,22 @@ class MermaidCandidate(BaseModel):
         if invalid:
             raise ValueError(f"candidate scores must be between 0 and 1: {invalid}")
         return value
+
+    @model_validator(mode="after")
+    def serialization_metadata_is_consistent(self) -> MermaidCandidate:
+        if self.emitted_diagram_type is None:
+            self.emitted_diagram_type = self.diagram_type
+        if not self.fallback_chain:
+            self.fallback_chain = [self.diagram_type]
+            if self.emitted_diagram_type != self.diagram_type:
+                self.fallback_chain.append(self.emitted_diagram_type)
+        if self.fallback_chain[0] != self.diagram_type:
+            raise ValueError("candidate fallback chain must start with diagram_type")
+        if self.fallback_chain[-1] != self.emitted_diagram_type:
+            raise ValueError("candidate fallback chain must end with emitted_diagram_type")
+        if len(self.fallback_chain) != len(set(self.fallback_chain)):
+            raise ValueError("candidate fallback chain cannot contain cycles")
+        return self
 
 
 class CandidateFailure(BaseModel):

@@ -33,6 +33,39 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
     elif diagram_type == "architecture":
         node_records = list(ir.get("services") or [])
         edge_records = list(ir.get("edges") or [])
+    elif diagram_type == "state":
+        node_records = list(ir.get("states") or [])
+        edge_records = [
+            edge
+            for edge in ir.get("transitions") or []
+            if isinstance(edge, dict)
+            and edge.get("source") != "[*]"
+            and edge.get("target") != "[*]"
+        ]
+    elif diagram_type == "class":
+        node_records = list(ir.get("classes") or [])
+        edge_records = list(ir.get("relations") or [])
+    elif diagram_type == "er":
+        node_records = list(ir.get("entities") or [])
+        edge_records = list(ir.get("relationships") or [])
+    elif diagram_type == "requirement":
+        node_records = [*(ir.get("requirements") or []), *(ir.get("elements") or [])]
+        edge_records = list(ir.get("relations") or [])
+    elif diagram_type == "block":
+        node_records = list(ir.get("blocks") or [])
+        edge_records = list(ir.get("edges") or [])
+    elif diagram_type == "c4":
+        node_records = list(ir.get("elements") or [])
+        edge_records = list(ir.get("relations") or [])
+    elif diagram_type == "deployment":
+        node_records = [*(ir.get("nodes") or []), *(ir.get("artifacts") or [])]
+        edge_records = list(ir.get("links") or ir.get("edges") or [])
+    elif diagram_type == "component":
+        node_records = [*(ir.get("components") or []), *(ir.get("interfaces") or [])]
+        edge_records = list(ir.get("dependencies") or ir.get("edges") or [])
+    elif diagram_type == "usecase":
+        node_records = [*(ir.get("actors") or []), *(ir.get("use_cases") or [])]
+        edge_records = list(ir.get("relations") or [])
     elif diagram_type == "sequence":
         for index, participant in enumerate(ir.get("participants") or [], start=1):
             if isinstance(participant, str):
@@ -114,7 +147,7 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
                 semantic_relation=semantic_relation,
                 label=str(edge.get("label")) if edge.get("label") is not None else None,
                 arrow_at_start=bool(edge.get("bidirectional") or edge.get("arrow_at_start")),
-                arrow_at_end=edge.get("arrow_at_end", True),
+                arrow_at_end=bool(edge.get("arrow_at_end", diagram_type not in {"class", "er"})),
                 line_style=str(edge.get("style")) if edge.get("style") else None,
                 confidence=1.0,
                 evidence_ids=list(edge.get("evidence_ids") or []),
