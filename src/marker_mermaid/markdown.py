@@ -5,12 +5,17 @@ from __future__ import annotations
 from marker_mermaid.models import ReconstructionResult
 
 
-def reconstruction_markdown(result: ReconstructionResult, *, show_score: bool = False) -> str:
+def reconstruction_markdown(
+    result: ReconstructionResult,
+    *,
+    show_score: bool = False,
+    show_warning: bool = True,
+) -> str:
     selected = result.selected
     if not result.publish or selected is None or not selected.mermaid_code:
         return ""
     warning = ""
-    if result.grade in {"B", "C"}:
+    if show_warning and result.grade in {"B", "C"}:
         message = "일부 요소는 검토가 필요합니다."
         if result.grade == "C":
             message = "의미 정확도가 낮을 수 있으므로 반드시 원본과 대조해 주세요."

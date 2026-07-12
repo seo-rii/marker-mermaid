@@ -18,7 +18,8 @@ portable flowchart subgraph로 명시적으로 fallback합니다. 아직 구현�
 - `extended` 기본 budget은 type 2개, candidate 3개, repair 3회입니다.
 - 의미 점수가 없는 결과는 성공률을 부풀리지 않고 `U` 등급과 review 대상으로 둡니다.
 - node/relation의 OCR, contour, VLM observation 등 provenance를 sidecar에 보존합니다.
-- composite panel, full-page coverage, adjacent/continued fragment merge를 결정적으로 제안합니다.
+- composite panel과 adjacent/continued multi-page fragment를 virtual source로 조립·출력합니다.
+- panel/merge OCR bbox와 원 page/block을 잇는 affine provenance를 sidecar에 보존합니다.
 - geometry contour/line/arrowhead evidence를 VLM보다 먼저 수집하며 engine별 후보를 공정하게 배분합니다.
 - 렌더 런타임은 외부 네트워크를 차단하며 종료 시 Chromium process group을 정리합니다.
 
@@ -89,6 +90,7 @@ output/document/
         ├── scene-ir.json
         ├── typed-ir.json
         ├── provenance.json
+        ├── source-map.json
         ├── scores.json
         ├── review-history.json
         └── alternatives/

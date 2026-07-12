@@ -23,6 +23,12 @@ def _safe_component(value: str) -> str:
     return component
 
 
+def safe_artifact_component(value: str) -> str:
+    """Return the canonical filesystem component used by sidecar artifacts."""
+
+    return _safe_component(value)
+
+
 def _json_bytes(value: Any) -> bytes:
     return (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
 
@@ -102,6 +108,10 @@ class SidecarStore:
                     temporary / "provenance.json",
                     _json_bytes([item.model_dump(mode="json") for item in result.evidence]),
                 )
+            if result.source_mapping is not None:
+                hashes["source-map.json"] = _write(
+                    temporary / "source-map.json", _json_bytes(result.source_mapping)
+                )
             hashes["review-history.json"] = _write(temporary / "review-history.json", b"[]\n")
             if self.write_alternatives:
                 for candidate in result.alternatives:
@@ -116,6 +126,10 @@ class SidecarStore:
                 "schema_version": SCHEMA_VERSION,
                 "source_id": result.source_id,
                 "source_image": f"images/{Path(result.source_image_name).name}",
+                "source_kind": result.source_kind,
+                "source_block_ids": result.source_block_ids,
+                "page_ids": result.page_ids,
+                "anchor_block_id": result.anchor_block_id,
                 "status": result.status,
                 "grade": result.grade,
                 "publish": result.publish,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from typing import Literal
 
 from PIL import Image, ImageChops, ImageFilter, ImageOps
 
@@ -91,6 +92,12 @@ class ReconstructionPipeline:
         image: Image.Image,
         *,
         source_block_ids: list[str] | None = None,
+        source_kind: Literal["original", "panel", "merged", "full_page", "page_proposal"] = (
+            "original"
+        ),
+        page_ids: list[int] | None = None,
+        anchor_block_id: str | None = None,
+        source_mapping: dict | None = None,
         evidence: list[VisualEvidence] | None = None,
         ocr_texts: list[str] | None = None,
         source_block: object | None = None,
@@ -315,6 +322,11 @@ class ReconstructionPipeline:
         return ReconstructionResult(
             source_id=source_id,
             source_image_name=source_image_name,
+            source_kind=source_kind,
+            source_block_ids=context.source_block_ids,
+            page_ids=list(page_ids or []),
+            anchor_block_id=anchor_block_id,
+            source_mapping=source_mapping,
             selected=selected,
             alternatives=[item for item in candidates if item is not selected],
             evidence=all_evidence,

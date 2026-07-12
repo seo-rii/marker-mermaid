@@ -170,6 +170,8 @@ class MermaidConfig(BaseModel):
     max_mermaid_chars: int = 50_000
     max_mermaid_lines: int = 5_000
     max_image_dimension: int = 2048
+    max_virtual_source_dimension: int = 32_768
+    max_virtual_source_pixels: int = 100_000_000
     tile_size: int = 1280
     tile_overlap: int = 128
     max_views: int = 8
@@ -212,7 +214,14 @@ class MermaidConfig(BaseModel):
             raise ValueError("max_repair_iterations must be between 0 and 10")
         return value
 
-    @field_validator("max_mermaid_chars", "max_mermaid_lines", "max_image_dimension", "max_views")
+    @field_validator(
+        "max_mermaid_chars",
+        "max_mermaid_lines",
+        "max_image_dimension",
+        "max_virtual_source_dimension",
+        "max_virtual_source_pixels",
+        "max_views",
+    )
     @classmethod
     def resource_limit_is_positive(cls, value: int) -> int:
         if value <= 0:

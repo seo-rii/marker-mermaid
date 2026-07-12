@@ -210,6 +210,14 @@ def test_sidecar_tree_and_markdown(tmp_path, fake_runtime):
         "page-1-figure-1",
         "source.png",
         Image.new("RGB", (100, 60), "white"),
+        source_block_ids=["/page/1/Figure/1"],
+        source_kind="panel",
+        page_ids=[1],
+        anchor_block_id="/page/1/Figure/1",
+        source_mapping={
+            "source": {"source_id": "page-1-figure-1"},
+            "assembly": {"canvas_size": [100, 60]},
+        },
         ocr_texts=["Start End"],
     )
     relative = SidecarStore(tmp_path).write(result)
@@ -217,8 +225,17 @@ def test_sidecar_tree_and_markdown(tmp_path, fake_runtime):
     assert (bundle / "final.mmd").is_file()
     assert (bundle / "final.svg").is_file()
     assert (bundle / "provenance.json").is_file()
+    assert (bundle / "source-map.json").is_file()
     manifest = json.loads((bundle / "manifest.json").read_text())
     assert manifest["schema_version"] == "mmx-sidecar-0.3"
+    assert manifest["source_kind"] == "panel"
+    assert manifest["source_block_ids"] == ["/page/1/Figure/1"]
+    assert manifest["page_ids"] == [1]
+    assert manifest["anchor_block_id"] == "/page/1/Figure/1"
+    assert json.loads((bundle / "source-map.json").read_text())["assembly"]["canvas_size"] == [
+        100,
+        60,
+    ]
     markdown = standalone_document_markdown(result, image_path="images/source.png")
     assert markdown.index("images/source.png") < markdown.index("```mermaid")
 

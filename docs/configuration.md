@@ -44,6 +44,8 @@ prefix 없는 이름을 직접 전달할 수 있습니다. prefix 설정이 conc
 | `render_timeout_seconds` | `20` | candidate당 parse/render 제한 |
 | `max_mermaid_chars` | `50000` | browser 전달 전 source 문자 상한 |
 | `max_mermaid_lines` | `5000` | browser 전달 전 source line 상한 |
+| `max_virtual_source_dimension` | `32768` | panel/merge canvas 한 변 상한 |
+| `max_virtual_source_pixels` | `100000000` | panel/merge canvas pixel budget |
 | `max_views` | `8` | VLM에 전달할 view 상한 |
 
 `write_ir`, `write_svg`, `write_png`, `write_alternatives`, `write_provenance`는 각 sidecar
@@ -56,7 +58,7 @@ bundle의 최소 감사 기록으로 항상 남습니다.
 ## 구현 상태가 있는 옵션
 
 edge map, Hough line, arrow overlay, OCR overlay, thumbnail, tile과 보수적 GeometryEngine은
-구현되어 있습니다. composite split, fragment/multi-page merge, full-page coverage는 결정적 heuristic과
-직렬화 가능한 fragment registry까지 구현됐지만 Marker virtual source 출력 연결은 다음 단계입니다.
-page-level missed detector와 PDF vector primitive extraction은 아직 예약 상태입니다. 자세한 구분은
-[스펙 대응표](spec-coverage.md)를 참고하세요.
+구현되어 있습니다. composite split, fragment/multi-page merge, full-page coverage는 Marker virtual
+source 조립·출력과 OCR affine provenance까지 연결됩니다. page-level missed detector와 PDF vector
+primitive extraction은 아직 예약 상태입니다. 자세한 구분은 [스펙 대응표](spec-coverage.md)를
+참고하세요.

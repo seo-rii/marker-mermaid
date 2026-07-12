@@ -6,6 +6,9 @@
 `syntax_valid && render_valid`가 아니거나 policy가 게시를 거부하면 image만 남습니다. C 등급은
 `Experimental reconstruction` warning을 동반합니다.
 
+한 Marker anchor에 virtual source가 있으면 original Mermaid, panel image/Mermaid, merged image/Mermaid
+순서로 출력합니다. virtual source가 review/failed 상태여도 조립에 성공한 원본은 보존합니다.
+
 ## Sidecar bundle
 
 각 source는 `diagrams/<safe-source-id>/`에 독립 bundle을 가집니다. writer는 같은 parent의 임시
@@ -20,6 +23,10 @@ directory에 모두 쓴 뒤 `os.replace`로 최종 directory를 공개합니다.
   "schema_version": "mmx-sidecar-0.3",
   "source_id": "_page_4_Figure_2",
   "source_image": "images/_page_4_Figure_2.jpeg",
+  "source_kind": "panel",
+  "source_block_ids": ["/page/4/Figure/2"],
+  "page_ids": [4],
+  "anchor_block_id": "/page/4/Figure/2",
   "status": "success",
   "grade": "B",
   "publish": true,
@@ -27,7 +34,8 @@ directory에 모두 쓴 뒤 `os.replace`로 최종 directory를 공개합니다.
   "selected_candidate_id": "candidate-1",
   "files": {
     "final.mmd": "sha256...",
-    "final.svg": "sha256..."
+    "final.svg": "sha256...",
+    "source-map.json": "sha256..."
   },
   "failures": []
 }
@@ -36,10 +44,14 @@ directory에 모두 쓴 뒤 `os.replace`로 최종 directory를 공개합니다.
 `files`의 값은 content SHA-256입니다. `final.*`은 hard gate를 통과해 selected가 된 candidate에만
 생성됩니다. 실패하거나 선택되지 않은 후보는 `alternatives/`에 JSON과 가능한 `.mmd`로 남습니다.
 `review-history.json`은 현재 빈 배열로 시작하며 향후 review editor와 같은 schema를 공유합니다.
+`source-map.json`은 serialized `DiscoveredSource`, fragment crop/page bbox, canvas placement,
+source→canvas/page→canvas affine을 보존하여 canvas provenance를 PDF page와 source block으로 역추적합니다.
+
+writer는 파일을 만들기 전에 source/image/sidecar/alternative 이름 충돌, 누락 source image, 기존 bundle,
+metadata JSON 직렬화를 검사합니다. source별 bundle은 임시 directory에서 원자적으로 공개합니다.
 
 ## JSON 직렬화
 
 PNG bytes와 SVG text는 candidate JSON에 중복으로 넣지 않습니다. 각각 artifact file로 저장하고
 candidate JSON에는 validation, score, warning, IR, code를 둡니다. document metadata는 source별
 summary와 sidecar path를 제공합니다.
-

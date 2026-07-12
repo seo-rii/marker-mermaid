@@ -9,10 +9,10 @@
 | strict/extended/maximal | 구현 | mode-derived top-k/candidate/repair budget |
 | 4개 게시 정책 | 구현 | hard gate와 등급/threshold truth table |
 | Figure/Picture/ComplexRegion | 구현 | Marker discovery와 원본 추출 |
-| full-page candidate | 기반 | coverage/edge 판정 구현; Marker virtual source 연결 후속 |
+| full-page candidate | 구현 | coverage/edge 판정과 Marker source 분류/출력 |
 | page missed detector | 후속 | config 예약 |
-| composite split | 기반 | whitespace/line/component proposal와 crop 구현; 출력 연결 후속 |
-| fragment/multi-page merge | 기반 | adjacency/caption/continued proposal와 page별 SourceFragment 구현 |
+| composite split | 구현 | proposal, raw-fragment crop, virtual 원본/결과 출력 |
+| fragment/multi-page merge | 구현 | caption/continued proposal, canvas assembly, first-fragment anchor 출력 |
 | Scene IR/provenance | 구현 | Pydantic 무결성, OCR/source/VLM evidence, sidecar |
 | edge/Hough/arrow/OCR view | 구현 | Pillow/OpenCV priors와 보수적 geometry evidence |
 | color cluster/vector primitive | 후속 | config 예약 |
@@ -36,7 +36,7 @@
 | visual entailment | 기반 | evidence coverage proxy; model scorer 후속 |
 | arrow/layout/path score | 후속 | score slots/config 예약 |
 | render-and-compare repair | 기반 | injected repair engine, strict improvement adoption |
-| atomic sidecars | 구현 | manifest/hash/alternatives/provenance |
+| atomic sidecars | 구현 | preflight, manifest/hash/alternatives/provenance/source affine map |
 | Review Workspace | 기반 | read-only source/render/artifact viewer |
 | code/IR edit, DnD, NL patch | 후속 | Phase 4 |
 

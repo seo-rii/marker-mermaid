@@ -26,10 +26,14 @@ DEFAULT_BLOCK_TYPES = (
 )
 ```
 
-Discovery는 구조에 포함된 block과 page의 current children을 함께 보며 ID로 중복을 제거합니다.
-Reconstruction은 `Block.get_image(document, highres=True)`를 expansion 없이 사용합니다. Span bbox는
-정확히 같은 block polygon을 기준으로 page 좌표에서 crop pixel 좌표로 변환됩니다. crop만 1% 넓히고
-기존 polygon으로 변환하던 방식은 모든 provenance bbox를 이동시키므로 사용하지 않습니다.
+Discovery, reconstruction, renderer는 같은 candidate iterator를 사용하여 구조에 포함된 block과 page의
+`current_children`을 함께 봅니다. 각 anchor는 original/full-page, panel, merged source를 가질 수 있으며
+순서는 original/full-page → panel ID → merged로 고정됩니다.
+
+Reconstruction은 `Block.get_image(document, highres=True)`를 expansion 없이 사용합니다. original은
+정확한 block crop, panel은 raw crop 안의 bbox, merge는 여러 raw fragment를 virtual canvas에 배치합니다.
+각 Span은 fragment page bbox와 교차·clip한 뒤 page→canvas affine으로 변환되므로 다른 panel의 label이
+OCR recall에 섞이지 않고 다음 page의 label에는 올바른 canvas offset이 적용됩니다.
 
 ## LLM service adapter
 
@@ -45,7 +49,8 @@ Marker 1.10.2 기본 renderer는 Figure/Picture만 image block으로 취급하�
 document metadata에 복사하지 않습니다. `MermaidMarkdownRenderer`는 다음을 추가합니다.
 
 - ComplexRegion 원본 추출
-- 원본 image 뒤 검증된 Mermaid 1회 삽입
+- 원본 image 뒤 source별 검증된 Mermaid 1회 삽입
+- panel/merged virtual 원본 image 추가
 - B/C warning
 - Mermaid metadata 수집
 - image reference를 `images/` 아래로 이동
@@ -56,6 +61,15 @@ Marker 기본 `save_output`은 nested sidecar를 지원하지 않으므로 CLI�
 
 ## metadata
 
-각 block에는 `set_internal_metadata("mermaid", data)`로 status, stability, type, score, selected ID,
-code, sidecar path가 저장됩니다. Pydantic private metadata는 기본 renderer에 노출되지 않으므로
-전용 renderer가 JSON-safe summary를 생성합니다.
+직렬화 경계가 흐려지지 않도록 metadata key를 분리합니다.
+
+| key | 내용 |
+| --- | --- |
+| `mermaid_candidate` | JSON-safe source registry summary |
+| `mermaid_candidate_images` | runtime-only fragment ID → raw PIL image |
+| `mermaid` | JSON-safe reconstruction summary와 source별 오류 |
+| `mermaid_results` | runtime-only `ReconstructionResult` 목록 |
+| `mermaid_source_images` | runtime-only virtual output PIL image |
+
+document metadata writer는 `default=str` fallback을 쓰지 않습니다. PIL이나 Marker 객체가 JSON summary에
+잘못 유입되면 저장 전에 즉시 실패합니다.

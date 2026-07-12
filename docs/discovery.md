@@ -35,6 +35,15 @@ edge가 page dimension의 4% 이내인 경우입니다.
 
 ## 현재 경계
 
-이 계층은 proposal과 source registry 모델까지 제공합니다. Marker page registry에서 virtual source를
-실제로 crop/조립하고 renderer에 panel/merged 원본을 추가하는 연결은 별도 구현 단위로 진행합니다.
-따라서 현재 대응표는 `구현`이 아니라 `기반`으로 표시합니다.
+`MarkerSourceDiscovery`는 Marker의 구조화 block뿐 아니라 `current_children`의 loose object와 reference도
+같은 iterator로 탐색합니다. registry는 `source_id → DiscoveredSource`, pixel registry는
+`fragment_id → crop 전 PIL image`로 분리됩니다. 동일 page, bbox, image size, pixel digest를 가진
+nested Figure/Picture는 canonical source 하나로 축약합니다.
+
+`assemble_discovered_source()`는 panel crop과 same-page/cross-page fragment를 흰색 RGB virtual canvas에
+결정적으로 조립합니다. 각 placement에는 source crop, canvas bbox, source→canvas 및 page→canvas affine,
+page/block mapping이 남습니다. 조립 전 dimension과 pixel budget을 검사하며, 한 panel/merge 실패는
+original이나 다른 source 처리를 중단하지 않습니다.
+
+현재 경계는 Marker가 이미 제공한 block과 full-page image입니다. block 밖의 missed diagram을 새로
+제안하는 page-level detector는 후속 범위입니다.

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.metadata
+import json
 
 import pytest
+from PIL import Image
 
 from marker_mermaid.models import MermaidCandidate, ReconstructionResult
 
@@ -56,18 +58,32 @@ def test_marker_renderer_keeps_original_before_one_mermaid_block(monkeypatch):
         status="success",
     )
 
+    class Identifier:
+        def to_path(self):
+            return "_page_0_ComplexRegion_1"
+
     class Block:
+        id = Identifier()
+        block_type = "ComplexRegion"
+
         def get_internal_metadata(self, key):
             return {
-                "source_id": result.source_id,
-                "status": "success",
-                "selected_candidate_id": candidate.candidate_id,
-                "result": result,
-            }
+                "mermaid": {
+                    "source_id": result.source_id,
+                    "status": "success",
+                    "selected_candidate_id": candidate.candidate_id,
+                    "result": result,
+                }
+            }.get(key)
+
+    class Page:
+        current_children = [Block()]
+
+        def contained_blocks(self, document, block_types):
+            return [self.current_children[0]]
 
     class Document:
-        def contained_blocks(self, block_types):
-            return [Block()]
+        pages = [Page()]
 
     monkeypatch.setattr(
         MarkdownRenderer,
@@ -86,6 +102,120 @@ def test_marker_renderer_keeps_original_before_one_mermaid_block(monkeypatch):
 
 
 @pytest.mark.integration
+def test_marker_renderer_emits_multiple_virtual_sources_after_anchor(monkeypatch):
+    from marker.renderers.markdown import MarkdownOutput, MarkdownRenderer
+
+    from marker_mermaid.marker_integration import MermaidMarkdownRenderer
+
+    candidate = MermaidCandidate(
+        candidate_id="candidate-1",
+        generation_method="typed_ir",
+        diagram_type="flowchart",
+        mermaid_code='flowchart LR\n    A["Start"] --> B["End"]\n',
+        syntax_valid=True,
+        render_valid=True,
+        aggregate_score=0.8,
+    )
+    original = ReconstructionResult(
+        source_id="_page_0_Figure_1",
+        source_image_name="_page_0_Figure_1.jpeg",
+        source_block_ids=["/page/0/Figure/1"],
+        page_ids=[0],
+        selected=candidate,
+        grade="B",
+        publish=True,
+        review_required=False,
+        status="success",
+    )
+    original.selected.mermaid_code = f'flowchart LR\n    A["{original.source_id}"]\n'
+    panel_1 = original.model_copy(deep=True)
+    panel_1.source_id = "_page_0_Figure_1--panel-1"
+    panel_1.source_image_name = f"{panel_1.source_id}.jpeg"
+    panel_1.source_kind = "panel"
+    panel_1.selected.mermaid_code = f'flowchart LR\n    A["{panel_1.source_id}"]\n'
+    panel_2 = original.model_copy(deep=True)
+    panel_2.source_id = "_page_0_Figure_1--panel-2"
+    panel_2.source_image_name = f"{panel_2.source_id}.jpeg"
+    panel_2.source_kind = "panel"
+    panel_2.selected.mermaid_code = f'flowchart LR\n    A["{panel_2.source_id}"]\n'
+    merged = original.model_copy(deep=True)
+    merged.source_id = "_page_0_Figure_1--merged"
+    merged.source_image_name = f"{merged.source_id}.jpeg"
+    merged.source_kind = "merged"
+    merged.selected.mermaid_code = f'flowchart LR\n    A["{merged.source_id}"]\n'
+    runtime_metadata = {
+        "mermaid": {
+            "status": "success",
+            "sources": [],
+            "errors": [],
+        },
+        "mermaid_results": [merged, panel_2, original, panel_1],
+        "mermaid_source_images": {
+            item.source_image_name: Image.new("RGB", (20, 20), "white")
+            for item in (merged, panel_2, panel_1)
+        },
+    }
+
+    class Identifier:
+        def to_path(self):
+            return "_page_0_Figure_1"
+
+    class Block:
+        id = Identifier()
+        block_type = "Figure"
+
+        def get_internal_metadata(self, key):
+            return runtime_metadata.get(key)
+
+    class Page:
+        current_children = [Block()]
+
+        def contained_blocks(self, document, block_types):
+            return [self.current_children[0]]
+
+    class Document:
+        pages = [Page()]
+
+    monkeypatch.setattr(
+        MarkdownRenderer,
+        "__call__",
+        lambda self, document: MarkdownOutput(
+            markdown="![](_page_0_Figure_1.jpeg)", images={}, metadata={}
+        ),
+    )
+
+    rendered = MermaidMarkdownRenderer()(Document())
+
+    original_index = rendered.markdown.index("images/_page_0_Figure_1.jpeg")
+    original_code = rendered.markdown.index(original.source_id, original_index)
+    panel_1_image = rendered.markdown.index(f"images/{panel_1.source_image_name}")
+    panel_1_code = rendered.markdown.index(panel_1.source_id, panel_1_image)
+    panel_2_image = rendered.markdown.index(f"images/{panel_2.source_image_name}")
+    panel_2_code = rendered.markdown.index(panel_2.source_id, panel_2_image)
+    merged_image = rendered.markdown.index(f"images/{merged.source_image_name}")
+    merged_code = rendered.markdown.index(merged.source_id, merged_image)
+    assert (
+        original_index
+        < original_code
+        < panel_1_image
+        < panel_1_code
+        < panel_2_image
+        < panel_2_code
+        < merged_image
+        < merged_code
+    )
+    assert rendered.markdown.count("```mermaid") == 4
+    assert json.dumps(runtime_metadata["mermaid"])
+    assert all(item.source_image_name in rendered.images for item in (panel_1, panel_2, merged))
+    assert [item.source_id for item in rendered.reconstructions] == [
+        original.source_id,
+        panel_1.source_id,
+        panel_2.source_id,
+        merged.source_id,
+    ]
+
+
+@pytest.mark.integration
 def test_marker_processor_uses_geometry_without_an_llm(fake_runtime):
     from marker_mermaid.marker_integration import MermaidDiagramProcessor
 
@@ -95,8 +225,94 @@ def test_marker_processor_uses_geometry_without_an_llm(fake_runtime):
 
 
 @pytest.mark.integration
+def test_marker_processors_keep_json_summaries_separate_from_runtime_payloads(fake_runtime):
+    from marker_mermaid.marker_integration import (
+        MermaidCandidateDiscoveryProcessor,
+        MermaidDiagramProcessor,
+    )
+
+    class Identifier:
+        def __str__(self):
+            return "/page/0/Figure/1"
+
+        def to_path(self):
+            return "_page_0_Figure_1"
+
+    class Polygon:
+        def __init__(self, bbox):
+            self.bbox = bbox
+
+    class Block:
+        id = Identifier()
+        block_type = "Figure"
+        page_id = 0
+        polygon = Polygon((10, 10, 110, 70))
+        current_children = []
+
+        def __init__(self):
+            self.metadata = {}
+
+        def get_image(self, document, highres=True):
+            return Image.new("RGB", (200, 120), "white")
+
+        def contained_blocks(self, document, block_types):
+            return []
+
+        def raw_text(self, document):
+            return ""
+
+        def set_internal_metadata(self, key, value):
+            self.metadata[key] = value
+
+        def get_internal_metadata(self, key):
+            return self.metadata.get(key)
+
+    block = Block()
+
+    class Page:
+        page_id = 0
+        polygon = Polygon((0, 0, 200, 100))
+        current_children = [block]
+
+        def contained_blocks(self, document, block_types):
+            return [block]
+
+    class Document:
+        pages = [Page()]
+
+    config = {
+        "MermaidDiagramProcessor_split_composite_figures": False,
+        "MermaidDiagramProcessor_merge_adjacent_fragments": False,
+        "MermaidDiagramProcessor_detect_multi_page_diagrams": False,
+    }
+    MermaidCandidateDiscoveryProcessor(config)(Document())
+    candidate_summary = block.get_internal_metadata("mermaid_candidate")
+    candidate_images = block.get_internal_metadata("mermaid_candidate_images")
+
+    assert json.dumps(candidate_summary)
+    assert candidate_summary["source_ids"] == ["_page_0_Figure_1"]
+    assert all(isinstance(image, Image.Image) for image in candidate_images.values())
+
+    MermaidDiagramProcessor(
+        config=config,
+        engines=[],
+        runtime=fake_runtime,
+    )(Document())
+    summary = block.get_internal_metadata("mermaid")
+    results = block.get_internal_metadata("mermaid_results")
+    source_images = block.get_internal_metadata("mermaid_source_images")
+
+    assert json.dumps(summary)
+    assert len(results) == 1
+    assert results[0].source_mapping["assembly"]["canvas_size"] == [200, 120]
+    assert source_images == {}
+
+
+@pytest.mark.integration
 def test_marker_ocr_evidence_uses_exact_block_crop_coordinates():
+    from marker_mermaid.discovery import DiscoveredSource, SourceFragment
     from marker_mermaid.marker_integration import MermaidDiagramProcessor
+    from marker_mermaid.source_assembly import assemble_discovered_source
 
     class Identifier:
         def __init__(self, value):
@@ -127,7 +343,126 @@ def test_marker_ocr_evidence_uses_exact_block_crop_coordinates():
         def raw_text(self, document):
             return "Label"
 
-    evidence, texts = MermaidDiagramProcessor._ocr_evidence(Block(), object(), (200, 400))
+    block = Block()
+    source = DiscoveredSource(
+        source_id="source",
+        anchor_block_id=str(block.id),
+        kind="original",
+        fragments=[
+            SourceFragment(
+                fragment_id="fragment",
+                page_id=0,
+                source_block_ids=[str(block.id)],
+                page_bbox=tuple(block.polygon.bbox),
+                crop_bbox=(0, 0, 200, 400),
+                image_size=(200, 400),
+            )
+        ],
+        confidence=1,
+    )
+    assembled = assemble_discovered_source(
+        source, {"fragment": Image.new("RGB", (200, 400), "white")}
+    )
+    evidence, texts = MermaidDiagramProcessor._ocr_evidence(
+        source,
+        assembled.metadata,
+        {str(block.id): block},
+        object(),
+    )
 
     assert evidence[1].bbox == (20.0, 40.0, 100.0, 120.0)
     assert texts == ["Label"]
+
+
+@pytest.mark.integration
+def test_marker_ocr_evidence_filters_panels_and_offsets_continued_pages():
+    from marker_mermaid.discovery import DiscoveredSource, SourceFragment
+    from marker_mermaid.marker_integration import MermaidDiagramProcessor
+    from marker_mermaid.source_assembly import assemble_discovered_source
+
+    class Identifier:
+        def __init__(self, value):
+            self.value = value
+
+        def __str__(self):
+            return self.value
+
+    class Polygon:
+        def __init__(self, bbox):
+            self.bbox = bbox
+
+    class Span:
+        def __init__(self, name, bbox, text):
+            self.id = Identifier(name)
+            self.polygon = Polygon(bbox)
+            self.text = text
+
+    class Block:
+        def __init__(self, name, spans):
+            self.id = Identifier(name)
+            self.polygon = Polygon((0, 0, 200, 100))
+            self.spans = spans
+
+        def contained_blocks(self, document, block_types):
+            return self.spans
+
+        def raw_text(self, document):
+            return " ".join(span.text for span in self.spans)
+
+    first = Block(
+        "/page/1/Figure/1",
+        [
+            Span("/page/1/Span/1", (10, 10, 40, 30), "Left"),
+            Span("/page/1/Span/2", (120, 10, 180, 30), "Right"),
+        ],
+    )
+    second = Block(
+        "/page/2/Figure/1",
+        [Span("/page/2/Span/1", (20, 10, 80, 30), "Continued")],
+    )
+    source = DiscoveredSource(
+        source_id="continued",
+        anchor_block_id=str(first.id),
+        kind="merged",
+        fragments=[
+            SourceFragment(
+                fragment_id="right-panel",
+                page_id=1,
+                source_block_ids=[str(first.id)],
+                page_bbox=(100, 0, 200, 100),
+                crop_bbox=(200, 0, 400, 200),
+                image_size=(400, 200),
+            ),
+            SourceFragment(
+                fragment_id="page-2",
+                page_id=2,
+                source_block_ids=[str(second.id)],
+                page_bbox=(0, 0, 200, 100),
+                crop_bbox=(0, 0, 400, 200),
+                image_size=(400, 200),
+                canvas_offset=(0, 200),
+            ),
+        ],
+        confidence=0.9,
+    )
+    assembled = assemble_discovered_source(
+        source,
+        {
+            "right-panel": Image.new("RGB", (400, 200), "white"),
+            "page-2": Image.new("RGB", (400, 200), "white"),
+        },
+    )
+
+    evidence, texts = MermaidDiagramProcessor._ocr_evidence(
+        source,
+        assembled.metadata,
+        {str(first.id): first, str(second.id): second},
+        object(),
+    )
+
+    tokens = {item.text: item.bbox for item in evidence if item.kind == "ocr_token"}
+    assert texts == ["Right", "Continued"]
+    assert "Left" not in tokens
+    assert tokens["Right"] == (40.0, 20.0, 160.0, 60.0)
+    assert tokens["Continued"] == (40.0, 220.0, 160.0, 260.0)
+    assert len({item.id for item in evidence}) == len(evidence)

@@ -29,6 +29,8 @@ flowchart TB
 | --- | --- |
 | `models.py` | scene, evidence, prediction, candidate, result 모델과 참조 무결성 |
 | `discovery.py` | panel/full-page/fragment proposal와 virtual source fragment 모델 |
+| `marker_discovery.py` | Marker block/current_children adapter, source registry와 dedupe |
+| `source_assembly.py` | panel/merged canvas 조립과 source/page affine mapping |
 | `geometry.py` | contour, Hough line, arrowhead의 보수적 Scene IR/provenance 변환 |
 | `views.py` | thumbnail, edge, Hough, arrow, OCR overlay, tile 생성 |
 | `engines.py` | Marker BaseService adapter와 offline fixture engine |
@@ -45,8 +47,9 @@ flowchart TB
 
 ## 좌표와 provenance
 
-`DiagramSceneIR.coordinate_space`는 `pixels` 또는 `normalized`입니다. Marker adapter는 block
-crop pixel 좌표로 OCR bbox를 변환합니다. 모든 evidence는 원 Marker block ID를 보존합니다.
+`DiagramSceneIR.coordinate_space`는 `pixels` 또는 `normalized`입니다. Marker adapter는 fragment page
+bbox와 assembly의 page→canvas affine으로 OCR bbox를 변환합니다. panel 밖 token은 제외하고 multi-page
+token에는 fragment offset을 적용합니다. 모든 evidence는 원 Marker block ID를 보존합니다.
 Scene relation은 endpoint가 아직 불명확할 때 `None`을 허용하지만, 존재하지 않는 ID 참조는
 모델 validation에서 거부합니다.
 

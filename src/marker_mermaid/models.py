@@ -252,6 +252,11 @@ class CandidateFailure(BaseModel):
 class ReconstructionResult(BaseModel):
     source_id: str
     source_image_name: str
+    source_kind: Literal["original", "panel", "merged", "full_page", "page_proposal"] = "original"
+    source_block_ids: list[str] = Field(default_factory=list)
+    page_ids: list[int] = Field(default_factory=list)
+    anchor_block_id: str | None = None
+    source_mapping: dict[str, Any] | None = None
     selected: MermaidCandidate | None = None
     alternatives: list[MermaidCandidate] = Field(default_factory=list)
     evidence: list[VisualEvidence] = Field(default_factory=list)
