@@ -438,7 +438,11 @@ class MermaidCandidate(BaseModel):
     runtime_diagram_type: str | None = None
     fallback_chain: list[str] = Field(default_factory=list)
     serialization_stability: Literal["stable", "extended", "experimental"] = "stable"
+    # ``scene_ir`` records what extraction engines observed in the source image.
+    # Keep the reconstructed candidate scene separate so evaluation never compares
+    # a source observation with itself.
     scene_ir: DiagramSceneIR | None = None
+    generated_scene_ir: DiagramSceneIR | None = None
     typed_ir: dict[str, Any] | None = None
     raw_mermaid: str | None = None
     mermaid_code: str | None = None

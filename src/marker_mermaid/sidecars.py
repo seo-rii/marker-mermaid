@@ -13,7 +13,7 @@ from typing import Any
 
 from marker_mermaid.models import MermaidCandidate, ReconstructionResult
 
-SCHEMA_VERSION = "mmx-sidecar-0.3"
+SCHEMA_VERSION = "mmx-sidecar-0.4"
 
 
 def _safe_component(value: str) -> str:
@@ -89,6 +89,11 @@ class SidecarStore:
                     hashes["scene-ir.json"] = _write(
                         temporary / "scene-ir.json",
                         _json_bytes(selected.scene_ir.model_dump(mode="json")),
+                    )
+                if self.write_ir and selected.generated_scene_ir is not None:
+                    hashes["generated-scene-ir.json"] = _write(
+                        temporary / "generated-scene-ir.json",
+                        _json_bytes(selected.generated_scene_ir.model_dump(mode="json")),
                     )
                 if self.write_ir and selected.typed_ir is not None:
                     hashes["typed-ir.json"] = _write(

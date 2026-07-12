@@ -16,11 +16,15 @@ directory에 모두 쓴 뒤 `os.replace`로 최종 directory를 공개합니다.
 자동 덮어쓰지 않습니다. path component는 allowlist로 정규화하며 absolute path와 `..`를
 허용하지 않습니다.
 
-`manifest.json`의 `schema_version`은 `mmx-sidecar-0.3`입니다.
+`manifest.json`의 `schema_version`은 `mmx-sidecar-0.4`입니다. `0.4`부터 소스에서 관찰한
+`scene-ir.json`과 선택 후보에서 다시 구성한 `generated-scene-ir.json`을 구분합니다. 전자는
+OCR/CV/VLM 추출 근거이며 후자는 품질 평가 대상입니다. Direct Mermaid처럼 생성 구조를 안전하게
+역추출할 수 없는 후보는 `generated-scene-ir.json`을 생략하므로 구조 품질을 평가 불가로 처리해야
+합니다.
 
 ```json
 {
-  "schema_version": "mmx-sidecar-0.3",
+  "schema_version": "mmx-sidecar-0.4",
   "source_id": "_page_4_Figure_2",
   "source_image": "images/_page_4_Figure_2.jpeg",
   "source_kind": "panel",

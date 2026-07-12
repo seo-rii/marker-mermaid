@@ -90,6 +90,8 @@ def test_pipeline_selects_valid_candidate_and_respects_budget(fake_runtime):
     assert result.publish
     assert len(fake_runtime.calls) == 1
     assert result.selected.generation_method == "typed_ir"
+    assert result.selected.generated_scene_ir is not None
+    assert result.selected.generated_scene_ir is not result.selected.scene_ir
     assert result.selected.scores["edge_agreement"] == 1
     assert result.selected.scores["arrow_agreement"] == 1
     assert result.selected.scores["path_consistency"] == 1
@@ -640,7 +642,7 @@ def test_sidecar_tree_and_markdown(tmp_path, fake_runtime):
     assert (bundle / "provenance.json").is_file()
     assert (bundle / "source-map.json").is_file()
     manifest = json.loads((bundle / "manifest.json").read_text())
-    assert manifest["schema_version"] == "mmx-sidecar-0.3"
+    assert manifest["schema_version"] == "mmx-sidecar-0.4"
     assert manifest["source_kind"] == "panel"
     assert manifest["source_block_ids"] == ["/page/1/Figure/1"]
     assert manifest["page_ids"] == [1]
@@ -648,6 +650,11 @@ def test_sidecar_tree_and_markdown(tmp_path, fake_runtime):
     assert manifest["requested_diagram_type"] == "flowchart"
     assert manifest["emitted_diagram_type"] == "flowchart"
     assert manifest["fallback_chain"] == ["flowchart"]
+    source_scene = json.loads((bundle / "scene-ir.json").read_text())
+    generated_scene = json.loads((bundle / "generated-scene-ir.json").read_text())
+    assert source_scene == result.selected.scene_ir.model_dump(mode="json")
+    assert generated_scene == result.selected.generated_scene_ir.model_dump(mode="json")
+    assert "generated-scene-ir.json" in manifest["files"]
     assert json.loads((bundle / "source-map.json").read_text())["assembly"]["canvas_size"] == [
         100,
         60,
@@ -685,5 +692,6 @@ def test_sidecar_write_flags_are_honored(tmp_path, fake_runtime):
     assert (bundle / "final.mmd").is_file()
     assert not (bundle / "final.svg").exists()
     assert not (bundle / "scene-ir.json").exists()
+    assert not (bundle / "generated-scene-ir.json").exists()
     assert not (bundle / "provenance.json").exists()
     assert not (bundle / "alternatives").exists()

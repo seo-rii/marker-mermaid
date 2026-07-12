@@ -81,6 +81,7 @@ class _CandidateEvaluation:
     scores: dict[str, float]
     aggregate_score: float | None
     warnings: list[str]
+    generated_scene_ir: DiagramSceneIR | None
 
 
 def _edge_iou(source: Image.Image, rendered: bytes | None) -> float | None:
@@ -805,6 +806,7 @@ class ReconstructionPipeline:
             )
             candidate.scores = evaluation.scores
             candidate.aggregate_score = evaluation.aggregate_score
+            candidate.generated_scene_ir = evaluation.generated_scene_ir
             candidate.warnings.extend(evaluation.warnings)
             candidates.append(candidate)
 
@@ -951,7 +953,7 @@ class ReconstructionPipeline:
             warnings.append(
                 "unlabeled scene-only candidates require OCR/VLM fusion before publishing"
             )
-        return _CandidateEvaluation(scores, aggregate, warnings)
+        return _CandidateEvaluation(scores, aggregate, warnings, generated_scene)
 
     def _repair(self, context: SourceContext, selected: MermaidCandidate) -> MermaidCandidate:
         current = selected
@@ -1076,6 +1078,7 @@ class ReconstructionPipeline:
             attempted.png = outcome.runtime.png
             attempted.scores = evaluation.scores
             attempted.aggregate_score = evaluation.aggregate_score
+            attempted.generated_scene_ir = evaluation.generated_scene_ir
             attempted.warnings = list(
                 dict.fromkeys(
                     [

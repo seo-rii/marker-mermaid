@@ -97,6 +97,7 @@ output/document/
         ├── final.svg
         ├── final.png
         ├── scene-ir.json
+        ├── generated-scene-ir.json # 생성 후보 구조(평가 대상, 가용한 경우)
         ├── typed-ir.json
         ├── provenance.json
         ├── source-map.json
