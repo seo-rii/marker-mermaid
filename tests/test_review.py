@@ -58,6 +58,7 @@ def make_bundle(tmp_path, *, source_id="source-a"):
                     }
                 ],
                 "groups": [],
+                "canvas_size": [100, 100],
             }
         ),
         encoding="utf-8",
@@ -639,3 +640,42 @@ def test_structured_node_delete_persists_validated_ir_code_and_render(tmp_path):
     deletion = next(entry for entry in entries if entry["operation"] == "delete_node")
     assert deletion["target"] == "A"
     assert deletion["after"] == {"deleted": "A"}
+
+
+def test_source_anchored_add_revisions_user_evidence_and_undo_restores_both(tmp_path):
+    diagram_path = make_bundle(tmp_path)
+    with running_server(tmp_path) as (base, store):
+        current = store.load_bundle("diagram-a")
+        added, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/operations",
+            {
+                **expected(current),
+                "operation": {
+                    "operation": "add_node",
+                    "node_id": "Review",
+                    "label": "Manual review",
+                    "bbox": [40, 20, 70, 40],
+                },
+                "reason": "confirmed on source image",
+            },
+        )
+        current = store.load_bundle("diagram-a")
+        undone, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/history",
+            {**expected(current), "action": "undo"},
+        )
+
+    added_diagram = added["diagram"]
+    node = added_diagram["scene_ir"]["elements"][-1]
+    evidence_id = node["evidence_ids"][0]
+    assert node["id"] == "Review"
+    assert evidence_id.startswith("user-edit-r000001-Review")
+    assert 'Review["Manual review"]' in added_diagram["mermaid_code"]
+    user_evidence = next(item for item in added_diagram["provenance"] if item["id"] == evidence_id)
+    assert user_evidence["kind"] == "user_edit"
+    assert user_evidence["bbox"] == [40.0, 20.0, 70.0, 40.0]
+    assert user_evidence["source_block_ids"] == ["source-a"]
+    assert all(item["id"] != "Review" for item in undone["diagram"]["scene_ir"]["elements"])
+    assert all(item["id"] != evidence_id for item in undone["diagram"]["provenance"])
+    manifest = json.loads((diagram_path / "manifest.json").read_text())
+    assert manifest["files"]["provenance.json"]

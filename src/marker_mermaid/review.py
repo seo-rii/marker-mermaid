@@ -414,10 +414,27 @@ class ReviewHandler(SimpleHTTPRequestHandler):
             expected_version=version,
             expected_digest=digest,
         )
+        operation_name = operation.get("operation")
+        user_evidence_id = None
+        source_block_ids: list[str] | None = None
+        if operation_name == "add_node":
+            node_id = operation.get("node_id")
+            if isinstance(node_id, str):
+                user_evidence_id = f"user-edit-r{current.state.version + 1:06d}-{node_id}"
+            raw_block_ids = current.manifest.get("source_block_ids")
+            if isinstance(raw_block_ids, list) and all(
+                isinstance(item, str) for item in raw_block_ids
+            ):
+                source_block_ids = raw_block_ids
+            else:
+                source_block_ids = [str(current.manifest.get("source_id", current.bundle_id))]
         result = apply_review_operation(
             operation,
             ir=current.scene_ir,
             mermaid_code=current.mermaid_code,
+            provenance=current.provenance,
+            user_evidence_id=user_evidence_id,
+            source_block_ids=source_block_ids,
             reason=reason,
         )
         if not result.applied:
@@ -433,6 +450,8 @@ class ReviewHandler(SimpleHTTPRequestHandler):
             reason=reason or result.history_entry.operation,
             operation="structured_ir_operation",
             audit_entry=result.history_entry,
+            provenance=result.provenance if result.provenance_changed else None,
+            replace_provenance=result.provenance_changed,
         )
 
     def _bundle_payload(self, bundle: ReviewBundle) -> dict[str, Any]:

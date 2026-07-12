@@ -50,6 +50,14 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
         "edge-target",
         "delete-node-form",
         "node-select",
+        "add-node-form",
+        "add-node-id",
+        "add-node-label",
+        "bbox-x0",
+        "bbox-y0",
+        "bbox-x1",
+        "bbox-y1",
+        "add-node-reason",
     ):
         assert f'id="{control_id}"' in assets.html
 
@@ -72,9 +80,11 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert "innerHTML" not in assets.javascript
     assert 'operation: "reconnect_edge"' in assets.javascript
     assert 'operation: "delete_node"' in assets.javascript
+    assert 'operation: "add_node"' in assets.javascript
+    assert "Source-anchored node added." in assets.javascript
     assert "data-node-id" in assets.javascript
     assert 'addEventListener("keydown"' in assets.javascript
-    assert "Node movement and insertion" in assets.html
+    assert "Render-layout movement" in assets.html
     assert "pointermove" not in assets.javascript
 
 

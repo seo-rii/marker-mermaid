@@ -61,11 +61,13 @@ revision/state 파일은 HTTP로 노출하지 않습니다.
 같은 strict validator에서 code를 다시 parse/render하고, 성공한 새 render artifact와 승인 revision을
 함께 기록합니다. Review validator를 구성하지 않은 API embedding은 승인할 수 없습니다.
 
-구조 연산 API는 자연어 command와 분리된 closed discriminated schema를 사용합니다. 현재 edge
-재연결과 node 삭제만 허용하며, IR relation/node와 독립 Mermaid line이 정확히 대응하지 않거나 group,
-style, chained/labeled edge 같은 추가 참조가 있으면 mutation 전에 거부합니다. optimistic revision은
-operation을 IR에 해석하기 전과 실제 commit lock 안에서 모두 검사합니다. source bbox를 Mermaid layout
-좌표로 재사용하는 이동 연산과 revisioned `user_edit` provenance가 없는 node 추가는 제공하지 않습니다.
+구조 연산 API는 자연어 command와 분리된 closed discriminated schema를 사용합니다. 현재
+source-anchored node 추가, edge 재연결, node 삭제만 허용합니다. 기존 IR relation/node와 독립 Mermaid
+line이 정확히 대응하지 않거나 group, style, chained/labeled edge 같은 추가 참조가 있으면 mutation 전에 거부합니다. optimistic revision은
+operation을 IR에 해석하기 전과 실제 commit lock 안에서 모두 검사합니다. node 추가는 safe ID/label,
+reason, positive bbox, explicit Scene canvas bounds를 요구하며 client가 evidence ID/kind/score/source를
+정하지 못하게 서버가 revision 기반 `user_edit` evidence를 생성합니다. source bbox를 Mermaid layout
+좌표로 재사용하는 이동 연산과 provenance 없는 자유 배치 추가는 제공하지 않습니다.
 
 review provenance는 root `provenance.json`의 sidecar manifest hash와 `mmx-review-0.4` current digest를
 검사합니다. 각 revision은 content-addressed provenance digest를 참조하며 code/IR/render와 같은

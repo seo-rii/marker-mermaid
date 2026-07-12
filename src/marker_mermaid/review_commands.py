@@ -10,14 +10,15 @@ artifacts.
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping
 from copy import deepcopy
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 
-from marker_mermaid.models import ReviewHistoryEntry
+from marker_mermaid.models import ReviewHistoryEntry, VisualEvidence
 
 MAX_COMMAND_LENGTH = 500
 MAX_LABEL_LENGTH = 200
@@ -85,6 +86,7 @@ class ParsedReviewCommand(BaseModel):
         "relabel_node",
         "group_nodes",
         "change_diagram_type",
+        "add_node",
         "delete_node",
         "reconnect_edge",
     ]
@@ -96,6 +98,30 @@ class ParsedReviewCommand(BaseModel):
     node_ids: list[str] = Field(default_factory=list)
     label: str | None = None
     diagram_type: str | None = None
+    bbox: tuple[float, float, float, float] | None = None
+    evidence_id: str | None = None
+
+
+class AddNodeOperation(BaseModel):
+    """Add one source-anchored node with server-created user evidence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation: Literal["add_node"]
+    node_id: str
+    label: str
+    bbox: tuple[float, float, float, float]
+
+    @field_validator("bbox", mode="before")
+    @classmethod
+    def bbox_rejects_booleans(cls, value):
+        if (
+            not isinstance(value, list | tuple)
+            or len(value) != 4
+            or any(isinstance(item, bool) for item in value)
+        ):
+            raise ValueError("bbox must contain four numeric coordinates")
+        return value
 
 
 class DeleteNodeOperation(BaseModel):
@@ -119,7 +145,7 @@ class ReconnectEdgeOperation(BaseModel):
 
 
 StructuredReviewOperation = Annotated[
-    DeleteNodeOperation | ReconnectEdgeOperation,
+    AddNodeOperation | DeleteNodeOperation | ReconnectEdgeOperation,
     Field(discriminator="operation"),
 ]
 _STRUCTURED_OPERATION_ADAPTER = TypeAdapter(StructuredReviewOperation)
@@ -131,6 +157,8 @@ class ReviewCommandResult(BaseModel):
     applied: bool
     ir: dict[str, Any] | None = None
     mermaid_code: str | None = None
+    provenance: list[dict[str, Any]] | None = None
+    provenance_changed: bool = False
     history_entry: ReviewHistoryEntry | None = None
     error_code: str | None = None
     message: str
@@ -359,6 +387,50 @@ def _apply_ir(
     intent: ParsedReviewCommand, ir: dict[str, Any]
 ) -> tuple[dict[str, Any], str, dict, dict]:
     ids = _node_ids(ir)
+    if intent.operation == "add_node":
+        assert intent.node_id and intent.label is not None and intent.evidence_id
+        if intent.node_id in ids:
+            raise ReviewCommandError("ambiguous_reference", "node id already exists in the IR")
+        nodes, key = _node_container(ir)
+        if key != "elements":
+            raise ReviewCommandError(
+                "unsupported_ir", "source-anchored insertion requires Scene IR elements"
+            )
+        bbox = intent.bbox
+        if bbox is None or not all(math.isfinite(value) for value in bbox):
+            raise ReviewCommandError("invalid_bbox", "bbox must contain four finite numbers")
+        x0, y0, x1, y1 = bbox
+        if x1 <= x0 or y1 <= y0:
+            raise ReviewCommandError("invalid_bbox", "bbox must have positive ordered area")
+        coordinate_space = ir.get("coordinate_space", "pixels")
+        if coordinate_space == "normalized":
+            width = height = 1.0
+        else:
+            canvas_size = ir.get("canvas_size")
+            if (
+                not isinstance(canvas_size, list | tuple)
+                or len(canvas_size) != 2
+                or not all(isinstance(value, int | float) for value in canvas_size)
+                or any(isinstance(value, bool) for value in canvas_size)
+                or not all(math.isfinite(value) and value > 0 for value in canvas_size)
+            ):
+                raise ReviewCommandError(
+                    "unsupported_ir", "source-anchored insertion requires Scene canvas_size"
+                )
+            width, height = canvas_size
+        if x0 < 0 or y0 < 0 or x1 > width or y1 > height:
+            raise ReviewCommandError("invalid_bbox", "bbox must remain inside the Scene canvas")
+        node = {
+            "id": intent.node_id,
+            "role": "user_node",
+            "text": intent.label,
+            "bbox": list(bbox),
+            "confidence": 1.0,
+            "evidence_ids": [intent.evidence_id],
+        }
+        nodes.append(node)
+        return ir, intent.node_id, {}, node
+
     if intent.operation == "reconnect_edge":
         assert intent.edge_id and intent.source_id and intent.target_id
         if intent.source_id == intent.target_id:
@@ -566,6 +638,15 @@ def _apply_mermaid(
             f"{intent.source_id}{match['tail']}"
         )
         return code[: match.start()] + replacement + code[match.end() :]
+
+    if intent.operation == "add_node":
+        assert intent.node_id and intent.label is not None
+        if intent.node_id in ids or re.search(rf"\b{re.escape(intent.node_id)}\b", code):
+            raise ReviewCommandError(
+                "ambiguous_reference", "node id already appears in Mermaid source"
+            )
+        escaped = intent.label.replace("\\", "\\\\").replace('"', '\\"')
+        return code.rstrip("\n") + f'\n    {intent.node_id}["{escaped}"]\n'
 
     if intent.operation == "relabel_node":
         assert intent.node_id and intent.label is not None
@@ -779,6 +860,9 @@ def apply_review_operation(
     *,
     ir: Mapping[str, Any] | None,
     mermaid_code: str | None,
+    provenance: list[Mapping[str, Any] | VisualEvidence] | None = None,
+    user_evidence_id: str | None = None,
+    source_block_ids: list[str] | None = None,
     reason: str | None = None,
 ) -> ReviewCommandResult:
     """Apply a validated structured operation to synchronized review artifacts.
@@ -790,7 +874,24 @@ def apply_review_operation(
 
     original_ir = deepcopy(dict(ir)) if ir is not None else None
     original_code = mermaid_code
+    original_provenance: list[dict[str, Any]] = []
     try:
+        if provenance is not None and not isinstance(provenance, list):
+            raise ReviewCommandError("invalid_evidence", "existing provenance must be a list")
+        try:
+            normalized_provenance = [
+                VisualEvidence.model_validate(item) for item in provenance or []
+            ]
+        except ValidationError as error:
+            raise ReviewCommandError(
+                "invalid_evidence", "existing provenance contains invalid evidence"
+            ) from error
+        evidence_ids = [item.id for item in normalized_provenance]
+        if len(evidence_ids) != len(set(evidence_ids)):
+            raise ReviewCommandError(
+                "ambiguous_reference", "existing provenance evidence ids must be unique"
+            )
+        original_provenance = [item.model_dump(mode="json") for item in normalized_provenance]
         if original_ir is None or original_code is None:
             raise ReviewCommandError(
                 "missing_artifact", "structured operations require Scene IR and Mermaid code"
@@ -807,9 +908,47 @@ def apply_review_operation(
             value = payload.get(key)
             if value is not None:
                 payload[key] = _validated_id(value)
+        if payload.get("label") is not None:
+            payload["label"] = _validated_label(payload["label"])
+        if parsed.operation == "add_node":
+            if not reason or not reason.strip():
+                raise ReviewCommandError(
+                    "missing_reason", "source-anchored node addition requires a reason"
+                )
+            if (
+                not isinstance(user_evidence_id, str)
+                or not user_evidence_id
+                or len(user_evidence_id) > 256
+            ):
+                raise ReviewCommandError(
+                    "invalid_evidence", "server-created user evidence id is required"
+                )
+            payload["evidence_id"] = user_evidence_id
         intent = ParsedReviewCommand.model_validate(payload)
         patched_ir, target, before, after = _apply_ir(intent, deepcopy(original_ir))
         patched_code = _apply_mermaid(intent, original_code, before=before)
+        patched_provenance = deepcopy(original_provenance)
+        provenance_changed = False
+        if intent.operation == "add_node":
+            if any(item.get("id") == intent.evidence_id for item in patched_provenance):
+                raise ReviewCommandError(
+                    "ambiguous_reference", "user evidence id already exists in provenance"
+                )
+            try:
+                evidence = VisualEvidence(
+                    id=intent.evidence_id,
+                    kind="user_edit",
+                    bbox=intent.bbox,
+                    text=intent.label,
+                    score=1.0,
+                    source_block_ids=source_block_ids or [],
+                )
+            except ValidationError as error:
+                raise ReviewCommandError(
+                    "invalid_evidence", "server-created user evidence is invalid"
+                ) from error
+            patched_provenance.append(evidence.model_dump(mode="json"))
+            provenance_changed = True
         history = ReviewHistoryEntry(
             operation=intent.operation,
             target=target,
@@ -822,6 +961,8 @@ def apply_review_operation(
             applied=True,
             ir=patched_ir,
             mermaid_code=patched_code,
+            provenance=patched_provenance,
+            provenance_changed=provenance_changed,
             history_entry=history,
             message="structured operation applied",
         )
@@ -830,6 +971,7 @@ def apply_review_operation(
             applied=False,
             ir=original_ir,
             mermaid_code=original_code,
+            provenance=original_provenance,
             error_code=error.code,
             message=str(error),
         )

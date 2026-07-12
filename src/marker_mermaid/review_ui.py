@@ -115,10 +115,28 @@ def build_review_workspace_assets(
       <section id="structure-operations" aria-labelledby="structure-heading">
         <h2 id="structure-heading">Validated structure operations</h2>
         <p class="muted">
-          Select source-backed nodes and relations by stable ID. Node movement and insertion
-          remain unavailable until layout hints and user-edit provenance are revisioned safely.
+          Select source-backed nodes and relations by stable ID. Render-layout movement and
+          unanchored insertion remain unavailable until layout hints are revisioned safely.
         </p>
         <div class="structure-grid">
+          <form id="add-node-form">
+            <h3>Add source-anchored node</h3>
+            <label for="add-node-id">Node ID</label>
+            <input id="add-node-id" pattern="[A-Za-z][A-Za-z0-9_-]{{0,63}}" required>
+            <label for="add-node-label">Label</label>
+            <input id="add-node-label" maxlength="200" required>
+            <fieldset class="bbox-fields">
+              <legend>Source bbox (x0, y0, x1, y1)</legend>
+              <input id="bbox-x0" type="number" min="0" step="any" aria-label="bbox x0" required>
+              <input id="bbox-y0" type="number" min="0" step="any" aria-label="bbox y0" required>
+              <input id="bbox-x1" type="number" min="0" step="any" aria-label="bbox x1" required>
+              <input id="bbox-y1" type="number" min="0" step="any" aria-label="bbox y1" required>
+            </fieldset>
+            <p id="canvas-size" class="muted"></p>
+            <label for="add-node-reason">Evidence note</label>
+            <input id="add-node-reason" maxlength="4096" required>
+            <button id="add-node" type="submit">Add node</button>
+          </form>
           <form id="reconnect-form">
             <h3>Reconnect edge</h3>
             <label for="edge-select">Relation</label>
@@ -221,12 +239,16 @@ textarea {
 }
 .editor-actions { justify-content: end; margin-block: .6rem 1rem; }
 #structure-operations { border: 1px solid GrayText; padding: 0 1rem 1rem; margin-block: 1rem; }
-.structure-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 1rem; }
+.structure-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
 .structure-grid form {
   display: grid; grid-template-columns: max-content 1fr; gap: .6rem; align-items: center;
 }
 .structure-grid h3, .structure-grid p { grid-column: 1 / -1; }
 .structure-grid button { justify-self: end; grid-column: 2; }
+.bbox-fields {
+  grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: .4rem;
+}
+.bbox-fields input { min-width: 0; width: 100%; }
 .review-grid > div { border: 1px solid GrayText; padding: 0 1rem 1rem; }
 .item-list { margin: 0; padding: 0; list-style: none; }
 .item-list li, .candidate { padding: .55rem; border-top: 1px solid GrayText; }
@@ -277,6 +299,10 @@ REVIEW_JAVASCRIPT = r"""
     edgeSource: byId("edge-source"), edgeTarget: byId("edge-target"),
     edgeCount: byId("node-edge-count"), reconnect: byId("reconnect-edge"),
     deleteNode: byId("delete-node"),
+    addNode: byId("add-node"), addNodeId: byId("add-node-id"),
+    addNodeLabel: byId("add-node-label"), addNodeReason: byId("add-node-reason"),
+    canvasSize: byId("canvas-size"),
+    bbox: [byId("bbox-x0"), byId("bbox-y0"), byId("bbox-x1"), byId("bbox-y1")],
   };
 
   const diagramId = () => encodeURIComponent(
@@ -415,6 +441,13 @@ REVIEW_JAVASCRIPT = r"""
     controls.edge.disabled = state.busy || !relations.length;
     controls.edgeSource.disabled = unavailable; controls.edgeTarget.disabled = unavailable;
     controls.reconnect.disabled = state.busy || !relations.length || !nodes.length;
+    const canvas = ir.coordinate_space === "normalized"
+      ? [1, 1] : (Array.isArray(ir.canvas_size) ? ir.canvas_size.map(Number) : []);
+    const sourceAnchoringAvailable = canvas.length === 2 && canvas.every(Number.isFinite);
+    controls.canvasSize.textContent = sourceAnchoringAvailable
+      ? `Scene canvas: ${canvas[0]} × ${canvas[1]}`
+      : "Scene canvas size is unavailable; source-anchored addition is disabled.";
+    controls.addNode.disabled = state.busy || !sourceAnchoringAvailable;
   }
 
   function renderIssues(diagram) {
@@ -569,6 +602,24 @@ REVIEW_JAVASCRIPT = r"""
         source_id: controls.edgeSource.value, target_id: controls.edgeTarget.value,
       } },
       "Edge reconnected.",
+    );
+  });
+  byId("add-node-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const bbox = controls.bbox.map((input) => Number(input.value));
+    if (!bbox.every(Number.isFinite)) {
+      showMessage("Source bbox must contain four finite numbers.", true); return;
+    }
+    await perform(
+      route("/operations"),
+      {
+        operation: {
+          operation: "add_node", node_id: controls.addNodeId.value.trim(),
+          label: controls.addNodeLabel.value.trim(), bbox,
+        },
+        reason: controls.addNodeReason.value.trim(),
+      },
+      "Source-anchored node added.",
     );
   });
   byId("delete-node-form").addEventListener("submit", async (event) => {

@@ -44,7 +44,8 @@
 | code/IR/provenance revision | 구현 | strict code/Scene/evidence schema, content-addressed provenance, 0.3 lazy migration, rollback/undo |
 | NL patch | 구현 | 품질 invalidation, 명시 ID 기반 patch와 구조화 audit history |
 | structured operations | 구현 | exact-ID edge 재연결/node 삭제, IR↔Mermaid 1:1 gate, pre-interpretation optimistic lock |
-| drag-and-drop/node add | 후속 | source bbox와 layout 분리, revisioned user-edit provenance 도입 후 제공 |
+| source-anchored node add | 구현 | bounded canvas bbox, server-created user_edit evidence, code/IR/provenance transaction |
+| layout drag-and-drop | 후속 | source bbox와 별도인 revisioned layout hint/canvas 도입 필요 |
 
 ## 릴리스 해석
 

@@ -21,6 +21,7 @@ def scene_ir() -> dict:
             {"id": "E8", "source_id": "User", "target_id": "API"},
         ],
         "groups": [],
+        "canvas_size": [100, 100],
     }
 
 
@@ -208,6 +209,76 @@ def test_structured_reconnect_uses_relation_id_and_updates_both_artifacts() -> N
     assert result.history_entry.before == {"source": "DB", "target": "API"}
     assert result.history_entry.after == {"source": "User", "target": "DB"}
     assert result.history_entry.reason == "source reviewed"
+
+
+def test_source_anchored_add_creates_node_code_and_user_evidence_transactionally() -> None:
+    result = apply_review_operation(
+        {
+            "operation": "add_node",
+            "node_id": "Review",
+            "label": "Manual review",
+            "bbox": [60, 20, 90, 40],
+        },
+        ir=scene_ir(),
+        mermaid_code=flowchart(),
+        provenance=[],
+        user_evidence_id="user-edit-r000001-Review",
+        source_block_ids=["block-1"],
+        reason="confirmed on source image",
+    )
+
+    assert result.applied
+    node = result.ir["elements"][-1]
+    assert node["id"] == "Review"
+    assert node["bbox"] == [60.0, 20.0, 90.0, 40.0]
+    assert node["evidence_ids"] == ["user-edit-r000001-Review"]
+    assert 'Review["Manual review"]' in result.mermaid_code
+    assert result.provenance_changed
+    assert result.provenance[-1]["kind"] == "user_edit"
+    assert result.provenance[-1]["source_block_ids"] == ["block-1"]
+    assert result.history_entry.operation == "add_node"
+    assert result.history_entry.after["evidence_ids"] == ["user-edit-r000001-Review"]
+
+
+def test_source_anchored_add_rejects_missing_reason_and_out_of_canvas_bbox() -> None:
+    original_ir = scene_ir()
+    original_code = flowchart()
+    operation = {
+        "operation": "add_node",
+        "node_id": "Review",
+        "label": "Manual review",
+        "bbox": [60, 20, 120, 40],
+    }
+    missing_reason = apply_review_operation(
+        operation,
+        ir=original_ir,
+        mermaid_code=original_code,
+        user_evidence_id="user-edit-r000001-Review",
+    )
+    invalid_bbox = apply_review_operation(
+        operation,
+        ir=original_ir,
+        mermaid_code=original_code,
+        user_evidence_id="user-edit-r000001-Review",
+        reason="source checked",
+    )
+    boolean_bbox = apply_review_operation(
+        {**operation, "bbox": [True, 20, 80, 40]},
+        ir=original_ir,
+        mermaid_code=original_code,
+        user_evidence_id="user-edit-r000001-Review",
+        reason="source checked",
+    )
+
+    assert not missing_reason.applied
+    assert missing_reason.error_code == "missing_reason"
+    assert not invalid_bbox.applied
+    assert invalid_bbox.error_code == "invalid_bbox"
+    assert not boolean_bbox.applied
+    assert boolean_bbox.error_code == "invalid_operation"
+    assert original_ir == scene_ir()
+    assert invalid_bbox.ir == scene_ir()
+    assert invalid_bbox.mermaid_code == original_code
 
 
 def test_structured_delete_requires_one_to_one_explicit_flowchart_mapping() -> None:

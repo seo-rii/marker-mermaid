@@ -37,6 +37,7 @@
 - Validated Review Workspace edge reconnection and node deletion with synchronized IR/code audit history.
 - Vector-backed flowchart edge color recovery with allowlisted, exact-order `linkStyle` mapping.
 - Digest-verified, content-addressed Review provenance revisions with legacy timeline migration.
+- Source-anchored Review node addition with server-created `user_edit` evidence.
 
 ### Changed
 
