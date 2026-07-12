@@ -47,6 +47,7 @@
 - Advisory Review edge endpoint drag with screen-space snapping and validated reconnect reuse.
 - Validated Review node grouping with canonical IDs and exact Scene-to-subgraph membership checks.
 - Provenance-backed Review edge creation and exact-mapped deletion with global topology preflight.
+- Exact-mapped Review group deletion that preserves member nodes, edges, provenance, and layout.
 
 ### Changed
 

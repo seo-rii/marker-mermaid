@@ -60,7 +60,7 @@ audit entry는 디스크에서 삭제하지 않습니다. UI는 restore 전에 �
 
 workspace의 `Validated structure operations`는 자유 형식 JSON 편집보다 작은 동기화 경계를
 제공합니다. 원본 overlay에서 node bbox를 클릭하거나 ID select를 사용해 entity를 선택할 수 있습니다.
-현재 지원 연산은 다음 일곱 가지입니다.
+현재 지원 연산은 다음 여덟 가지입니다.
 
 - `add_node`: safe ID/label, Scene canvas 안의 positive source bbox, evidence note를 요구합니다. 서버가
   revision 기반 `user_edit` evidence ID를 생성하고 node `evidence_ids`, provenance snapshot, quoted
@@ -89,6 +89,10 @@ workspace의 `Validated structure operations`는 자유 형식 JSON 편집보다
   합니다. 기존 Scene group과 bounded flat Mermaid subgraph가 ID/member 기준 1:1이고 모든 membership이
   disjoint일 때만 bbox union과 bare membership subgraph를 함께 추가합니다. nested/unbalanced subgraph,
   implicit/duplicate declaration, 기존 membership, client group ID, extra field는 거절합니다.
+- `delete_group`: stable group ID만 받고 member node와 edge는 유지한 채 Scene group과 정확히 대응하는
+  flat Mermaid `subgraph ... end` block 하나만 제거합니다. 전체 Scene group↔Mermaid membership과 grouped
+  member declaration을 먼저 검증하고 parser가 확정한 header/end line slice만 삭제합니다. nested,
+  unbalanced, duplicate/mismatched group과 block 밖 group ID reference는 거절합니다.
 
 구조 연산 payload는 operation별 필수 field를 갖는 closed schema이며 알 수 없는 field도 거부합니다.
 요청을 현재 IR에 해석하기 전에 version/digest를 확인하고, 저장 시 lock 안에서 다시 확인합니다. 성공한
@@ -106,6 +110,9 @@ Group form은 grouped option을 비활성화해 설명하고 선택 수를 live 
 않은 label이 없으면 submit할 수 없습니다. 성공 시 Scene/Code와 audit만 바뀌며 source element bbox,
 relation, provenance, source image, advisory layout hint는 그대로 유지됩니다. Mermaid subgraph는 renderer의
 자동 배치를 바꿀 수 있지만, 이는 source geometry나 정확한 coordinate 편집을 뜻하지 않습니다.
+Group 삭제 form은 stable ID·label·member count를 표시하고 node/edge 유지 사실을 confirm에 반복합니다.
+삭제 성공 후에도 element/relation/provenance/layout/source는 그대로이며 undo가 같은 block과 group을
+복원합니다.
 
 오른쪽 advisory canvas는 stable ID로 만든 deterministic grid에서 시작하고 저장된 partial hint만
 덮어씁니다. source bbox를 초기 배치로 재사용하지 않습니다. Pointer move는 browser preview만 갱신하고

@@ -88,6 +88,7 @@ class ParsedReviewCommand(BaseModel):
         "reverse_edge",
         "relabel_node",
         "group_nodes",
+        "delete_group",
         "change_diagram_type",
         "add_node",
         "add_edge",
@@ -96,6 +97,7 @@ class ParsedReviewCommand(BaseModel):
         "reconnect_edge",
     ]
     edge_id: str | None = None
+    group_id: str | None = None
     source_id: str | None = None
     target_id: str | None = None
     node_id: str | None = None
@@ -185,13 +187,23 @@ class DeleteEdgeOperation(BaseModel):
     edge_id: str
 
 
+class DeleteGroupOperation(BaseModel):
+    """Delete one exact Scene group and matching flat Mermaid subgraph."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation: Literal["delete_group"]
+    group_id: str
+
+
 StructuredReviewOperation = Annotated[
     AddNodeOperation
     | DeleteNodeOperation
     | ReconnectEdgeOperation
     | GroupNodesOperation
     | AddEdgeOperation
-    | DeleteEdgeOperation,
+    | DeleteEdgeOperation
+    | DeleteGroupOperation,
     Field(discriminator="operation"),
 ]
 _STRUCTURED_OPERATION_ADAPTER = TypeAdapter(StructuredReviewOperation)
@@ -536,24 +548,33 @@ def _validated_scene_groups(
     return result
 
 
-def _mermaid_subgraph_memberships(code: str) -> dict[str, tuple[str, ...]]:
-    header = re.compile(rf'^\s*subgraph\s+(?P<id>{_ID})(?:\s*\[.*\])?\s*$')
+_SUBGRAPH_HEADER_RE = re.compile(
+    rf'^\s*subgraph\s+(?P<id>{_ID})(?:\s*\[\s*"(?:[^"\\]|\\.)*"\s*\])?\s*$'
+)
+
+
+def _flat_mermaid_subgraphs(
+    code: str,
+) -> dict[str, tuple[tuple[str, ...], int, int]]:
     bare_member = re.compile(rf"^\s*(?P<id>{_ID})\s*$")
-    result: dict[str, tuple[str, ...]] = {}
+    result: dict[str, tuple[tuple[str, ...], int, int]] = {}
     active_id: str | None = None
+    start_line = -1
     members: list[str] = []
     claimed: set[str] = set()
-    for line in code.splitlines():
-        match = header.fullmatch(line)
+    for index, line in enumerate(code.splitlines(keepends=True)):
+        raw_line = line.rstrip("\r\n")
+        match = _SUBGRAPH_HEADER_RE.fullmatch(raw_line)
         if match:
             if active_id is not None:
                 raise ReviewCommandError(
                     "unsupported_mermaid", "nested Mermaid subgraphs are not safely editable"
                 )
             active_id = match["id"]
+            start_line = index
             members = []
             continue
-        if line.strip() == "end":
+        if raw_line.strip() == "end":
             if active_id is None:
                 raise ReviewCommandError(
                     "unsupported_mermaid", "orphan Mermaid subgraph end is not safely editable"
@@ -568,12 +589,13 @@ def _mermaid_subgraph_memberships(code: str) -> dict[str, tuple[str, ...]]:
                     "ambiguous_reference", "Mermaid nodes cannot belong to multiple subgraphs"
                 )
             claimed.update(members)
-            result[active_id] = tuple(sorted(members))
+            result[active_id] = (tuple(sorted(members)), start_line, index)
             active_id = None
+            start_line = -1
             members = []
             continue
         if active_id is not None:
-            member = bare_member.fullmatch(line)
+            member = bare_member.fullmatch(raw_line)
             if member is None:
                 raise ReviewCommandError(
                     "unsupported_mermaid",
@@ -583,6 +605,13 @@ def _mermaid_subgraph_memberships(code: str) -> dict[str, tuple[str, ...]]:
     if active_id is not None:
         raise ReviewCommandError("unsupported_mermaid", "Mermaid subgraph is not closed")
     return result
+
+
+def _mermaid_subgraph_memberships(code: str) -> dict[str, tuple[str, ...]]:
+    return {
+        group_id: record[0]
+        for group_id, record in _flat_mermaid_subgraphs(code).items()
+    }
 
 
 def _quoted_rectangle_declaration_counts(
@@ -815,6 +844,20 @@ def _apply_ir(
         before = {label_key: node.get(label_key)}
         node[label_key] = intent.label
         return ir, intent.node_id, before, {label_key: intent.label}
+
+    if intent.operation == "delete_group":
+        assert intent.group_id
+        groups = ir.get("groups", [])
+        if not isinstance(groups, list) or not all(isinstance(item, dict) for item in groups):
+            raise ReviewCommandError("unsupported_ir", "IR groups must be a list")
+        matches = [group for group in groups if group.get("id") == intent.group_id]
+        if len(matches) != 1:
+            raise ReviewCommandError(
+                "unresolved_reference", "group id does not identify exactly one Scene group"
+            )
+        before = deepcopy(matches[0])
+        groups.remove(matches[0])
+        return ir, intent.group_id, before, {"deleted": intent.group_id}
 
     if intent.operation == "group_nodes":
         selected = set(intent.node_ids)
@@ -1131,6 +1174,37 @@ def _apply_mermaid(
         remove = {declarations[0], *(index for index, _ in edge_lines)}
         return "".join(line for index, line in enumerate(lines) if index not in remove)
 
+    if intent.operation == "delete_group":
+        assert intent.group_id
+        if before is None or before.get("id") != intent.group_id:
+            raise ReviewCommandError(
+                "unsupported_artifact", "group deletion requires matching Scene group state"
+            )
+        members = before.get("member_ids")
+        if not isinstance(members, list) or not all(isinstance(item, str) for item in members):
+            raise ReviewCommandError(
+                "unsupported_ir", "deleted group members must be explicit node ids"
+            )
+        subgraphs = _flat_mermaid_subgraphs(code)
+        record = subgraphs.get(intent.group_id)
+        if record is None or record[0] != tuple(sorted(members)):
+            raise ReviewCommandError(
+                "unsupported_artifact", "Scene group does not map to one exact Mermaid subgraph"
+            )
+        _, start_line, end_line = record
+        lines = code.splitlines(keepends=True)
+        outside = "".join(
+            line for index, line in enumerate(lines) if not start_line <= index <= end_line
+        )
+        group_reference = re.compile(
+            rf"(?<![A-Za-z0-9_-]){re.escape(intent.group_id)}(?![A-Za-z0-9_-])"
+        )
+        if group_reference.search(outside):
+            raise ReviewCommandError(
+                "unsupported_mermaid", "group id has Mermaid references outside its subgraph"
+            )
+        return outside
+
     assert intent.operation == "group_nodes"
     missing = set(intent.node_ids) - set(ids)
     if missing:
@@ -1312,7 +1386,7 @@ def apply_review_operation(
             raise ReviewCommandError(
                 "invalid_operation", "operation payload does not match the supported schema"
             ) from error
-        if parsed.operation == "group_nodes":
+        if parsed.operation in {"group_nodes", "delete_group"}:
             scene_groups = _validated_scene_groups(original_ir, set(_node_ids(original_ir)))
             mermaid_groups = _mermaid_subgraph_memberships(original_code)
             if scene_groups != mermaid_groups:
@@ -1349,7 +1423,7 @@ def apply_review_operation(
                     "Scene relations and plain Mermaid edges do not match one-to-one",
                 )
         payload = parsed.model_dump()
-        for key in ("node_id", "edge_id", "source_id", "target_id"):
+        for key in ("node_id", "edge_id", "group_id", "source_id", "target_id"):
             value = payload.get(key)
             if value is not None:
                 payload[key] = _validated_id(value)

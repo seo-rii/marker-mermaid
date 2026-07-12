@@ -197,6 +197,16 @@ def build_review_workspace_assets(
             <input id="group-label" maxlength="200" placeholder="Services" required>
             <button id="group-nodes" type="submit" disabled>Create group</button>
           </form>
+          <form id="delete-group-form">
+            <h3>Delete group</h3>
+            <label for="delete-group-select">Explicit group</label>
+            <select id="delete-group-select" required
+              aria-describedby="delete-group-help"></select>
+            <p id="delete-group-help" class="muted">
+              Removes only the group; member nodes and edges remain.
+            </p>
+            <button id="delete-group" class="reject" type="submit">Delete group</button>
+          </form>
         </div>
       </section>
 
@@ -402,6 +412,7 @@ REVIEW_JAVASCRIPT = r"""
     addEdgeTarget: byId("add-edge-target"), addEdgeReason: byId("add-edge-reason"),
     groupNodes: byId("group-nodes"), groupNodeSelect: byId("group-node-select"),
     groupLabel: byId("group-label"), groupStatus: byId("group-selection-status"),
+    deleteGroup: byId("delete-group"), deleteGroupSelect: byId("delete-group-select"),
     addNode: byId("add-node"), addNodeId: byId("add-node-id"),
     addNodeLabel: byId("add-node-label"), addNodeReason: byId("add-node-reason"),
     canvasSize: byId("canvas-size"),
@@ -694,6 +705,8 @@ REVIEW_JAVASCRIPT = r"""
     const nodes = Array.isArray(ir.elements) ? ir.elements.filter((item) => item?.id) : [];
     const relations = Array.isArray(ir.relations)
       ? ir.relations.filter((item) => item?.id && item?.source_id && item?.target_id) : [];
+    const groups = Array.isArray(ir.groups)
+      ? ir.groups.filter((item) => item?.id && Array.isArray(item?.member_ids)) : [];
     const selectedNode = controls.node.value;
     const selectedEdge = controls.edge.value;
     const selectedGroupNodes = new Set(
@@ -730,6 +743,11 @@ REVIEW_JAVASCRIPT = r"""
       controls.edge, relations, selectedEdge,
       (item) => `${text(item.id)} · ${text(item.source_id)} → ${text(item.target_id)}`,
     );
+    replaceOptions(
+      controls.deleteGroupSelect, groups, controls.deleteGroupSelect.value,
+      (item) => `${text(item.id)} · ${text(item.label || "unlabelled")} · `
+        + `${item.member_ids.length} node(s)`,
+    );
     const selectedRelation = relations.find((item) => text(item.id) === controls.edge.value);
     if (selectedRelation) {
       controls.edgeSource.value = text(selectedRelation.source_id);
@@ -758,6 +776,8 @@ REVIEW_JAVASCRIPT = r"""
     controls.groupNodeSelect.disabled = state.busy || nodes.length < 2;
     controls.groupLabel.disabled = state.busy || nodes.length < 2;
     updateGroupSelectionState();
+    controls.deleteGroupSelect.disabled = state.busy || !groups.length;
+    controls.deleteGroup.disabled = state.busy || !groups.length;
     const canvas = ir.coordinate_space === "normalized"
       ? [1, 1] : (Array.isArray(ir.canvas_size) ? ir.canvas_size.map(Number) : []);
     const sourceAnchoringAvailable = canvas.length === 2 && canvas.every(Number.isFinite);
@@ -1214,6 +1234,24 @@ REVIEW_JAVASCRIPT = r"""
       "Nodes grouped.",
     );
     controls.groupStatus.focus();
+  });
+  byId("delete-group-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const groupId = controls.deleteGroupSelect.value;
+    const selected = (Array.isArray(state.current?.scene_ir?.groups)
+      ? state.current.scene_ir.groups : []).find((item) => text(item.id) === groupId);
+    if (!selected) return;
+    const memberCount = Array.isArray(selected.member_ids) ? selected.member_ids.length : 0;
+    if (!window.confirm(
+      `Delete group ${groupId} (${text(selected.label || "unlabelled")}, ${memberCount} nodes)? `
+        + "Member nodes and edges will remain.",
+    )) return;
+    await perform(
+      route("/operations"),
+      { operation: { operation: "delete_group", group_id: groupId } },
+      "Group deleted.",
+    );
+    if (!controls.deleteGroupSelect.disabled) controls.deleteGroupSelect.focus();
   });
   byId("add-node-form").addEventListener("submit", async (event) => {
     event.preventDefault();

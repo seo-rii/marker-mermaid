@@ -78,6 +78,10 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
         "group-selection-status",
         "group-label",
         "group-nodes",
+        "delete-group-form",
+        "delete-group-select",
+        "delete-group-help",
+        "delete-group",
     ):
         assert f'id="{control_id}"' in assets.html
 
@@ -105,6 +109,7 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert 'operation: "add_node"' in assets.javascript
     assert 'operation: "move_node"' in assets.javascript
     assert 'operation: "group_nodes"' in assets.javascript
+    assert 'operation: "delete_group"' in assets.javascript
     assert "controls.groupNodeSelect.selectedOptions" in assets.javascript
     assert "Select at least two node IDs to create a group." in assets.javascript
     assert "Enter a group label." in assets.javascript
@@ -115,6 +120,8 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert 'id="group-label" maxlength="200" placeholder="Services" required' in assets.html
     assert "updateGroupSelectionState" in assets.javascript
     assert "clearGroupSelection" in assets.javascript
+    assert "Member nodes and edges will remain." in assets.javascript
+    assert "group_id: groupId" in assets.javascript
     assert "Source-anchored node added." in assets.javascript
     assert "An evidence note is required to add an edge." in assets.javascript
     assert "Delete relation ${edgeId}?" in assets.javascript

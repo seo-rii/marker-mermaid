@@ -668,6 +668,114 @@ def test_structured_group_hashes_long_canonical_member_ids_deterministically() -
     assert group_id.startswith("group_") and len(group_id) == 26
 
 
+def test_structured_delete_group_removes_only_exact_group_block() -> None:
+    first = apply_review_operation(
+        {
+            "operation": "group_nodes",
+            "node_ids": ["User", "API"],
+            "label": "Services",
+        },
+        ir=scene_ir(),
+        mermaid_code=flowchart(),
+    )
+    deleted = apply_review_operation(
+        {"operation": "delete_group", "group_id": "group_User_API"},
+        ir=first.ir,
+        mermaid_code=first.mermaid_code,
+        provenance=[{"id": "ocr-a", "kind": "ocr_token"}],
+        reason="group boundary removed",
+    )
+
+    assert first.applied and deleted.applied
+    assert deleted.ir["groups"] == []
+    assert deleted.ir["elements"] == scene_ir()["elements"]
+    assert deleted.ir["relations"] == scene_ir()["relations"]
+    assert deleted.mermaid_code == flowchart()
+    assert [item["id"] for item in deleted.provenance] == ["ocr-a"]
+    assert not deleted.provenance_changed
+    assert deleted.history_entry.operation == "delete_group"
+    assert deleted.history_entry.target == "group_User_API"
+    assert deleted.history_entry.before["member_ids"] == ["User", "API"]
+    assert deleted.history_entry.after == {"deleted": "group_User_API"}
+
+
+def test_structured_delete_group_rejects_unknown_mismatch_and_external_reference() -> None:
+    grouped = apply_review_operation(
+        {
+            "operation": "group_nodes",
+            "node_ids": ["User", "API"],
+            "label": "Services",
+        },
+        ir=scene_ir(),
+        mermaid_code=flowchart(),
+    )
+    unknown = apply_review_operation(
+        {"operation": "delete_group", "group_id": "Missing"},
+        ir=grouped.ir,
+        mermaid_code=grouped.mermaid_code,
+    )
+    mismatch = apply_review_operation(
+        {"operation": "delete_group", "group_id": "group_User_API"},
+        ir=grouped.ir,
+        mermaid_code=flowchart(),
+    )
+    external_reference = apply_review_operation(
+        {"operation": "delete_group", "group_id": "group_User_API"},
+        ir=grouped.ir,
+        mermaid_code=grouped.mermaid_code + "    style group_User_API fill:#fff\n",
+    )
+
+    assert not unknown.applied and unknown.error_code == "unresolved_reference"
+    assert not mismatch.applied and mismatch.error_code == "unsupported_artifact"
+    assert not external_reference.applied
+    assert external_reference.error_code == "unsupported_mermaid"
+
+
+def test_structured_delete_group_uses_exact_crlf_span_with_prefix_ids() -> None:
+    ir = {
+        "elements": [
+            {"id": "A", "bbox": [0, 0, 10, 10]},
+            {"id": "B", "bbox": [20, 0, 30, 10]},
+            {"id": "C", "bbox": [40, 0, 50, 10]},
+            {"id": "D", "bbox": [60, 0, 70, 10]},
+        ],
+        "relations": [],
+        "groups": [
+            {
+                "id": "group_A",
+                "role": "subgraph",
+                "label": "Same",
+                "bbox": [0, 0, 30, 10],
+                "member_ids": ["A", "B"],
+            },
+            {
+                "id": "group_A_B",
+                "role": "subgraph",
+                "label": "Same",
+                "bbox": [40, 0, 70, 10],
+                "member_ids": ["C", "D"],
+            },
+        ],
+        "canvas_size": [100, 100],
+    }
+    code = (
+        'flowchart LR\r\n  A["A"]\r\n  B["B"]\r\n  C["C"]\r\n  D["D"]\r\n'
+        '  subgraph group_A["Same"]\r\n    A\r\n    B\r\n  end\r\n'
+        '  subgraph group_A_B["Same"]\r\n    C\r\n    D\r\n  end\r\n'
+    )
+    result = apply_review_operation(
+        {"operation": "delete_group", "group_id": "group_A"},
+        ir=ir,
+        mermaid_code=code,
+    )
+
+    assert result.applied
+    assert [group["id"] for group in result.ir["groups"]] == ["group_A_B"]
+    assert 'subgraph group_A["Same"]' not in result.mermaid_code
+    assert 'subgraph group_A_B["Same"]\r\n' in result.mermaid_code
+    assert result.mermaid_code.count("\r\n") == 9
+
+
 def test_source_anchored_add_creates_node_code_and_user_evidence_transactionally() -> None:
     result = apply_review_operation(
         {
@@ -778,6 +886,7 @@ def test_structured_operations_reject_invalid_schema_without_mutation() -> None:
             "edge_id": "spoofed",
         },
         {"operation": "delete_edge", "edge_id": "E7", "unexpected": True},
+        {"operation": "delete_group", "group_id": "group_User_API", "members": ["User"]},
         {"operation": "move_node", "node_id": "API"},
         {"operation": "delete_node", "node_id": "unsafe id"},
     ):

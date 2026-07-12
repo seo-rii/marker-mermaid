@@ -741,6 +741,68 @@ def test_structured_group_is_validated_rendered_audited_and_preserves_source_sta
     assert grouped["reason"] == "confirmed logical boundary"
 
 
+def test_structured_group_delete_preserves_members_and_undoes_atomically(tmp_path):
+    diagram_path = make_bundle(tmp_path)
+    scene_path = diagram_path / "scene-ir.json"
+    scene = json.loads(scene_path.read_text())
+    scene["groups"] = [
+        {
+            "id": "group_A_B",
+            "role": "subgraph",
+            "label": "Pair",
+            "bbox": [0, 0, 30, 10],
+            "member_ids": ["A", "B"],
+        }
+    ]
+    scene_path.write_text(json.dumps(scene), encoding="utf-8")
+    (diagram_path / "final.mmd").write_text(
+        'flowchart LR\n  A["A"]\n  B["B"]\n  A --> B\n'
+        '  subgraph group_A_B["Pair"]\n    A\n    B\n  end\n',
+        encoding="utf-8",
+    )
+    source_before = (tmp_path / "images" / "source.png").read_bytes()
+    with running_server(tmp_path) as (base, store):
+        initial = store.load_bundle("diagram-a")
+        current = store.apply_layout_hint(
+            "diagram-a",
+            node_id="A",
+            x=0.2,
+            y=0.8,
+            expected_version=initial.state.version,
+            expected_digest=initial.state.code_digest,
+        )
+        provenance_before = [item.model_dump(mode="json") for item in current.provenance]
+        payload = {
+            **expected(current),
+            "operation": {"operation": "delete_group", "group_id": "group_A_B"},
+            "reason": "group boundary removed",
+        }
+        deleted, _ = post_json(f"{base}/api/diagrams/diagram-a/operations", payload)
+        with pytest.raises(urllib.error.HTTPError) as stale:
+            post_json(f"{base}/api/diagrams/diagram-a/operations", payload)
+        current = store.load_bundle("diagram-a")
+        undone, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/history",
+            {**expected(current), "action": "undo"},
+        )
+
+    assert deleted["diagram"]["scene_ir"]["groups"] == []
+    assert [item["id"] for item in deleted["diagram"]["scene_ir"]["elements"]] == ["A", "B"]
+    assert [item["id"] for item in deleted["diagram"]["scene_ir"]["relations"]] == ["E1"]
+    assert "subgraph group_A_B" not in deleted["diagram"]["mermaid_code"]
+    assert 'A["A"]' in deleted["diagram"]["mermaid_code"]
+    assert deleted["diagram"]["provenance"] == provenance_before
+    assert deleted["diagram"]["layout_hints"]["nodes"][0]["node_id"] == "A"
+    assert undone["diagram"]["scene_ir"]["groups"][0]["id"] == "group_A_B"
+    assert "subgraph group_A_B" in undone["diagram"]["mermaid_code"]
+    assert stale.value.code == HTTPStatus.CONFLICT
+    assert (tmp_path / "images" / "source.png").read_bytes() == source_before
+    entries = json.loads((diagram_path / "review-history.json").read_text())
+    deletion = next(entry for entry in entries if entry["operation"] == "delete_group")
+    assert deletion["before"]["member_ids"] == ["A", "B"]
+    assert deletion["after"] == {"deleted": "group_A_B"}
+
+
 def test_structured_edge_add_delete_revisions_evidence_and_undoes_atomically(tmp_path):
     diagram_path = make_bundle(tmp_path)
     (diagram_path / "final.mmd").write_text(

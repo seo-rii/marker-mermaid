@@ -96,6 +96,13 @@ quoted node label을 제외한 `linkStyle` token이 어디에 있어도 거부�
 undo가 relation을 같은 provenance에 다시 연결할 수 있습니다. 두 operation 모두 strict render 실패나
 stale optimistic lock에서 code/IR/render/history/provenance/layout 어느 파일도 commit하지 않습니다.
 
+`delete_group` payload는 stable `group_id` 하나만 허용합니다. 삭제 전 모든 Scene group의 safe ID,
+group/node collision, disjoint existing members, exact bbox union과 모든 flat Mermaid subgraph의 ID/member
+mapping 및 grouped member declaration count를 다시 검증합니다. bounded parser가 기록한 target header부터
+matching `end`까지의 line slice만 제거하고, target block 밖에 같은 group ID token이 있으면 dangling
+style/class/click/reference를 추측하지 않고 거절합니다. member element·relation·bbox와 provenance/layout,
+source artifact는 수정하지 않으며 strict render와 optimistic revision transaction을 그대로 사용합니다.
+
 advisory canvas의 endpoint drag도 별도 mutation 권한을 만들지 않습니다. client는 화면 좌표로 유일한
 최근접 node를 선택한 뒤 기존 `reconnect_edge` schema의 relation/source/target ID만 전송합니다. 좌표,
 polyline, bbox, provenance, layout field는 payload에 없으며 server는 current revision의 stable ID와
