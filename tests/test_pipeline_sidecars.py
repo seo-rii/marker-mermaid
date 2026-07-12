@@ -264,6 +264,62 @@ def test_typed_serializer_runtime_type_mismatch_fails_the_render_gate():
     assert result.alternatives[0].scores["render"] == 0
 
 
+def test_native_runtime_rejection_retries_declared_portable_fallback():
+    class NativeRejectingRuntime:
+        def __init__(self):
+            self.calls = []
+
+        def validate_and_render(self, code, timeout_seconds):
+            self.calls.append(code)
+            if code.startswith("packet-beta"):
+                return RuntimeResult(False, False, error="native parser rejected packet")
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="flowchart",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    packet_observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["packet"], scores=[0.9]),
+        typed_candidates=[
+            TypedIRCandidate(
+                diagram_type="packet",
+                ir={
+                    "fields": [
+                        {"id": "version", "start": 0, "end": 3, "label": "Version"},
+                        {"id": "ihl", "start": 4, "end": 7, "label": "IHL"},
+                    ]
+                },
+            )
+        ],
+    )
+    runtime = NativeRejectingRuntime()
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(packet_observation)],
+        CandidateValidator(runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        ocr_texts=["Version 0 3 IHL 4 7"],
+    )
+
+    assert result.selected is not None
+    assert result.selected.diagram_type == "packet"
+    assert result.selected.emitted_diagram_type == "flowchart"
+    assert result.selected.fallback_chain == ["packet", "flowchart"]
+    assert result.selected.render_valid
+    assert len(runtime.calls) == 2
+    assert result.selected.repair_history[-1].operation == "runtime_portable_fallback"
+
+
 def test_numeric_diagram_without_source_numeric_evidence_requires_review():
     class PieEngine:
         name = "pie"

@@ -261,6 +261,9 @@ class VectorPrimitiveEngine:
 def _context_sources(context: SourceContext) -> list[Any]:
     """Prefer all assembled-source blocks while retaining old contexts."""
 
+    vector_sources = getattr(context, "vector_sources", None)
+    if vector_sources:
+        return list(vector_sources)
     source_blocks = getattr(context, "source_blocks", None)
     if source_blocks:
         return list(source_blocks)

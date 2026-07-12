@@ -33,6 +33,37 @@ from marker_mermaid.vector import VectorPrimitiveEngine
 DEFAULT_BLOCK_TYPES = (BlockTypes.Figure, BlockTypes.Picture, BlockTypes.ComplexRegion)
 
 
+class _PyMuPDFPageProvider:
+    """Page-coordinate vector API wrapper consumed by ``VectorPrimitiveEngine``."""
+
+    vector_coordinate_space = "page"
+
+    def __init__(self, page: Any, page_id: int):
+        self.page = page
+        self.page_id = page_id
+
+    def get_drawings(self):
+        return self.page.get_drawings()
+
+    def get_text(self, option="dict"):
+        return self.page.get_text(option)
+
+
+def _open_pymupdf_document(document: Any) -> Any | None:
+    filepath = getattr(document, "filepath", None)
+    if not filepath:
+        return None
+    try:
+        try:
+            import pymupdf
+        except ImportError:  # PyMuPDF before the modern import name.
+            import fitz as pymupdf  # type: ignore[import-not-found,no-redef]
+
+        return pymupdf.open(filepath)
+    except (ImportError, OSError, RuntimeError, ValueError):
+        return None
+
+
 def _source_sort_key(source: Any) -> tuple[int, str]:
     kind = getattr(source, "kind", None) or getattr(source, "source_kind", None)
     rank = {"original": 0, "full_page": 0, "panel": 1, "merged": 2}.get(kind, 3)
@@ -144,6 +175,36 @@ class MermaidCandidateDiscoveryProcessor(BaseProcessor):
                 "mermaid_candidate_images",
                 {fragment_id: discovered.images[fragment_id] for fragment_id in fragment_ids},
             )
+        unanchored_by_page: dict[int, list[Any]] = defaultdict(list)
+        for source in discovered.registry.values():
+            if source.anchor_block_id is None and source.fragments:
+                unanchored_by_page[source.fragments[0].page_id].append(source)
+        for page_index, page in enumerate(document.pages):
+            page_id = getattr(page, "page_id", page_index)
+            sources = sorted(unanchored_by_page.get(page_id, []), key=_source_sort_key)
+            if not sources:
+                continue
+            fragment_ids = {
+                fragment.fragment_id for source in sources for fragment in source.fragments
+            }
+            page.set_internal_metadata(
+                "mermaid_unanchored_candidate",
+                {
+                    "status": "discovered",
+                    "anchor_block_id": None,
+                    "source_ids": [source.source_id for source in sources],
+                    "sources": [source.model_dump(mode="json") for source in sources],
+                    "errors": [
+                        error
+                        for error in discovered.errors
+                        if error.get("source_id") in {source.source_id for source in sources}
+                    ],
+                },
+            )
+            page.set_internal_metadata(
+                "mermaid_unanchored_candidate_images",
+                {fragment_id: discovered.images[fragment_id] for fragment_id in fragment_ids},
+            )
 
 
 class MermaidDiagramProcessor(BaseProcessor):
@@ -177,13 +238,46 @@ class MermaidDiagramProcessor(BaseProcessor):
         )
 
     def __call__(self, document: Document, *args, **kwargs):
+        vector_document = (
+            _open_pymupdf_document(document) if self.mermaid_config.use_vector_primitives else None
+        )
         try:
             blocks = {str(block.id): block for block in iter_marker_candidate_blocks(document)}
-            for block in blocks.values():
-                discovery = block.get_internal_metadata("mermaid_candidate")
+            work_items = [
+                (
+                    block,
+                    "mermaid_candidate",
+                    "mermaid_candidate_images",
+                    "mermaid",
+                    "mermaid_results",
+                    "mermaid_source_images",
+                )
+                for block in blocks.values()
+            ]
+            work_items.extend(
+                (
+                    page,
+                    "mermaid_unanchored_candidate",
+                    "mermaid_unanchored_candidate_images",
+                    "mermaid_unanchored",
+                    "mermaid_unanchored_results",
+                    "mermaid_unanchored_source_images",
+                )
+                for page in document.pages
+                if callable(getattr(page, "get_internal_metadata", None))
+            )
+            for (
+                anchor,
+                discovery_key,
+                candidate_images_key,
+                data_key,
+                results_key,
+                images_key,
+            ) in work_items:
+                discovery = anchor.get_internal_metadata(discovery_key)
                 if not discovery:
                     continue
-                fragment_images = block.get_internal_metadata("mermaid_candidate_images") or {}
+                fragment_images = anchor.get_internal_metadata(candidate_images_key) or {}
                 results: list[ReconstructionResult] = []
                 source_images: dict[str, Any] = {}
                 errors: list[dict[str, str]] = [
@@ -220,6 +314,26 @@ class MermaidDiagramProcessor(BaseProcessor):
                         page_ids = list(
                             dict.fromkeys(fragment.page_id for fragment in source.fragments)
                         )
+                        vector_sources = []
+                        if vector_document is not None:
+                            for page_id in page_ids:
+                                try:
+                                    vector_sources.append(
+                                        _PyMuPDFPageProvider(
+                                            vector_document.load_page(page_id),
+                                            page_id,
+                                        )
+                                    )
+                                except (IndexError, RuntimeError, ValueError) as exc:
+                                    errors.append(
+                                        {
+                                            "source_id": source.source_id,
+                                            "error": (
+                                                "vector page provider failed: "
+                                                f"{type(exc).__name__}: {exc}"
+                                            ),
+                                        }
+                                    )
                         image = assembled.image
                         source_id = source.source_id
                         extension = settings.OUTPUT_IMAGE_FORMAT.lower()
@@ -238,16 +352,20 @@ class MermaidDiagramProcessor(BaseProcessor):
                             },
                             evidence=evidence,
                             ocr_texts=texts,
-                            source_block=(None if source.kind == "page_proposal" else block),
+                            source_block=(None if source.kind == "page_proposal" else anchor),
                             source_blocks=[
                                 blocks[block_id]
                                 for block_id in source_block_ids
                                 if block_id in blocks
                             ],
+                            vector_sources=vector_sources,
                         )
                         results.append(result)
+                        anchor_identifier = getattr(anchor, "id", None)
                         anchor_image_name = (
-                            f"{block.id.to_path()}.{settings.OUTPUT_IMAGE_FORMAT.lower()}"
+                            f"{anchor_identifier.to_path()}.{settings.OUTPUT_IMAGE_FORMAT.lower()}"
+                            if anchor_identifier is not None
+                            else ""
                         )
                         if image_name != anchor_image_name:
                             if image_name in source_images:
@@ -265,8 +383,8 @@ class MermaidDiagramProcessor(BaseProcessor):
                 status = "success" if results and not errors else "partial"
                 if not results:
                     status = "failed"
-                block.set_internal_metadata(
-                    "mermaid",
+                anchor.set_internal_metadata(
+                    data_key,
                     {
                         "anchor_block_id": discovery.get("anchor_block_id"),
                         "status": status,
@@ -274,9 +392,11 @@ class MermaidDiagramProcessor(BaseProcessor):
                         "errors": errors,
                     },
                 )
-                block.set_internal_metadata("mermaid_results", results)
-                block.set_internal_metadata("mermaid_source_images", source_images)
+                anchor.set_internal_metadata(results_key, results)
+                anchor.set_internal_metadata(images_key, source_images)
         finally:
+            if vector_document is not None:
+                vector_document.close()
             self.runtime.close()
 
     @staticmethod
@@ -454,6 +574,36 @@ class MermaidMarkdownRenderer(MarkdownRenderer):
                 fragment = "\n\n" + "\n\n".join(fragments)
                 markdown = markdown[: match.end()] + fragment + markdown[match.end() :]
                 inserted.update(result.source_id for result in pending)
+        for page in document.pages:
+            get_metadata = getattr(page, "get_internal_metadata", None)
+            if not callable(get_metadata):
+                continue
+            data = get_metadata("mermaid_unanchored")
+            if not data:
+                continue
+            raw_results = get_metadata("mermaid_unanchored_results") or []
+            source_images = get_metadata("mermaid_unanchored_source_images") or {}
+            for image_name, image in source_images.items():
+                if image_name in images:
+                    raise ValueError(f"duplicate output image name: {image_name}")
+                images[image_name] = image
+            if data.get("errors"):
+                metadata_rows.append(
+                    {
+                        "anchor_block_id": None,
+                        "status": data.get("status"),
+                        "errors": data["errors"],
+                    }
+                )
+            for result in sorted(
+                (item for item in raw_results if isinstance(item, ReconstructionResult)),
+                key=_source_sort_key,
+            ):
+                if result.source_id in collected:
+                    continue
+                collected.add(result.source_id)
+                reconstructions.append(result)
+                metadata_rows.append(_result_summary(result))
         markdown = re.sub(r"(!\[[^\]]*\]\()(_page_[^)]+)(\))", r"\1images/\2\3", markdown)
         metadata = dict(rendered.metadata)
         metadata["mermaid"] = metadata_rows

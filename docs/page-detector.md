@@ -17,8 +17,8 @@ proposal은 다음 보수적 gate를 통과해야 합니다.
 보존합니다. Marker adapter는 PDF page bbox로 affine 변환한 `page_proposal` SourceFragment를 만들고,
 동일 page에 기존 diagram block이 있으면 가장 가까운 block을 Markdown insertion anchor로만 사용합니다.
 proposal crop의 `source_block_ids`는 비워 두어 anchor block을 시각 evidence로 잘못 귀속하지 않습니다.
-page에 anchor가 전혀 없으면 proposal은 discovery registry에는 남지만 현재 processor/Markdown renderer에는
-전달되지 않습니다. document-level sidecar queue는 후속 범위입니다.
+page에 anchor가 전혀 없으면 proposal은 PageGroup 내부 metadata queue로 전달되어 reconstruction과
+sidecar 원본 저장까지 수행됩니다. 삽입할 Marker image block이 없으므로 자동 Markdown에는 넣지 않습니다.
 
 OpenCV import나 실행이 실패하면 Pillow backend로 전환하고 detector result에 warning을 기록합니다.
 현재 Marker discovery metadata는 이 backend warning을 전달하지 않습니다. detector는 downscale 후

@@ -163,6 +163,33 @@ def test_duck_typed_page_vectors_are_cropped_and_scaled_to_source_image() -> Non
     assert any("bbox fallback" in warning for warning in result.warnings)
 
 
+def test_explicit_pdf_page_provider_takes_precedence_over_marker_block() -> None:
+    class Provider(_Page):
+        vector_coordinate_space = "page"
+        page_id = 3
+
+    context = _context(object(), block_ids=["/page/3/Figure/2"])
+    context.vector_sources = [Provider()]
+    context.source_mapping = {
+        "assembly": {
+            "placements": [
+                {
+                    "page_id": 3,
+                    "source_block_ids": ["/page/3/Figure/2"],
+                    "page_bbox": [100, 200, 300, 300],
+                    "page_to_canvas": [1, 0, -100, 0, 1, -200],
+                }
+            ]
+        }
+    }
+
+    result = VectorPrimitiveEngine().observe(context)
+
+    assert result.scene_ir is not None
+    assert result.scene_ir.elements[0].bbox == (0.0, 0.0, 100.0, 60.0)
+    assert result.scene_ir.elements[0].text == "Node"
+
+
 def test_assembly_page_to_canvas_mapping_overrides_bbox_fallback() -> None:
     class Block(_Block):
         id = "/page/3/Figure/2"

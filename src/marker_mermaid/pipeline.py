@@ -40,6 +40,7 @@ from marker_mermaid.serialization import SerializationContractError, Serializati
 from marker_mermaid.serializers import (
     SerializationError,
     scene_to_flowchart,
+    serialize_runtime_fallback_result,
     serialize_typed_ir_result,
 )
 from marker_mermaid.style_recovery import recover_flowchart_styles
@@ -228,6 +229,7 @@ class ReconstructionPipeline:
         ocr_texts: list[str] | None = None,
         source_block: object | None = None,
         source_blocks: list[object] | None = None,
+        vector_sources: list[object] | None = None,
     ) -> ReconstructionResult:
         failures: list[CandidateFailure] = []
         all_evidence = list(evidence or [])
@@ -249,6 +251,7 @@ class ReconstructionPipeline:
             source_blocks=list(
                 source_blocks or ([source_block] if source_block is not None else [])
             ),
+            vector_sources=list(vector_sources or []),
             source_mapping=source_mapping,
         )
 
@@ -559,6 +562,50 @@ class ReconstructionPipeline:
                         message=str(exc),
                     )
                 )
+            if (
+                draft.method == "typed_ir"
+                and draft.typed_ir is not None
+                and not runtime.render_valid
+                and candidate.emitted_diagram_type == candidate.diagram_type
+            ):
+                try:
+                    fallback = serialize_runtime_fallback_result(
+                        draft.diagram_type,
+                        draft.typed_ir,
+                        experimental=self.config.mode != Mode.STRICT,
+                    )
+                    if fallback is not None:
+                        fallback_outcome = self.validator.validate(
+                            fallback.code,
+                            self.config.render_timeout_seconds,
+                        )
+                        if fallback_outcome.runtime.render_valid:
+                            candidate_code = fallback.code
+                            candidate.mermaid_code = fallback.code
+                            candidate.emitted_diagram_type = fallback.emitted_type
+                            candidate.fallback_chain = list(fallback.fallback_chain)
+                            candidate.serialization_stability = fallback.stability
+                            candidate.warnings.extend(fallback.warnings)
+                            candidate.repair_history.append(
+                                RepairEvent(
+                                    iteration=0,
+                                    operation="runtime_portable_fallback",
+                                    accepted=True,
+                                    details={
+                                        "rejected_type": draft.diagram_type,
+                                        "emitted_type": fallback.emitted_type,
+                                        "stage": "validation",
+                                    },
+                                )
+                            )
+                            runtime = fallback_outcome.runtime
+                            validation_warnings = fallback_outcome.warnings
+                        else:
+                            candidate.warnings.append(
+                                "declared portable fallback also failed parse/render validation"
+                            )
+                except (SerializationError, SerializationContractError) as exc:
+                    candidate.warnings.append(f"runtime fallback unavailable: {exc}")
             candidate.syntax_valid = runtime.syntax_valid
             candidate.render_valid = runtime.render_valid
             candidate.svg = runtime.svg

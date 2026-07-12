@@ -32,6 +32,7 @@ GitGraph는 Mermaid가 자동 commit ID를 만들도록 두지 않으며 merge�
 - Organization과 Data Lineage는 각각 TreeView와 Flowchart fallback으로 hierarchy/endpoint를 보존합니다.
 
 대표 native/fallback fixture는 pinned Mermaid 11.16에서 실제 strict security scan, parse, render, SVG
-inspection을 통과하는 integration test로 고정합니다. Organization/Data Lineage와 runtime rejection 뒤
-portable fallback 재시도는 아직 이 범위에 포함되지 않습니다. experimental native도 validation hard
-gate를 우회하지 않습니다.
+inspection을 통과하는 integration test로 고정합니다. Packet/Ishikawa/TreeView와 Treemap/Venn은 native
+runtime rejection 뒤 같은 candidate slot에서 evidence-preserving portable fallback을 한 번 재검증합니다.
+Organization/Data Lineage의 별도 runtime fixture는 아직 이 범위에 포함되지 않습니다. experimental
+native도 validation hard gate를 우회하지 않습니다.

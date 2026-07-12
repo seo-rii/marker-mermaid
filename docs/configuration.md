@@ -65,8 +65,11 @@ bundle의 최소 감사 기록으로 항상 남습니다.
 edge map, Hough line, detected-arrow overlay, OCR/vector overlay, color cluster, thumbnail, tile,
 GeometryEngine과 duck-typed VectorPrimitiveEngine이 구현되어 있습니다. vector engine은
 `get_drawings()`, `get_text()`, `vector_primitives`, `vector_texts`를 노출하는 provider에서만 추출하며
-없으면 fail-closed empty observation을 반환합니다. page-level detector는 bounded edge/component
-heuristic과 occupied-region exclusion을 사용하며 unanchored proposal은 registry에만 남깁니다.
+Marker processor는 `marker` extra의 PyMuPDF로 실제 PDF page provider를 열어 source page→canvas mapping과
+함께 전달합니다. provider를 열 수 없으면 block duck-typing으로 후퇴한 뒤 fail-closed empty observation을
+반환합니다. page-level detector는 bounded edge/component
+heuristic과 occupied-region exclusion을 사용하며 unanchored proposal은 PageGroup queue를 거쳐 sidecar로
+보존하되 Markdown에는 자동 삽입하지 않습니다.
 자세한 구분은 [스펙 대응표](spec-coverage.md)를 참고하세요.
 
 State/Class/ER/Requirement/Block typed serializer와 C4/Deployment/Component/Use-case fallback은

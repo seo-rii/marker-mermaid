@@ -43,6 +43,9 @@
 - Undo/redo transactionally removes optional artifacts absent from the target revision.
 - Engine observations, typed IR, and per-engine serialization now have explicit resource budgets.
 - Page proposals retain bounded crops instead of one full-page copy per proposal.
+- Unanchored page proposals now flow through PageGroup metadata into sidecar output.
+- Declared portable fallbacks are revalidated after supported native runtime failures.
+- Marker now supplies real PyMuPDF page providers to vector extraction when available.
 - SVG CSS inspection covers `<style>` text and edge styles require fully mapped Mermaid ordering.
 
 ## 0.1.0

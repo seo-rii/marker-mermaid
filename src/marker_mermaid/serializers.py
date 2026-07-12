@@ -513,6 +513,49 @@ def serialize_typed_ir_result(
     )
 
 
+def serialize_runtime_fallback_result(
+    diagram_type: str,
+    ir: dict[str, Any],
+    *,
+    experimental: bool = False,
+) -> SerializationResult | None:
+    """Return a declared portable fallback after native runtime rejection.
+
+    Only serializers that can preserve their typed evidence while changing grammar
+    participate.  Returning ``None`` keeps unsupported native candidates invalid.
+    """
+
+    if diagram_type in {"treemap", "venn"}:
+        from marker_mermaid.serializers_charts_sets import serialize_chart_set
+
+        code, emitted_type, reason = serialize_chart_set(
+            diagram_type,
+            ir,
+            experimental=experimental,
+            native_runtime_valid=False,
+        )
+        if emitted_type == diagram_type:
+            return None
+        return SerializationResult.fallback(
+            diagram_type,
+            emitted_type,
+            code,
+            warnings=(reason or f"CandidateValidator rejected native {diagram_type}.",),
+            stability="experimental",
+        )
+    if diagram_type in {"packet", "ishikawa", "treeview"}:
+        from marker_mermaid.serializers_special import serialize_special
+
+        result = serialize_special(
+            diagram_type,
+            ir,
+            experimental=experimental,
+            native_runtime_valid=False,
+        )
+        return result if result.used_fallback else None
+    return None
+
+
 def serialize_typed_ir(diagram_type: str, ir: dict[str, Any], *, experimental: bool = False) -> str:
     try:
         return serialize_typed_ir_result(

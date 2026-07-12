@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-marker = ["marker-pdf==1.10.2"]
+marker = ["marker-pdf==1.10.2", "PyMuPDF>=1.24,<2"]
 vision = ["numpy>=1.26", "opencv-python-headless>=4.8"]
 dev = [
   "pytest>=8.0",

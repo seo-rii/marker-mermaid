@@ -312,6 +312,84 @@ def test_marker_processors_keep_json_summaries_separate_from_runtime_payloads(fa
 
 
 @pytest.mark.integration
+def test_unanchored_page_proposal_reaches_sidecar_output_without_markdown_anchor(
+    monkeypatch, fake_runtime
+):
+    from marker.renderers.markdown import MarkdownOutput, MarkdownRenderer
+
+    import marker_mermaid.marker_integration as integration
+    from marker_mermaid.discovery import DiscoveredSource, SourceFragment
+    from marker_mermaid.marker_discovery import MarkerDiscoveryResult
+
+    fragment = SourceFragment(
+        fragment_id="page_0_page_diagram_001--fragment",
+        page_id=0,
+        source_block_ids=[],
+        page_bbox=(10, 10, 90, 90),
+        crop_bbox=(0, 0, 80, 80),
+        image_size=(80, 80),
+    )
+    source = DiscoveredSource(
+        source_id="page_0_page_diagram_001",
+        anchor_block_id=None,
+        kind="page_proposal",
+        fragments=[fragment],
+        confidence=0.8,
+    )
+    discovered = MarkerDiscoveryResult(
+        registry={source.source_id: source},
+        images={fragment.fragment_id: Image.new("RGB", (80, 80), "white")},
+    )
+    monkeypatch.setattr(integration, "discover_marker_sources", lambda document, config: discovered)
+
+    class Page:
+        page_id = 0
+        current_children = []
+
+        def __init__(self):
+            self.metadata = {}
+
+        def contained_blocks(self, document, block_types):
+            return []
+
+        def set_internal_metadata(self, key, value):
+            self.metadata[key] = value
+
+        def get_internal_metadata(self, key):
+            return self.metadata.get(key)
+
+    page = Page()
+
+    class Document:
+        pages = [page]
+
+    document = Document()
+    integration.MermaidCandidateDiscoveryProcessor({})(document)
+    assert page.get_internal_metadata("mermaid_unanchored_candidate")["source_ids"] == [
+        source.source_id
+    ]
+
+    integration.MermaidDiagramProcessor(
+        config={},
+        engines=[],
+        runtime=fake_runtime,
+    )(document)
+    [result] = page.get_internal_metadata("mermaid_unanchored_results")
+    assert result.source_id == source.source_id
+    assert result.anchor_block_id is None
+
+    monkeypatch.setattr(
+        MarkdownRenderer,
+        "__call__",
+        lambda self, document: MarkdownOutput(markdown="body", images={}, metadata={}),
+    )
+    rendered = integration.MermaidMarkdownRenderer()(document)
+    assert rendered.markdown == "body"
+    assert rendered.reconstructions == [result]
+    assert result.source_image_name in rendered.images
+
+
+@pytest.mark.integration
 def test_marker_ocr_evidence_uses_exact_block_crop_coordinates():
     from marker_mermaid.discovery import DiscoveredSource, SourceFragment
     from marker_mermaid.marker_integration import MermaidDiagramProcessor

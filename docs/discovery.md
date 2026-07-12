@@ -48,4 +48,5 @@ original이나 다른 source 처리를 중단하지 않습니다.
 full-page image에는 [page-level detector](page-detector.md)를 적용합니다. 기존 diagram block과 겹치지
 않는 edge/component cluster를 `page_proposal`로 만들고, proposal pixel만 crop하여 보관합니다. 같은
 page의 기존 diagram block은 Markdown 삽입 위치로만 사용하며 source evidence로 귀속하지 않습니다.
-anchor가 없는 proposal은 현재 Marker Markdown에 삽입되지 않는 sidecar 연결 한계가 있습니다.
+anchor가 없는 proposal은 PageGroup 내부 metadata queue로 넘겨 reconstruction/sidecar에는 포함하되,
+삽입할 원본 image block이 없으므로 Marker Markdown에는 자동 삽입하지 않습니다.

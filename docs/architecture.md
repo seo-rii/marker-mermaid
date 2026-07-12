@@ -53,6 +53,10 @@ flowchart TB
 `CandidateEngine`, `RepairEngine`, `MermaidRuntime`은 Protocol로 주입됩니다. 테스트와 offline
 재현은 Marker/LLM/Chromium을 각각 fake로 대체할 수 있습니다.
 
+page proposal에 Figure/Picture/ComplexRegion anchor가 없으면 PageGroup 내부 metadata queue가 processor
+사이의 전달 경계가 됩니다. 이 결과와 원본 crop은 sidecar 출력에 포함하지만 자동 Markdown에는
+삽입하지 않습니다.
+
 ## 좌표와 provenance
 
 `DiagramSceneIR.coordinate_space`는 `pixels` 또는 `normalized`입니다. Marker adapter는 fragment page
@@ -71,8 +75,10 @@ engine의 evidence를 다음 engine context와 view에 합칩니다. payload가 
 candidate budget까지만 직렬화합니다. type top-k와 code hash 중복 제거 후
 기본 우선순위는 typed IR, Scene IR fallback, direct Mermaid입니다. 최종 정렬은 hard gate,
 aggregate score, OCR recall, generation priority, candidate ID 순서로 결정적입니다.
+Treemap/Venn/Packet/Ishikawa/TreeView native validation이 실패하면 serializer가 명시한 portable fallback을
+같은 candidate slot에서 한 번 재검증하며, 요청/출력 type과 repair history에 전환을 기록합니다.
 
-Marker 기본 구성에서는 VectorPrimitiveEngine과 GeometryEngine이 먼저 구조 evidence를 만들고
+Marker 기본 구성에서는 PyMuPDF page provider를 연결한 VectorPrimitiveEngine과 GeometryEngine이 먼저 구조 evidence를 만들고
 Structured VLM이 그 evidence와 OCR token을 prompt에서 함께 봅니다. scene node에 읽을 수 있는
 label이 하나도 없으면 문법적으로 렌더 가능해도 `U`로 두어 자동 Markdown 게시를 막습니다.
 
