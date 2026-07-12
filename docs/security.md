@@ -83,6 +83,19 @@ subgraph, 중복·겹침 membership, implicit/duplicate node declaration, group/
 transaction을 거절합니다. group label만 single-line length/escape 검사를 거쳐 quoted subgraph label이
 되며 최종 code는 동일한 strict parse/render/SVG gate를 다시 통과합니다.
 
+`add_edge`는 closed payload에서 source/target ID만 받고 top-level bounded evidence note를 요구합니다.
+relation/evidence ID와 relation type·semantic·arrow·confidence는 서버가 next revision으로 고정하며,
+label/style/polyline 입력은 허용하지 않습니다. 추가 전 기존 IR ordered endpoint multiset과 Mermaid plain
+edge multiset 전체를 1:1 대조하고, non-plain/labeled/chained/bidirectional edge signal은 fail-closed로
+거부합니다. endpoint node도 각각 하나의 quoted rectangle declaration이 있어야 합니다. 생성 evidence는
+`user_edit`, `bbox=None`, note text, current source block IDs로 제한됩니다.
+
+`delete_edge`도 같은 global mapping preflight 뒤 stable relation ID, unique ordered pair, unique plain line을
+모두 확인하고 검증한 line index만 제거합니다. edge ordinal을 다른 style에 잘못 적용하지 않도록 comment와
+quoted node label을 제외한 `linkStyle` token이 어디에 있어도 거부합니다. delete는 evidence를 지우지 않아
+undo가 relation을 같은 provenance에 다시 연결할 수 있습니다. 두 operation 모두 strict render 실패나
+stale optimistic lock에서 code/IR/render/history/provenance/layout 어느 파일도 commit하지 않습니다.
+
 advisory canvas의 endpoint drag도 별도 mutation 권한을 만들지 않습니다. client는 화면 좌표로 유일한
 최근접 node를 선택한 뒤 기존 `reconnect_edge` schema의 relation/source/target ID만 전송합니다. 좌표,
 polyline, bbox, provenance, layout field는 payload에 없으며 server는 current revision의 stable ID와

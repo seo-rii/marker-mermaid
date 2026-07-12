@@ -211,6 +211,182 @@ def test_structured_reconnect_uses_relation_id_and_updates_both_artifacts() -> N
     assert result.history_entry.reason == "source reviewed"
 
 
+def test_structured_add_and_delete_edge_synchronize_code_ir_and_user_evidence() -> None:
+    provenance = [{"id": "ocr-a", "kind": "ocr_token", "bbox": [0, 0, 1, 1]}]
+    added = apply_review_operation(
+        {"operation": "add_edge", "source_id": "API", "target_id": "DB"},
+        ir=scene_ir(),
+        mermaid_code=flowchart(),
+        provenance=provenance,
+        user_relation_id="user-edge-r000001",
+        user_evidence_id="user-edit-r000001-edge",
+        source_block_ids=["block-1"],
+        reason="confirmed connector on source",
+    )
+
+    assert added.applied
+    relation = added.ir["relations"][-1]
+    assert relation["id"] == "user-edge-r000001"
+    assert relation["source_id"] == "API" and relation["target_id"] == "DB"
+    assert relation["evidence_ids"] == ["user-edit-r000001-edge"]
+    assert "    API --> DB\n" in added.mermaid_code
+    assert added.provenance_changed
+    assert added.provenance[-1]["kind"] == "user_edit"
+    assert added.provenance[-1]["text"] == "confirmed connector on source"
+    assert added.history_entry.operation == "add_edge"
+    assert added.history_entry.target == "user-edge-r000001"
+
+    deleted = apply_review_operation(
+        {"operation": "delete_edge", "edge_id": "user-edge-r000001"},
+        ir=added.ir,
+        mermaid_code=added.mermaid_code,
+        provenance=added.provenance,
+        reason="connector removed after review",
+    )
+
+    assert deleted.applied
+    assert [item["id"] for item in deleted.ir["relations"]] == ["E7", "E8"]
+    assert "    API --> DB\n" not in deleted.mermaid_code
+    assert not deleted.provenance_changed
+    assert deleted.provenance == added.provenance
+    assert deleted.history_entry.operation == "delete_edge"
+    assert deleted.history_entry.before["id"] == "user-edge-r000001"
+    assert deleted.history_entry.after == {"deleted": "user-edge-r000001"}
+
+
+def test_structured_edge_add_delete_reject_ambiguous_or_unanchored_mapping() -> None:
+    add_kwargs = {
+        "ir": scene_ir(),
+        "mermaid_code": flowchart(),
+        "user_relation_id": "user-edge-r000001",
+        "user_evidence_id": "user-edit-r000001-edge",
+        "reason": "source reviewed",
+    }
+    duplicate = apply_review_operation(
+        {"operation": "add_edge", "source_id": "DB", "target_id": "API"},
+        **add_kwargs,
+    )
+    self_loop = apply_review_operation(
+        {"operation": "add_edge", "source_id": "API", "target_id": "API"},
+        **add_kwargs,
+    )
+    implicit = apply_review_operation(
+        {"operation": "add_edge", "source_id": "API", "target_id": "DB"},
+        **{**add_kwargs, "mermaid_code": "flowchart LR\n    API --> DB\n"},
+    )
+    missing_reason = apply_review_operation(
+        {"operation": "add_edge", "source_id": "API", "target_id": "DB"},
+        ir=scene_ir(),
+        mermaid_code=flowchart(),
+        user_relation_id="user-edge-r000001",
+        user_evidence_id="user-edit-r000001-edge",
+    )
+    duplicate_delete = apply_review_operation(
+        {"operation": "delete_edge", "edge_id": "E7"},
+        ir=scene_ir(),
+        mermaid_code=flowchart() + "    DB --> API\n",
+    )
+    styled_delete = apply_review_operation(
+        {"operation": "delete_edge", "edge_id": "E7"},
+        ir=scene_ir(),
+        mermaid_code=flowchart() + "    linkStyle 0 stroke:#333\n",
+    )
+    inline_styled_delete = apply_review_operation(
+        {"operation": "delete_edge", "edge_id": "E7"},
+        ir=scene_ir(),
+        mermaid_code=flowchart() + "    classDef x fill:#fff; linkStyle 0 stroke:#333\n",
+    )
+    unsupported_edge = apply_review_operation(
+        {"operation": "add_edge", "source_id": "API", "target_id": "DB"},
+        **{**add_kwargs, "mermaid_code": flowchart().replace("DB --> API", "DB --o API")},
+    )
+    empty_edge_ir = {
+        "elements": [
+            {"id": "A", "bbox": [0, 0, 10, 10]},
+            {"id": "B", "bbox": [20, 0, 30, 10]},
+        ],
+        "relations": [],
+        "groups": [],
+        "canvas_size": [100, 100],
+    }
+    inline_subgraph_edges = [
+        'flowchart LR\n  A["A"]\n  B["B"]\n  subgraph G; A --> B; end\n',
+        'flowchart LR\n  A["A"]\n  B["B"]\n  subgraph G["G"]; A --> B\n',
+        'flowchart LR\n  A["A"]\n  B["B"]\n  subgraph G["G"]; A --> B["inline"]\n',
+    ]
+    hidden_inline_edges = [
+        apply_review_operation(
+            {"operation": "add_edge", "source_id": "A", "target_id": "B"},
+            ir=empty_edge_ir,
+            mermaid_code=code,
+            user_relation_id="user-edge-r000001",
+            user_evidence_id="user-edit-r000001-edge",
+            reason="source reviewed",
+        )
+        for code in inline_subgraph_edges
+    ]
+    oversized_reason = apply_review_operation(
+        {"operation": "add_edge", "source_id": "API", "target_id": "DB"},
+        **{**add_kwargs, "reason": "x" * 4097},
+    )
+    evidence_collision = apply_review_operation(
+        {"operation": "add_edge", "source_id": "API", "target_id": "DB"},
+        **{
+            **add_kwargs,
+            "provenance": [{"id": "user-edit-r000001-edge", "kind": "user_edit"}],
+        },
+    )
+    relation_id_collision = apply_review_operation(
+        {"operation": "add_edge", "source_id": "API", "target_id": "DB"},
+        **{**add_kwargs, "user_relation_id": "E7"},
+    )
+    duplicate_declaration = apply_review_operation(
+        {"operation": "add_edge", "source_id": "API", "target_id": "DB"},
+        **{**add_kwargs, "mermaid_code": flowchart() + '    API["duplicate"]\n'},
+    )
+    invalid_reason_type = apply_review_operation(
+        {"operation": "add_edge", "source_id": "API", "target_id": "DB"},
+        **{**add_kwargs, "reason": 1},
+    )
+    unknown_delete = apply_review_operation(
+        {"operation": "delete_edge", "edge_id": "Missing"},
+        ir=scene_ir(),
+        mermaid_code=flowchart(),
+    )
+    parallel_ir = scene_ir()
+    parallel_ir["relations"].append(
+        {"id": "E9", "source_id": "DB", "target_id": "API"}
+    )
+    parallel_delete = apply_review_operation(
+        {"operation": "delete_edge", "edge_id": "E7"},
+        ir=parallel_ir,
+        mermaid_code=flowchart() + "    DB --> API\n",
+    )
+
+    assert not duplicate.applied and duplicate.error_code == "ambiguous_reference"
+    assert not self_loop.applied and self_loop.error_code == "invalid_edge"
+    assert not implicit.applied and implicit.error_code == "unsupported_artifact"
+    assert not missing_reason.applied and missing_reason.error_code == "missing_reason"
+    assert not duplicate_delete.applied and duplicate_delete.error_code == "unsupported_artifact"
+    assert not styled_delete.applied and styled_delete.error_code == "unsupported_mermaid"
+    assert not inline_styled_delete.applied
+    assert inline_styled_delete.error_code == "unsupported_mermaid"
+    assert not unsupported_edge.applied and unsupported_edge.error_code == "unsupported_mermaid"
+    assert all(not result.applied for result in hidden_inline_edges)
+    assert all(result.error_code == "unsupported_mermaid" for result in hidden_inline_edges)
+    assert [result.mermaid_code for result in hidden_inline_edges] == inline_subgraph_edges
+    assert not oversized_reason.applied and oversized_reason.error_code == "missing_reason"
+    assert not evidence_collision.applied
+    assert evidence_collision.error_code == "ambiguous_reference"
+    assert not relation_id_collision.applied
+    assert relation_id_collision.error_code == "ambiguous_reference"
+    assert not duplicate_declaration.applied
+    assert duplicate_declaration.error_code == "unresolved_reference"
+    assert not invalid_reason_type.applied and invalid_reason_type.error_code == "missing_reason"
+    assert not unknown_delete.applied and unknown_delete.error_code == "unresolved_reference"
+    assert not parallel_delete.applied and parallel_delete.error_code == "ambiguous_reference"
+
+
 def test_structured_group_uses_explicit_ids_and_preserves_provenance() -> None:
     provenance = [{"id": "ocr-a", "kind": "ocr_token", "bbox": [0, 0, 1, 1]}]
     result = apply_review_operation(
@@ -594,6 +770,14 @@ def test_structured_operations_reject_invalid_schema_without_mutation() -> None:
             "label": "Services",
             "unexpected": True,
         },
+        {"operation": "add_edge", "source_id": "User", "target_id": "DB", "label": "x"},
+        {
+            "operation": "add_edge",
+            "source_id": "User",
+            "target_id": "DB",
+            "edge_id": "spoofed",
+        },
+        {"operation": "delete_edge", "edge_id": "E7", "unexpected": True},
         {"operation": "move_node", "node_id": "API"},
         {"operation": "delete_node", "node_id": "unsafe id"},
     ):

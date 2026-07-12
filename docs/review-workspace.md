@@ -60,7 +60,7 @@ audit entry는 디스크에서 삭제하지 않습니다. UI는 restore 전에 �
 
 workspace의 `Validated structure operations`는 자유 형식 JSON 편집보다 작은 동기화 경계를
 제공합니다. 원본 overlay에서 node bbox를 클릭하거나 ID select를 사용해 entity를 선택할 수 있습니다.
-현재 지원 연산은 다음 다섯 가지입니다.
+현재 지원 연산은 다음 일곱 가지입니다.
 
 - `add_node`: safe ID/label, Scene canvas 안의 positive source bbox, evidence note를 요구합니다. 서버가
   revision 기반 `user_edit` evidence ID를 생성하고 node `evidence_ids`, provenance snapshot, quoted
@@ -68,6 +68,14 @@ workspace의 `Validated structure operations`는 자유 형식 JSON 편집보다
   위치가 아니라 원본 overlay와 같은 Scene coordinate입니다.
 - `reconnect_edge`: stable relation ID와 새 source/target node ID를 지정합니다. Scene IR relation과
   독립적인 Mermaid edge line이 정확히 1:1로 대응할 때만 connector를 보존하며 양쪽을 함께 바꿉니다.
+- `add_edge`: 두 explicit node ID와 필수 evidence note만 받습니다. client는 relation/evidence ID, label,
+  type, style, polyline, confidence를 정할 수 없습니다. 서버가 next revision 기반 ID와 bbox 없는
+  `user_edit` evidence를 만들고 `user_edge`/`unknown`, unlabeled, arrow-at-target인 relation 및 plain
+  `source --> target` line을 함께 추가합니다. self-loop, parallel ordered pair, implicit/duplicate endpoint
+  declaration은 거절합니다.
+- `delete_edge`: stable relation ID가 IR에서 유일하고 같은 ordered pair가 하나이며 정확히 하나의 plain
+  Mermaid edge line과 대응할 때 line index와 relation을 함께 제거합니다. evidence는 undo에서 relation을
+  다시 연결할 수 있도록 보존합니다. labeled/chained/non-plain edge와 `linkStyle`이 있는 code는 거절합니다.
 - `delete_node`: quoted rectangle node declaration과 모든 incident relation/edge가 정확히 대응할 때
   node와 edge를 함께 삭제합니다. group/style/class/click/bare membership 같은 추가 참조, parallel edge,
   chained/labeled edge가 있으면 전체 연산을 거절합니다.
@@ -86,6 +94,13 @@ workspace의 `Validated structure operations`는 자유 형식 JSON 편집보다
 요청을 현재 IR에 해석하기 전에 version/digest를 확인하고, 저장 시 lock 안에서 다시 확인합니다. 성공한
 결과는 full Scene schema와 strict Mermaid parse/render를 통과한 뒤에만 하나의 revision으로 저장되며,
 실패하면 IR, code, render, history 중 어느 것도 바뀌지 않습니다.
+
+edge add/delete 전에는 기존 Scene relation의 ordered endpoint multiset과 Mermaid의 지원되는 plain edge
+multiset 전체가 1:1인지 확인합니다. `--o`, `--x`, bidirectional, labeled, chained 등 지원하지 않는 edge
+syntax가 하나라도 있으면 일부만 추측해 편집하지 않습니다. add의 evidence note는 trim 후 1..4096자
+single-line이며 source block mapping과 함께 provenance에 저장됩니다. add를 undo하면 relation, line,
+evidence가 함께 사라지고 redo하면 같은 server ID로 복원됩니다. delete는 provenance와 layout을 바꾸지
+않으며 add/delete 모두 source image, element bbox, group, 기존 relation을 그대로 둡니다.
 
 Group form은 grouped option을 비활성화해 설명하고 선택 수를 live status로 알립니다. 두 node와 비어 있지
 않은 label이 없으면 submit할 수 없습니다. 성공 시 Scene/Code와 audit만 바뀌며 source element bbox,

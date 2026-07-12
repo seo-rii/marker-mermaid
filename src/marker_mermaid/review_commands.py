@@ -27,6 +27,7 @@ MAX_LABEL_LENGTH = 200
 MAX_NODE_IDS = 50
 MAX_MERMAID_LENGTH = 1_000_000
 MAX_IR_JSON_LENGTH = 2_000_000
+MAX_REASON_LENGTH = 4096
 
 _ID = r"[A-Za-z][A-Za-z0-9_-]{0,63}"
 _ID_RE = re.compile(rf"^{_ID}$")
@@ -89,6 +90,8 @@ class ParsedReviewCommand(BaseModel):
         "group_nodes",
         "change_diagram_type",
         "add_node",
+        "add_edge",
+        "delete_edge",
         "delete_node",
         "reconnect_edge",
     ]
@@ -163,8 +166,32 @@ class GroupNodesOperation(BaseModel):
         return value
 
 
+class AddEdgeOperation(BaseModel):
+    """Add one user-confirmed plain directed relation between explicit nodes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation: Literal["add_edge"]
+    source_id: str
+    target_id: str
+
+
+class DeleteEdgeOperation(BaseModel):
+    """Delete one explicit Scene relation and its unique plain Mermaid edge."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation: Literal["delete_edge"]
+    edge_id: str
+
+
 StructuredReviewOperation = Annotated[
-    AddNodeOperation | DeleteNodeOperation | ReconnectEdgeOperation | GroupNodesOperation,
+    AddNodeOperation
+    | DeleteNodeOperation
+    | ReconnectEdgeOperation
+    | GroupNodesOperation
+    | AddEdgeOperation
+    | DeleteEdgeOperation,
     Field(discriminator="operation"),
 ]
 _STRUCTURED_OPERATION_ADAPTER = TypeAdapter(StructuredReviewOperation)
@@ -620,6 +647,79 @@ def _apply_ir(
         nodes.append(node)
         return ir, intent.node_id, {}, node
 
+    if intent.operation == "add_edge":
+        assert intent.edge_id and intent.source_id and intent.target_id and intent.evidence_id
+        if intent.source_id == intent.target_id:
+            raise ReviewCommandError("invalid_edge", "self-loop edge addition is not supported")
+        if intent.source_id not in ids or intent.target_id not in ids:
+            raise ReviewCommandError(
+                "unresolved_reference", "new edge endpoint does not exist in the IR"
+            )
+        relations = _relation_container(ir)
+        relation_ids = [relation.get("id") for relation in relations]
+        if (
+            not all(isinstance(relation_id, str) for relation_id in relation_ids)
+            or intent.edge_id in relation_ids
+            or len(relation_ids) != len(set(relation_ids))
+        ):
+            raise ReviewCommandError(
+                "ambiguous_reference", "new edge id collides with an existing IR relation"
+            )
+        for relation in relations:
+            source_key, target_key = _edge_keys(relation)
+            if (
+                relation.get(source_key) == intent.source_id
+                and relation.get(target_key) == intent.target_id
+            ):
+                raise ReviewCommandError(
+                    "ambiguous_reference", "parallel directed edges are not safely editable"
+                )
+        relation = {
+            "id": intent.edge_id,
+            "source_id": intent.source_id,
+            "target_id": intent.target_id,
+            "relation_type": "user_edge",
+            "semantic_relation": "unknown",
+            "label": None,
+            "polyline": [],
+            "arrow_at_start": False,
+            "arrow_at_end": True,
+            "confidence": 1.0,
+            "evidence_ids": [intent.evidence_id],
+        }
+        relations.append(relation)
+        return ir, intent.edge_id, {}, relation
+
+    if intent.operation == "delete_edge":
+        assert intent.edge_id
+        relations = _relation_container(ir)
+        matches = [relation for relation in relations if relation.get("id") == intent.edge_id]
+        if len(matches) != 1:
+            raise ReviewCommandError(
+                "unresolved_reference", "edge id does not identify exactly one IR relation"
+            )
+        relation = matches[0]
+        source_key, target_key = _edge_keys(relation)
+        source = relation.get(source_key)
+        target = relation.get(target_key)
+        if not isinstance(source, str) or not isinstance(target, str):
+            raise ReviewCommandError("unsupported_ir", "deleted edge endpoints must be explicit")
+        parallel = []
+        for candidate in relations:
+            candidate_source, candidate_target = _edge_keys(candidate)
+            if (
+                candidate.get(candidate_source) == source
+                and candidate.get(candidate_target) == target
+            ):
+                parallel.append(candidate)
+        if len(parallel) != 1:
+            raise ReviewCommandError(
+                "ambiguous_reference", "parallel directed edges cannot be deleted safely"
+            )
+        before = deepcopy(relation)
+        relations.remove(relation)
+        return ir, intent.edge_id, before, {"deleted": intent.edge_id}
+
     if intent.operation == "reconnect_edge":
         assert intent.edge_id and intent.source_id and intent.target_id
         if intent.source_id == intent.target_id:
@@ -797,6 +897,38 @@ _PLAIN_EDGE_RE = re.compile(
 )
 
 
+def _plain_mermaid_edge_counter(code: str) -> Counter[tuple[str, str]]:
+    counter: Counter[tuple[str, str]] = Counter()
+    quoted_declaration = re.compile(
+        rf'^\s*{_ID}\s*\[\s*"(?:[^"\\]|\\.)*"\s*\]\s*$'
+    )
+    edge_signal = re.compile(r"(?:--|==|-\.|~~~|<--|--[ox])")
+    for line in code.splitlines(keepends=True):
+        match = _PLAIN_EDGE_RE.fullmatch(line)
+        if match:
+            counter[(match["src"], match["dst"])] += 1
+            continue
+        raw_line = line.rstrip("\r\n")
+        stripped = raw_line.strip()
+        if (
+            not stripped
+            or stripped.startswith("%%")
+            or stripped.startswith(("accTitle:", "accDescr:"))
+            or re.fullmatch(
+                rf'subgraph\s+{_ID}(?:\s*\[\s*"(?:[^"\\]|\\.)*"\s*\])?',
+                stripped,
+            )
+            or stripped == "end"
+            or quoted_declaration.fullmatch(raw_line)
+        ):
+            continue
+        if edge_signal.search(raw_line):
+            raise ReviewCommandError(
+                "unsupported_mermaid", "non-plain Mermaid edges are not safely editable"
+            )
+    return counter
+
+
 def _apply_mermaid(
     intent: ParsedReviewCommand,
     code: str,
@@ -891,6 +1023,56 @@ def _apply_mermaid(
                 "ambiguous_reference", "Mermaid edge text is not uniquely addressable"
             )
         return code.replace(old_line, replacement, 1)
+
+    if intent.operation == "add_edge":
+        assert intent.source_id and intent.target_id
+        declaration_counts = _quoted_rectangle_declaration_counts(
+            code, {intent.source_id, intent.target_id}
+        )
+        endpoints = (intent.source_id, intent.target_id)
+        if any(declaration_counts[node_id] != 1 for node_id in endpoints):
+            raise ReviewCommandError(
+                "unresolved_reference",
+                "new edge endpoints require one quoted rectangle Mermaid declaration",
+            )
+        return code.rstrip("\n") + f"\n    {intent.source_id} --> {intent.target_id}\n"
+
+    if intent.operation == "delete_edge":
+        if before is None:
+            raise ReviewCommandError(
+                "unsupported_artifact", "edge deletion requires matching Scene IR state"
+            )
+        source = before.get("source_id")
+        target = before.get("target_id")
+        if not isinstance(source, str) or not isinstance(target, str):
+            raise ReviewCommandError(
+                "unsupported_artifact", "edge deletion requires explicit Scene endpoints"
+            )
+        quoted_node = re.compile(
+            rf'^\s*{_ID}\s*\[\s*"(?:[^"\\]|\\.)*"\s*\]\s*$'
+        )
+        unsafe_link_style = any(
+            re.search(r"\blinkStyle\b", line)
+            and not line.lstrip().startswith("%%")
+            and not quoted_node.fullmatch(line)
+            for line in code.splitlines()
+        )
+        if unsafe_link_style:
+            raise ReviewCommandError(
+                "unsupported_mermaid", "indexed link styles prevent safe edge deletion"
+            )
+        lines = code.splitlines(keepends=True)
+        matches: list[int] = []
+        for index, line in enumerate(lines):
+            match = _PLAIN_EDGE_RE.fullmatch(line)
+            if match and match["src"] == source and match["dst"] == target:
+                matches.append(index)
+        if len(matches) != 1:
+            error = "unresolved_reference" if not matches else "ambiguous_reference"
+            raise ReviewCommandError(
+                error, "Scene relation must map to exactly one plain Mermaid edge"
+            )
+        return "".join(line for index, line in enumerate(lines) if index != matches[0])
 
     if intent.operation == "delete_node":
         assert intent.node_id
@@ -1088,6 +1270,7 @@ def apply_review_operation(
     mermaid_code: str | None,
     provenance: list[Mapping[str, Any] | VisualEvidence] | None = None,
     user_evidence_id: str | None = None,
+    user_relation_id: str | None = None,
     source_block_ids: list[str] | None = None,
     reason: str | None = None,
 ) -> ReviewCommandResult:
@@ -1148,6 +1331,23 @@ def apply_review_operation(
                     "unsupported_artifact",
                     "existing grouped nodes require one quoted rectangle declaration",
                 )
+        if parsed.operation in {"add_edge", "delete_edge"}:
+            ir_edges: Counter[tuple[str, str]] = Counter()
+            for relation in _relation_container(original_ir):
+                source_key, target_key = _edge_keys(relation)
+                source = relation.get(source_key)
+                target = relation.get(target_key)
+                if not isinstance(source, str) or not isinstance(target, str):
+                    raise ReviewCommandError(
+                        "unsupported_ir", "editable relations require explicit endpoints"
+                    )
+                ir_edges[(source, target)] += 1
+            mermaid_edges = _plain_mermaid_edge_counter(original_code)
+            if ir_edges != mermaid_edges:
+                raise ReviewCommandError(
+                    "unsupported_artifact",
+                    "Scene relations and plain Mermaid edges do not match one-to-one",
+                )
         payload = parsed.model_dump()
         for key in ("node_id", "edge_id", "source_id", "target_id"):
             value = payload.get(key)
@@ -1157,10 +1357,16 @@ def apply_review_operation(
             payload["node_ids"] = [_validated_id(value) for value in payload["node_ids"]]
         if payload.get("label") is not None:
             payload["label"] = _validated_label(payload["label"])
-        if parsed.operation == "add_node":
-            if not reason or not reason.strip():
+        if parsed.operation in {"add_node", "add_edge"}:
+            if (
+                not isinstance(reason, str)
+                or not reason
+                or not reason.strip()
+                or len(reason) > MAX_REASON_LENGTH
+                or any(ord(character) < 32 for character in reason)
+            ):
                 raise ReviewCommandError(
-                    "missing_reason", "source-anchored node addition requires a reason"
+                    "missing_reason", "user-created nodes and edges require a bounded reason"
                 )
             if (
                 not isinstance(user_evidence_id, str)
@@ -1171,6 +1377,16 @@ def apply_review_operation(
                     "invalid_evidence", "server-created user evidence id is required"
                 )
             payload["evidence_id"] = user_evidence_id
+        if parsed.operation == "add_edge":
+            if (
+                not isinstance(user_relation_id, str)
+                or not user_relation_id
+                or len(user_relation_id) > 256
+            ):
+                raise ReviewCommandError(
+                    "invalid_identifier", "server-created relation id is required"
+                )
+            payload["edge_id"] = _validated_id(user_relation_id)
         intent = ParsedReviewCommand.model_validate(payload)
         patched_ir, target, before, after = _apply_ir(intent, deepcopy(original_ir))
         patched_code = _apply_mermaid(intent, original_code, before=before)
@@ -1178,7 +1394,7 @@ def apply_review_operation(
             before = {}
         patched_provenance = deepcopy(original_provenance)
         provenance_changed = False
-        if intent.operation == "add_node":
+        if intent.operation in {"add_node", "add_edge"}:
             if any(item.get("id") == intent.evidence_id for item in patched_provenance):
                 raise ReviewCommandError(
                     "ambiguous_reference", "user evidence id already exists in provenance"
@@ -1187,8 +1403,8 @@ def apply_review_operation(
                 evidence = VisualEvidence(
                     id=intent.evidence_id,
                     kind="user_edit",
-                    bbox=intent.bbox,
-                    text=intent.label,
+                    bbox=intent.bbox if intent.operation == "add_node" else None,
+                    text=intent.label if intent.operation == "add_node" else reason.strip(),
                     score=1.0,
                     source_block_ids=source_block_ids or [],
                 )

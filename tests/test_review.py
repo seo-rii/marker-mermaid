@@ -112,13 +112,15 @@ def make_bundle(tmp_path, *, source_id="source-a", with_png=False):
 
 
 @contextlib.contextmanager
-def running_server(tmp_path, *, token="test-token"):
-    validator = lambda code: ReviewValidationResult(  # noqa: E731
-        valid="INVALID" not in code,
-        svg=f"<svg viewBox='0 0 1 1'><title>{len(code)}</title></svg>",
-        png=_png_bytes(),
+def running_server(tmp_path, *, token="test-token", validator=None):
+    effective_validator = validator or (
+        lambda code: ReviewValidationResult(
+            valid="INVALID" not in code,
+            svg=f"<svg viewBox='0 0 1 1'><title>{len(code)}</title></svg>",
+            png=_png_bytes(),
+        )
     )
-    store = ReviewStore(tmp_path, validator=validator)
+    store = ReviewStore(tmp_path, validator=effective_validator)
     server = ThreadingHTTPServer(
         ("127.0.0.1", 0),
         partial(ReviewHandler, directory=str(tmp_path), store=store, csrf_token=token),
@@ -737,6 +739,126 @@ def test_structured_group_is_validated_rendered_audited_and_preserves_source_sta
     assert grouped["target"] == "group_A_B"
     assert grouped["after"]["member_ids"] == ["A", "B"]
     assert grouped["reason"] == "confirmed logical boundary"
+
+
+def test_structured_edge_add_delete_revisions_evidence_and_undoes_atomically(tmp_path):
+    diagram_path = make_bundle(tmp_path)
+    (diagram_path / "final.mmd").write_text(
+        'flowchart LR\n  A["A"]\n  B["B"]\n  A --> B\n', encoding="utf-8"
+    )
+    source_before = (tmp_path / "images" / "source.png").read_bytes()
+    with running_server(tmp_path) as (base, store):
+        initial = store.load_bundle("diagram-a")
+        current = store.apply_layout_hint(
+            "diagram-a",
+            node_id="A",
+            x=0.2,
+            y=0.8,
+            expected_version=initial.state.version,
+            expected_digest=initial.state.code_digest,
+        )
+        provenance_before = [item.model_dump(mode="json") for item in current.provenance]
+        add_payload = {
+            **expected(current),
+            "operation": {
+                "operation": "add_edge",
+                "source_id": "B",
+                "target_id": "A",
+            },
+            "reason": "confirmed connector on source",
+        }
+        added, _ = post_json(f"{base}/api/diagrams/diagram-a/operations", add_payload)
+        with pytest.raises(urllib.error.HTTPError) as stale:
+            post_json(f"{base}/api/diagrams/diagram-a/operations", add_payload)
+        current = store.load_bundle("diagram-a")
+        added_relation = next(
+            item for item in added["diagram"]["scene_ir"]["relations"]
+            if item["source_id"] == "B" and item["target_id"] == "A"
+        )
+        deleted, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/operations",
+            {
+                **expected(current),
+                "operation": {
+                    "operation": "delete_edge",
+                    "edge_id": added_relation["id"],
+                },
+                "reason": "connector removed after review",
+            },
+        )
+        current = store.load_bundle("diagram-a")
+        undo_delete, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/history",
+            {**expected(current), "action": "undo"},
+        )
+        current = store.load_bundle("diagram-a")
+        undo_add, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/history",
+            {**expected(current), "action": "undo"},
+        )
+
+    evidence_id = added_relation["evidence_ids"][0]
+    assert added_relation["id"] == "user-edge-r000002"
+    assert evidence_id == "user-edit-r000002-edge"
+    assert "B --> A" in added["diagram"]["mermaid_code"]
+    assert any(item["id"] == evidence_id for item in added["diagram"]["provenance"])
+    assert [item["id"] for item in deleted["diagram"]["scene_ir"]["relations"]] == ["E1"]
+    assert "B --> A" not in deleted["diagram"]["mermaid_code"]
+    assert any(item["id"] == evidence_id for item in deleted["diagram"]["provenance"])
+    assert any(
+        item["id"] == added_relation["id"]
+        for item in undo_delete["diagram"]["scene_ir"]["relations"]
+    )
+    assert undo_add["diagram"]["provenance"] == provenance_before
+    assert [item["id"] for item in undo_add["diagram"]["scene_ir"]["relations"]] == ["E1"]
+    assert undo_add["diagram"]["layout_hints"]["nodes"] == [
+        {"node_id": "A", "x": 0.2, "y": 0.8}
+    ]
+    assert stale.value.code == HTTPStatus.CONFLICT
+    assert (tmp_path / "images" / "source.png").read_bytes() == source_before
+    entries = json.loads((diagram_path / "review-history.json").read_text())
+    assert any(entry["operation"] == "add_edge" for entry in entries)
+    assert any(entry["operation"] == "delete_edge" for entry in entries)
+
+
+def test_structured_edge_add_render_failure_leaves_every_bundle_file_unchanged(tmp_path):
+    diagram_path = make_bundle(tmp_path)
+    (diagram_path / "final.mmd").write_text(
+        'flowchart LR\n  A["A"]\n  B["B"]\n  A --> B\n', encoding="utf-8"
+    )
+    before = {
+        path.relative_to(diagram_path): path.read_bytes()
+        for path in diagram_path.rglob("*")
+        if path.is_file()
+    }
+    validator = lambda code: ReviewValidationResult(  # noqa: E731
+        valid="B --> A" not in code,
+        svg="<svg viewBox='0 0 1 1'/>",
+        error="injected render rejection",
+    )
+    with running_server(tmp_path, validator=validator) as (base, store):
+        current = store.load_bundle("diagram-a")
+        with pytest.raises(urllib.error.HTTPError) as rejected:
+            post_json(
+                f"{base}/api/diagrams/diagram-a/operations",
+                {
+                    **expected(current),
+                    "operation": {
+                        "operation": "add_edge",
+                        "source_id": "B",
+                        "target_id": "A",
+                    },
+                    "reason": "confirmed connector on source",
+                },
+            )
+
+    after = {
+        path.relative_to(diagram_path): path.read_bytes()
+        for path in diagram_path.rglob("*")
+        if path.is_file()
+    }
+    assert rejected.value.code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert after == before
 
 
 def test_structured_edge_operation_is_validated_rendered_and_audited(tmp_path):

@@ -13,6 +13,7 @@ native 또는 loss-disclosed fallback으로 처리합니다. 대화형 workspace
 Review canvas의 node drag는 source bbox를 덮어쓰지 않는 revisioned advisory layout hint로 저장되며,
 edge endpoint drag는 화면상 node 선택만 수행한 뒤 기존의 검증된 reconnect transaction을 재사용합니다.
 명시적 node group도 Scene↔Mermaid membership을 대조한 closed operation으로만 생성합니다.
+edge 추가·삭제 역시 전체 Scene relation↔plain Mermaid edge mapping이 일치할 때만 revision됩니다.
 유형별 추출 schema, 외부 평가 corpus, 일부 review 조작처럼 아직 구현하지 않은 v0.3 범위는
 [스펙 대응표](docs/spec-coverage.md)에 숨김없이 구분했습니다.
 

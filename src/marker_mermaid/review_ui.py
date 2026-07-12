@@ -166,6 +166,17 @@ def build_review_workspace_assets(
             <label for="edge-target">New target</label>
             <select id="edge-target" required></select>
             <button id="reconnect-edge" type="submit">Reconnect</button>
+            <button id="delete-edge" class="reject" type="button">Delete relation</button>
+          </form>
+          <form id="add-edge-form">
+            <h3>Add directed edge</h3>
+            <label for="add-edge-source">Source</label>
+            <select id="add-edge-source" required></select>
+            <label for="add-edge-target">Target</label>
+            <select id="add-edge-target" required></select>
+            <label for="add-edge-reason">Evidence note</label>
+            <input id="add-edge-reason" maxlength="4096" required>
+            <button id="add-edge" type="submit">Add edge</button>
           </form>
           <form id="delete-node-form">
             <h3>Delete node</h3>
@@ -386,7 +397,9 @@ REVIEW_JAVASCRIPT = r"""
     node: byId("node-select"), edge: byId("edge-select"),
     edgeSource: byId("edge-source"), edgeTarget: byId("edge-target"),
     edgeCount: byId("node-edge-count"), reconnect: byId("reconnect-edge"),
-    deleteNode: byId("delete-node"),
+    deleteEdge: byId("delete-edge"), deleteNode: byId("delete-node"),
+    addEdge: byId("add-edge"), addEdgeSource: byId("add-edge-source"),
+    addEdgeTarget: byId("add-edge-target"), addEdgeReason: byId("add-edge-reason"),
     groupNodes: byId("group-nodes"), groupNodeSelect: byId("group-node-select"),
     groupLabel: byId("group-label"), groupStatus: byId("group-selection-status"),
     addNode: byId("add-node"), addNodeId: byId("add-node-id"),
@@ -690,7 +703,9 @@ REVIEW_JAVASCRIPT = r"""
       controls.node, nodes, selectedNode,
       (item) => `${text(item.id)} · ${text(item.text || item.role || "node")}`,
     );
-    for (const select of [controls.edgeSource, controls.edgeTarget]) {
+    for (const select of [
+      controls.edgeSource, controls.edgeTarget, controls.addEdgeSource, controls.addEdgeTarget,
+    ]) {
       const selected = select.value;
       replaceOptions(select, nodes, selected, (item) => text(item.id));
     }
@@ -720,6 +735,9 @@ REVIEW_JAVASCRIPT = r"""
       controls.edgeSource.value = text(selectedRelation.source_id);
       controls.edgeTarget.value = text(selectedRelation.target_id);
     }
+    if (controls.addEdgeSource.value === controls.addEdgeTarget.value && nodes.length > 1) {
+      controls.addEdgeTarget.value = text(nodes[1].id);
+    }
     const incident = relations.filter(
       (item) => controls.node.value
         && [item.source_id, item.target_id].map(text).includes(controls.node.value),
@@ -731,6 +749,12 @@ REVIEW_JAVASCRIPT = r"""
     controls.edge.disabled = state.busy || !relations.length;
     controls.edgeSource.disabled = unavailable; controls.edgeTarget.disabled = unavailable;
     controls.reconnect.disabled = state.busy || !relations.length || !nodes.length;
+    controls.deleteEdge.disabled = state.busy || !relations.length;
+    const edgeAdditionUnavailable = state.busy || nodes.length < 2;
+    controls.addEdgeSource.disabled = edgeAdditionUnavailable;
+    controls.addEdgeTarget.disabled = edgeAdditionUnavailable;
+    controls.addEdgeReason.disabled = edgeAdditionUnavailable;
+    controls.addEdge.disabled = edgeAdditionUnavailable;
     controls.groupNodeSelect.disabled = state.busy || nodes.length < 2;
     controls.groupLabel.disabled = state.busy || nodes.length < 2;
     updateGroupSelectionState();
@@ -1148,6 +1172,28 @@ REVIEW_JAVASCRIPT = r"""
     event.preventDefault();
     await saveEdgeReconnect(
       controls.edge.value, controls.edgeSource.value, controls.edgeTarget.value,
+    );
+  });
+  controls.deleteEdge.addEventListener("click", async () => {
+    const edgeId = controls.edge.value;
+    if (!edgeId || !window.confirm(`Delete relation ${edgeId}?`)) return;
+    await perform(
+      route("/operations"),
+      { operation: { operation: "delete_edge", edge_id: edgeId } },
+      "Edge deleted.",
+    );
+  });
+  byId("add-edge-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const reason = controls.addEdgeReason.value.trim();
+    if (!reason) {
+      showMessage("An evidence note is required to add an edge.", true); return;
+    }
+    await perform(
+      route("/operations"),
+      { operation: { operation: "add_edge", source_id: controls.addEdgeSource.value,
+        target_id: controls.addEdgeTarget.value }, reason },
+      "Edge added.",
     );
   });
   byId("group-nodes-form").addEventListener("submit", async (event) => {

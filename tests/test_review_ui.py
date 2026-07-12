@@ -56,6 +56,12 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
         "edge-select",
         "edge-source",
         "edge-target",
+        "delete-edge",
+        "add-edge-form",
+        "add-edge-source",
+        "add-edge-target",
+        "add-edge-reason",
+        "add-edge",
         "delete-node-form",
         "node-select",
         "add-node-form",
@@ -93,6 +99,8 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert "eval(" not in assets.javascript
     assert "innerHTML" not in assets.javascript
     assert 'operation: "reconnect_edge"' in assets.javascript
+    assert 'operation: "add_edge"' in assets.javascript
+    assert 'operation: "delete_edge"' in assets.javascript
     assert 'operation: "delete_node"' in assets.javascript
     assert 'operation: "add_node"' in assets.javascript
     assert 'operation: "move_node"' in assets.javascript
@@ -108,6 +116,8 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert "updateGroupSelectionState" in assets.javascript
     assert "clearGroupSelection" in assets.javascript
     assert "Source-anchored node added." in assets.javascript
+    assert "An evidence note is required to add an edge." in assets.javascript
+    assert "Delete relation ${edgeId}?" in assets.javascript
     assert "data-node-id" in assets.javascript
     assert 'addEventListener("keydown"' in assets.javascript
     assert "Drag nodes on the advisory" in assets.html

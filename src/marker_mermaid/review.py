@@ -517,11 +517,15 @@ class ReviewHandler(SimpleHTTPRequestHandler):
                 reason=reason,
             )
         user_evidence_id = None
+        user_relation_id = None
         source_block_ids: list[str] | None = None
-        if operation_name == "add_node":
+        if operation_name in {"add_node", "add_edge"}:
             node_id = operation.get("node_id")
-            if isinstance(node_id, str):
+            if operation_name == "add_node" and isinstance(node_id, str):
                 user_evidence_id = f"user-edit-r{current.state.version + 1:06d}-{node_id}"
+            elif operation_name == "add_edge":
+                user_relation_id = f"user-edge-r{current.state.version + 1:06d}"
+                user_evidence_id = f"user-edit-r{current.state.version + 1:06d}-edge"
             raw_block_ids = current.manifest.get("source_block_ids")
             if isinstance(raw_block_ids, list) and all(
                 isinstance(item, str) for item in raw_block_ids
@@ -535,6 +539,7 @@ class ReviewHandler(SimpleHTTPRequestHandler):
             mermaid_code=current.mermaid_code,
             provenance=current.provenance,
             user_evidence_id=user_evidence_id,
+            user_relation_id=user_relation_id,
             source_block_ids=source_block_ids,
             reason=reason,
         )
