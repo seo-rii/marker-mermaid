@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 from pydantic import ValidationError
 
@@ -10,8 +12,10 @@ from marker_mermaid.models import (
     EngineObservation,
     MetricResult,
     SceneElement,
+    SceneGroup,
     SceneRelation,
     TypedIRCandidate,
+    VisualEvidence,
 )
 
 
@@ -30,6 +34,19 @@ def test_original_image_cannot_be_disabled():
         MermaidConfig(extract_images=False)
     with pytest.raises(ValidationError):
         MermaidConfig(include_original_image=False)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"tile_size": 63},
+        {"tile_size": 128, "tile_overlap": -1},
+        {"tile_size": 128, "tile_overlap": 128},
+    ],
+)
+def test_tile_geometry_budget_is_validated(values):
+    with pytest.raises(ValidationError, match="tile_"):
+        MermaidConfig(**values)
 
 
 @pytest.mark.parametrize(
@@ -78,3 +95,50 @@ def test_engine_observation_and_typed_ir_are_resource_bounded():
         cursor = child
     with pytest.raises(ValidationError, match="nesting depth"):
         TypedIRCandidate(diagram_type="mindmap", ir=deeply_nested)
+
+
+def test_typed_candidate_rejects_another_diagram_familys_root_shape():
+    with pytest.raises(ValidationError, match="requires root field 'participants'"):
+        TypedIRCandidate(
+            diagram_type="sequence",
+            ir={"nodes": [{"id": "A"}], "edges": []},
+        )
+    with pytest.raises(ValidationError, match="must be a list"):
+        TypedIRCandidate(
+            diagram_type="flowchart",
+            ir={"nodes": {"A": {"label": "wrong container"}}},
+        )
+
+
+def test_candidate_confidence_is_a_probability():
+    with pytest.raises(ValidationError):
+        TypedIRCandidate(diagram_type="flowchart", ir={"nodes": []}, confidence=1.1)
+
+
+def test_observation_text_and_scene_coordinates_are_json_bounded():
+    with pytest.raises(ValidationError, match="text size limit"):
+        VisualEvidence(id="e", kind="ocr_token", text="x" * 50_001)
+    with pytest.raises(ValidationError, match="finite"):
+        SceneElement(id="A", role="node", bbox=(0, 0, math.nan, 1))
+    with pytest.raises(ValidationError, match="finite"):
+        SceneRelation(
+            id="E",
+            source_id=None,
+            target_id=None,
+            relation_type="edge",
+            polyline=[(0, 0), (math.inf, 1)],
+        )
+    with pytest.raises(ValidationError, match="endpoint"):
+        SceneRelation(id="E", source_id="x" * 257, relation_type="edge")
+    with pytest.raises(ValidationError, match="warning"):
+        EngineObservation(
+            prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1]),
+            warnings=["x" * 4_097],
+        )
+
+
+def test_scene_group_budget_is_independent_from_evidence_reference_budget():
+    members = [f"N{index}" for index in range(257)]
+    group = SceneGroup(id="G", role="group", bbox=(0, 0, 1, 1), member_ids=members)
+
+    assert len(group.member_ids) == 257

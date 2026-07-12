@@ -256,6 +256,10 @@ class MermaidConfig(BaseModel):
             raise ValueError("trusted-local output cannot be published to automatic Markdown")
         if self.review_below_score < self.publish_min_score:
             raise ValueError("review_below_score cannot be below publish_min_score")
+        if self.tile_size < 64:
+            raise ValueError("tile_size must be at least 64 pixels")
+        if self.tile_overlap < 0 or self.tile_overlap >= self.tile_size:
+            raise ValueError("tile_overlap must be non-negative and smaller than tile_size")
         return self
 
     @classmethod

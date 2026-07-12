@@ -14,6 +14,52 @@ from typing import Any
 from marker_mermaid.models import DiagramSceneIR, SceneElement, SceneRelation
 
 
+def _hierarchy_records(
+    root: dict[str, Any], *, fallback_root_id: str = "root"
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    pending = [(root, None, fallback_root_id)]
+    while pending:
+        node, parent_id, fallback_id = pending.pop(0)
+        node_id = str(node.get("id") or fallback_id)
+        nodes.append({**node, "id": node_id})
+        if parent_id is not None:
+            edges.append(
+                {
+                    "source": parent_id,
+                    "target": node_id,
+                    "semantic_relation": "containment",
+                    "evidence_ids": list(node.get("evidence_ids") or []),
+                }
+            )
+        for index, child in enumerate(node.get("children") or [], start=1):
+            if isinstance(child, dict):
+                pending.append((child, node_id, f"{node_id}_{index}"))
+    return nodes, edges
+
+
+def _ordered_records(
+    records: Any, *, prefix: str, label_field: str = "label"
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for index, record in enumerate(records or [], start=1):
+        if not isinstance(record, dict):
+            continue
+        result.append(
+            {
+                **record,
+                "id": record.get("id") or f"{prefix}{index}",
+                "label": record.get(label_field)
+                or record.get("text")
+                or record.get("name")
+                or record.get("time")
+                or record.get("period"),
+            }
+        )
+    return result
+
+
 def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR | None:
     """Convert deterministic typed-IR node and relation fields into a scene."""
 
@@ -69,7 +115,7 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
     elif diagram_type == "sankey":
         node_records = list(ir.get("nodes") or [])
         edge_records = list(ir.get("flows") or ir.get("links") or [])
-    elif diagram_type == "sequence":
+    elif diagram_type in {"sequence", "zenuml"}:
         for index, participant in enumerate(ir.get("participants") or [], start=1):
             if isinstance(participant, str):
                 node_records.append({"id": participant, "label": participant})
@@ -81,17 +127,80 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
                     }
                 )
         edge_records = list(ir.get("messages") or [])
-    elif diagram_type in {"mindmap", "treemap"} and isinstance(ir.get("root"), dict):
-        pending = [(ir["root"], None, "root")]
-        while pending:
-            node, parent_id, fallback_id = pending.pop(0)
-            node_id = str(node.get("id") or fallback_id)
-            node_records.append({**node, "id": node_id})
-            if parent_id is not None:
-                edge_records.append({"source": parent_id, "target": node_id})
-            for index, child in enumerate(node.get("children") or [], start=1):
-                if isinstance(child, dict):
-                    pending.append((child, node_id, f"{node_id}_{index}"))
+    elif diagram_type in {"mindmap", "treemap", "treeview", "organization"} and isinstance(
+        ir.get("root"), dict
+    ):
+        node_records, edge_records = _hierarchy_records(ir["root"])
+    elif diagram_type == "ishikawa" and isinstance(ir.get("effect"), dict):
+        root = {**ir["effect"], "children": list(ir.get("categories") or [])}
+        node_records, edge_records = _hierarchy_records(root, fallback_root_id="effect")
+    elif diagram_type == "timeline":
+        node_records = _ordered_records(ir.get("events"), prefix="event_")
+    elif diagram_type == "journey":
+        for section_index, section in enumerate(ir.get("sections") or [], start=1):
+            if not isinstance(section, dict):
+                continue
+            for task_index, task in enumerate(section.get("tasks") or [], start=1):
+                if isinstance(task, dict):
+                    node_records.append(
+                        {
+                            **task,
+                            "id": task.get("id") or f"section_{section_index}_task_{task_index}",
+                        }
+                    )
+    elif diagram_type == "kanban":
+        columns = _ordered_records(ir.get("columns"), prefix="column_")
+        cards = _ordered_records(ir.get("cards"), prefix="card_")
+        node_records = [*columns, *cards]
+        column_ids = {str(item["id"]) for item in columns}
+        for card in cards:
+            column_id = str(card.get("column_id") or "")
+            if column_id in column_ids:
+                edge_records.append(
+                    {
+                        "source": column_id,
+                        "target": str(card["id"]),
+                        "semantic_relation": "containment",
+                        "evidence_ids": list(card.get("evidence_ids") or []),
+                    }
+                )
+    elif diagram_type == "eventmodeling":
+        node_records = [
+            frame
+            for lane in ir.get("lanes") or []
+            if isinstance(lane, dict)
+            for frame in lane.get("frames") or []
+            if isinstance(frame, dict)
+        ]
+        edge_records = list(ir.get("relations") or [])
+    elif diagram_type == "wardley":
+        node_records = list(ir.get("components") or [])
+        edge_records = list(ir.get("links") or [])
+    elif diagram_type == "data_lineage":
+        node_records = [*(ir.get("datasets") or []), *(ir.get("processes") or [])]
+        edge_records = list(ir.get("relations") or [])
+    elif diagram_type == "venn":
+        node_records = list(ir.get("sets") or [])
+        for index, intersection in enumerate(ir.get("intersections") or [], start=1):
+            if not isinstance(intersection, dict):
+                continue
+            intersection_id = str(intersection.get("id") or f"intersection_{index}")
+            node_records.append(
+                {
+                    **intersection,
+                    "id": intersection_id,
+                    "label": intersection.get("label") or intersection_id,
+                }
+            )
+            for member in intersection.get("sets") or []:
+                edge_records.append(
+                    {
+                        "source": str(member),
+                        "target": intersection_id,
+                        "semantic_relation": "containment",
+                        "evidence_ids": list(intersection.get("evidence_ids") or []),
+                    }
+                )
     else:
         return None
 

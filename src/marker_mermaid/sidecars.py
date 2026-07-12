@@ -30,7 +30,9 @@ def safe_artifact_component(value: str) -> str:
 
 
 def _json_bytes(value: Any) -> bytes:
-    return (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
+    return (
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    ).encode()
 
 
 def _candidate_json(candidate: MermaidCandidate) -> dict[str, Any]:

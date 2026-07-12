@@ -14,9 +14,9 @@
 | composite split | 구현 | proposal, raw-fragment crop, virtual 원본/결과 출력 |
 | fragment/multi-page merge | 구현 | caption/continued proposal, canvas assembly, first-fragment anchor 출력 |
 | Scene IR/provenance | 구현 | Pydantic 무결성, 생성 node attribution, Extended 80% 게시 gate, sidecar |
-| edge/Hough/arrow/OCR view | 구현 | Pillow/OpenCV priors와 보수적 geometry evidence |
+| type-aware visual priors | 구현 | edge/Hough/arrow/OCR/contour/threshold/grayscale, source-resolution tile과 view manifest |
 | color cluster/vector primitive | 구현 | PIL color map, Marker PyMuPDF/duck-typed provider와 page→canvas affine |
-| structured Marker VLM | 구현 | response schema adapter |
+| structured Marker VLM | 구현 | enabled-type root contract prompt/validation과 bounded response schema adapter |
 | Direct Mermaid | 구현 | extended/maximal, 동일 hard gate |
 | Fusion engine | 구현 | source-explicit precedence, spatial match, label/edge/type/provenance consensus |
 | Flowchart | 구현 | typed serializer + real render fixture |
@@ -46,7 +46,7 @@
 ## 릴리스 해석
 
 현재 버전은 Phase 1~5 serializer를 제공하는 experimental engineering baseline이지 MMX-001의 모든
-end-to-end 기능 gate를 달성한 production `extended` 릴리스가 아닙니다. 특히 유형별 extraction schema,
+end-to-end 기능 gate를 달성한 production `extended` 릴리스가 아닙니다. 특히 유형 내부 discriminated extraction schema,
 아직 fallback adapter가 없는 experimental grammar, 연구 데이터셋 규모의
 precision/recall 목표와 유형별 최소 fixture 수량은 별도 평가 corpus가 필요합니다. 자동 게시 hard gate, 원본 보존, candidate failure
 isolation, budget, sidecar/review 가능성은 현재 test 대상으로 삼습니다.

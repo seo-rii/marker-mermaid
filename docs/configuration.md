@@ -66,7 +66,8 @@ Renderer의 `MermaidMarkdownRenderer_include_rendered_preview=true`는 validatio
 
 ## 구현 상태가 있는 옵션
 
-edge map, Hough line, detected-arrow overlay, OCR/vector overlay, color cluster, thumbnail, tile,
+edge map, Hough line, detected-arrow overlay, OCR/vector/contour overlay, grayscale,
+adaptive threshold, color cluster, thumbnail, source-resolution tile,
 GeometryEngine과 duck-typed VectorPrimitiveEngine이 구현되어 있습니다. vector engine은
 `get_drawings()`, `get_text()`, `vector_primitives`, `vector_texts`를 노출하는 provider에서만 추출하며
 Marker processor는 `marker` extra의 PyMuPDF로 실제 PDF page provider를 열어 source page→canvas mapping과
@@ -82,6 +83,10 @@ State/Class/ER/Requirement/Block typed serializer와 C4/Deployment/Component/Use
 Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn도 같은 allowlist와 계약을 사용합니다. 숫자 chart의 자동
 게시에는 OCR 또는 vector numeric evidence와 최소 numeric consistency가 필요합니다. 구조 후보는 생성
 node attribution을 계산할 수 없거나 80% 미만이면 자동 게시하지 않습니다.
+
+`tile_size`는 64 이상이고 `tile_overlap`은 0 이상 `tile_size` 미만이어야 합니다. View slot은 큰
+source의 tile 1~2개를 먼저 예약하고, 앞선 engine의 type top-k에 따라 유형별 priority를 적용합니다.
+빈 OCR/arrow/contour/Hough overlay는 slot을 사용하지 않습니다.
 
 기본 `strict` security profile에서는 `enable_style_recovery=true`여도 style statement를 만들지
 않습니다. 실제 style code를 원하면 `portable-rich`/`style-rich` compatibility와 `style-only` 같은

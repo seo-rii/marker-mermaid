@@ -6,8 +6,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+from marker_mermaid.config import ALL_TYPES
 from marker_mermaid.models import EngineObservation
 from marker_mermaid.protocols import SourceContext
+from marker_mermaid.typed_contracts import typed_ir_contract_prompt
 
 SYSTEM_PROMPT = """You reconstruct diagrams from source images and structural overlays.
 Return only data matching the supplied schema. Do not invent unreadable labels or numbers.
@@ -23,8 +25,9 @@ class MarkerStructuredVLMEngine:
     name = "marker_structured_vlm"
     fusion_source = "vlm"
 
-    def __init__(self, llm_service: Any):
+    def __init__(self, llm_service: Any, *, enabled_types: set[str] | None = None):
         self.llm_service = llm_service
+        self.enabled_types = set(enabled_types) if enabled_types is not None else set(ALL_TYPES)
 
     def observe(self, context: SourceContext) -> EngineObservation:
         if self.llm_service is None:
@@ -32,6 +35,16 @@ class MarkerStructuredVLMEngine:
         prior_evidence = [item.model_dump(mode="json") for item in context.evidence[:256]]
         prompt = (
             SYSTEM_PROMPT
+            + "\n"
+            + typed_ir_contract_prompt(self.enabled_types)
+            + "\nView manifest (images use this exact order): "
+            + json.dumps(
+                [
+                    {"name": name, "width": view.width, "height": view.height}
+                    for name, view in context.views.items()
+                ],
+                ensure_ascii=False,
+            )
             + "\nOCR tokens: "
             + json.dumps(context.ocr_texts, ensure_ascii=False)
             + "\nPrior evidence: "

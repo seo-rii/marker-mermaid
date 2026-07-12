@@ -117,6 +117,59 @@ def test_generated_node_provenance_gate_holds_unattributed_typed_nodes(fake_runt
     assert any("provenance gate" in warning for warning in result.selected.warnings)
 
 
+def test_attributed_timeline_typed_candidate_can_pass_extended_provenance_gate():
+    class TimelineRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="timeline",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    timeline_observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["timeline"], scores=[0.9]),
+        typed_candidates=[
+            TypedIRCandidate(
+                diagram_type="timeline",
+                ir={
+                    "events": [
+                        {
+                            "id": "launch",
+                            "time": "Q1",
+                            "label": "Launch",
+                            "evidence_ids": ["ocr-launch"],
+                        }
+                    ]
+                },
+            )
+        ],
+        evidence=[
+            VisualEvidence(
+                id="ocr-launch",
+                kind="ocr_token",
+                text="Launch",
+                bbox=(0, 0, 20, 10),
+            )
+        ],
+    )
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(timeline_observation)],
+        CandidateValidator(TimelineRuntime(), config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is not None
+    assert result.selected.scores["visual_entailment_precision"] == 1
+    assert result.selected.aggregate_score is not None
+    assert result.publish
+
+
 def test_direct_structural_candidate_without_attribution_requires_review(fake_runtime):
     class DirectOnlyEngine:
         name = "direct-only"

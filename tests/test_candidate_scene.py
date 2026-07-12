@@ -50,6 +50,92 @@ def test_unsupported_or_empty_typed_ir_is_unavailable():
     assert typed_ir_to_scene("flowchart", {"nodes": []}) is None
 
 
+def test_planning_and_event_modeling_scenes_preserve_emitted_elements_and_evidence():
+    timeline = typed_ir_to_scene(
+        "timeline",
+        {"events": [{"id": "launch", "time": "Q1", "label": "Launch", "evidence_ids": ["ocr-1"]}]},
+    )
+    kanban = typed_ir_to_scene(
+        "kanban",
+        {
+            "columns": [{"id": "todo", "label": "Todo", "evidence_ids": ["ocr-2"]}],
+            "cards": [
+                {
+                    "id": "task",
+                    "label": "Ship",
+                    "column_id": "todo",
+                    "evidence_ids": ["ocr-3"],
+                }
+            ],
+        },
+    )
+    event_model = typed_ir_to_scene(
+        "eventmodeling",
+        {
+            "lanes": [
+                {
+                    "frames": [
+                        {"id": "submit", "label": "Submit", "evidence_ids": ["ocr-4"]},
+                        {"id": "placed", "label": "Placed", "evidence_ids": ["ocr-5"]},
+                    ]
+                }
+            ],
+            "relations": [{"source": "submit", "target": "placed", "evidence_ids": ["line-1"]}],
+        },
+    )
+
+    assert timeline is not None and timeline.elements[0].evidence_ids == ["ocr-1"]
+    assert kanban is not None and kanban.relations[0].semantic_relation == "containment"
+    assert event_model is not None and event_model.relations[0].evidence_ids == ["line-1"]
+
+
+def test_hierarchy_lineage_wardley_and_venn_scene_adapters_are_attributable():
+    organization = typed_ir_to_scene(
+        "organization",
+        {
+            "root": {
+                "id": "ceo",
+                "label": "CEO",
+                "evidence_ids": ["ocr-ceo"],
+                "children": [{"id": "cto", "label": "CTO", "evidence_ids": ["ocr-cto"]}],
+            }
+        },
+    )
+    lineage = typed_ir_to_scene(
+        "data_lineage",
+        {
+            "datasets": [{"id": "raw", "evidence_ids": ["ocr-raw"]}],
+            "processes": [{"id": "etl", "evidence_ids": ["ocr-etl"]}],
+            "relations": [{"source": "raw", "target": "etl", "evidence_ids": ["line-etl"]}],
+        },
+    )
+    wardley = typed_ir_to_scene(
+        "wardley",
+        {
+            "components": [
+                {"id": "user", "label": "User", "x": 0.9, "y": 0.7, "evidence_ids": ["ocr-user"]},
+                {"id": "api", "label": "API", "x": 0.5, "y": 0.4, "evidence_ids": ["ocr-api"]},
+            ],
+            "links": [{"source": "user", "target": "api", "evidence_ids": ["line-api"]}],
+        },
+    )
+    venn = typed_ir_to_scene(
+        "venn",
+        {
+            "sets": [
+                {"id": "A", "label": "A", "evidence_ids": ["ocr-a"]},
+                {"id": "B", "label": "B", "evidence_ids": ["ocr-b"]},
+            ],
+            "intersections": [{"sets": ["A", "B"], "label": "Both", "evidence_ids": ["ocr-both"]}],
+        },
+    )
+
+    assert organization is not None and organization.relations[0].target_id == "cto"
+    assert lineage is not None and lineage.relations[0].semantic_relation == "unknown"
+    assert wardley is not None and wardley.relations[0].evidence_ids == ["line-api"]
+    assert venn is not None and len(venn.elements) == 3 and len(venn.relations) == 2
+
+
 def test_phase2_sources_keep_requested_structure_even_when_code_falls_back():
     deployment = typed_ir_to_scene(
         "deployment",

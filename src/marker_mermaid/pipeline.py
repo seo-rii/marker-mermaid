@@ -256,6 +256,7 @@ class ReconstructionPipeline:
         )
 
         successful_observations: list[tuple[str, str, EngineObservation]] = []
+        view_type_hints: list[str] = []
         for engine in self.engines:
             try:
                 observation = engine.observe(context)
@@ -280,18 +281,29 @@ class ReconstructionPipeline:
             )
             if has_payload:
                 successful_observations.append((engine.name, fusion_source, observation))
+            hints_changed = False
+            for diagram_type in observation.prediction.candidates[
+                : self.config.type_candidate_count
+            ]:
+                if (
+                    diagram_type in self.config.enabled_types
+                    and diagram_type not in view_type_hints
+                ):
+                    view_type_hints.append(diagram_type)
+                    hints_changed = True
             evidence_changed = False
             for item in observation.evidence:
                 if item.id not in known_evidence_ids:
                     all_evidence.append(item)
                     known_evidence_ids.add(item.id)
                     evidence_changed = True
-            if evidence_changed:
+            if evidence_changed or hints_changed:
                 try:
                     context.views, new_warnings = build_visual_priors(
                         image,
                         all_evidence,
                         self.config,
+                        diagram_types=view_type_hints,
                     )
                     view_warnings = list(dict.fromkeys([*view_warnings, *new_warnings]))
                 except Exception as exc:

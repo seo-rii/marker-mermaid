@@ -20,6 +20,8 @@ node를 맞추지 않으므로 layout metric이 자신의 가정을 검증하는
 typed IR은 serializer가 실제 방출하는 node/edge 구조로 다시 변환합니다. bbox가 IR에 명시되지 않으면
 layout을 추측하지 않습니다. Scene IR portable fallback은 deterministic serializer 보존 여부를 평가할 수
 있습니다. raw/direct Mermaid는 아직 일반 AST→Scene 변환이 없으므로 구조 점수가 unavailable일 수 있습니다.
+평가 Scene adapter는 sequence/ZenUML, hierarchy/organization, planning/event, Ishikawa, Wardley,
+data-lineage, Venn까지 포함하며 typed record의 evidence ID를 보존합니다.
 
 ## 기존 metric과 결합
 

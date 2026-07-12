@@ -29,14 +29,14 @@ flowchart TB
 
 | 모듈 | 책임 |
 | --- | --- |
-| `models.py` | scene, evidence, prediction, candidate, result 모델과 참조 무결성 |
+| `models.py`, `typed_contracts.py` | bounded scene/evidence/candidate 모델과 유형별 extraction root 계약 |
 | `discovery.py`, `page_detector.py` | panel/full-page/fragment와 missed page region proposal |
 | `marker_discovery.py` | Marker block/current_children adapter, source registry와 dedupe |
 | `source_assembly.py` | panel/merged canvas 조립과 source/page affine mapping |
 | `geometry.py` | contour, Hough line, arrowhead의 보수적 Scene IR/provenance 변환 |
 | `vector.py` | duck-typed PDF vector/text primitive 추출과 canvas affine 변환 |
 | `fusion.py` | vector/geometry/OCR/VLM Scene IR와 후보의 결정적 병합 |
-| `views.py` | thumbnail, edge, Hough, detected-arrow, OCR/vector/color overlay, tile 생성 |
+| `views.py` | type-aware thumbnail/edge/threshold/overlay와 source-resolution tile 생성 |
 | `engines.py` | Marker BaseService adapter와 offline fixture engine |
 | `serializers*.py`, `serialization.py` | software/chart typed IR, requested/emitted type와 fallback 계약 |
 | `ast_repair.py` | 의미를 추가하지 않는 bounded lexical/structural repair와 AST adapter seam |
@@ -81,6 +81,11 @@ Treemap/Venn/Packet/Ishikawa/TreeView native validation이 실패하면 serializ
 Marker 기본 구성에서는 PyMuPDF page provider를 연결한 VectorPrimitiveEngine과 GeometryEngine이 먼저 구조 evidence를 만들고
 Structured VLM이 그 evidence와 OCR token을 prompt에서 함께 봅니다. scene node에 읽을 수 있는
 label이 하나도 없으면 문법적으로 렌더 가능해도 `U`로 두어 자동 Markdown 게시를 막습니다.
+
+Structured VLM prompt는 `enabled_types`에 해당하는 typed root contract와 실제 view 순서/크기를
+포함합니다. 앞선 engine의 top-k type 또는 evidence가 바뀌면 view를 type profile에 맞춰 다시 만들며,
+큰 source의 tile은 축소 전 원본에서 잘라냅니다. 자세한 계약은 [typed extraction](typed-extraction.md)과
+[visual priors](visual-priors.md)를 참고합니다.
 
 ## 점수의 의미
 

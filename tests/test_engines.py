@@ -33,9 +33,17 @@ def test_marker_vlm_prompt_receives_prior_geometry_evidence():
         ocr_texts=["Label"],
     )
 
-    result = MarkerStructuredVLMEngine(service).observe(context)
+    result = MarkerStructuredVLMEngine(
+        service,
+        enabled_types={"flowchart", "architecture"},
+    ).observe(context)
 
     assert result.prediction.candidates == ["flowchart"]
     assert "geometry-contour-001" in captured["prompt"]
     assert "Label" in captured["prompt"]
+    assert "- flowchart: nodes:list" in captured["prompt"]
+    assert "- architecture: services:list" in captured["prompt"]
+    assert "- packet:" not in captured["prompt"]
+    assert '"name": "original"' in captured["prompt"]
+    assert '"width": 20' in captured["prompt"]
     assert captured["image"] == [context.views["original"]]
