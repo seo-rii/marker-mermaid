@@ -45,6 +45,7 @@
 - Off-by-default, bounds-normalized source/render difference blend in the Review Workspace.
 - Optimistically locked active-timeline revision restore with complete artifact rollback and audit.
 - Advisory Review edge endpoint drag with screen-space snapping and validated reconnect reuse.
+- Validated Review node grouping with canonical IDs and exact Scene-to-subgraph membership checks.
 
 ### Changed
 

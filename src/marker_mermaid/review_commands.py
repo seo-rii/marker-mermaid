@@ -9,9 +9,11 @@ artifacts.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
+from collections import Counter
 from collections.abc import Mapping
 from copy import deepcopy
 from typing import Annotated, Any, Literal
@@ -144,8 +146,25 @@ class ReconnectEdgeOperation(BaseModel):
     target_id: str
 
 
+class GroupNodesOperation(BaseModel):
+    """Place explicit Scene nodes in one deterministic Mermaid subgraph."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation: Literal["group_nodes"]
+    node_ids: list[str] = Field(min_length=2, max_length=MAX_NODE_IDS)
+    label: str
+
+    @field_validator("node_ids")
+    @classmethod
+    def node_ids_are_unique(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("group node ids must be unique")
+        return value
+
+
 StructuredReviewOperation = Annotated[
-    AddNodeOperation | DeleteNodeOperation | ReconnectEdgeOperation,
+    AddNodeOperation | DeleteNodeOperation | ReconnectEdgeOperation | GroupNodesOperation,
     Field(discriminator="operation"),
 ]
 _STRUCTURED_OPERATION_ADAPTER = TypeAdapter(StructuredReviewOperation)
@@ -383,6 +402,176 @@ def _edge_keys(edge: Mapping[str, Any]) -> tuple[str, str]:
     raise ReviewCommandError("unsupported_ir", "edge has no recognized endpoint fields")
 
 
+def _group_id(node_ids: list[str]) -> str:
+    readable = "group_" + "_".join(node_ids)
+    if _ID_RE.fullmatch(readable):
+        return readable
+    digest = hashlib.sha256("\0".join(node_ids).encode()).hexdigest()[:20]
+    return f"group_{digest}"
+
+
+def _is_finite_ordered_bbox(value: Any) -> bool:
+    return (
+        isinstance(value, list | tuple)
+        and len(value) == 4
+        and all(
+            not isinstance(item, bool)
+            and isinstance(item, int | float)
+            and math.isfinite(item)
+            for item in value
+        )
+        and value[2] > value[0]
+        and value[3] > value[1]
+    )
+
+
+def _scene_canvas_bounds(ir: Mapping[str, Any]) -> tuple[float, float]:
+    if ir.get("coordinate_space", "pixels") == "normalized":
+        return 1.0, 1.0
+    canvas_size = ir.get("canvas_size")
+    if (
+        not isinstance(canvas_size, list | tuple)
+        or len(canvas_size) != 2
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not math.isfinite(value)
+            or value <= 0
+            for value in canvas_size
+        )
+    ):
+        raise ReviewCommandError(
+            "unsupported_ir", "grouping requires an explicit finite Scene canvas"
+        )
+    return float(canvas_size[0]), float(canvas_size[1])
+
+
+def _validated_scene_groups(
+    ir: Mapping[str, Any], node_ids: set[str]
+) -> dict[str, tuple[str, ...]]:
+    groups = ir.get("groups", [])
+    if not isinstance(groups, list) or not all(isinstance(item, dict) for item in groups):
+        raise ReviewCommandError("unsupported_ir", "IR groups must be a list")
+    result: dict[str, tuple[str, ...]] = {}
+    claimed: set[str] = set()
+    width, height = _scene_canvas_bounds(ir)
+    nodes, _ = _node_container(dict(ir))
+    node_by_id = {node.get("id"): node for node in nodes}
+    for group in groups:
+        group_id = group.get("id")
+        members = group.get("member_ids")
+        if not isinstance(group_id, str) or not _ID_RE.fullmatch(group_id):
+            raise ReviewCommandError("unsupported_ir", "IR group ids must be safe and explicit")
+        if group_id in node_ids:
+            raise ReviewCommandError(
+                "ambiguous_reference", "IR group ids cannot collide with node ids"
+            )
+        if group_id in result:
+            raise ReviewCommandError("ambiguous_reference", "IR group ids must be unique")
+        if (
+            not isinstance(members, list)
+            or not members
+            or not all(isinstance(item, str) and item in node_ids for item in members)
+            or len(members) != len(set(members))
+        ):
+            raise ReviewCommandError(
+                "unsupported_ir", "IR group members must be unique existing node ids"
+            )
+        overlap = claimed.intersection(members)
+        if overlap:
+            raise ReviewCommandError(
+                "ambiguous_reference", "IR nodes cannot belong to multiple groups"
+            )
+        claimed.update(members)
+        boxes = [node_by_id[member].get("bbox") for member in members]
+        if not all(
+            _is_finite_ordered_bbox(box)
+            and box[0] >= 0
+            and box[1] >= 0
+            and box[2] <= width
+            and box[3] <= height
+            for box in boxes
+        ):
+            raise ReviewCommandError(
+                "unsupported_ir", "existing group members require bounded finite bbox evidence"
+            )
+        expected_bbox = [
+            min(box[0] for box in boxes),
+            min(box[1] for box in boxes),
+            max(box[2] for box in boxes),
+            max(box[3] for box in boxes),
+        ]
+        if not _is_finite_ordered_bbox(group.get("bbox")) or list(group["bbox"]) != expected_bbox:
+            raise ReviewCommandError(
+                "unsupported_ir", "existing group bbox must equal its member bbox union"
+            )
+        result[group_id] = tuple(sorted(members))
+    return result
+
+
+def _mermaid_subgraph_memberships(code: str) -> dict[str, tuple[str, ...]]:
+    header = re.compile(rf'^\s*subgraph\s+(?P<id>{_ID})(?:\s*\[.*\])?\s*$')
+    bare_member = re.compile(rf"^\s*(?P<id>{_ID})\s*$")
+    result: dict[str, tuple[str, ...]] = {}
+    active_id: str | None = None
+    members: list[str] = []
+    claimed: set[str] = set()
+    for line in code.splitlines():
+        match = header.fullmatch(line)
+        if match:
+            if active_id is not None:
+                raise ReviewCommandError(
+                    "unsupported_mermaid", "nested Mermaid subgraphs are not safely editable"
+                )
+            active_id = match["id"]
+            members = []
+            continue
+        if line.strip() == "end":
+            if active_id is None:
+                raise ReviewCommandError(
+                    "unsupported_mermaid", "orphan Mermaid subgraph end is not safely editable"
+                )
+            if active_id in result or not members or len(members) != len(set(members)):
+                raise ReviewCommandError(
+                    "ambiguous_reference", "Mermaid subgraph ids and members must be unique"
+                )
+            overlap = claimed.intersection(members)
+            if overlap:
+                raise ReviewCommandError(
+                    "ambiguous_reference", "Mermaid nodes cannot belong to multiple subgraphs"
+                )
+            claimed.update(members)
+            result[active_id] = tuple(sorted(members))
+            active_id = None
+            members = []
+            continue
+        if active_id is not None:
+            member = bare_member.fullmatch(line)
+            if member is None:
+                raise ReviewCommandError(
+                    "unsupported_mermaid",
+                    "existing subgraphs must contain only explicit bare node memberships",
+                )
+            members.append(member["id"])
+    if active_id is not None:
+        raise ReviewCommandError("unsupported_mermaid", "Mermaid subgraph is not closed")
+    return result
+
+
+def _quoted_rectangle_declaration_counts(
+    code: str, node_ids: set[str]
+) -> Counter[str]:
+    declaration = re.compile(
+        rf'^\s*(?P<id>{_ID})\s*\[\s*"(?:[^"\\]|\\.)*"\s*\]\s*$'
+    )
+    counts: Counter[str] = Counter()
+    for line in code.splitlines():
+        match = declaration.fullmatch(line)
+        if match and match["id"] in node_ids:
+            counts[match["id"]] += 1
+    return counts
+
+
 def _apply_ir(
     intent: ParsedReviewCommand, ir: dict[str, Any]
 ) -> tuple[dict[str, Any], str, dict, dict]:
@@ -528,31 +717,38 @@ def _apply_ir(
         return ir, intent.node_id, before, {label_key: intent.label}
 
     if intent.operation == "group_nodes":
-        missing = set(intent.node_ids) - set(ids)
+        selected = set(intent.node_ids)
+        missing = selected - set(ids)
         if missing:
             raise ReviewCommandError(
                 "unresolved_reference", f"group references missing node ids: {sorted(missing)}"
             )
-        group_id = "group_" + "_".join(intent.node_ids)
-        if len(group_id) > 128:
-            raise ReviewCommandError("input_too_large", "generated group id exceeds the safe limit")
-        groups = ir.setdefault("groups", [])
-        if not isinstance(groups, list) or not all(isinstance(item, dict) for item in groups):
-            raise ReviewCommandError("unsupported_ir", "IR groups must be a list")
-        if any(group.get("id") == group_id for group in groups):
+        intent.node_ids = [node_id for node_id in ids if node_id in selected]
+        group_id = _group_id(intent.node_ids)
+        existing_groups = _validated_scene_groups(ir, set(ids))
+        if group_id in set(ids) or group_id in existing_groups:
             raise ReviewCommandError("ambiguous_reference", f"group id already exists: {group_id}")
+        claimed = {member for members in existing_groups.values() for member in members}
+        if selected.intersection(claimed):
+            raise ReviewCommandError(
+                "ambiguous_reference", "a selected node already belongs to an IR group"
+            )
         selected_nodes = [
             node for node in _node_container(ir)[0] if node.get("id") in intent.node_ids
         ]
         boxes = [node.get("bbox") for node in selected_nodes]
-        if len(boxes) != len(intent.node_ids) or any(
-            not isinstance(box, list | tuple)
-            or len(box) != 4
-            or any(not isinstance(value, int | float) for value in box)
-            for box in boxes
+        if len(boxes) != len(intent.node_ids) or not all(
+            _is_finite_ordered_bbox(box) for box in boxes
         ):
             raise ReviewCommandError(
                 "unsupported_ir", "group members require explicit four-number bbox evidence"
+            )
+        width, height = _scene_canvas_bounds(ir)
+        if any(
+            box[0] < 0 or box[1] < 0 or box[2] > width or box[3] > height for box in boxes
+        ):
+            raise ReviewCommandError(
+                "unsupported_ir", "group member bbox must remain inside the Scene canvas"
             )
         group_bbox = [
             min(box[0] for box in boxes),
@@ -567,8 +763,8 @@ def _apply_ir(
             "bbox": group_bbox,
             "member_ids": list(intent.node_ids),
         }
-        groups.append(group)
-        return ir, group_id, {}, group
+        ir.setdefault("groups", []).append(group)
+        return ir, group_id, {"existing_groups": existing_groups}, group
 
     assert intent.operation == "change_diagram_type" and intent.diagram_type
     before_type = ir.get("diagram_type")
@@ -759,10 +955,38 @@ def _apply_mermaid(
         raise ReviewCommandError(
             "unresolved_reference", f"Mermaid group references missing node ids: {sorted(missing)}"
         )
-    group_id = "group_" + "_".join(intent.node_ids)
-    if re.search(rf"(?m)^\s*subgraph\s+{re.escape(group_id)}\b", code):
+    group_id = _group_id(intent.node_ids)
+    scene_groups = before.get("existing_groups") if before is not None else None
+    existing_subgraphs = _mermaid_subgraph_memberships(code)
+    if scene_groups is not None and existing_subgraphs != scene_groups:
+        raise ReviewCommandError(
+            "unsupported_artifact", "Scene groups and Mermaid subgraphs do not match one-to-one"
+        )
+    if scene_groups is not None:
+        existing_members = {
+            member for members in scene_groups.values() for member in members
+        }
+        declaration_counts = _quoted_rectangle_declaration_counts(code, existing_members)
+        if any(declaration_counts[member] != 1 for member in existing_members):
+            raise ReviewCommandError(
+                "unsupported_artifact",
+                "existing grouped nodes require one quoted rectangle declaration",
+            )
+    if re.search(rf"\b{re.escape(group_id)}\b", code):
         raise ReviewCommandError("ambiguous_reference", f"subgraph already exists: {group_id}")
-    label = intent.label or ", ".join(intent.node_ids)
+    claimed = {member for members in existing_subgraphs.values() for member in members}
+    if set(intent.node_ids).intersection(claimed):
+        raise ReviewCommandError(
+            "ambiguous_reference", "a selected node already belongs to a Mermaid subgraph"
+        )
+    declaration_counts = _quoted_rectangle_declaration_counts(code, set(intent.node_ids))
+    for node_id in intent.node_ids:
+        if declaration_counts[node_id] != 1:
+            raise ReviewCommandError(
+                "unresolved_reference",
+                "each grouped node must have one quoted rectangle Mermaid declaration",
+            )
+    label = _validated_label(intent.label or ", ".join(intent.node_ids))
     escaped = label.replace("\\", "\\\\").replace('"', '\\"')
     indent = "    "
     block = [f'{indent}subgraph {group_id}["{escaped}"]']
@@ -821,9 +1045,11 @@ def apply_review_command(
                     before = {"label": None}
                     after = {"label": intent.label}
                 else:
-                    group_id = "group_" + "_".join(intent.node_ids)
+                    group_id = _group_id(intent.node_ids)
                     target = group_id
                     after = {"id": group_id, "member_ids": intent.node_ids}
+        if intent.operation == "group_nodes":
+            before = {}
 
         history = ReviewHistoryEntry(
             operation=intent.operation,
@@ -903,11 +1129,32 @@ def apply_review_operation(
             raise ReviewCommandError(
                 "invalid_operation", "operation payload does not match the supported schema"
             ) from error
+        if parsed.operation == "group_nodes":
+            scene_groups = _validated_scene_groups(original_ir, set(_node_ids(original_ir)))
+            mermaid_groups = _mermaid_subgraph_memberships(original_code)
+            if scene_groups != mermaid_groups:
+                raise ReviewCommandError(
+                    "unsupported_artifact",
+                    "Scene groups and Mermaid subgraphs do not match one-to-one",
+                )
+            existing_members = {
+                member for members in scene_groups.values() for member in members
+            }
+            declaration_counts = _quoted_rectangle_declaration_counts(
+                original_code, existing_members
+            )
+            if any(declaration_counts[member] != 1 for member in existing_members):
+                raise ReviewCommandError(
+                    "unsupported_artifact",
+                    "existing grouped nodes require one quoted rectangle declaration",
+                )
         payload = parsed.model_dump()
         for key in ("node_id", "edge_id", "source_id", "target_id"):
             value = payload.get(key)
             if value is not None:
                 payload[key] = _validated_id(value)
+        if payload.get("node_ids") is not None:
+            payload["node_ids"] = [_validated_id(value) for value in payload["node_ids"]]
         if payload.get("label") is not None:
             payload["label"] = _validated_label(payload["label"])
         if parsed.operation == "add_node":
@@ -927,6 +1174,8 @@ def apply_review_operation(
         intent = ParsedReviewCommand.model_validate(payload)
         patched_ir, target, before, after = _apply_ir(intent, deepcopy(original_ir))
         patched_code = _apply_mermaid(intent, original_code, before=before)
+        if intent.operation == "group_nodes":
+            before = {}
         patched_provenance = deepcopy(original_provenance)
         provenance_changed = False
         if intent.operation == "add_node":

@@ -174,6 +174,18 @@ def build_review_workspace_assets(
             <p id="node-edge-count" class="muted"></p>
             <button id="delete-node" class="reject" type="submit">Delete node and edges</button>
           </form>
+          <form id="group-nodes-form">
+            <h3>Group nodes</h3>
+            <label for="group-node-select">Explicit nodes</label>
+            <select id="group-node-select" multiple size="6" required
+              aria-describedby="group-node-help"></select>
+            <p id="group-node-help" class="muted">Select at least two ungrouped node IDs.</p>
+            <p id="group-selection-status" class="muted" role="status" aria-live="polite"
+              tabindex="-1">0 nodes selected.</p>
+            <label for="group-label">Group label</label>
+            <input id="group-label" maxlength="200" placeholder="Services" required>
+            <button id="group-nodes" type="submit" disabled>Create group</button>
+          </form>
         </div>
       </section>
 
@@ -375,6 +387,8 @@ REVIEW_JAVASCRIPT = r"""
     edgeSource: byId("edge-source"), edgeTarget: byId("edge-target"),
     edgeCount: byId("node-edge-count"), reconnect: byId("reconnect-edge"),
     deleteNode: byId("delete-node"),
+    groupNodes: byId("group-nodes"), groupNodeSelect: byId("group-node-select"),
+    groupLabel: byId("group-label"), groupStatus: byId("group-selection-status"),
     addNode: byId("add-node"), addNodeId: byId("add-node-id"),
     addNodeLabel: byId("add-node-label"), addNodeReason: byId("add-node-reason"),
     canvasSize: byId("canvas-size"),
@@ -418,6 +432,10 @@ REVIEW_JAVASCRIPT = r"""
   function replaceCurrent(payload) {
     const next = normalizeDiagram(payload);
     if (!next || typeof next !== "object") return;
+    const changedRevision = String(next.id) !== String(state.current?.id)
+      || Number(next.version) !== Number(state.current?.version)
+      || text(next.digest) !== text(state.current?.digest);
+    if (changedRevision) clearGroupSelection();
     const index = state.diagrams.findIndex((item) => String(item.id) === String(next.id));
     if (index >= 0) state.diagrams[index] = next;
     state.current = next;
@@ -665,6 +683,9 @@ REVIEW_JAVASCRIPT = r"""
       ? ir.relations.filter((item) => item?.id && item?.source_id && item?.target_id) : [];
     const selectedNode = controls.node.value;
     const selectedEdge = controls.edge.value;
+    const selectedGroupNodes = new Set(
+      [...controls.groupNodeSelect.selectedOptions].map((option) => option.value),
+    );
     replaceOptions(
       controls.node, nodes, selectedNode,
       (item) => `${text(item.id)} · ${text(item.text || item.role || "node")}`,
@@ -672,6 +693,23 @@ REVIEW_JAVASCRIPT = r"""
     for (const select of [controls.edgeSource, controls.edgeTarget]) {
       const selected = select.value;
       replaceOptions(select, nodes, selected, (item) => text(item.id));
+    }
+    replaceOptions(
+      controls.groupNodeSelect, nodes, "",
+      (item) => `${text(item.id)} · ${text(item.text || item.role || "node")}`,
+    );
+    const groupedNodeIds = new Map();
+    for (const group of Array.isArray(ir.groups) ? ir.groups : []) {
+      for (const nodeId of Array.isArray(group?.member_ids) ? group.member_ids : []) {
+        groupedNodeIds.set(text(nodeId), text(group.id || "group"));
+      }
+    }
+    for (const option of controls.groupNodeSelect.options) {
+      option.disabled = groupedNodeIds.has(option.value);
+      if (option.disabled) {
+        option.textContent += ` · already grouped in ${groupedNodeIds.get(option.value)}`;
+      }
+      option.selected = !option.disabled && selectedGroupNodes.has(option.value);
     }
     replaceOptions(
       controls.edge, relations, selectedEdge,
@@ -693,6 +731,9 @@ REVIEW_JAVASCRIPT = r"""
     controls.edge.disabled = state.busy || !relations.length;
     controls.edgeSource.disabled = unavailable; controls.edgeTarget.disabled = unavailable;
     controls.reconnect.disabled = state.busy || !relations.length || !nodes.length;
+    controls.groupNodeSelect.disabled = state.busy || nodes.length < 2;
+    controls.groupLabel.disabled = state.busy || nodes.length < 2;
+    updateGroupSelectionState();
     const canvas = ir.coordinate_space === "normalized"
       ? [1, 1] : (Array.isArray(ir.canvas_size) ? ir.canvas_size.map(Number) : []);
     const sourceAnchoringAvailable = canvas.length === 2 && canvas.every(Number.isFinite);
@@ -808,6 +849,7 @@ REVIEW_JAVASCRIPT = r"""
   async function loadSelectedDiagram() {
     const selected = state.diagrams.find((item) => String(item.id) === controls.diagram.value);
     if (!selected) return;
+    clearGroupSelection();
     state.current = selected; renderCurrent();
     try {
       const id = encodeURIComponent(String(selected.id));
@@ -844,6 +886,19 @@ REVIEW_JAVASCRIPT = r"""
   controls.edge.addEventListener("change", () => {
     renderStructure(state.current || {}); renderLayout(state.current || {});
   });
+  function clearGroupSelection() {
+    for (const option of controls.groupNodeSelect.options) option.selected = false;
+    controls.groupLabel.value = "";
+    updateGroupSelectionState();
+  }
+  function updateGroupSelectionState() {
+    const count = controls.groupNodeSelect.selectedOptions.length;
+    controls.groupStatus.textContent = `${count} node(s) selected.`;
+    controls.groupNodes.disabled = state.busy || count < 2
+      || controls.groupLabel.value.trim().length === 0;
+  }
+  controls.groupNodeSelect.addEventListener("change", updateGroupSelectionState);
+  controls.groupLabel.addEventListener("input", updateGroupSelectionState);
   let layoutDrag = null; let edgeDrag = null;
   function normalizedPointer(event) {
     const bounds = controls.layout.getBoundingClientRect();
@@ -1094,6 +1149,25 @@ REVIEW_JAVASCRIPT = r"""
     await saveEdgeReconnect(
       controls.edge.value, controls.edgeSource.value, controls.edgeTarget.value,
     );
+  });
+  byId("group-nodes-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const nodeIds = [...controls.groupNodeSelect.selectedOptions]
+      .map((option) => option.value);
+    if (nodeIds.length < 2) {
+      showMessage("Select at least two node IDs to create a group.", true); return;
+    }
+    const label = controls.groupLabel.value.trim();
+    if (!label) {
+      showMessage("Enter a group label.", true); return;
+    }
+    await perform(
+      route("/operations"),
+      { operation: { operation: "group_nodes", node_ids: nodeIds,
+        ...(label ? { label } : {}) } },
+      "Nodes grouped.",
+    );
+    controls.groupStatus.focus();
   });
   byId("add-node-form").addEventListener("submit", async (event) => {
     event.preventDefault();

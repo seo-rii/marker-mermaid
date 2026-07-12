@@ -66,6 +66,12 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
         "bbox-x1",
         "bbox-y1",
         "add-node-reason",
+        "group-nodes-form",
+        "group-node-select",
+        "group-node-help",
+        "group-selection-status",
+        "group-label",
+        "group-nodes",
     ):
         assert f'id="{control_id}"' in assets.html
 
@@ -90,6 +96,17 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert 'operation: "delete_node"' in assets.javascript
     assert 'operation: "add_node"' in assets.javascript
     assert 'operation: "move_node"' in assets.javascript
+    assert 'operation: "group_nodes"' in assets.javascript
+    assert "controls.groupNodeSelect.selectedOptions" in assets.javascript
+    assert "Select at least two node IDs to create a group." in assets.javascript
+    assert "Enter a group label." in assets.javascript
+    assert "groupedNodeIds.has(option.value)" in assets.javascript
+    assert "already grouped in ${groupedNodeIds.get(option.value)}" in assets.javascript
+    assert 'role="status" aria-live="polite"' in assets.html
+    assert 'id="group-node-select" multiple size="6" required' in assets.html
+    assert 'id="group-label" maxlength="200" placeholder="Services" required' in assets.html
+    assert "updateGroupSelectionState" in assets.javascript
+    assert "clearGroupSelection" in assets.javascript
     assert "Source-anchored node added." in assets.javascript
     assert "data-node-id" in assets.javascript
     assert 'addEventListener("keydown"' in assets.javascript

@@ -43,7 +43,7 @@
 | Review Workspace | 구현 | source/render/provenance/node 비교, bounds-normalized difference blend, 실패 bundle bootstrap, 대안 선택, 승인/거절, 이력 API |
 | code/IR/provenance revision | 구현 | strict code/Scene/evidence schema, content-addressed provenance, 0.3 lazy migration, rollback/undo/redo와 active timeline restore |
 | NL patch | 구현 | 품질 invalidation, 명시 ID 기반 patch와 구조화 audit history |
-| structured operations | 구현 | exact-ID edge 재연결/node 삭제, screen-space endpoint drag와 select fallback, IR↔Mermaid 1:1 gate, pre-interpretation optimistic lock |
+| structured operations | 구현 | exact-ID edge 재연결/node 삭제/group 생성, screen-space endpoint drag와 accessible form fallback, IR↔Mermaid node/edge/group 1:1 gate, pre-interpretation optimistic lock |
 | source-anchored node add | 구현 | bounded canvas bbox, server-created user_edit evidence, code/IR/provenance transaction |
 | layout drag-and-drop | 구현 | source bbox와 분리된 normalized advisory node move, screen-space edge endpoint snap, pointer/keyboard fallback, content-addressed revision과 undo/redo |
 | release evaluation | 기반 | hash-bound manifest, micro metrics, hard/fixture/22-type/quality gate와 JSON/Markdown report; 대규모 corpus와 격리 runner 후속 |

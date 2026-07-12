@@ -656,7 +656,10 @@ def test_history_api_can_restore_an_active_timeline_revision(tmp_path):
 
 
 def test_group_command_persists_member_bbox_union_through_scene_schema(tmp_path):
-    make_bundle(tmp_path)
+    diagram_path = make_bundle(tmp_path)
+    (diagram_path / "final.mmd").write_text(
+        'flowchart LR\n  A["A"]\n  B["B"]\n  A --> B\n', encoding="utf-8"
+    )
     with running_server(tmp_path) as (base, store):
         current = store.load_bundle("diagram-a")
         grouped, _ = post_json(
@@ -667,6 +670,73 @@ def test_group_command_persists_member_bbox_union_through_scene_schema(tmp_path)
     [group] = grouped["diagram"]["scene_ir"]["groups"]
     assert group["member_ids"] == ["A", "B"]
     assert group["bbox"] == [0.0, 0.0, 30.0, 10.0]
+
+
+def test_structured_group_is_validated_rendered_audited_and_preserves_source_state(tmp_path):
+    diagram_path = make_bundle(tmp_path)
+    (diagram_path / "final.mmd").write_text(
+        'flowchart LR\n  A["A"]\n  B["B"]\n  A --> B\n', encoding="utf-8"
+    )
+    source_before = (tmp_path / "images" / "source.png").read_bytes()
+    with running_server(tmp_path) as (base, store):
+        current = store.load_bundle("diagram-a")
+        provenance_before = [item.model_dump(mode="json") for item in current.provenance]
+        elements_before = current.scene_ir["elements"]
+        relations_before = current.scene_ir["relations"]
+        moved, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/operations",
+            {
+                **expected(current),
+                "operation": {
+                    "operation": "move_node",
+                    "node_id": "A",
+                    "position": [0.2, 0.8],
+                },
+            },
+        )
+        current = store.load_bundle("diagram-a")
+        payload = {
+            **expected(current),
+            "operation": {
+                "operation": "group_nodes",
+                "node_ids": ["A", "B"],
+                "label": "Pair",
+            },
+            "reason": "confirmed logical boundary",
+        }
+        result, _ = post_json(f"{base}/api/diagrams/diagram-a/operations", payload)
+        with pytest.raises(urllib.error.HTTPError) as stale:
+            post_json(f"{base}/api/diagrams/diagram-a/operations", payload)
+        current = store.load_bundle("diagram-a")
+        undone, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/history",
+            {**expected(current), "action": "undo"},
+        )
+        current = store.load_bundle("diagram-a")
+        redone, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/history",
+            {**expected(current), "action": "redo"},
+        )
+
+    diagram = result["diagram"]
+    assert diagram["scene_ir"]["groups"][0]["member_ids"] == ["A", "B"]
+    assert diagram["scene_ir"]["groups"][0]["bbox"] == [0.0, 0.0, 30.0, 10.0]
+    assert diagram["scene_ir"]["elements"] == elements_before
+    assert diagram["scene_ir"]["relations"] == relations_before
+    assert 'subgraph group_A_B["Pair"]' in diagram["mermaid_code"]
+    assert diagram["provenance"] == provenance_before
+    assert diagram["layout_hints"] == moved["diagram"]["layout_hints"]
+    assert (tmp_path / "images" / "source.png").read_bytes() == source_before
+    assert stale.value.code == HTTPStatus.CONFLICT
+    assert undone["diagram"]["scene_ir"]["groups"] == []
+    assert 'subgraph group_A_B["Pair"]' not in undone["diagram"]["mermaid_code"]
+    assert redone["diagram"]["scene_ir"]["groups"][0]["member_ids"] == ["A", "B"]
+    assert redone["diagram"]["layout_hints"] == moved["diagram"]["layout_hints"]
+    entries = json.loads((diagram_path / "review-history.json").read_text())
+    grouped = next(entry for entry in entries if entry["operation"] == "group_nodes")
+    assert grouped["target"] == "group_A_B"
+    assert grouped["after"]["member_ids"] == ["A", "B"]
+    assert grouped["reason"] == "confirmed logical boundary"
 
 
 def test_structured_edge_operation_is_validated_rendered_and_audited(tmp_path):

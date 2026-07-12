@@ -60,7 +60,7 @@ audit entry는 디스크에서 삭제하지 않습니다. UI는 restore 전에 �
 
 workspace의 `Validated structure operations`는 자유 형식 JSON 편집보다 작은 동기화 경계를
 제공합니다. 원본 overlay에서 node bbox를 클릭하거나 ID select를 사용해 entity를 선택할 수 있습니다.
-현재 지원 연산은 다음 네 가지입니다.
+현재 지원 연산은 다음 다섯 가지입니다.
 
 - `add_node`: safe ID/label, Scene canvas 안의 positive source bbox, evidence note를 요구합니다. 서버가
   revision 기반 `user_edit` evidence ID를 생성하고 node `evidence_ids`, provenance snapshot, quoted
@@ -74,11 +74,23 @@ workspace의 `Validated structure operations`는 자유 형식 JSON 편집보다
 - `move_node`: 현재 Scene에 존재하는 stable node ID와 normalized center `[x, y]`를 받습니다. source
   `bbox`, Mermaid code, provenance는 바꾸지 않고 `layout-hints.json`만 revision합니다. 같은 code digest인
   layout-only revision도 version이 증가하므로 stale drag는 `409`로 거절됩니다.
+- `group_nodes`: native multi-select에서 고른 두 개 이상의 ungrouped stable node ID와 필수 label을
+  받습니다. 순서는 client 입력이 아니라 Scene element 순서로 canonicalize하고, 짧으면 읽을 수 있는
+  `group_<members>`, 길면 같은 member 집합에 대해 결정적인 hash ID를 서버가 만듭니다. 각 member는
+  정확히 하나의 quoted rectangle Mermaid declaration과 finite·ordered·in-canvas Scene bbox가 있어야
+  합니다. 기존 Scene group과 bounded flat Mermaid subgraph가 ID/member 기준 1:1이고 모든 membership이
+  disjoint일 때만 bbox union과 bare membership subgraph를 함께 추가합니다. nested/unbalanced subgraph,
+  implicit/duplicate declaration, 기존 membership, client group ID, extra field는 거절합니다.
 
 구조 연산 payload는 operation별 필수 field를 갖는 closed schema이며 알 수 없는 field도 거부합니다.
 요청을 현재 IR에 해석하기 전에 version/digest를 확인하고, 저장 시 lock 안에서 다시 확인합니다. 성공한
 결과는 full Scene schema와 strict Mermaid parse/render를 통과한 뒤에만 하나의 revision으로 저장되며,
 실패하면 IR, code, render, history 중 어느 것도 바뀌지 않습니다.
+
+Group form은 grouped option을 비활성화해 설명하고 선택 수를 live status로 알립니다. 두 node와 비어 있지
+않은 label이 없으면 submit할 수 없습니다. 성공 시 Scene/Code와 audit만 바뀌며 source element bbox,
+relation, provenance, source image, advisory layout hint는 그대로 유지됩니다. Mermaid subgraph는 renderer의
+자동 배치를 바꿀 수 있지만, 이는 source geometry나 정확한 coordinate 편집을 뜻하지 않습니다.
 
 오른쪽 advisory canvas는 stable ID로 만든 deterministic grid에서 시작하고 저장된 partial hint만
 덮어씁니다. source bbox를 초기 배치로 재사용하지 않습니다. Pointer move는 browser preview만 갱신하고

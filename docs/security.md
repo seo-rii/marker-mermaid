@@ -75,6 +75,14 @@ ID와 finite/non-boolean `0..1` center만 허용하며 bbox/style/URL/evidence f
 않습니다. source bbox를 Mermaid layout 좌표로 재사용하는 이동과 provenance 없는 자유 배치 추가는
 제공하지 않습니다.
 
+`group_nodes`는 client가 group ID, bbox, provenance, layout 또는 Mermaid fragment를 정하지 못하게
+합니다. 서버가 Scene 순서의 unique safe node ID로 deterministic group ID와 exact bbox union을 만들며,
+member bbox의 finite/non-boolean/order/canvas bounds를 확인합니다. 기존 Scene group과 bounded flat
+Mermaid subgraph membership은 operation 전에 ID/member 기준 1:1이어야 합니다. nested/unbalanced
+subgraph, 중복·겹침 membership, implicit/duplicate node declaration, group/node ID collision은 전체
+transaction을 거절합니다. group label만 single-line length/escape 검사를 거쳐 quoted subgraph label이
+되며 최종 code는 동일한 strict parse/render/SVG gate를 다시 통과합니다.
+
 advisory canvas의 endpoint drag도 별도 mutation 권한을 만들지 않습니다. client는 화면 좌표로 유일한
 최근접 node를 선택한 뒤 기존 `reconnect_edge` schema의 relation/source/target ID만 전송합니다. 좌표,
 polyline, bbox, provenance, layout field는 payload에 없으며 server는 current revision의 stable ID와

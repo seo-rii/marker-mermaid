@@ -211,6 +211,287 @@ def test_structured_reconnect_uses_relation_id_and_updates_both_artifacts() -> N
     assert result.history_entry.reason == "source reviewed"
 
 
+def test_structured_group_uses_explicit_ids_and_preserves_provenance() -> None:
+    provenance = [{"id": "ocr-a", "kind": "ocr_token", "bbox": [0, 0, 1, 1]}]
+    result = apply_review_operation(
+        {
+            "operation": "group_nodes",
+            "node_ids": ["API", "User"],
+            "label": "Services",
+        },
+        ir=scene_ir(),
+        mermaid_code=flowchart(),
+        provenance=provenance,
+        reason="confirmed logical boundary",
+    )
+
+    assert result.applied
+    assert result.ir["groups"] == [
+        {
+            "id": "group_User_API",
+            "role": "subgraph",
+            "label": "Services",
+            "bbox": [0, 0, 30, 10],
+            "member_ids": ["User", "API"],
+        }
+    ]
+    assert 'subgraph group_User_API["Services"]' in result.mermaid_code
+    assert "        User\n" in result.mermaid_code
+    assert "        API\n" in result.mermaid_code
+    assert [item["id"] for item in result.provenance] == ["ocr-a"]
+    assert provenance == [{"id": "ocr-a", "kind": "ocr_token", "bbox": [0, 0, 1, 1]}]
+    assert not result.provenance_changed
+    assert result.history_entry.operation == "group_nodes"
+    assert result.history_entry.target == "group_User_API"
+    assert result.history_entry.reason == "confirmed logical boundary"
+    duplicate_set = apply_review_operation(
+        {
+            "operation": "group_nodes",
+            "node_ids": ["User", "API"],
+            "label": "Duplicate",
+        },
+        ir=result.ir,
+        mermaid_code=result.mermaid_code,
+    )
+    assert not duplicate_set.applied
+    assert duplicate_set.error_code == "ambiguous_reference"
+
+
+def test_structured_group_rejects_ambiguous_membership_and_invalid_schema() -> None:
+    grouped_ir = scene_ir()
+    grouped_ir["groups"] = [
+        {
+            "id": "Existing",
+            "role": "subgraph",
+            "bbox": [0, 0, 10, 10],
+            "member_ids": ["User"],
+        }
+    ]
+    cases = (
+        (
+            {
+                "operation": "group_nodes",
+                "node_ids": ["User", "API"],
+                "label": "Services",
+            },
+            grouped_ir,
+            flowchart(),
+            "unsupported_artifact",
+        ),
+        (
+            {
+                "operation": "group_nodes",
+                "node_ids": ["User", "API"],
+                "label": "Services",
+            },
+            scene_ir(),
+            flowchart() + "    subgraph Existing\n        User\n    end\n",
+            "unsupported_artifact",
+        ),
+        (
+            {"operation": "group_nodes", "node_ids": ["User"], "label": "Services"},
+            scene_ir(),
+            flowchart(),
+            "invalid_operation",
+        ),
+        (
+            {
+                "operation": "group_nodes",
+                "node_ids": ["User", "User"],
+                "label": "Services",
+            },
+            scene_ir(),
+            flowchart(),
+            "invalid_operation",
+        ),
+        (
+            {
+                "operation": "group_nodes",
+                "node_ids": ["User", "unsafe id"],
+                "label": "Services",
+            },
+            scene_ir(),
+            flowchart(),
+            "invalid_identifier",
+        ),
+        (
+            {"operation": "group_nodes", "node_ids": ["User", "API"]},
+            scene_ir(),
+            flowchart(),
+            "invalid_operation",
+        ),
+        (
+            {"operation": "group_nodes", "node_ids": ["User", "API"], "label": ""},
+            scene_ir(),
+            flowchart(),
+            "invalid_label",
+        ),
+        (
+            {
+                "operation": "group_nodes",
+                "node_ids": ["User", "API"],
+                "label": "x" * 201,
+            },
+            scene_ir(),
+            flowchart(),
+            "invalid_label",
+        ),
+        (
+            {
+                "operation": "group_nodes",
+                "node_ids": [f"N{index}" for index in range(51)],
+                "label": "Oversized",
+            },
+            scene_ir(),
+            flowchart(),
+            "invalid_operation",
+        ),
+    )
+    for operation, ir, code, error_code in cases:
+        result = apply_review_operation(operation, ir=ir, mermaid_code=code)
+        assert not result.applied
+        assert result.error_code == error_code
+        assert result.ir == ir
+        assert result.mermaid_code == code
+
+
+def test_structured_group_requires_exact_existing_subgraph_mapping_and_node_declarations() -> None:
+    grouped_ir = scene_ir()
+    grouped_ir["groups"] = [
+        {
+            "id": "Existing",
+            "role": "subgraph",
+            "bbox": [0, 0, 10, 10],
+            "member_ids": ["User"],
+        }
+    ]
+    matching_code = flowchart() + '    subgraph Existing["Existing"]\n        User\n    end\n'
+    added = apply_review_operation(
+        {"operation": "group_nodes", "node_ids": ["DB", "API"], "label": "Data"},
+        ir=grouped_ir,
+        mermaid_code=matching_code,
+    )
+    mismatched = apply_review_operation(
+        {"operation": "group_nodes", "node_ids": ["DB", "API"], "label": "Data"},
+        ir=grouped_ir,
+        mermaid_code=flowchart(),
+    )
+    duplicate_declaration = apply_review_operation(
+        {"operation": "group_nodes", "node_ids": ["User", "API"], "label": "Services"},
+        ir=scene_ir(),
+        mermaid_code=flowchart() + '    API["duplicate"]\n',
+    )
+    implicit_declaration = apply_review_operation(
+        {"operation": "group_nodes", "node_ids": ["User", "API"], "label": "Services"},
+        ir=scene_ir(),
+        mermaid_code="flowchart LR\n    User --> API\n",
+    )
+    existing_duplicate_declaration = apply_review_operation(
+        {"operation": "group_nodes", "node_ids": ["DB", "API"], "label": "Data"},
+        ir=grouped_ir,
+        mermaid_code=matching_code + '    User["duplicate"]\n',
+    )
+    natural_existing_duplicate = apply_review_command(
+        "group nodes API, DB as Data",
+        ir=grouped_ir,
+        mermaid_code=matching_code + '    User["duplicate"]\n',
+    )
+    colliding_group_ir = scene_ir()
+    colliding_group_ir["groups"] = [
+        {
+            "id": "User",
+            "role": "subgraph",
+            "bbox": [0, 0, 10, 10],
+            "member_ids": ["User"],
+        }
+    ]
+    group_node_collision = apply_review_operation(
+        {"operation": "group_nodes", "node_ids": ["DB", "API"], "label": "Data"},
+        ir=colliding_group_ir,
+        mermaid_code=flowchart() + '    subgraph User["Existing"]\n        User\n    end\n',
+    )
+
+    assert added.applied
+    assert [group["id"] for group in added.ir["groups"]] == ["Existing", "group_API_DB"]
+    assert 'subgraph group_API_DB["Data"]' in added.mermaid_code
+    assert not mismatched.applied
+    assert mismatched.error_code == "unsupported_artifact"
+    assert not duplicate_declaration.applied
+    assert duplicate_declaration.error_code == "unresolved_reference"
+    assert not implicit_declaration.applied
+    assert implicit_declaration.error_code == "unresolved_reference"
+    assert not existing_duplicate_declaration.applied
+    assert existing_duplicate_declaration.error_code == "unsupported_artifact"
+    assert not natural_existing_duplicate.applied
+    assert natural_existing_duplicate.error_code == "unsupported_artifact"
+    assert not group_node_collision.applied
+    assert group_node_collision.error_code == "ambiguous_reference"
+
+
+def test_structured_group_rejects_invalid_or_out_of_canvas_member_bbox() -> None:
+    for bbox in (
+        [False, 0, 10, 10],
+        [0, 0, float("nan"), 10],
+        [10, 0, 5, 10],
+        [0, 0, 101, 10],
+    ):
+        ir = scene_ir()
+        ir["elements"][0]["bbox"] = bbox
+        result = apply_review_operation(
+            {
+                "operation": "group_nodes",
+                "node_ids": ["User", "API"],
+                "label": "Services",
+            },
+            ir=ir,
+            mermaid_code=flowchart(),
+        )
+        assert not result.applied
+        assert result.error_code in {"unsupported_ir", "invalid_operation"}
+
+
+def test_structured_group_hashes_long_canonical_member_ids_deterministically() -> None:
+    first_id = "Node" + "A" * 40
+    second_id = "Node" + "B" * 40
+    ir = {
+        "elements": [
+            {"id": first_id, "bbox": [0, 0, 10, 10]},
+            {"id": second_id, "bbox": [20, 0, 30, 10]},
+        ],
+        "relations": [],
+        "groups": [],
+        "canvas_size": [100, 100],
+    }
+    code = (
+        "flowchart LR\n"
+        f'    {first_id}["First"]\n'
+        f'    {second_id}["Second"]\n'
+    )
+    forward = apply_review_operation(
+        {
+            "operation": "group_nodes",
+            "node_ids": [first_id, second_id],
+            "label": "Long IDs",
+        },
+        ir=ir,
+        mermaid_code=code,
+    )
+    reversed_input = apply_review_operation(
+        {
+            "operation": "group_nodes",
+            "node_ids": [second_id, first_id],
+            "label": "Long IDs",
+        },
+        ir=ir,
+        mermaid_code=code,
+    )
+
+    assert forward.applied and reversed_input.applied
+    group_id = forward.ir["groups"][0]["id"]
+    assert group_id == reversed_input.ir["groups"][0]["id"]
+    assert group_id.startswith("group_") and len(group_id) == 26
+
+
 def test_source_anchored_add_creates_node_code_and_user_evidence_transactionally() -> None:
     result = apply_review_operation(
         {
@@ -307,6 +588,12 @@ def test_structured_operations_reject_invalid_schema_without_mutation() -> None:
     for operation in (
         {"operation": "reconnect_edge", "edge_id": "E7", "source_id": "User"},
         {"operation": "delete_node", "node_id": "API", "unexpected": True},
+        {
+            "operation": "group_nodes",
+            "node_ids": ["User", "API"],
+            "label": "Services",
+            "unexpected": True,
+        },
         {"operation": "move_node", "node_id": "API"},
         {"operation": "delete_node", "node_id": "unsafe id"},
     ):
