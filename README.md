@@ -78,6 +78,17 @@ marker-mermaid validate diagram.mmd
 marker-mermaid review output/document
 ```
 
+고정된 MMX-001 corpus manifest를 집계하고 release gate 보고서를 만들 수 있습니다. Manifest와
+모든 source/ground-truth/prediction artifact는 SHA-256으로 고정됩니다.
+
+```bash
+marker-mermaid evaluate corpus/manifest.json --output output/evaluation
+```
+
+종료 코드는 trusted-runner 입력의 전체 gate 통과 `0`, gate 실패 또는 필수 근거 부재 `1`,
+잘못된 manifest/artifact `2`, 보고서 I/O 실패 `3`입니다. Corpus runner와 manifest 계약은
+[Release evaluation](docs/evaluation.md)을 참고하세요.
+
 수정 Mermaid는 strict security scan과 실제 parse/render를 다시 통과해야 저장됩니다. Scene IR,
 SVG/PNG, 이력, immutable revision도 같은 commit으로 갱신됩니다. 자세한 사용법과 지원되는
 자연어 명령은 [Review Workspace](docs/review-workspace.md)를 참고하세요.
@@ -119,6 +130,7 @@ output/document/
 - [Page-level missed diagram detector](docs/page-detector.md)
 - [Vector extraction과 fusion](docs/vector-fusion.md)
 - [품질 평가와 점수 availability](docs/quality.md)
+- [Release corpus와 MMX-001 gate](docs/evaluation.md)
 - [접근성 title/description 생성](docs/accessibility.md)
 - [Typed serializer와 fallback 계약](docs/serialization.md)
 - [Typed extraction 계약과 평가 Scene](docs/typed-extraction.md)

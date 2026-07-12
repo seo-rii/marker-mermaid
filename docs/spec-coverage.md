@@ -46,11 +46,13 @@
 | structured operations | 구현 | exact-ID edge 재연결/node 삭제, IR↔Mermaid 1:1 gate, pre-interpretation optimistic lock |
 | source-anchored node add | 구현 | bounded canvas bbox, server-created user_edit evidence, code/IR/provenance transaction |
 | layout drag-and-drop | 후속 | source bbox와 별도인 revisioned layout hint/canvas 도입 필요 |
+| release evaluation | 기반 | hash-bound manifest, micro metrics, hard/fixture/22-type/quality gate와 JSON/Markdown report; 대규모 corpus와 격리 runner 후속 |
 
 ## 릴리스 해석
 
 현재 버전은 Phase 1~5 serializer를 제공하는 experimental engineering baseline이지 MMX-001의 모든
 end-to-end 기능 gate를 달성한 production `extended` 릴리스가 아닙니다. 특히 유형 내부 discriminated extraction schema,
-아직 fallback adapter가 없는 experimental grammar, 연구 데이터셋 규모의
-precision/recall 목표와 유형별 최소 fixture 수량은 별도 평가 corpus가 필요합니다. 자동 게시 hard gate, 원본 보존, candidate failure
+아직 fallback adapter가 없는 experimental grammar, 연구 데이터셋 규모의 실제 corpus와 trusted
+runner 측정이 필요합니다. precision/recall 목표와 유형별 최소 fixture 수량을 판정하는 고정 평가기는
+제공합니다. 자동 게시 hard gate, 원본 보존, candidate failure
 isolation, budget, sidecar/review 가능성은 현재 test 대상으로 삼습니다.

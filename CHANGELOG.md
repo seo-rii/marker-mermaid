@@ -38,6 +38,8 @@
 - Vector-backed flowchart edge color recovery with allowlisted, exact-order `linkStyle` mapping.
 - Digest-verified, content-addressed Review provenance revisions with legacy timeline migration.
 - Source-anchored Review node addition with server-created `user_edit` evidence.
+- Separate source-observation and generated-candidate Scene IR sidecar artifacts.
+- Hash-bound MMX-001 corpus manifests, fixed release gates, auditable reports, and `evaluate` CLI.
 
 ### Changed
 

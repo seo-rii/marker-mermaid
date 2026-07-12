@@ -1,4 +1,4 @@
-"""Command-line interface for conversion, validation, fixtures, and review."""
+"""Command-line interface for conversion, validation, evaluation, and review."""
 
 from __future__ import annotations
 
@@ -15,6 +15,12 @@ from PIL import Image
 
 from marker_mermaid.config import MermaidConfig
 from marker_mermaid.engines import JsonFixtureEngine
+from marker_mermaid.evaluation import (
+    EvaluationManifestError,
+    evaluate_manifest,
+    load_evaluation_manifest,
+    write_evaluation_report,
+)
 from marker_mermaid.markdown import standalone_document_markdown
 from marker_mermaid.output import save_document_output
 from marker_mermaid.pipeline import ReconstructionPipeline
@@ -212,6 +218,26 @@ def command_review(args) -> int:
     return 0
 
 
+def command_evaluate(args) -> int:
+    try:
+        loaded = load_evaluation_manifest(args.manifest)
+    except EvaluationManifestError as error:
+        print(f"evaluation manifest error: {error}", file=sys.stderr)
+        return 2
+    try:
+        report = evaluate_manifest(loaded)
+        report_path = write_evaluation_report(
+            report,
+            args.output,
+            evaluation=loaded,
+        )
+    except Exception as error:
+        print(f"evaluation runtime error: {error}", file=sys.stderr)
+        return 3
+    print(report_path)
+    return 0 if report.overall_status == "pass" else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="marker-mermaid")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -252,6 +278,14 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--port", type=int, default=8765)
     review.add_argument("--no-open", action="store_true")
     review.set_defaults(handler=command_review)
+
+    evaluate = subparsers.add_parser(
+        "evaluate",
+        help="aggregate trusted-runner MMX-001 evidence against fixed release gates",
+    )
+    evaluate.add_argument("manifest")
+    evaluate.add_argument("--output", required=True)
+    evaluate.set_defaults(handler=command_evaluate)
 
     doctor = subparsers.add_parser("doctor", help="check optional Marker and Mermaid runtimes")
     doctor.set_defaults(handler=command_doctor)
