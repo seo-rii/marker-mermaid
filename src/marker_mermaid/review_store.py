@@ -379,6 +379,24 @@ class ReviewStore:
             validator=validator,
         )
 
+    def load_expected_bundle(
+        self,
+        bundle_id: str,
+        *,
+        expected_version: int,
+        expected_digest: str,
+    ) -> ReviewBundle:
+        """Load a bundle only when the caller's optimistic revision is current.
+
+        Mutating methods repeat this check under the bundle lock.  This early check
+        lets callers reject stale structured commands before interpreting them against
+        a newer IR revision.
+        """
+
+        bundle = self.load_bundle(bundle_id)
+        self._check_expected(bundle, expected_version, expected_digest)
+        return bundle
+
     def apply_edit(
         self,
         bundle_id: str,

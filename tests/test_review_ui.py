@@ -43,10 +43,24 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
         "undo",
         "redo",
         "command-form",
+        "structure-operations",
+        "reconnect-form",
+        "edge-select",
+        "edge-source",
+        "edge-target",
+        "delete-node-form",
+        "node-select",
     ):
         assert f'id="{control_id}"' in assets.html
 
-    for route in ("/edits", "/history", "/candidate", "/commands", "/decision"):
+    for route in (
+        "/edits",
+        "/history",
+        "/candidate",
+        "/commands",
+        "/operations",
+        "/decision",
+    ):
         assert f'route("{route}")' in assets.javascript
     assert "/api/diagrams/" in assets.javascript
     assert "target.origin !== window.location.origin" in assets.javascript
@@ -56,6 +70,12 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert "expected_digest" in assets.javascript
     assert "eval(" not in assets.javascript
     assert "innerHTML" not in assets.javascript
+    assert 'operation: "reconnect_edge"' in assets.javascript
+    assert 'operation: "delete_node"' in assets.javascript
+    assert "data-node-id" in assets.javascript
+    assert 'addEventListener("keydown"' in assets.javascript
+    assert "Node movement and insertion" in assets.html
+    assert "pointermove" not in assets.javascript
 
 
 def test_asset_base_must_be_same_origin_path():

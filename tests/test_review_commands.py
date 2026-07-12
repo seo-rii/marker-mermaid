@@ -1,6 +1,10 @@
 from copy import deepcopy
 
-from marker_mermaid.review_commands import apply_review_command, parse_review_command
+from marker_mermaid.review_commands import (
+    apply_review_command,
+    apply_review_operation,
+    parse_review_command,
+)
 
 
 def scene_ir() -> dict:
@@ -179,3 +183,125 @@ def test_label_is_escaped_without_becoming_mermaid_syntax() -> None:
 
     assert result.applied
     assert 'API["Approved \\"locally\\""]' in result.mermaid_code
+
+
+def test_structured_reconnect_uses_relation_id_and_updates_both_artifacts() -> None:
+    result = apply_review_operation(
+        {
+            "operation": "reconnect_edge",
+            "edge_id": "E7",
+            "source_id": "User",
+            "target_id": "DB",
+        },
+        ir=scene_ir(),
+        mermaid_code=flowchart(),
+        reason="source reviewed",
+    )
+
+    assert result.applied
+    assert result.ir["relations"][0]["source_id"] == "User"
+    assert result.ir["relations"][0]["target_id"] == "DB"
+    assert "    User --> DB\n" in result.mermaid_code
+    assert "    DB --> API\n" not in result.mermaid_code
+    assert result.history_entry.operation == "reconnect_edge"
+    assert result.history_entry.target == "E7"
+    assert result.history_entry.before == {"source": "DB", "target": "API"}
+    assert result.history_entry.after == {"source": "User", "target": "DB"}
+    assert result.history_entry.reason == "source reviewed"
+
+
+def test_structured_delete_requires_one_to_one_explicit_flowchart_mapping() -> None:
+    result = apply_review_operation(
+        {"operation": "delete_node", "node_id": "API"},
+        ir=scene_ir(),
+        mermaid_code=flowchart(),
+    )
+
+    assert result.applied
+    assert [item["id"] for item in result.ir["elements"]] == ["User", "DB"]
+    assert result.ir["relations"] == []
+    assert 'API["API"]' not in result.mermaid_code
+    assert "DB --> API" not in result.mermaid_code
+    assert "User --> API" not in result.mermaid_code
+    assert result.history_entry.operation == "delete_node"
+    assert result.history_entry.target == "API"
+    assert len(result.history_entry.before["relations"]) == 2
+
+
+def test_structured_operations_reject_invalid_schema_without_mutation() -> None:
+    original_ir = scene_ir()
+    original_code = flowchart()
+    snapshot = deepcopy(original_ir)
+
+    for operation in (
+        {"operation": "reconnect_edge", "edge_id": "E7", "source_id": "User"},
+        {"operation": "delete_node", "node_id": "API", "unexpected": True},
+        {"operation": "move_node", "node_id": "API"},
+        {"operation": "delete_node", "node_id": "unsafe id"},
+    ):
+        result = apply_review_operation(
+            operation,
+            ir=original_ir,
+            mermaid_code=original_code,
+        )
+        assert not result.applied
+        assert result.error_code in {"invalid_operation", "invalid_identifier"}
+        assert result.ir == snapshot
+        assert result.mermaid_code == original_code
+        assert original_ir == snapshot
+
+
+def test_structured_delete_rejects_grouped_or_extra_mermaid_references() -> None:
+    grouped_ir = scene_ir()
+    grouped_ir["groups"] = [
+        {
+            "id": "Services",
+            "role": "subgraph",
+            "bbox": [0, 0, 30, 10],
+            "member_ids": ["User", "API"],
+        }
+    ]
+    grouped = apply_review_operation(
+        {"operation": "delete_node", "node_id": "API"},
+        ir=grouped_ir,
+        mermaid_code=flowchart(),
+    )
+    styled = apply_review_operation(
+        {"operation": "delete_node", "node_id": "API"},
+        ir=scene_ir(),
+        mermaid_code=flowchart() + "    style API fill:#fff\n",
+    )
+
+    assert not grouped.applied
+    assert grouped.error_code == "unsupported_ir"
+    assert not styled.applied
+    assert styled.error_code == "unsupported_mermaid"
+
+
+def test_structured_reconnect_rejects_duplicate_or_labeled_edge_mapping() -> None:
+    duplicate = apply_review_operation(
+        {
+            "operation": "reconnect_edge",
+            "edge_id": "E7",
+            "source_id": "User",
+            "target_id": "DB",
+        },
+        ir=scene_ir(),
+        mermaid_code=flowchart() + "    DB --> API\n",
+    )
+    labeled_code = flowchart().replace("    DB --> API\n", "    DB -->|query| API\n")
+    labeled = apply_review_operation(
+        {
+            "operation": "reconnect_edge",
+            "edge_id": "E7",
+            "source_id": "User",
+            "target_id": "DB",
+        },
+        ir=scene_ir(),
+        mermaid_code=labeled_code,
+    )
+
+    assert not duplicate.applied
+    assert duplicate.error_code == "ambiguous_reference"
+    assert not labeled.applied
+    assert labeled.error_code == "unresolved_reference"

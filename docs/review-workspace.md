@@ -46,6 +46,28 @@ undo 뒤 새 편집을 하면 활성 timeline은 분기하지만 기존 snapshot
 변경도 대응 code를 안전하게 재생성할 정보가 부족하므로 editor에서 code와 IR을 명시적으로 함께
 고치거나 해당 type의 대안 후보를 선택해야 합니다.
 
+## 검증된 구조 연산
+
+workspace의 `Validated structure operations`는 자유 형식 JSON 편집보다 작은 동기화 경계를
+제공합니다. 원본 overlay에서 node bbox를 클릭하거나 ID select를 사용해 entity를 선택할 수 있습니다.
+현재 지원 연산은 다음 두 가지입니다.
+
+- `reconnect_edge`: stable relation ID와 새 source/target node ID를 지정합니다. Scene IR relation과
+  독립적인 Mermaid edge line이 정확히 1:1로 대응할 때만 connector를 보존하며 양쪽을 함께 바꿉니다.
+- `delete_node`: quoted rectangle node declaration과 모든 incident relation/edge가 정확히 대응할 때
+  node와 edge를 함께 삭제합니다. group/style/class/click/bare membership 같은 추가 참조, parallel edge,
+  chained/labeled edge가 있으면 전체 연산을 거절합니다.
+
+구조 연산 payload는 operation별 필수 field를 갖는 closed schema이며 알 수 없는 field도 거부합니다.
+요청을 현재 IR에 해석하기 전에 version/digest를 확인하고, 저장 시 lock 안에서 다시 확인합니다. 성공한
+결과는 full Scene schema와 strict Mermaid parse/render를 통과한 뒤에만 하나의 revision으로 저장되며,
+실패하면 IR, code, render, history 중 어느 것도 바뀌지 않습니다.
+
+node 이동은 아직 제공하지 않습니다. Scene `bbox`는 Mermaid 배치 좌표가 아니라 원본 근거 좌표이므로
+drag 결과로 덮어쓰면 provenance가 손상되고, flowchart grammar도 고정 위치를 표현하지 못합니다. node
+추가도 `user_edit` evidence와 provenance sidecar가 revision/undo에 함께 들어가기 전에는 공개하지
+않습니다. 향후 두 기능은 별도 layout hint와 provenance snapshot을 도입한 뒤 활성화합니다.
+
 ## HTTP 및 파일 안전성
 
 브라우저 mutation에는 page bootstrap에 포함된 CSRF token과 same-origin 요청이 필요합니다.
@@ -69,6 +91,6 @@ review server는 인증 시스템이 아닙니다. 기본 loopback bind를 권�
 
 ## 현재 제한
 
-provenance overlay와 JSON editor는 제공하지만 node drag-and-drop 및 edge를 canvas에서 직접
-재연결하는 조작은 아직 구현하지 않았습니다. version history는 undo/redo timeline으로 제공하며
+provenance/node overlay와 JSON editor, ID 기반 edge 재연결/node 삭제는 제공하지만 node drag-and-drop,
+node 추가 및 edge endpoint를 canvas에서 직접 끌어 놓는 조작은 아직 구현하지 않았습니다. version history는 undo/redo timeline으로 제공하며
 과거 revision을 임의 선택하는 UI와 VLM 기반 자유 형식 명령도 후속 범위입니다.

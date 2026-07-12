@@ -34,6 +34,7 @@
 - Candidate Scene adapters for planning, hierarchy, event, Wardley, lineage, Venn, and ZenUML structures.
 - Requested-type accessibility enrichment with emitted-grammar limitations and validated direct-code augmentation.
 - Evidence-backed typed Flowchart label repair with structured IR/code proposals.
+- Validated Review Workspace edge reconnection and node deletion with synchronized IR/code audit history.
 
 ### Changed
 
@@ -64,6 +65,7 @@
 - Hostile or decompression-bomb Marker previews are omitted without failing document conversion.
 - Numeric consistency ignores accessibility/title metadata so repeated descriptive numbers do not reduce chart agreement.
 - Initial and repaired candidates share OCR/vector, provenance, structural, numeric, and publication-gate evaluation.
+- Structured review operations reject stale revisions before interpretation and require exact Scene-to-Mermaid mappings.
 
 ## 0.1.0
 

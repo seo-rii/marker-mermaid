@@ -112,6 +112,33 @@ def build_review_workspace_assets(
         <button id="save-editors" type="button">Save editors</button>
       </div>
 
+      <section id="structure-operations" aria-labelledby="structure-heading">
+        <h2 id="structure-heading">Validated structure operations</h2>
+        <p class="muted">
+          Select source-backed nodes and relations by stable ID. Node movement and insertion
+          remain unavailable until layout hints and user-edit provenance are revisioned safely.
+        </p>
+        <div class="structure-grid">
+          <form id="reconnect-form">
+            <h3>Reconnect edge</h3>
+            <label for="edge-select">Relation</label>
+            <select id="edge-select" required></select>
+            <label for="edge-source">New source</label>
+            <select id="edge-source" required></select>
+            <label for="edge-target">New target</label>
+            <select id="edge-target" required></select>
+            <button id="reconnect-edge" type="submit">Reconnect</button>
+          </form>
+          <form id="delete-node-form">
+            <h3>Delete node</h3>
+            <label for="node-select">Explicit node</label>
+            <select id="node-select" required></select>
+            <p id="node-edge-count" class="muted"></p>
+            <button id="delete-node" class="reject" type="submit">Delete node and edges</button>
+          </form>
+        </div>
+      </section>
+
       <section class="review-grid">
         <div>
           <h2>Issues</h2>
@@ -179,6 +206,13 @@ figcaption, label { font-weight: 650; }
   vector-effect: non-scaling-stroke;
 }
 .evidence-box:hover, .evidence-box:focus { fill: rgb(255 159 64 / .25); stroke: #e26f00; }
+.node-box {
+  fill: transparent; stroke: #7453c6; stroke-width: 2; stroke-dasharray: 6 3;
+  vector-effect: non-scaling-stroke; cursor: pointer;
+}
+.node-box:hover, .node-box:focus, .node-box.selected {
+  fill: rgb(116 83 198 / .18); stroke: #4f2d9e;
+}
 .editor-grid { margin-top: 1rem; }
 .editor-grid label { display: grid; gap: .4rem; }
 textarea {
@@ -186,6 +220,13 @@ textarea {
   font: .9rem ui-monospace, monospace; tab-size: 2;
 }
 .editor-actions { justify-content: end; margin-block: .6rem 1rem; }
+#structure-operations { border: 1px solid GrayText; padding: 0 1rem 1rem; margin-block: 1rem; }
+.structure-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 1rem; }
+.structure-grid form {
+  display: grid; grid-template-columns: max-content 1fr; gap: .6rem; align-items: center;
+}
+.structure-grid h3, .structure-grid p { grid-column: 1 / -1; }
+.structure-grid button { justify-self: end; grid-column: 2; }
 .review-grid > div { border: 1px solid GrayText; padding: 0 1rem 1rem; }
 .item-list { margin: 0; padding: 0; list-style: none; }
 .item-list li, .candidate { padding: .55rem; border-top: 1px solid GrayText; }
@@ -199,7 +240,7 @@ textarea {
 .reject { background: #a32d2d; color: #fff; border: 1px solid #711c1c; }
 #message.error { color: #b42318; }
 @media (max-width: 800px) {
-  .visual-grid, .editor-grid, .review-grid { grid-template-columns: 1fr; }
+  .visual-grid, .editor-grid, .review-grid, .structure-grid { grid-template-columns: 1fr; }
   .topbar, .decision-actions { align-items: stretch; flex-direction: column; }
 }
 """.strip()
@@ -232,6 +273,10 @@ REVIEW_JAVASCRIPT = r"""
     overlay: byId("provenance-overlay"), mermaid: byId("mermaid-editor"), ir: byId("ir-editor"),
     issues: byId("issue-list"), alternatives: byId("alternative-list"), message: byId("message"),
     saveState: byId("save-state"), undo: byId("undo"), redo: byId("redo"),
+    node: byId("node-select"), edge: byId("edge-select"),
+    edgeSource: byId("edge-source"), edgeTarget: byId("edge-target"),
+    edgeCount: byId("node-edge-count"), reconnect: byId("reconnect-edge"),
+    deleteNode: byId("delete-node"),
   };
 
   const diagramId = () => encodeURIComponent(
@@ -306,6 +351,70 @@ REVIEW_JAVASCRIPT = r"""
       rect.dataset.evidenceId = text(item.id);
       controls.overlay.append(rect);
     }
+    const elements = Array.isArray(diagram.scene_ir?.elements)
+      ? diagram.scene_ir.elements : [];
+    for (const item of elements) {
+      if (!Array.isArray(item?.bbox) || item.bbox.length !== 4) continue;
+      const [x0, y0, x1, y1] = item.bbox.map(Number);
+      if (![x0, y0, x1, y1].every(Number.isFinite) || x1 <= x0 || y1 <= y0) continue;
+      const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      rect.setAttribute("x", String(x0)); rect.setAttribute("y", String(y0));
+      rect.setAttribute("width", String(x1 - x0)); rect.setAttribute("height", String(y1 - y0));
+      rect.setAttribute("class", "node-box"); rect.setAttribute("tabindex", "0");
+      rect.setAttribute("aria-label", `node ${text(item.id)}: ${text(item.text || "unlabelled")}`);
+      rect.dataset.nodeId = text(item.id);
+      if (text(item.id) === controls.node.value) rect.classList.add("selected");
+      controls.overlay.append(rect);
+    }
+  }
+
+  function replaceOptions(select, values, selectedValue, labelFor) {
+    select.replaceChildren();
+    for (const value of values) {
+      const option = document.createElement("option");
+      option.value = text(value.id); option.textContent = labelFor(value);
+      select.append(option);
+    }
+    if (values.some((value) => text(value.id) === text(selectedValue))) {
+      select.value = text(selectedValue);
+    }
+  }
+
+  function renderStructure(diagram) {
+    const ir = diagram.scene_ir && typeof diagram.scene_ir === "object" ? diagram.scene_ir : {};
+    const nodes = Array.isArray(ir.elements) ? ir.elements.filter((item) => item?.id) : [];
+    const relations = Array.isArray(ir.relations)
+      ? ir.relations.filter((item) => item?.id && item?.source_id && item?.target_id) : [];
+    const selectedNode = controls.node.value;
+    const selectedEdge = controls.edge.value;
+    replaceOptions(
+      controls.node, nodes, selectedNode,
+      (item) => `${text(item.id)} · ${text(item.text || item.role || "node")}`,
+    );
+    for (const select of [controls.edgeSource, controls.edgeTarget]) {
+      const selected = select.value;
+      replaceOptions(select, nodes, selected, (item) => text(item.id));
+    }
+    replaceOptions(
+      controls.edge, relations, selectedEdge,
+      (item) => `${text(item.id)} · ${text(item.source_id)} → ${text(item.target_id)}`,
+    );
+    const selectedRelation = relations.find((item) => text(item.id) === controls.edge.value);
+    if (selectedRelation) {
+      controls.edgeSource.value = text(selectedRelation.source_id);
+      controls.edgeTarget.value = text(selectedRelation.target_id);
+    }
+    const incident = relations.filter(
+      (item) => controls.node.value
+        && [item.source_id, item.target_id].map(text).includes(controls.node.value),
+    ).length;
+    controls.edgeCount.textContent = controls.node.value
+      ? `${incident} incident relation(s) will also be deleted.` : "No selectable explicit node.";
+    const unavailable = state.busy || !nodes.length;
+    controls.node.disabled = unavailable; controls.deleteNode.disabled = unavailable;
+    controls.edge.disabled = state.busy || !relations.length;
+    controls.edgeSource.disabled = unavailable; controls.edgeTarget.disabled = unavailable;
+    controls.reconnect.disabled = state.busy || !relations.length || !nodes.length;
   }
 
   function renderIssues(diagram) {
@@ -362,7 +471,8 @@ REVIEW_JAVASCRIPT = r"""
     controls.saveState.textContent = [
       text(diagram.status || "review"), `grade ${text(diagram.grade || "U")}`,
     ].join(" · ");
-    renderOverlay(diagram); renderIssues(diagram); renderAlternatives(diagram);
+    renderStructure(diagram); renderOverlay(diagram);
+    renderIssues(diagram); renderAlternatives(diagram);
   }
 
   async function perform(path, body, successMessage) {
@@ -399,6 +509,25 @@ REVIEW_JAVASCRIPT = r"""
   controls.diagram.addEventListener("change", loadSelectedDiagram);
 
   controls.source.addEventListener("load", () => renderOverlay(state.current || {}));
+  function selectOverlayNode(nodeId) {
+    controls.node.value = text(nodeId);
+    renderStructure(state.current || {}); renderOverlay(state.current || {});
+  }
+  controls.overlay.addEventListener("click", (event) => {
+    const node = event.target.closest("[data-node-id]");
+    if (!node) return;
+    selectOverlayNode(node.dataset.nodeId);
+  });
+  controls.overlay.addEventListener("keydown", (event) => {
+    if (!['Enter', ' '].includes(event.key)) return;
+    const node = event.target.closest("[data-node-id]");
+    if (!node) return;
+    event.preventDefault(); selectOverlayNode(node.dataset.nodeId);
+  });
+  controls.node.addEventListener("change", () => {
+    renderStructure(state.current || {}); renderOverlay(state.current || {});
+  });
+  controls.edge.addEventListener("change", () => renderStructure(state.current || {}));
   byId("save-editors").addEventListener("click", async () => {
     let sceneIr;
     try { sceneIr = JSON.parse(controls.ir.value); }
@@ -430,6 +559,28 @@ REVIEW_JAVASCRIPT = r"""
     const input = byId("command-input"); const command = input.value.trim();
     if (!command) return;
     await perform(route("/commands"), { command }, "Command applied."); input.value = "";
+  });
+  byId("reconnect-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await perform(
+      route("/operations"),
+      { operation: {
+        operation: "reconnect_edge", edge_id: controls.edge.value,
+        source_id: controls.edgeSource.value, target_id: controls.edgeTarget.value,
+      } },
+      "Edge reconnected.",
+    );
+  });
+  byId("delete-node-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!controls.node.value || !window.confirm(
+      `Delete node ${controls.node.value} and all incident relations?`,
+    )) return;
+    await perform(
+      route("/operations"),
+      { operation: { operation: "delete_node", node_id: controls.node.value } },
+      "Node deleted.",
+    );
   });
   for (const decision of ["approve", "reject"]) {
     byId(decision).addEventListener("click", () => perform(

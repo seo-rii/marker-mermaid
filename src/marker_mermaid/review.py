@@ -20,7 +20,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from marker_mermaid.config import SecurityProfile
-from marker_mermaid.review_commands import apply_review_command
+from marker_mermaid.review_commands import apply_review_command, apply_review_operation
 from marker_mermaid.review_store import (
     MAX_JSON_BYTES,
     ReviewBundle,
@@ -170,6 +170,7 @@ class ReviewHandler(SimpleHTTPRequestHandler):
             "/history",
             "/candidate",
             "/commands",
+            "/operations",
             "/decision",
         }:
             self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
@@ -211,6 +212,14 @@ class ReviewHandler(SimpleHTTPRequestHandler):
                     payload.get("command"),
                     expected_version,
                     expected_digest,
+                )
+            elif action == "/operations":
+                bundle = self._apply_operation(
+                    bundle_id,
+                    payload.get("operation"),
+                    expected_version,
+                    expected_digest,
+                    payload.get("reason"),
                 )
             else:
                 decision = payload.get("decision")
@@ -358,7 +367,11 @@ class ReviewHandler(SimpleHTTPRequestHandler):
     ) -> ReviewBundle:
         if not isinstance(command, str):
             raise ReviewValidationError("command must be a string")
-        current = self.store.load_bundle(bundle_id)
+        current = self.store.load_expected_bundle(
+            bundle_id,
+            expected_version=version,
+            expected_digest=digest,
+        )
         result = apply_review_command(
             command,
             ir=current.scene_ir,
@@ -381,6 +394,44 @@ class ReviewHandler(SimpleHTTPRequestHandler):
             expected_digest=digest,
             reason=command,
             operation="natural_language_patch",
+            audit_entry=result.history_entry,
+        )
+
+    def _apply_operation(
+        self,
+        bundle_id: str,
+        operation: Any,
+        version: int,
+        digest: str,
+        reason: Any,
+    ) -> ReviewBundle:
+        if not isinstance(operation, dict):
+            raise ReviewValidationError("operation must be a JSON object")
+        if reason is not None and not isinstance(reason, str):
+            raise ReviewValidationError("reason must be a string")
+        current = self.store.load_expected_bundle(
+            bundle_id,
+            expected_version=version,
+            expected_digest=digest,
+        )
+        result = apply_review_operation(
+            operation,
+            ir=current.scene_ir,
+            mermaid_code=current.mermaid_code,
+            reason=reason,
+        )
+        if not result.applied:
+            raise ReviewValidationError(f"{result.error_code}: {result.message}")
+        assert result.mermaid_code is not None
+        assert result.history_entry is not None
+        return self.store.apply_edit(
+            bundle_id,
+            result.mermaid_code,
+            scene_ir=result.ir,
+            expected_version=version,
+            expected_digest=digest,
+            reason=reason or result.history_entry.operation,
+            operation="structured_ir_operation",
             audit_entry=result.history_entry,
         )
 

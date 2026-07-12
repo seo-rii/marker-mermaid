@@ -550,3 +550,92 @@ def test_group_command_persists_member_bbox_union_through_scene_schema(tmp_path)
     [group] = grouped["diagram"]["scene_ir"]["groups"]
     assert group["member_ids"] == ["A", "B"]
     assert group["bbox"] == [0.0, 0.0, 30.0, 10.0]
+
+
+def test_structured_edge_operation_is_validated_rendered_and_audited(tmp_path):
+    diagram_path = make_bundle(tmp_path)
+    with running_server(tmp_path) as (base, store):
+        current = store.load_bundle("diagram-a")
+        payload = {
+            **expected(current),
+            "operation": {
+                "operation": "reconnect_edge",
+                "edge_id": "E1",
+                "source_id": "B",
+                "target_id": "A",
+            },
+            "reason": "confirmed against source",
+        }
+        result, _ = post_json(f"{base}/api/diagrams/diagram-a/operations", payload)
+        with pytest.raises(urllib.error.HTTPError) as stale:
+            post_json(f"{base}/api/diagrams/diagram-a/operations", payload)
+
+    diagram = result["diagram"]
+    assert diagram["scene_ir"]["relations"][0]["source_id"] == "B"
+    assert diagram["scene_ir"]["relations"][0]["target_id"] == "A"
+    assert "B --> A" in diagram["mermaid_code"]
+    assert stale.value.code == HTTPStatus.CONFLICT
+    entries = json.loads((diagram_path / "review-history.json").read_text())
+    reconnect = next(entry for entry in entries if entry["operation"] == "reconnect_edge")
+    assert reconnect["target"] == "E1"
+    assert reconnect["before"] == {"source": "A", "target": "B"}
+    assert reconnect["after"] == {"source": "B", "target": "A"}
+    assert reconnect["reason"] == "confirmed against source"
+
+
+def test_structured_operation_schema_failure_leaves_bundle_unchanged(tmp_path):
+    diagram_path = make_bundle(tmp_path)
+    before = {
+        path.relative_to(diagram_path): path.read_bytes()
+        for path in diagram_path.rglob("*")
+        if path.is_file()
+    }
+    with running_server(tmp_path) as (base, store):
+        current = store.load_bundle("diagram-a")
+        with pytest.raises(urllib.error.HTTPError) as invalid:
+            post_json(
+                f"{base}/api/diagrams/diagram-a/operations",
+                {
+                    **expected(current),
+                    "operation": {
+                        "operation": "reconnect_edge",
+                        "edge_id": "E1",
+                        "source_id": "B",
+                    },
+                },
+            )
+
+    after = {
+        path.relative_to(diagram_path): path.read_bytes()
+        for path in diagram_path.rglob("*")
+        if path.is_file()
+    }
+    assert invalid.value.code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert after == before
+
+
+def test_structured_node_delete_persists_validated_ir_code_and_render(tmp_path):
+    diagram_path = make_bundle(tmp_path)
+    (diagram_path / "final.mmd").write_text(
+        'flowchart LR\n  A["Start"]\n  B["End"]\n  A --> B\n',
+        encoding="utf-8",
+    )
+    with running_server(tmp_path) as (base, store):
+        current = store.load_bundle("diagram-a")
+        result, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/operations",
+            {
+                **expected(current),
+                "operation": {"operation": "delete_node", "node_id": "A"},
+            },
+        )
+
+    diagram = result["diagram"]
+    assert [item["id"] for item in diagram["scene_ir"]["elements"]] == ["B"]
+    assert diagram["scene_ir"]["relations"] == []
+    assert diagram["mermaid_code"] == 'flowchart LR\n  B["End"]\n'
+    assert "<title>" in (diagram_path / "final.svg").read_text()
+    entries = json.loads((diagram_path / "review-history.json").read_text())
+    deletion = next(entry for entry in entries if entry["operation"] == "delete_node")
+    assert deletion["target"] == "A"
+    assert deletion["after"] == {"deleted": "A"}
