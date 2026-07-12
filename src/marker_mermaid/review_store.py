@@ -27,8 +27,10 @@ from marker_mermaid.models import (
     ReviewHistoryEntry,
     VisualEvidence,
 )
+from marker_mermaid.review_layout import ReviewLayoutHints
 
-REVIEW_SCHEMA_VERSION = "mmx-review-0.4"
+REVIEW_SCHEMA_VERSION = "mmx-review-0.4.1"
+PROVENANCE_REVIEW_SCHEMA_VERSION = "mmx-review-0.4"
 LEGACY_REVIEW_SCHEMA_VERSION = "mmx-review-0.3"
 MAX_MERMAID_BYTES = 1_000_000
 MAX_JSON_BYTES = 4_000_000
@@ -92,9 +94,11 @@ class ReviewValidationError(ReviewStoreError):
 
 
 class ReviewState(BaseModel):
-    schema_version: Literal[REVIEW_SCHEMA_VERSION, LEGACY_REVIEW_SCHEMA_VERSION] = (
-        REVIEW_SCHEMA_VERSION
-    )
+    schema_version: Literal[
+        REVIEW_SCHEMA_VERSION,
+        PROVENANCE_REVIEW_SCHEMA_VERSION,
+        LEGACY_REVIEW_SCHEMA_VERSION,
+    ] = REVIEW_SCHEMA_VERSION
     version: int = Field(ge=0)
     timeline: list[str]
     cursor: int = Field(ge=0)
@@ -104,6 +108,7 @@ class ReviewState(BaseModel):
     svg_digest: str | None = None
     png_digest: str | None = None
     provenance_digest: str | None = None
+    layout_digest: str | None = None
     legacy_provenance_digest: str | None = None
     decision: ReviewDecision = "pending"
     decision_reason: str | None = None
@@ -127,6 +132,7 @@ class ReviewState(BaseModel):
         "svg_digest",
         "png_digest",
         "provenance_digest",
+        "layout_digest",
         "legacy_provenance_digest",
     )
     @classmethod
@@ -167,20 +173,24 @@ class ReviewBundle(BaseModel):
     svg: str | None = None
     png: bytes | None = None
     provenance: list[VisualEvidence] | None = None
+    layout_hints: ReviewLayoutHints | None = None
     history: list[ReviewHistoryEntry]
     state: ReviewState
 
 
 class _RevisionSnapshot(BaseModel):
-    schema_version: Literal[REVIEW_SCHEMA_VERSION, LEGACY_REVIEW_SCHEMA_VERSION] = (
-        REVIEW_SCHEMA_VERSION
-    )
+    schema_version: Literal[
+        REVIEW_SCHEMA_VERSION,
+        PROVENANCE_REVIEW_SCHEMA_VERSION,
+        LEGACY_REVIEW_SCHEMA_VERSION,
+    ] = REVIEW_SCHEMA_VERSION
     revision: str
     code_digest: str
     ir_digest: str | None = None
     svg_digest: str | None = None
     png_digest: str | None = None
     provenance_digest: str | None = None
+    layout_digest: str | None = None
     decision: ReviewDecision
     decision_reason: str | None = None
     selected_candidate_id: str | None = None
@@ -192,6 +202,7 @@ class _RevisionSnapshot(BaseModel):
         "svg_digest",
         "png_digest",
         "provenance_digest",
+        "layout_digest",
     )
     @classmethod
     def digest_is_sha256(cls, value: str | None) -> str | None:
@@ -212,6 +223,10 @@ def _ir_bytes(value: dict[str, Any]) -> bytes:
 
 def _provenance_bytes(value: list[VisualEvidence]) -> bytes:
     return _json_bytes([item.model_dump(mode="json") for item in value])
+
+
+def _layout_bytes(value: ReviewLayoutHints) -> bytes:
+    return _json_bytes(value.model_dump(mode="json"))
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -317,6 +332,7 @@ class ReviewStore:
         else:
             code, scene_ir, bootstrap_candidate_id = self._bootstrap_alternative(bundle)
         provenance = self._load_provenance(bundle, manifest)
+        layout_hints = self._load_layout_hints(bundle, manifest)
         svg_payload = self._read_optional_bytes(bundle, "final.svg", MAX_RENDER_BYTES)
         png = self._read_optional_bytes(bundle, "final.png", MAX_RENDER_BYTES)
         try:
@@ -351,10 +367,18 @@ class ReviewStore:
                 _bytes_digest(_provenance_bytes(provenance)) if provenance is not None else None
             )
             if (
-                state.schema_version == REVIEW_SCHEMA_VERSION
+                state.schema_version
+                in {REVIEW_SCHEMA_VERSION, PROVENANCE_REVIEW_SCHEMA_VERSION}
                 and state.provenance_digest != actual_provenance_digest
             ):
                 raise ReviewConflictError("provenance.json changed outside the review store")
+            actual_layout_digest = (
+                _bytes_digest(_layout_bytes(layout_hints))
+                if layout_hints is not None
+                else None
+            )
+            if state.layout_digest != actual_layout_digest:
+                raise ReviewConflictError("layout-hints.json changed outside the review store")
         else:
             state = self._initial_state(
                 code,
@@ -362,6 +386,7 @@ class ReviewStore:
                 svg,
                 png,
                 provenance,
+                layout_hints,
                 selected_candidate_id=(
                     manifest.get("selected_candidate_id") or bootstrap_candidate_id
                 ),
@@ -374,6 +399,7 @@ class ReviewStore:
             svg=svg,
             png=png,
             provenance=provenance,
+            layout_hints=layout_hints,
             history=history,
             state=state,
         )
@@ -461,6 +487,7 @@ class ReviewStore:
         audit_entry: ReviewHistoryEntry | None = None,
         provenance: list[dict[str, Any] | VisualEvidence] | None = None,
         replace_provenance: bool = False,
+        reset_layout: bool = False,
     ) -> ReviewBundle:
         """Atomically persist code, IR, render/provenance artifacts, state, and history.
 
@@ -474,6 +501,8 @@ class ReviewStore:
         self._validate_reason(reason)
         if not isinstance(replace_provenance, bool):
             raise ReviewValidationError("replace_provenance must be a boolean")
+        if not isinstance(reset_layout, bool):
+            raise ReviewValidationError("reset_layout must be a boolean")
         if provenance is not None and not replace_provenance:
             raise ReviewValidationError(
                 "provenance input requires the explicit replace_provenance boundary"
@@ -503,6 +532,11 @@ class ReviewStore:
             selected_provenance = (
                 replacement_provenance if replace_provenance else bundle.provenance
             )
+            selected_layout = (
+                None
+                if reset_layout
+                else self._reconcile_layout_hints(bundle.layout_hints, scene_ir)
+            )
             available_evidence_ids = {item.id for item in selected_provenance or []}
             referenced_evidence_ids = {
                 evidence_id
@@ -524,12 +558,14 @@ class ReviewStore:
                 bundle.mermaid_code,
                 bundle.scene_ir,
                 bundle.provenance,
+                bundle.layout_hints,
             )
             return self._commit_new_revision(
                 bundle,
                 code=code,
                 scene_ir=scene_ir,
                 provenance=selected_provenance,
+                layout_hints=selected_layout,
                 svg=validation_result.svg if validation_result else bundle.svg,
                 png=validation_result.png if validation_result else bundle.png,
                 decision="pending",
@@ -546,6 +582,88 @@ class ReviewStore:
             )
 
     edit_mermaid = apply_mermaid_edit
+
+    def apply_layout_hint(
+        self,
+        bundle_id: str,
+        *,
+        node_id: str,
+        x: float,
+        y: float,
+        expected_version: int,
+        expected_digest: str,
+        reason: str | None = None,
+    ) -> ReviewBundle:
+        """Commit one advisory normalized node position without changing source geometry."""
+
+        self._validate_reason(reason)
+        try:
+            requested = ReviewLayoutHints().with_node(node_id, x, y).nodes[0]
+        except (ValidationError, TypeError) as exc:
+            raise ReviewValidationError("invalid normalized layout hint") from exc
+        current = self.load_bundle(bundle_id)
+        self._check_expected(current, expected_version, expected_digest)
+        self._require_scene_node(current.scene_ir, requested.node_id)
+        with self._locked_bundle(bundle_id):
+            bundle = self.load_bundle(bundle_id)
+            self._check_expected(bundle, expected_version, expected_digest)
+            self._require_scene_node(bundle.scene_ir, requested.node_id)
+            current_layout = bundle.layout_hints or ReviewLayoutHints()
+            try:
+                updated_layout = current_layout.with_node(
+                    requested.node_id,
+                    requested.x,
+                    requested.y,
+                )
+            except ValidationError as exc:
+                raise ReviewValidationError("layout hint exceeds the node budget") from exc
+            if updated_layout == bundle.layout_hints:
+                raise ReviewValidationError("layout hint did not change")
+            previous_hint = next(
+                (
+                    item
+                    for item in current_layout.nodes
+                    if item.node_id == requested.node_id
+                ),
+                None,
+            )
+            audit_entry = ReviewHistoryEntry(
+                operation="move_node",
+                target=requested.node_id,
+                before={
+                    "layout_position": (
+                        [previous_hint.x, previous_hint.y]
+                        if previous_hint is not None
+                        else None
+                    )
+                },
+                after={"layout_position": [requested.x, requested.y]},
+                source="user",
+                reason=reason,
+            )
+            before = self._state_value(
+                bundle.state,
+                bundle.mermaid_code,
+                bundle.scene_ir,
+                bundle.provenance,
+                bundle.layout_hints,
+            )
+            return self._commit_new_revision(
+                bundle,
+                code=bundle.mermaid_code,
+                scene_ir=bundle.scene_ir,
+                provenance=bundle.provenance,
+                layout_hints=updated_layout,
+                svg=bundle.svg,
+                png=bundle.png,
+                decision="pending",
+                decision_reason=None,
+                selected_candidate_id=bundle.state.selected_candidate_id,
+                operation="move_node",
+                reason=reason,
+                before=before,
+                audit_entry=audit_entry,
+            )
 
     def approve(
         self,
@@ -648,12 +766,14 @@ class ReviewStore:
                 bundle.mermaid_code,
                 bundle.scene_ir,
                 bundle.provenance,
+                bundle.layout_hints,
             )
             return self._commit_new_revision(
                 bundle,
                 code=bundle.mermaid_code,
                 scene_ir=bundle.scene_ir,
                 provenance=bundle.provenance,
+                layout_hints=bundle.layout_hints,
                 svg=validation_result.svg if validation_result else bundle.svg,
                 png=validation_result.png if validation_result else bundle.png,
                 decision=decision,
@@ -696,6 +816,10 @@ class ReviewStore:
             scene_ir = self._read_revision_ir(bundle_path, revision, snapshot.ir_digest)
             svg = self._read_revision_render(bundle_path, revision, "svg", snapshot.svg_digest)
             png = self._read_revision_render(bundle_path, revision, "png", snapshot.png_digest)
+            layout_hints = self._read_revision_layout(
+                bundle_path,
+                snapshot.layout_digest,
+            )
             current_provenance_digest = (
                 _bytes_digest(_provenance_bytes(bundle.provenance))
                 if bundle.provenance is not None
@@ -724,6 +848,7 @@ class ReviewStore:
                 bundle.mermaid_code,
                 bundle.scene_ir,
                 bundle.provenance,
+                bundle.layout_hints,
             )
             state = bundle.state.model_copy(
                 update={
@@ -736,6 +861,7 @@ class ReviewStore:
                     "svg_digest": snapshot.svg_digest,
                     "png_digest": snapshot.png_digest,
                     "provenance_digest": target_provenance_digest,
+                    "layout_digest": snapshot.layout_digest,
                     "legacy_provenance_digest": legacy_provenance_digest,
                     "decision": snapshot.decision,
                     "decision_reason": snapshot.decision_reason,
@@ -743,7 +869,7 @@ class ReviewStore:
                     "updated_at": datetime.now(UTC),
                 }
             )
-            after = self._state_value(state, code, scene_ir, provenance)
+            after = self._state_value(state, code, scene_ir, provenance, layout_hints)
             history = self._append_history(
                 bundle.history,
                 operation="undo" if delta < 0 else "redo",
@@ -760,6 +886,9 @@ class ReviewStore:
                 "provenance.json": (
                     _provenance_bytes(provenance) if provenance is not None else None
                 ),
+                "layout-hints.json": (
+                    _layout_bytes(layout_hints) if layout_hints is not None else None
+                ),
                 "review-history.json": _json_bytes(
                     [entry.model_dump(mode="json") for entry in history]
                 ),
@@ -770,6 +899,12 @@ class ReviewStore:
                     raise ReviewValidationError("revision provenance is missing its digest")
                 files[f"versions/provenance/{target_provenance_digest}.json"] = _provenance_bytes(
                     provenance
+                )
+            if layout_hints is not None:
+                if snapshot.layout_digest is None:
+                    raise ReviewValidationError("revision layout is missing its digest")
+                files[f"versions/layout/{snapshot.layout_digest}.json"] = _layout_bytes(
+                    layout_hints
                 )
             quality_status = (
                 "automated_baseline" if revision == "r000000" else "unscored_user_revision"
@@ -789,6 +924,7 @@ class ReviewStore:
         code: str,
         scene_ir: dict[str, Any] | None,
         provenance: list[VisualEvidence] | None,
+        layout_hints: ReviewLayoutHints | None,
         svg: str | None,
         png: bytes | None,
         decision: ReviewDecision,
@@ -811,6 +947,9 @@ class ReviewStore:
         provenance_digest = (
             _bytes_digest(_provenance_bytes(provenance)) if provenance is not None else None
         )
+        layout_digest = (
+            _bytes_digest(_layout_bytes(layout_hints)) if layout_hints is not None else None
+        )
         legacy_provenance_digest = bundle.state.legacy_provenance_digest
         if bundle.state.schema_version == LEGACY_REVIEW_SCHEMA_VERSION:
             legacy_provenance_digest = current_provenance_digest
@@ -824,12 +963,13 @@ class ReviewStore:
             svg_digest=_digest(svg) if svg is not None else None,
             png_digest=_bytes_digest(png) if png is not None else None,
             provenance_digest=provenance_digest,
+            layout_digest=layout_digest,
             legacy_provenance_digest=legacy_provenance_digest,
             decision=decision,
             decision_reason=decision_reason,
             selected_candidate_id=selected_candidate_id,
         )
-        after = self._state_value(state, code, scene_ir, provenance)
+        after = self._state_value(state, code, scene_ir, provenance, layout_hints)
         if audit_entry is not None:
             if audit_entry.source != "user":
                 raise ReviewValidationError("review audit entries must have user source")
@@ -852,6 +992,7 @@ class ReviewStore:
             svg_digest=_digest(svg) if svg is not None else None,
             png_digest=_bytes_digest(png) if png is not None else None,
             provenance_digest=provenance_digest,
+            layout_digest=layout_digest,
             decision=decision,
             decision_reason=decision_reason,
             selected_candidate_id=selected_candidate_id,
@@ -872,6 +1013,11 @@ class ReviewStore:
                 svg_digest=_digest(bundle.svg) if bundle.svg is not None else None,
                 png_digest=_bytes_digest(bundle.png) if bundle.png is not None else None,
                 provenance_digest=current_provenance_digest,
+                layout_digest=(
+                    _bytes_digest(_layout_bytes(bundle.layout_hints))
+                    if bundle.layout_hints is not None
+                    else None
+                ),
                 decision=bundle.state.decision,
                 decision_reason=bundle.state.decision_reason,
                 selected_candidate_id=bundle.state.selected_candidate_id,
@@ -889,6 +1035,11 @@ class ReviewStore:
                 files[f"versions/provenance/{current_provenance_digest}.json"] = _provenance_bytes(
                     bundle.provenance
                 )
+            if bundle.layout_hints is not None:
+                current_layout_digest = _bytes_digest(_layout_bytes(bundle.layout_hints))
+                files[f"versions/layout/{current_layout_digest}.json"] = _layout_bytes(
+                    bundle.layout_hints
+                )
         files.update(
             {
                 f"versions/{revision}.mmd": code.encode("utf-8"),
@@ -904,6 +1055,9 @@ class ReviewStore:
                 "provenance.json": (
                     _provenance_bytes(provenance) if provenance is not None else None
                 ),
+                "layout-hints.json": (
+                    _layout_bytes(layout_hints) if layout_hints is not None else None
+                ),
             }
         )
         if (
@@ -917,6 +1071,9 @@ class ReviewStore:
         if provenance is not None:
             assert provenance_digest is not None
             files[f"versions/provenance/{provenance_digest}.json"] = _provenance_bytes(provenance)
+        if layout_hints is not None:
+            assert layout_digest is not None
+            files[f"versions/layout/{layout_digest}.json"] = _layout_bytes(layout_hints)
         if scene_ir is not None:
             files[f"versions/{revision}.scene-ir.json"] = _ir_bytes(scene_ir)
         if svg is not None:
@@ -927,6 +1084,7 @@ class ReviewStore:
             code != bundle.mermaid_code
             or scene_ir != bundle.scene_ir
             or provenance != bundle.provenance
+            or layout_hints != bundle.layout_hints
         )
         files["manifest.json"] = self._updated_manifest_bytes(
             bundle.manifest,
@@ -942,6 +1100,7 @@ class ReviewStore:
         code: str,
         scene_ir: dict[str, Any] | None = None,
         provenance: list[VisualEvidence] | None = None,
+        layout_hints: ReviewLayoutHints | None = None,
     ) -> dict[str, Any]:
         return {
             "revision": state.current_revision,
@@ -951,6 +1110,11 @@ class ReviewStore:
             "png_digest": state.png_digest,
             "provenance_digest": (
                 _bytes_digest(_provenance_bytes(provenance)) if provenance is not None else None
+            ),
+            "layout_digest": (
+                _bytes_digest(_layout_bytes(layout_hints))
+                if layout_hints is not None
+                else None
             ),
             "decision": state.decision,
             "decision_reason": state.decision_reason,
@@ -988,6 +1152,7 @@ class ReviewStore:
         svg: str | None,
         png: bytes | None,
         provenance: list[VisualEvidence] | None,
+        layout_hints: ReviewLayoutHints | None,
         *,
         selected_candidate_id: str | None = None,
     ) -> ReviewState:
@@ -1002,6 +1167,11 @@ class ReviewStore:
             png_digest=_bytes_digest(png) if png is not None else None,
             provenance_digest=(
                 _bytes_digest(_provenance_bytes(provenance)) if provenance is not None else None
+            ),
+            layout_digest=(
+                _bytes_digest(_layout_bytes(layout_hints))
+                if layout_hints is not None
+                else None
             ),
             selected_candidate_id=selected_candidate_id,
         )
@@ -1059,6 +1229,38 @@ class ReviewStore:
             raise ReviewValidationError("provenance evidence ids must be unique")
         _provenance_bytes(normalized)
         return normalized
+
+    @staticmethod
+    def _validate_layout_hints(payload: dict[str, Any] | None) -> ReviewLayoutHints | None:
+        if payload is None:
+            return None
+        try:
+            layout = ReviewLayoutHints.model_validate(payload)
+        except ValidationError as exc:
+            raise ReviewValidationError("layout hints violate the closed layout schema") from exc
+        _layout_bytes(layout)
+        return layout
+
+    @staticmethod
+    def _require_scene_node(scene_ir: dict[str, Any] | None, node_id: str) -> None:
+        if scene_ir is None or not any(
+            item.get("id") == node_id for item in scene_ir.get("elements", [])
+        ):
+            raise ReviewValidationError("layout node does not exist in the current Scene IR")
+
+    @staticmethod
+    def _reconcile_layout_hints(
+        layout_hints: ReviewLayoutHints | None,
+        scene_ir: dict[str, Any] | None,
+    ) -> ReviewLayoutHints | None:
+        if layout_hints is None or scene_ir is None:
+            return None
+        node_ids = {
+            item.get("id")
+            for item in scene_ir.get("elements", [])
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        }
+        return layout_hints.retain_nodes(node_ids)
 
     @staticmethod
     def _validate_manifest(manifest: dict[str, Any]) -> None:
@@ -1161,6 +1363,25 @@ class ReviewStore:
             raise ReviewConflictError("provenance.json failed its manifest digest check")
         return provenance
 
+    def _load_layout_hints(
+        self,
+        bundle: Path,
+        manifest: dict[str, Any],
+    ) -> ReviewLayoutHints | None:
+        path = self._artifact_path(bundle, "layout-hints.json", must_exist=False)
+        if path.exists() and path.stat().st_size > MAX_JSON_BYTES:
+            raise ReviewValidationError("layout-hints.json exceeds the JSON size limit")
+        raw_digest = _bytes_digest(path.read_bytes()) if path.exists() else None
+        payload = self._read_optional_json(bundle, "layout-hints.json", expected=dict)
+        layout = self._validate_layout_hints(payload)
+        files = manifest.get("files")
+        expected_digest = files.get("layout-hints.json") if isinstance(files, dict) else None
+        if raw_digest is not None and expected_digest is None:
+            raise ReviewConflictError("layout-hints.json is not managed by the bundle manifest")
+        if expected_digest is not None and expected_digest != raw_digest:
+            raise ReviewConflictError("layout-hints.json failed its manifest digest check")
+        return layout
+
     def _read_optional_bytes(self, bundle: Path, relative: str, limit: int) -> bytes | None:
         path = self._artifact_path(bundle, relative, must_exist=False)
         if not path.exists():
@@ -1198,6 +1419,24 @@ class ReviewStore:
             raise ReviewValidationError("revision provenance failed its digest check")
         return provenance
 
+    def _read_revision_layout(
+        self,
+        bundle: Path,
+        expected_digest: str | None,
+    ) -> ReviewLayoutHints | None:
+        if expected_digest is None:
+            return None
+        payload = self._read_json(
+            bundle,
+            f"versions/layout/{expected_digest}.json",
+            expected=dict,
+        )
+        layout = self._validate_layout_hints(payload)
+        assert layout is not None
+        if _bytes_digest(_layout_bytes(layout)) != expected_digest:
+            raise ReviewValidationError("revision layout failed its digest check")
+        return layout
+
     def _read_revision_render(
         self,
         bundle: Path,
@@ -1233,6 +1472,7 @@ class ReviewStore:
             "final.png",
             "scene-ir.json",
             "provenance.json",
+            "layout-hints.json",
         ):
             payload = pending_files.get(name)
             if name in pending_files and payload is None:

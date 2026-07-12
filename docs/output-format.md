@@ -55,11 +55,15 @@ OCR/CV/VLM 추출 근거이며 후자는 품질 평가 대상입니다. Direct M
 `review-history.json`은 빈 배열로 시작하며 review edit, candidate 선택, 자연어 patch, 승인·거절,
 undo/redo를 append-only `ReviewHistoryEntry`로 기록합니다. 첫 mutation은 `review-state.json`과
 `versions/r000000.*` 초기 snapshot을 만들고 이후 revision을 immutable하게 추가합니다. Mermaid,
-Scene IR, SVG/PNG, provenance, manifest hash, state, history는 한 review commit으로 교체되며 I/O 실패 시
+Scene IR, SVG/PNG, provenance, advisory layout, manifest hash, state, history는 한 review commit으로 교체되며 I/O 실패 시
 기존 artifact를 복원합니다. provenance payload는 SHA-256 content-addressed
 `versions/provenance/<digest>.json`으로 중복 없이 보존하고 각 revision snapshot이 digest를 참조합니다.
-`mmx-review-0.4` state는 current/legacy provenance digest를 기록하므로 0.3 timeline도 기존 snapshot을
-재작성하지 않고 lazy migration과 undo/redo가 가능합니다. 낙관적 `version`과 code SHA-256이 stale
+layout payload도 `versions/layout/<digest>.json`으로 보존하며 root `layout-hints.json`과 manifest hash를
+undo/redo에서 함께 생성·삭제합니다. Layout은 normalized node center만 담고 source Scene bbox를 바꾸지
+않습니다.
+`mmx-review-0.4.1` state는 current/legacy provenance와 advisory layout digest를 기록합니다. 0.4
+snapshot provenance와 0.3 정적 provenance timeline도 기존 snapshot을 재작성하지 않고 lazy
+migration과 undo/redo가 가능합니다. 낙관적 `version`과 code SHA-256이 stale
 browser write를 차단합니다.
 대안 후보를 선택한 뒤에는 생성 시점 manifest를 덮어쓰지 않고
 `review-state.json.selected_candidate_id`가 현재 review 선택을 나타냅니다.

@@ -33,6 +33,8 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
         "source-stage",
         "source-image",
         "render-image",
+        "render-stage",
+        "layout-overlay",
         "provenance-overlay",
         "mermaid-editor",
         "ir-editor",
@@ -81,11 +83,22 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert 'operation: "reconnect_edge"' in assets.javascript
     assert 'operation: "delete_node"' in assets.javascript
     assert 'operation: "add_node"' in assets.javascript
+    assert 'operation: "move_node"' in assets.javascript
     assert "Source-anchored node added." in assets.javascript
     assert "data-node-id" in assets.javascript
     assert 'addEventListener("keydown"' in assets.javascript
-    assert "Render-layout movement" in assets.html
-    assert "pointermove" not in assets.javascript
+    assert "Drag nodes on the advisory" in assets.html
+    assert "Mermaid may choose a different layout" in assets.html
+    assert 'addEventListener("pointerdown"' in assets.javascript
+    assert 'addEventListener("pointermove"' in assets.javascript
+    assert 'addEventListener("pointerup"' in assets.javascript
+    assert "setPointerCapture" in assets.javascript
+    assert "event.button !== 0" in assets.javascript
+    assert "completed.moved" in assets.javascript
+    assert "saveLayoutPosition" in assets.javascript
+    assert "node.focus()" in assets.javascript
+    assert "touch-action: none" in assets.css
+    assert "ArrowLeft" in assets.javascript
 
 
 def test_asset_base_must_be_same_origin_path():

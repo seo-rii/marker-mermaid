@@ -51,6 +51,24 @@ def write_provenance(bundle, items, *, record_manifest_hash=True):
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
 
+def write_scene(bundle, node_ids=("A", "B")):
+    scene = {
+        "elements": [
+            {
+                "id": node_id,
+                "role": "node",
+                "text": node_id,
+                "bbox": [index * 20, 0, index * 20 + 10, 10],
+            }
+            for index, node_id in enumerate(node_ids)
+        ],
+        "relations": [],
+        "groups": [],
+    }
+    (bundle / "scene-ir.json").write_text(json.dumps(scene), encoding="utf-8")
+    return scene
+
+
 def test_list_and_load_bundle_without_mutating_legacy_sidecar(tmp_path):
     bundle_path = make_bundle(tmp_path)
     store = ReviewStore(tmp_path)
@@ -63,6 +81,162 @@ def test_list_and_load_bundle_without_mutating_legacy_sidecar(tmp_path):
     assert bundle.state.decision == "pending"
     assert bundle.mermaid_code.startswith("flowchart")
     assert not (bundle_path / "review-state.json").exists()
+
+
+def test_layout_hint_is_revisioned_without_changing_code_scene_or_provenance(tmp_path):
+    bundle_path = make_bundle(tmp_path)
+    source_scene = write_scene(bundle_path)
+    write_provenance(bundle_path, [evidence()])
+    store = ReviewStore(tmp_path)
+    initial = store.load_bundle("diagram-a")
+
+    moved = store.apply_layout_hint(
+        "diagram-a",
+        node_id="A",
+        x=0.25,
+        y=0.75,
+        expected_version=initial.state.version,
+        expected_digest=initial.state.code_digest,
+        reason="place API left",
+    )
+
+    assert moved.mermaid_code == initial.mermaid_code
+    assert moved.scene_ir == source_scene
+    assert moved.provenance == initial.provenance
+    assert moved.state.code_digest == initial.state.code_digest
+    assert moved.state.version == 1
+    assert moved.state.layout_digest
+    assert moved.layout_hints.nodes[0].model_dump() == {
+        "node_id": "A",
+        "x": 0.25,
+        "y": 0.75,
+    }
+    assert moved.manifest["review_quality_status"] == "unscored_user_revision"
+    layout_blob = bundle_path / "versions/layout" / f"{moved.state.layout_digest}.json"
+    assert layout_blob.is_file()
+    assert moved.manifest["files"]["layout-hints.json"] == moved.state.layout_digest
+    assert moved.history[-1].operation == "move_node"
+    assert moved.history[-1].target == "A"
+    assert moved.history[-1].before == {"layout_position": None}
+    assert moved.history[-1].after == {"layout_position": [0.25, 0.75]}
+
+    with pytest.raises(ReviewConflictError):
+        store.apply_layout_hint(
+            "diagram-a",
+            node_id="B",
+            x=0.5,
+            y=0.5,
+            expected_version=initial.state.version,
+            expected_digest=initial.state.code_digest,
+        )
+    with pytest.raises(ReviewValidationError, match="did not change"):
+        store.apply_layout_hint(
+            "diagram-a",
+            node_id="A",
+            x=0.25,
+            y=0.75,
+            expected_version=moved.state.version,
+            expected_digest=moved.state.code_digest,
+        )
+
+
+def test_layout_hint_undo_redo_and_scene_reconciliation(tmp_path):
+    bundle_path = make_bundle(tmp_path)
+    write_scene(bundle_path)
+    store = ReviewStore(tmp_path)
+    initial = store.load_bundle("diagram-a")
+    moved = store.apply_layout_hint(
+        "diagram-a",
+        node_id="A",
+        x=0.2,
+        y=0.3,
+        expected_version=initial.state.version,
+        expected_digest=initial.state.code_digest,
+    )
+
+    undone = store.undo(
+        "diagram-a",
+        expected_version=moved.state.version,
+        expected_digest=moved.state.code_digest,
+    )
+    assert undone.layout_hints is None
+    assert not (bundle_path / "layout-hints.json").exists()
+    assert "layout-hints.json" not in undone.manifest["files"]
+
+    redone = store.redo(
+        "diagram-a",
+        expected_version=undone.state.version,
+        expected_digest=undone.state.code_digest,
+    )
+    assert redone.layout_hints.nodes[0].node_id == "A"
+
+    scene_without_a = write_scene(bundle_path, ("B",))
+    # Restore the managed Scene file before applying the explicit editor transaction.
+    (bundle_path / "scene-ir.json").write_text(json.dumps(redone.scene_ir), encoding="utf-8")
+    pruned = store.apply_edit(
+        "diagram-a",
+        redone.mermaid_code,
+        scene_ir=scene_without_a,
+        expected_version=redone.state.version,
+        expected_digest=redone.state.code_digest,
+    )
+    assert pruned.layout_hints is None
+
+
+def test_layout_hint_rejects_unknown_node_and_tampering(tmp_path):
+    bundle_path = make_bundle(tmp_path)
+    write_scene(bundle_path)
+    store = ReviewStore(tmp_path)
+    initial = store.load_bundle("diagram-a")
+    with pytest.raises(ReviewValidationError, match="does not exist"):
+        store.apply_layout_hint(
+            "diagram-a",
+            node_id="missing",
+            x=0.5,
+            y=0.5,
+            expected_version=initial.state.version,
+            expected_digest=initial.state.code_digest,
+        )
+
+    moved = store.apply_layout_hint(
+        "diagram-a",
+        node_id="A",
+        x=0.5,
+        y=0.5,
+        expected_version=initial.state.version,
+        expected_digest=initial.state.code_digest,
+    )
+    (bundle_path / "layout-hints.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "mmx-review-layout-0.1",
+                "coordinate_space": "normalized",
+                "nodes": [{"node_id": "A", "x": 0.9, "y": 0.9}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ReviewConflictError, match="manifest digest"):
+        store.load_bundle("diagram-a")
+    assert moved.state.layout_digest
+
+
+def test_unmanaged_layout_artifact_is_not_adopted_by_legacy_bundle(tmp_path):
+    bundle_path = make_bundle(tmp_path)
+    write_scene(bundle_path)
+    (bundle_path / "layout-hints.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "mmx-review-layout-0.1",
+                "coordinate_space": "normalized",
+                "nodes": [{"node_id": "A", "x": 0.5, "y": 0.5}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ReviewConflictError, match="not managed"):
+        ReviewStore(tmp_path).load_bundle("diagram-a")
 
 
 def test_list_summaries_is_bounded_and_skips_heavy_artifacts(monkeypatch, tmp_path):
@@ -580,7 +754,7 @@ def test_provenance_is_digest_checked_revisioned_and_restored_by_undo_redo(tmp_p
         expected_digest=initial.state.code_digest,
     )
 
-    assert edited.state.schema_version == "mmx-review-0.4"
+    assert edited.state.schema_version == "mmx-review-0.4.1"
     assert [item.id for item in edited.provenance] == ["user-edit-1"]
     assert edited.state.provenance_digest
     assert (bundle_path / "versions/provenance" / f"{edited.state.provenance_digest}.json").exists()
@@ -663,7 +837,7 @@ def test_legacy_review_state_lazily_migrates_static_provenance_on_undo(tmp_path)
         expected_digest=legacy.state.code_digest,
     )
 
-    assert migrated.state.schema_version == "mmx-review-0.4"
+    assert migrated.state.schema_version == "mmx-review-0.4.1"
     assert migrated.state.legacy_provenance_digest
     assert [item.id for item in migrated.provenance] == ["ocr-1"]
     assert (
@@ -712,6 +886,40 @@ def test_legacy_review_state_lazily_migrates_static_provenance_on_undo(tmp_path)
     )
     assert restored_removal.provenance is None
     assert not (bundle_path / "provenance.json").exists()
+
+
+def test_provenance_only_0_4_state_migrates_without_layout(tmp_path):
+    bundle_path = make_bundle(tmp_path)
+    write_scene(bundle_path)
+    store = ReviewStore(tmp_path)
+    initial = store.load_bundle("diagram-a")
+    edited = store.apply_mermaid_edit(
+        "diagram-a",
+        "flowchart LR\n  A --> C\n",
+        expected_version=initial.state.version,
+        expected_digest=initial.state.code_digest,
+    )
+    state_path = bundle_path / "review-state.json"
+    state = json.loads(state_path.read_text())
+    state["schema_version"] = "mmx-review-0.4"
+    state.pop("layout_digest", None)
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    for snapshot_path in (bundle_path / "versions").glob("r*.json"):
+        snapshot = json.loads(snapshot_path.read_text())
+        snapshot["schema_version"] = "mmx-review-0.4"
+        snapshot.pop("layout_digest", None)
+        snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+    old_state = store.load_bundle("diagram-a")
+    assert old_state.state.schema_version == "mmx-review-0.4"
+    migrated = store.apply_mermaid_edit(
+        "diagram-a",
+        "flowchart LR\n  A --> D\n",
+        expected_version=edited.state.version,
+        expected_digest=edited.state.code_digest,
+    )
+    assert migrated.state.schema_version == "mmx-review-0.4.1"
+    assert migrated.layout_hints is None
 
 
 def test_provenance_tamper_and_invalid_replacement_fail_without_writing(tmp_path):

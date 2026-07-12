@@ -52,6 +52,7 @@ flowchart TB
 | `pipeline.py` | budget, failure isolation, selection, 개선 시에만 repair 채택 |
 | `marker_integration.py` | processor 순서, Marker OCR provenance, 전용 renderer/converter |
 | `sidecars.py`, `output.py` | atomic diagram bundle과 문서 출력 |
+| `review_layout.py`, `review_store.py` | source geometry와 분리된 bounded layout hint와 review revision |
 
 `CandidateEngine`, `RepairEngine`, `MermaidRuntime`은 Protocol로 주입됩니다. 기본 Marker/fixture CLI는
 evidence-backed label repair를 연결하며 다른 repair engine도 구조화 proposal 계약으로 주입할 수 있습니다. 테스트와 offline

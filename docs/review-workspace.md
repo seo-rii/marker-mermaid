@@ -18,7 +18,9 @@ SHA-256을 포함하므로 다른 tab에서 먼저 수정했다면 `409 Conflict
 `mermaid.render()`, SVG 검사를 모두 통과해야 합니다. Scene IR도 bbox, 고유 ID, group/relation endpoint
 참조를 포함한 `DiagramSceneIR` schema를 통과해야 합니다. 성공한 render의 SVG/PNG도 code와 같은
 revision에 저장됩니다. provenance도 schema/고유 evidence ID를 검증한 뒤 content-addressed snapshot과
-root manifest hash를 같은 revision에 저장합니다. code, IR 또는 provenance가 바뀐 revision은 원본 기반 점수를 자동 승계하지 않고
+root manifest hash를 같은 revision에 저장합니다. Advisory layout hint도 source bbox와 분리된 closed
+normalized schema와 content-addressed snapshot으로 revision됩니다. code, IR, provenance 또는 layout이
+바뀐 revision은 원본 기반 점수를 자동 승계하지 않고
 `unscored_user_revision`으로 표시합니다.
 
 대안 후보 선택, 승인, 사유가 필수인 거절, undo/redo를 지원합니다. 승인은 저장 당시 성공 여부를
@@ -51,7 +53,7 @@ undo 뒤 새 편집을 하면 활성 timeline은 분기하지만 기존 snapshot
 
 workspace의 `Validated structure operations`는 자유 형식 JSON 편집보다 작은 동기화 경계를
 제공합니다. 원본 overlay에서 node bbox를 클릭하거나 ID select를 사용해 entity를 선택할 수 있습니다.
-현재 지원 연산은 다음 세 가지입니다.
+현재 지원 연산은 다음 네 가지입니다.
 
 - `add_node`: safe ID/label, Scene canvas 안의 positive source bbox, evidence note를 요구합니다. 서버가
   revision 기반 `user_edit` evidence ID를 생성하고 node `evidence_ids`, provenance snapshot, quoted
@@ -62,16 +64,22 @@ workspace의 `Validated structure operations`는 자유 형식 JSON 편집보다
 - `delete_node`: quoted rectangle node declaration과 모든 incident relation/edge가 정확히 대응할 때
   node와 edge를 함께 삭제합니다. group/style/class/click/bare membership 같은 추가 참조, parallel edge,
   chained/labeled edge가 있으면 전체 연산을 거절합니다.
+- `move_node`: 현재 Scene에 존재하는 stable node ID와 normalized center `[x, y]`를 받습니다. source
+  `bbox`, Mermaid code, provenance는 바꾸지 않고 `layout-hints.json`만 revision합니다. 같은 code digest인
+  layout-only revision도 version이 증가하므로 stale drag는 `409`로 거절됩니다.
 
 구조 연산 payload는 operation별 필수 field를 갖는 closed schema이며 알 수 없는 field도 거부합니다.
 요청을 현재 IR에 해석하기 전에 version/digest를 확인하고, 저장 시 lock 안에서 다시 확인합니다. 성공한
 결과는 full Scene schema와 strict Mermaid parse/render를 통과한 뒤에만 하나의 revision으로 저장되며,
 실패하면 IR, code, render, history 중 어느 것도 바뀌지 않습니다.
 
-node 이동은 아직 제공하지 않습니다. Scene `bbox`는 Mermaid 배치 좌표가 아니라 원본 근거 좌표이므로
-drag 결과로 덮어쓰면 provenance가 손상되고, flowchart grammar도 고정 위치를 표현하지 못합니다.
-현재 node 추가는 원본 bbox를 명시한 source-anchored operation만 제공하며 자유 배치 이동/추가는 별도
-layout hint가 필요합니다.
+오른쪽 advisory canvas는 stable ID로 만든 deterministic grid에서 시작하고 저장된 partial hint만
+덮어씁니다. source bbox를 초기 배치로 재사용하지 않습니다. Pointer move는 browser preview만 갱신하고
+pointerup에서 한 번만 commit하며, 실패하면 저장된 위치로 되돌립니다. 방향키로도 0.025 단위 이동할 수
+있습니다. Mermaid flowchart 문법은 임의 고정 좌표를 표현하지 않으므로 hint가 `final.svg`의 정확한
+위치를 바꾼다고 주장하지 않으며 자동 `layout_similarity` 점수에도 주입하지 않습니다. 대안 후보를
+선택하면 hint를 clear하고, node 삭제/직접 Scene 편집은 남은 node ID와 교집합만 보존합니다. undo/redo는
+layout artifact의 존재와 내용을 함께 복원합니다.
 
 ## HTTP 및 파일 안전성
 
@@ -86,7 +94,7 @@ HTTP로 제공하는 파일은 `images/*`와 각 bundle의 `final.svg/png`뿐이
 immutable version 파일은 API 응답이나 static route로 직접 공개하지 않습니다.
 Diagram 목록은 최대 1,000개 summary만 반환하고 최대 5,000개 bundle 후보만 상세 검증합니다. 목록 경로는
 SVG/PNG, Scene IR, review history를 읽지 않으며 개별 bundle을 열 때만 전체 digest를 검증합니다.
-undo/redo는 revision에 없던 optional Scene IR/SVG/PNG/provenance도 실제로 삭제하고 manifest hash를 함께
+undo/redo는 revision에 없던 optional Scene IR/SVG/PNG/provenance/layout도 실제로 삭제하고 manifest hash를 함께
 정리합니다. 0.3 review timeline의 정적 provenance는 첫 mutation/undo에서 검증된 legacy digest로
 고정하며 immutable 과거 snapshot을 재작성하지 않습니다.
 review revision은 처리 중 I/O 오류에는 rollback하지만 여러 파일을 교체하므로 process/power loss까지
@@ -98,7 +106,7 @@ review server는 인증 시스템이 아닙니다. 기본 loopback bind를 권�
 
 ## 현재 제한
 
-provenance/node overlay와 JSON editor, source-anchored node 추가, ID 기반 edge 재연결/node 삭제는
-제공하지만 node layout drag-and-drop 및 edge endpoint를 canvas에서 직접 끌어 놓는 조작은 아직
-구현하지 않았습니다. version history는 undo/redo timeline으로 제공하며
+provenance/node overlay와 JSON editor, source-anchored node 추가, advisory node drag-and-drop,
+ID 기반 edge 재연결/node 삭제는 제공합니다. Mermaid render의 실제 좌표 강제와 edge endpoint를
+canvas에서 직접 끌어 놓는 조작은 아직 구현하지 않았습니다. version history는 undo/redo timeline으로 제공하며
 과거 revision을 임의 선택하는 UI와 VLM 기반 자유 형식 명령도 후속 범위입니다.

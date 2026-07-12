@@ -45,7 +45,7 @@
 | NL patch | 구현 | 품질 invalidation, 명시 ID 기반 patch와 구조화 audit history |
 | structured operations | 구현 | exact-ID edge 재연결/node 삭제, IR↔Mermaid 1:1 gate, pre-interpretation optimistic lock |
 | source-anchored node add | 구현 | bounded canvas bbox, server-created user_edit evidence, code/IR/provenance transaction |
-| layout drag-and-drop | 후속 | source bbox와 별도인 revisioned layout hint/canvas 도입 필요 |
+| layout drag-and-drop | 구현 | source bbox와 분리된 normalized advisory canvas, pointer/keyboard move, content-addressed revision과 undo/redo |
 | release evaluation | 기반 | hash-bound manifest, micro metrics, hard/fixture/22-type/quality gate와 JSON/Markdown report; 대규모 corpus와 격리 runner 후속 |
 
 ## 릴리스 해석

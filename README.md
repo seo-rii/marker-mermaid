@@ -10,6 +10,7 @@ experimental engineering baseline입니다. Core/계획 serializer에 더해 Sta
 fallback합니다. Pie, XY, Quadrant, Sankey, Radar, Treemap, Venn도 explicit numeric/set IR을
 native 또는 loss-disclosed fallback으로 처리합니다. 대화형 workspace에서는 검증된 code/IR
 편집, provenance overlay, 대안 선택, 제한된 자연어 patch, undo/redo, 승인/거절을 제공합니다.
+Review canvas의 node drag는 source bbox를 덮어쓰지 않는 revisioned advisory layout hint로 저장됩니다.
 유형별 추출 schema, 외부 평가 corpus, 일부 review 조작처럼 아직 구현하지 않은 v0.3 범위는
 [스펙 대응표](docs/spec-coverage.md)에 숨김없이 구분했습니다.
 
@@ -115,6 +116,7 @@ output/document/
         ├── scores.json
         ├── review-history.json
         ├── review-state.json        # 첫 review 수정 후
+        ├── layout-hints.json        # advisory node center (drag 후, 선택적)
         ├── versions/                # immutable review revisions
         └── alternatives/
 ```

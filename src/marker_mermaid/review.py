@@ -19,8 +19,11 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from pydantic import ValidationError
+
 from marker_mermaid.config import SecurityProfile
 from marker_mermaid.review_commands import apply_review_command, apply_review_operation
+from marker_mermaid.review_layout import MoveNodeLayoutOperation
 from marker_mermaid.review_store import (
     MAX_JSON_BYTES,
     ReviewBundle,
@@ -360,6 +363,7 @@ class ReviewHandler(SimpleHTTPRequestHandler):
             reason=f"selected alternative {candidate_id}",
             operation="select_candidate",
             selected_candidate_id=candidate_id,
+            reset_layout=True,
         )
 
     def _apply_command(
@@ -415,6 +419,20 @@ class ReviewHandler(SimpleHTTPRequestHandler):
             expected_digest=digest,
         )
         operation_name = operation.get("operation")
+        if operation_name == "move_node":
+            try:
+                move = MoveNodeLayoutOperation.model_validate(operation)
+            except ValidationError as exc:
+                raise ReviewValidationError("move_node operation is invalid") from exc
+            return self.store.apply_layout_hint(
+                bundle_id,
+                node_id=move.node_id,
+                x=move.position[0],
+                y=move.position[1],
+                expected_version=version,
+                expected_digest=digest,
+                reason=reason,
+            )
         user_evidence_id = None
         source_block_ids: list[str] | None = None
         if operation_name == "add_node":
@@ -483,6 +501,11 @@ class ReviewHandler(SimpleHTTPRequestHandler):
             "selected_candidate_id": bundle.state.selected_candidate_id,
             "mermaid_code": bundle.mermaid_code,
             "scene_ir": bundle.scene_ir or {},
+            "layout_hints": (
+                bundle.layout_hints.model_dump(mode="json")
+                if bundle.layout_hints is not None
+                else None
+            ),
             "provenance": provenance,
             "issues": issues,
             "alternatives": self._alternatives(bundle.bundle_id),

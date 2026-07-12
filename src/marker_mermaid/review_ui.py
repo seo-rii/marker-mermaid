@@ -93,9 +93,12 @@ def build_review_workspace_assets(
           </div>
         </figure>
         <figure>
-          <figcaption>Mermaid render</figcaption>
-          <div class="image-stage">
+          <figcaption>Mermaid render and advisory layout</figcaption>
+          <p class="muted">Drag hints to record intent; Mermaid may choose a different layout.</p>
+          <div id="render-stage" class="image-stage">
             <img id="render-image" alt="Rendered Mermaid reconstruction">
+            <svg id="layout-overlay" viewBox="0 0 1 1"
+              preserveAspectRatio="none" aria-label="Advisory node layout canvas"></svg>
           </div>
         </figure>
       </section>
@@ -115,8 +118,8 @@ def build_review_workspace_assets(
       <section id="structure-operations" aria-labelledby="structure-heading">
         <h2 id="structure-heading">Validated structure operations</h2>
         <p class="muted">
-          Select source-backed nodes and relations by stable ID. Render-layout movement and
-          unanchored insertion remain unavailable until layout hints are revisioned safely.
+          Select source-backed nodes and relations by stable ID. Drag nodes on the advisory
+          layout canvas without changing source bounding boxes or claiming exact Mermaid placement.
         </p>
         <div class="structure-grid">
           <form id="add-node-form">
@@ -216,9 +219,10 @@ figcaption, label { font-weight: 650; }
 .image-stage { position: relative; display: grid; place-items: center; min-height: 18rem;
   border: 1px solid GrayText; overflow: auto; background: #fff; }
 .image-stage img { display: block; max-width: 100%; max-height: 65vh; }
-#provenance-overlay {
+#provenance-overlay, #layout-overlay {
   position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: auto;
 }
+#layout-overlay { touch-action: none; }
 .evidence-box {
   fill: rgb(54 162 235 / .12); stroke: #087dbd; stroke-width: 2;
   vector-effect: non-scaling-stroke;
@@ -230,6 +234,18 @@ figcaption, label { font-weight: 650; }
 }
 .node-box:hover, .node-box:focus, .node-box.selected {
   fill: rgb(116 83 198 / .18); stroke: #4f2d9e;
+}
+.layout-node { cursor: grab; outline: none; }
+.layout-node circle {
+  fill: rgb(255 255 255 / .88); stroke: #8a3ffc; stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+.layout-node.selected circle, .layout-node:hover circle, .layout-node:focus circle {
+  fill: rgb(138 63 252 / .24); stroke: #5b21b6;
+}
+.layout-node text {
+  fill: #24113d; font-size: .035px; font-weight: 700; pointer-events: none;
+  text-anchor: middle; dominant-baseline: central;
 }
 .editor-grid { margin-top: 1rem; }
 .editor-grid label { display: grid; gap: .4rem; }
@@ -293,6 +309,7 @@ REVIEW_JAVASCRIPT = r"""
   const controls = {
     diagram: byId("diagram-select"), source: byId("source-image"), render: byId("render-image"),
     overlay: byId("provenance-overlay"), mermaid: byId("mermaid-editor"), ir: byId("ir-editor"),
+    layout: byId("layout-overlay"),
     issues: byId("issue-list"), alternatives: byId("alternative-list"), message: byId("message"),
     saveState: byId("save-state"), undo: byId("undo"), redo: byId("redo"),
     node: byId("node-select"), edge: byId("edge-select"),
@@ -391,6 +408,48 @@ REVIEW_JAVASCRIPT = r"""
       rect.dataset.nodeId = text(item.id);
       if (text(item.id) === controls.node.value) rect.classList.add("selected");
       controls.overlay.append(rect);
+    }
+  }
+
+  function layoutPositions(diagram) {
+    const nodes = Array.isArray(diagram.scene_ir?.elements)
+      ? [...diagram.scene_ir.elements].filter((item) => item?.id) : [];
+    nodes.sort((left, right) => text(left.id).localeCompare(text(right.id)));
+    const saved = new Map(
+      (Array.isArray(diagram.layout_hints?.nodes) ? diagram.layout_hints.nodes : [])
+        .map((item) => [text(item.node_id), [Number(item.x), Number(item.y)]]),
+    );
+    const columns = Math.max(1, Math.ceil(Math.sqrt(nodes.length)));
+    return nodes.map((node, index) => {
+      const fallback = [
+        ((index % columns) + 1) / (columns + 1),
+        (Math.floor(index / columns) + 1) / (Math.ceil(nodes.length / columns) + 1),
+      ];
+      const position = saved.get(text(node.id));
+      const valid = position?.length === 2 && position.every(
+        (value) => Number.isFinite(value) && value >= 0 && value <= 1,
+      );
+      return { node, position: valid ? position : fallback };
+    });
+  }
+
+  function renderLayout(diagram) {
+    controls.layout.replaceChildren();
+    for (const { node, position } of layoutPositions(diagram)) {
+      const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      group.setAttribute("class", "layout-node");
+      group.setAttribute("transform", `translate(${position[0]} ${position[1]})`);
+      group.setAttribute("tabindex", "0");
+      group.setAttribute("role", "button");
+      group.setAttribute("aria-label", `Move layout hint for node ${text(node.id)}`);
+      group.dataset.nodeId = text(node.id);
+      group.dataset.x = String(position[0]); group.dataset.y = String(position[1]);
+      if (text(node.id) === controls.node.value) group.classList.add("selected");
+      const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      circle.setAttribute("r", ".035");
+      const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      label.textContent = text(node.id).slice(0, 12);
+      group.append(circle, label); controls.layout.append(group);
     }
   }
 
@@ -504,7 +563,7 @@ REVIEW_JAVASCRIPT = r"""
     controls.saveState.textContent = [
       text(diagram.status || "review"), `grade ${text(diagram.grade || "U")}`,
     ].join(" · ");
-    renderStructure(diagram); renderOverlay(diagram);
+    renderStructure(diagram); renderOverlay(diagram); renderLayout(diagram);
     renderIssues(diagram); renderAlternatives(diagram);
   }
 
@@ -542,6 +601,7 @@ REVIEW_JAVASCRIPT = r"""
   controls.diagram.addEventListener("change", loadSelectedDiagram);
 
   controls.source.addEventListener("load", () => renderOverlay(state.current || {}));
+  controls.render.addEventListener("load", () => renderLayout(state.current || {}));
   function selectOverlayNode(nodeId) {
     controls.node.value = text(nodeId);
     renderStructure(state.current || {}); renderOverlay(state.current || {});
@@ -559,8 +619,76 @@ REVIEW_JAVASCRIPT = r"""
   });
   controls.node.addEventListener("change", () => {
     renderStructure(state.current || {}); renderOverlay(state.current || {});
+    renderLayout(state.current || {});
   });
   controls.edge.addEventListener("change", () => renderStructure(state.current || {}));
+  let layoutDrag = null;
+  function normalizedPointer(event) {
+    const bounds = controls.layout.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) return null;
+    return [
+      Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width)),
+      Math.min(1, Math.max(0, (event.clientY - bounds.top) / bounds.height)),
+    ];
+  }
+  controls.layout.addEventListener("pointerdown", (event) => {
+    const node = event.target.closest(".layout-node[data-node-id]");
+    if (!node || state.busy || event.button !== 0 || event.isPrimary === false) return;
+    event.preventDefault(); controls.layout.setPointerCapture(event.pointerId);
+    layoutDrag = {
+      node, nodeId: node.dataset.nodeId, pointerId: event.pointerId,
+      startX: Number(node.dataset.x), startY: Number(node.dataset.y), moved: false,
+    };
+    selectOverlayNode(layoutDrag.nodeId);
+  });
+  controls.layout.addEventListener("pointermove", (event) => {
+    if (!layoutDrag || event.pointerId !== layoutDrag.pointerId) return;
+    const position = normalizedPointer(event);
+    if (!position) return;
+    if (Math.hypot(position[0] - layoutDrag.startX, position[1] - layoutDrag.startY) > .002) {
+      layoutDrag.moved = true;
+    }
+    layoutDrag.node.dataset.x = String(position[0]);
+    layoutDrag.node.dataset.y = String(position[1]);
+    layoutDrag.node.setAttribute("transform", `translate(${position[0]} ${position[1]})`);
+  });
+  async function saveLayoutPosition(nodeId, position) {
+    await perform(
+      route("/operations"),
+      { operation: { operation: "move_node", node_id: nodeId, position } },
+      "Advisory layout hint saved.",
+    );
+    const node = [...controls.layout.querySelectorAll(".layout-node[data-node-id]")]
+      .find((item) => item.dataset.nodeId === nodeId);
+    if (node) node.focus();
+  }
+  controls.layout.addEventListener("pointerup", (event) => {
+    if (!layoutDrag || event.pointerId !== layoutDrag.pointerId) return;
+    const completed = layoutDrag; layoutDrag = null;
+    if (controls.layout.hasPointerCapture(event.pointerId)) {
+      controls.layout.releasePointerCapture(event.pointerId);
+    }
+    if (!completed.moved) { renderLayout(state.current || {}); return; }
+    saveLayoutPosition(
+      completed.nodeId,
+      [Number(completed.node.dataset.x), Number(completed.node.dataset.y)],
+    );
+  });
+  controls.layout.addEventListener("pointercancel", () => {
+    layoutDrag = null; renderLayout(state.current || {});
+  });
+  controls.layout.addEventListener("keydown", (event) => {
+    const node = event.target.closest(".layout-node[data-node-id]");
+    const delta = { ArrowLeft: [-.025, 0], ArrowRight: [.025, 0],
+      ArrowUp: [0, -.025], ArrowDown: [0, .025] }[event.key];
+    if (!node || !delta || state.busy) return;
+    event.preventDefault();
+    const position = [
+      Math.min(1, Math.max(0, Number(node.dataset.x) + delta[0])),
+      Math.min(1, Math.max(0, Number(node.dataset.y) + delta[1])),
+    ];
+    saveLayoutPosition(node.dataset.nodeId, position);
+  });
   byId("save-editors").addEventListener("click", async () => {
     let sceneIr;
     try { sceneIr = JSON.parse(controls.ir.value); }

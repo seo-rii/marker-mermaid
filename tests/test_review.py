@@ -584,6 +584,74 @@ def test_structured_edge_operation_is_validated_rendered_and_audited(tmp_path):
     assert reconnect["reason"] == "confirmed against source"
 
 
+def test_layout_move_operation_is_advisory_versioned_and_stale_safe(tmp_path):
+    make_bundle(tmp_path)
+    with running_server(tmp_path) as (base, store):
+        current = store.load_bundle("diagram-a")
+        original_code = current.mermaid_code
+        original_bbox = current.scene_ir["elements"][0]["bbox"]
+        payload = {
+            **expected(current),
+            "operation": {
+                "operation": "move_node",
+                "node_id": "A",
+                "position": [0.2, 0.8],
+            },
+            "reason": "advisory placement",
+        }
+        moved, _ = post_json(f"{base}/api/diagrams/diagram-a/operations", payload)
+        with pytest.raises(urllib.error.HTTPError) as stale:
+            post_json(f"{base}/api/diagrams/diagram-a/operations", payload)
+        latest = store.load_bundle("diagram-a")
+        with pytest.raises(urllib.error.HTTPError) as extra_field:
+            post_json(
+                f"{base}/api/diagrams/diagram-a/operations",
+                {
+                    **expected(latest),
+                    "operation": {
+                        "operation": "move_node",
+                        "node_id": "B",
+                        "position": [0.4, 0.4],
+                        "url": "https://example.invalid",
+                    },
+                },
+            )
+
+    diagram = moved["diagram"]
+    assert diagram["mermaid_code"] == original_code
+    assert diagram["scene_ir"]["elements"][0]["bbox"] == original_bbox
+    assert diagram["layout_hints"]["coordinate_space"] == "normalized"
+    assert diagram["layout_hints"]["nodes"] == [{"node_id": "A", "x": 0.2, "y": 0.8}]
+    assert stale.value.code == HTTPStatus.CONFLICT
+    assert extra_field.value.code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+def test_candidate_selection_clears_layout_and_undo_restores_it(tmp_path):
+    make_bundle(tmp_path)
+    with running_server(tmp_path) as (base, store):
+        initial = store.load_bundle("diagram-a")
+        moved = store.apply_layout_hint(
+            "diagram-a",
+            node_id="A",
+            x=0.25,
+            y=0.5,
+            expected_version=initial.state.version,
+            expected_digest=initial.state.code_digest,
+        )
+        selected, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/candidate",
+            {**expected(moved), "candidate_id": "candidate-b"},
+        )
+        current = store.load_bundle("diagram-a")
+        undone, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/history",
+            {**expected(current), "action": "undo"},
+        )
+
+    assert selected["diagram"]["layout_hints"] is None
+    assert undone["diagram"]["layout_hints"]["nodes"][0]["node_id"] == "A"
+
+
 def test_structured_operation_schema_failure_leaves_bundle_unchanged(tmp_path):
     diagram_path = make_bundle(tmp_path)
     before = {
