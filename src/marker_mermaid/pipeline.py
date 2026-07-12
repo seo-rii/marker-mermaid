@@ -58,6 +58,7 @@ from marker_mermaid.serializers import (
 )
 from marker_mermaid.style_recovery import recover_flowchart_styles
 from marker_mermaid.validation import CandidateValidator
+from marker_mermaid.vector import VectorPrimitiveEngine
 from marker_mermaid.views import build_visual_priors
 
 
@@ -314,6 +315,7 @@ class ReconstructionPipeline:
         failures: list[CandidateFailure] = []
         all_evidence = list(evidence or [])
         known_evidence_ids = {item.id for item in all_evidence}
+        trusted_bold_evidence: dict[str, VisualEvidence] = {}
         try:
             views, view_warnings = build_visual_priors(image, all_evidence, self.config)
         except Exception as exc:
@@ -353,6 +355,7 @@ class ReconstructionPipeline:
             fusion_source = getattr(engine, "fusion_source", "other")
             if fusion_source not in {"vector", "geometry", "ocr", "vlm", "other"}:
                 fusion_source = "other"
+            trusted_vector_engine = type(engine) is VectorPrimitiveEngine
             has_payload = bool(
                 observation.scene_ir is not None
                 or observation.typed_candidates
@@ -377,6 +380,16 @@ class ReconstructionPipeline:
                     all_evidence.append(item)
                     known_evidence_ids.add(item.id)
                     evidence_changed = True
+                    if (
+                        trusted_vector_engine
+                        and item.kind == "vector_text"
+                        and item.font_weight == "bold"
+                    ):
+                        trusted_bold_evidence[item.id] = item
+                else:
+                    # A provenance ID collision cannot authorize style even
+                    # when the duplicate payload happens to be identical.
+                    trusted_bold_evidence.pop(item.id, None)
             if evidence_changed or hints_changed:
                 try:
                     context.views, new_warnings = build_visual_priors(
@@ -554,11 +567,22 @@ class ReconstructionPipeline:
         )
         for index, draft in enumerate(drafts, start=1):
             if self.config.enable_style_recovery:
+                style_candidate_scene = None
+                if draft.typed_ir is not None:
+                    style_candidate_scene = typed_ir_to_scene(
+                        draft.diagram_type,
+                        draft.typed_ir,
+                    )
+                elif draft.method == "scene_ir_fallback" and draft.observation.scene_ir is not None:
+                    style_candidate_scene = draft.observation.scene_ir.model_copy(deep=True)
                 style_recovery = recover_flowchart_styles(
                     draft.code,
                     draft.observation.scene_ir,
+                    style_candidate_scene,
                     compatibility_profile=self.config.compatibility_profile,
                     security_profile=self.config.security_profile,
+                    known_evidence_ids={item.id for item in all_evidence},
+                    known_bold_evidence=trusted_bold_evidence,
                 )
                 styled_code = style_recovery.code
                 style_repair_history = (
@@ -570,6 +594,15 @@ class ReconstructionPipeline:
                             details={
                                 "element_ids": list(style_recovery.applied_element_ids),
                                 "link_indexes": list(style_recovery.applied_link_indexes),
+                                "attributions": [
+                                    {
+                                        "source_element_id": item.source_element_id,
+                                        "emitted_element_id": item.emitted_element_id,
+                                        "evidence_ids": list(item.evidence_ids),
+                                        "match_method": item.match_method,
+                                    }
+                                    for item in style_recovery.attributions
+                                ],
                                 "stage": "pre_validation",
                             },
                         )

@@ -92,3 +92,5 @@ source의 tile 1~2개를 먼저 예약하고, 앞선 engine의 type top-k에 따
 기본 `strict` security profile에서는 `enable_style_recovery=true`여도 style statement를 만들지
 않습니다. 실제 style code를 원하면 `portable-rich`/`style-rich` compatibility와 `style-only` 같은
 비-strict security profile을 명시해야 하며 결과는 계속 parse/render/SVG hard gate를 거칩니다.
+PDF label 굵기는 trusted vector span evidence의 ID가 충돌하지 않고 text/bbox가 generated Flowchart
+node에 모호하지 않게 대응할 때만 상수 `font-weight:bold`로 복원됩니다.

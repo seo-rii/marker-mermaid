@@ -163,6 +163,38 @@ def test_vector_geometry_and_label_override_other_sources() -> None:
     assert any("label conflict" in warning for warning in fused.warnings)
 
 
+def test_conflicting_font_weight_evidence_is_omitted_during_fusion() -> None:
+    vector = _scene(
+        SceneElement(
+            id="node",
+            role="unknown",
+            text="Label",
+            bbox=(10, 10, 40, 40),
+            font_weight="bold",
+        )
+    )
+    vlm = _scene(
+        SceneElement(
+            id="semantic-node",
+            role="process",
+            text="Label",
+            bbox=(10, 10, 40, 40),
+            font_weight="normal",
+        )
+    )
+
+    fused = FusionEngine().fuse(
+        [
+            FusionInput("vector", _observation("flowchart", 0.8, scene=vector), "pdf"),
+            FusionInput("vlm", _observation("flowchart", 0.9, scene=vlm), "vlm"),
+        ]
+    )
+
+    assert fused.scene_ir is not None
+    assert fused.scene_ir.elements[0].font_weight is None
+    assert any("font-weight conflict" in warning for warning in fused.warnings)
+
+
 def test_ocr_consensus_beats_vlm_label() -> None:
     vlm = _scene(
         SceneElement(

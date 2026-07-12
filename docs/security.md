@@ -30,8 +30,11 @@ native C4는 Mermaid 11.16에서 parse/render되지만 생성 SVG가 undeclared 
 `style-only`은 마지막 세 Mermaid style statement만 허용하고 외부 URL/CSS는 계속 거부합니다.
 `trusted-local`은 자동 Markdown에 게시할 수 없습니다.
 
-Style recovery는 Scene IR 색을 그대로 CSS로 복사하지 않습니다. node와 vector-backed edge 모두 hex와
-제한된 named color, `stroke-width`, `stroke-dasharray`만 허용하며 `strict` 또는 `portable-basic`
+Style recovery는 Scene IR 값을 그대로 CSS로 복사하지 않습니다. node와 vector-backed edge에는 hex와
+제한된 named color, `stroke-width`, `stroke-dasharray`만 허용하고, vector-backed label 굵기는 상수
+`font-weight:bold`만 허용합니다. 굵기는 registered bold `vector_text` evidence와 모호하지 않은
+source→candidate mapping을 모두 요구합니다. evidence는 실제 vector engine origin, 고유 ID, source bbox
+내부 span, source/candidate/span label 일치까지 재검사합니다. `strict` 또는 `portable-basic`
 조합에서는 code를 바꾸지 않고 evidence를 IR에만 남깁니다. edge color/style은 모든 Mermaid edge의
 순서를 정확히 mapping할 수 있을 때만 하나의 `linkStyle`로 출력합니다. 생성 style code도 동일한
 source scanner와 SVG 검사를 통과해야 합니다.

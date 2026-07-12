@@ -29,6 +29,7 @@ Review canvas의 node drag는 source bbox를 덮어쓰지 않는 revisioned advi
 - panel/merge OCR bbox와 원 page/block을 잇는 affine provenance를 sidecar에 보존합니다.
 - geometry contour/line/arrowhead evidence를 VLM보다 먼저 수집하며 engine별 후보를 공정하게 배분합니다.
 - PDF vector/CV/OCR/VLM observation을 출처별 우선순위로 fusion하고 충돌 warning을 남깁니다.
+- 등록된 PDF vector span 근거가 있는 Flowchart bold label을 안전한 상수 style로 복원합니다.
 - 평가 가능한 경우 edge·arrow·layout·root-to-terminal path 구조 점수를 기록합니다.
 - 렌더 런타임은 외부 네트워크를 차단하며 종료 시 Chromium process group을 정리합니다.
 

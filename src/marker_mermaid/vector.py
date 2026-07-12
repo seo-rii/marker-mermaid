@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, replace
+from typing import Any, Literal
 
 from marker_mermaid.models import (
     DiagramSceneIR,
@@ -41,6 +41,7 @@ class VectorText:
     bbox: BBox
     color: str | None = None
     confidence: float = 0.99
+    font_weight: Literal["normal", "bold"] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,10 +79,11 @@ class VectorObservation:
 
         block_ids = list(dict.fromkeys(source_block_ids))
         primitives = _deduplicate_primitives(self.primitives)
-        texts = _deduplicate_texts(self.texts)
+        texts, dedupe_warnings = _deduplicate_texts(self.texts)
         evidence: list[VisualEvidence] = []
         elements: list[SceneElement] = []
         records: list[tuple[VectorPrimitive, str]] = []
+        font_warnings: list[str] = []
 
         for primitive in primitives:
             if not _is_node_primitive(primitive):
@@ -122,6 +124,7 @@ class VectorObservation:
                     kind="vector_text",
                     bbox=text_item.bbox,
                     text=text_item.text,
+                    font_weight=text_item.font_weight,
                     score=_probability(text_item.confidence),
                     source_block_ids=block_ids,
                 )
@@ -140,6 +143,15 @@ class VectorObservation:
             element = by_id[element_id]
             element.text = " ".join(item.text for item, _evidence_id in assigned)
             element.evidence_ids.extend(evidence_id for _item, evidence_id in assigned)
+            weights = {item.font_weight for item, _evidence_id in assigned}
+            if weights == {"bold"}:
+                element.font_weight = "bold"
+            elif weights == {"normal"}:
+                element.font_weight = "normal"
+            elif weights - {None}:
+                font_warnings.append(
+                    f"vector text weight was mixed or partial for {element_id}; emphasis omitted"
+                )
 
         relations: list[SceneRelation] = []
         relation_keys: set[tuple[str, str, bool, bool]] = set()
@@ -189,7 +201,7 @@ class VectorObservation:
                 )
             )
 
-        warnings = list(self.warnings)
+        warnings = [*self.warnings, *dedupe_warnings, *font_warnings]
         if not primitives and not texts:
             warnings.append("vector engine found no PDF vector primitives or text")
         elif not elements:
@@ -344,9 +356,11 @@ def extract_vector_observation(
     if len(primitives) > max_primitives:
         primitives = primitives[:max_primitives]
         warnings.append("vector primitives were truncated to the configured budget")
+    deduplicated_texts, text_warnings = _deduplicate_texts(texts)
+    warnings.extend(text_warnings)
     return VectorObservation(
         canvas_size=canvas_size,
-        texts=tuple(_deduplicate_texts(texts)),
+        texts=tuple(deduplicated_texts),
         primitives=tuple(_deduplicate_primitives(primitives)),
         warnings=tuple(warnings),
     )
@@ -578,8 +592,19 @@ def _parse_text(raw: Any) -> VectorText:
         text=text.strip(),
         bbox=bbox,
         color=_as_color(_get(raw, "color")),
+        font_weight=_font_weight(raw),
         confidence=_as_confidence(_get(raw, "confidence"), 0.99),
     )
+
+
+def _font_weight(raw: Any) -> Literal["normal", "bold"] | None:
+    explicit = _get(raw, "font_weight")
+    if explicit in {"normal", "bold"}:
+        return explicit
+    flags = _get(raw, "flags")
+    if isinstance(flags, int) and not isinstance(flags, bool):
+        return "bold" if flags & 16 else "normal"
+    return None
 
 
 def _parse_drawing(raw: Any) -> tuple[list[VectorPrimitive], int]:
@@ -660,6 +685,7 @@ def _map_text(item: VectorText, transform: _Transform) -> VectorText | None:
         text=item.text,
         bbox=transform.bbox(item.bbox),
         color=item.color,
+        font_weight=item.font_weight,
         confidence=item.confidence,
     )
 
@@ -812,15 +838,32 @@ def _bbox_iou(left: BBox, right: BBox) -> float:
     return intersection / union if union else 0.0
 
 
-def _deduplicate_texts(texts: Iterable[VectorText]) -> list[VectorText]:
+def _deduplicate_texts(texts: Iterable[VectorText]) -> tuple[list[VectorText], list[str]]:
     selected: dict[tuple[str, BBox], VectorText] = {}
+    conflicting_weights: set[tuple[str, BBox]] = set()
     for item in texts:
         if item.bbox[2] <= item.bbox[0] or item.bbox[3] <= item.bbox[1]:
             continue
         key = item.text, item.bbox
-        if key not in selected or item.confidence > selected[key].confidence:
+        existing = selected.get(key)
+        if existing is None:
             selected[key] = item
-    return sorted(selected.values(), key=lambda item: (item.bbox, item.text))
+            continue
+        preferred = item if item.confidence > existing.confidence else existing
+        if existing.font_weight != item.font_weight or key in conflicting_weights:
+            conflicting_weights.add(key)
+            preferred = replace(preferred, font_weight=None)
+        selected[key] = preferred
+    warnings = (
+        [
+            "vector text weight conflicted for "
+            f"{len(conflicting_weights)} duplicate span(s); emphasis omitted"
+        ]
+        if conflicting_weights
+        else []
+    )
+    ordered = sorted(selected.values(), key=lambda item: (item.bbox, item.text))
+    return ordered, warnings
 
 
 def _deduplicate_primitives(primitives: Iterable[VectorPrimitive]) -> list[VectorPrimitive]:

@@ -41,6 +41,7 @@
 - Separate source-observation and generated-candidate Scene IR sidecar artifacts.
 - Hash-bound MMX-001 corpus manifests, fixed release gates, auditable reports, and `evaluate` CLI.
 - Revisioned advisory Review layout hints with pointer and keyboard node movement.
+- Evidence-backed PDF vector bold-label recovery with source-to-candidate attribution.
 
 ### Changed
 

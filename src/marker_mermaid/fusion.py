@@ -369,6 +369,19 @@ class FusionEngine:
         if label_warning:
             warnings.append(f"fusion element {result.id!r} {label_warning}")
 
+        font_weights = {
+            item.element.font_weight
+            for item in ordered
+            if item.element.font_weight is not None
+        }
+        if len(font_weights) == 1:
+            result.font_weight = next(iter(font_weights))
+        elif len(font_weights) > 1:
+            result.font_weight = None
+            warnings.append(
+                f"fusion element {result.id!r} font-weight conflict; emphasis omitted"
+            )
+
         # Roles carry semantic meaning, so prefer a non-unknown VLM role even
         # when the shape and position come from vector or CV geometry.
         role_records = sorted(

@@ -121,6 +121,7 @@ class _Page:
                                         "text": "Node",
                                         "bbox": (110, 210, 150, 225),
                                         "color": 0x123456,
+                                        "flags": 16,
                                     }
                                 ]
                             }
@@ -158,11 +159,59 @@ def test_duck_typed_page_vectors_are_cropped_and_scaled_to_source_image() -> Non
     assert node.fill_color == "#ff8000"
     assert node.border_color == "#0000ff"
     assert node.border_style == "thick"
+    assert node.font_weight == "bold"
     text_evidence = next(item for item in result.evidence if item.kind == "vector_text")
     assert text_evidence.bbox == (10.0, 10.0, 50.0, 25.0)
+    assert text_evidence.font_weight == "bold"
     # The out-of-crop rectangle does not leak into the reconstructed crop.
     assert len(result.scene_ir.elements) == 1
     assert any("bbox fallback" in warning for warning in result.warnings)
+
+
+def test_mixed_vector_span_weights_fail_closed_without_node_emphasis() -> None:
+    observation = VectorObservation(
+        canvas_size=(100, 50),
+        texts=(
+            VectorText("Bold", (10, 10, 35, 20), font_weight="bold"),
+            VectorText("Normal", (40, 10, 75, 20), font_weight="normal"),
+        ),
+        primitives=(
+            VectorPrimitive(kind="rectangle", bbox=(0, 0, 90, 30), closed=True),
+        ),
+    )
+
+    result = observation.to_engine_observation(["block"])
+
+    assert result.scene_ir is not None
+    assert result.scene_ir.elements[0].font_weight is None
+    assert any("mixed or partial" in warning for warning in result.warnings)
+
+
+def test_duplicate_vector_span_weight_conflict_does_not_duplicate_the_label() -> None:
+    observation = VectorObservation(
+        canvas_size=(100, 50),
+        texts=(
+            VectorText("Node", (10, 10, 50, 20), font_weight="bold"),
+            VectorText("Node", (10, 10, 50, 20), font_weight="normal"),
+        ),
+        primitives=(
+            VectorPrimitive(kind="rectangle", bbox=(0, 0, 90, 30), closed=True),
+        ),
+    )
+
+    result = observation.to_engine_observation(["block"])
+
+    assert result.scene_ir is not None
+    assert result.scene_ir.elements[0].text == "Node"
+    assert result.scene_ir.elements[0].font_weight is None
+    assert any("duplicate span" in warning for warning in result.warnings)
+
+
+def test_vector_text_fourth_positional_argument_remains_confidence() -> None:
+    text = VectorText("Node", (10, 10, 50, 20), None, 0.8)
+
+    assert text.confidence == 0.8
+    assert text.font_weight is None
 
 
 def test_explicit_pdf_page_provider_takes_precedence_over_marker_block() -> None:

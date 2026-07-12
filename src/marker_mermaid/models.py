@@ -76,6 +76,7 @@ class VisualEvidence(BaseModel):
     ]
     bbox: BBox | None = None
     text: str | None = None
+    font_weight: Literal["normal", "bold"] | None = None
     score: float | None = None
     source_block_ids: list[str] = Field(default_factory=list)
 
@@ -122,6 +123,7 @@ class SceneElement(BaseModel):
     fill_color: str | None = None
     border_color: str | None = None
     border_style: str | None = None
+    font_weight: Literal["normal", "bold"] | None = None
     confidence: float = 0.0
     evidence_ids: list[str] = Field(default_factory=list)
 
