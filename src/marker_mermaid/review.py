@@ -438,7 +438,11 @@ class ReviewHandler(SimpleHTTPRequestHandler):
     def _bundle_payload(self, bundle: ReviewBundle) -> dict[str, Any]:
         manifest = bundle.manifest
         scores = self._optional_json(bundle.bundle_id, "scores.json", {})
-        provenance = self._optional_json(bundle.bundle_id, "provenance.json", [])
+        provenance = (
+            [item.model_dump(mode="json") for item in bundle.provenance]
+            if bundle.provenance is not None
+            else []
+        )
         warnings = scores.get("warnings", []) if isinstance(scores, dict) else []
         failures = manifest.get("failures", [])
         issues = [*warnings, *failures] if isinstance(warnings, list) else list(failures)

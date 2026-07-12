@@ -36,6 +36,7 @@
 - Evidence-backed typed Flowchart label repair with structured IR/code proposals.
 - Validated Review Workspace edge reconnection and node deletion with synchronized IR/code audit history.
 - Vector-backed flowchart edge color recovery with allowlisted, exact-order `linkStyle` mapping.
+- Digest-verified, content-addressed Review provenance revisions with legacy timeline migration.
 
 ### Changed
 
@@ -67,6 +68,7 @@
 - Numeric consistency ignores accessibility/title metadata so repeated descriptive numbers do not reduce chart agreement.
 - Initial and repaired candidates share OCR/vector, provenance, structural, numeric, and publication-gate evaluation.
 - Structured review operations reject stale revisions before interpretation and require exact Scene-to-Mermaid mappings.
+- Review undo/redo now restores provenance presence and content in the same boundary as code, IR, and renders.
 
 ## 0.1.0
 

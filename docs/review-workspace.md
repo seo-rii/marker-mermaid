@@ -17,7 +17,8 @@ SHA-256을 포함하므로 다른 tab에서 먼저 수정했다면 `409 Conflict
 합니다. Mermaid code는 자동 생성 후보와 같은 strict security scan, `mermaid.parse()`,
 `mermaid.render()`, SVG 검사를 모두 통과해야 합니다. Scene IR도 bbox, 고유 ID, group/relation endpoint
 참조를 포함한 `DiagramSceneIR` schema를 통과해야 합니다. 성공한 render의 SVG/PNG도 code와 같은
-revision에 저장됩니다. code 또는 IR이 바뀐 revision은 원본 기반 점수를 자동 승계하지 않고
+revision에 저장됩니다. provenance도 schema/고유 evidence ID를 검증한 뒤 content-addressed snapshot과
+root manifest hash를 같은 revision에 저장합니다. code, IR 또는 provenance가 바뀐 revision은 원본 기반 점수를 자동 승계하지 않고
 `unscored_user_revision`으로 표시합니다.
 
 대안 후보 선택, 승인, 사유가 필수인 거절, undo/redo를 지원합니다. 승인은 저장 당시 성공 여부를
@@ -64,9 +65,10 @@ workspace의 `Validated structure operations`는 자유 형식 JSON 편집보다
 실패하면 IR, code, render, history 중 어느 것도 바뀌지 않습니다.
 
 node 이동은 아직 제공하지 않습니다. Scene `bbox`는 Mermaid 배치 좌표가 아니라 원본 근거 좌표이므로
-drag 결과로 덮어쓰면 provenance가 손상되고, flowchart grammar도 고정 위치를 표현하지 못합니다. node
-추가도 `user_edit` evidence와 provenance sidecar가 revision/undo에 함께 들어가기 전에는 공개하지
-않습니다. 향후 두 기능은 별도 layout hint와 provenance snapshot을 도입한 뒤 활성화합니다.
+drag 결과로 덮어쓰면 provenance가 손상되고, flowchart grammar도 고정 위치를 표현하지 못합니다.
+provenance revision 기반은 구현됐지만 node 추가는 사용자가 원본 위에서 bbox를 지정하고 서버가
+`user_edit` evidence를 생성하는 source-anchored operation이 완성되기 전에는 공개하지 않습니다. 자유
+배치 이동/추가는 별도 layout hint가 필요합니다.
 
 ## HTTP 및 파일 안전성
 
@@ -81,7 +83,9 @@ HTTP로 제공하는 파일은 `images/*`와 각 bundle의 `final.svg/png`뿐이
 immutable version 파일은 API 응답이나 static route로 직접 공개하지 않습니다.
 Diagram 목록은 최대 1,000개 summary만 반환하고 최대 5,000개 bundle 후보만 상세 검증합니다. 목록 경로는
 SVG/PNG, Scene IR, review history를 읽지 않으며 개별 bundle을 열 때만 전체 digest를 검증합니다.
-undo/redo는 revision에 없던 optional Scene IR/SVG/PNG도 실제로 삭제하고 manifest hash를 함께 정리합니다.
+undo/redo는 revision에 없던 optional Scene IR/SVG/PNG/provenance도 실제로 삭제하고 manifest hash를 함께
+정리합니다. 0.3 review timeline의 정적 provenance는 첫 mutation/undo에서 검증된 legacy digest로
+고정하며 immutable 과거 snapshot을 재작성하지 않습니다.
 review revision은 처리 중 I/O 오류에는 rollback하지만 여러 파일을 교체하므로 process/power loss까지
 보장하는 crash-atomic transaction은 아닙니다. immutable revision directory와 단일 pointer swap은 후속입니다.
 

@@ -67,6 +67,14 @@ style, chained/labeled edge 같은 추가 참조가 있으면 mutation 전에 �
 operation을 IR에 해석하기 전과 실제 commit lock 안에서 모두 검사합니다. source bbox를 Mermaid layout
 좌표로 재사용하는 이동 연산과 revisioned `user_edit` provenance가 없는 node 추가는 제공하지 않습니다.
 
+review provenance는 root `provenance.json`의 sidecar manifest hash와 `mmx-review-0.4` current digest를
+검사합니다. 각 revision은 content-addressed provenance digest를 참조하며 code/IR/render와 같은
+rollback 및 undo/redo 경계에서 root artifact와 manifest hash를 교체합니다. legacy 0.3 state는 기존
+manifest hash가 있으면 먼저 검증한 뒤 정적 provenance digest를 고정해 lazy migration합니다. HTTP
+editor는 provenance replacement switch를 노출하지 않으며 trusted structured operation만 명시적으로
+교체할 수 있습니다. replacement를 포함한 모든 review commit은 Scene element/relation의
+`evidence_ids`가 current provenance의 고유 ID 집합에 포함되는지도 검사합니다.
+
 VLM/fixture JSON에는 Scene/IR 개수·깊이·문자·point·ID 상한과 finite-number 검사를 적용하며 sidecar
 JSON은 비표준 `NaN`/Infinity를 허용하지 않습니다. Marker preview image도 dimension 8,192와 5천만
 pixel 상한을 넘거나 Pillow decompression-bomb 판정이 나면 preview만 격리해 생략합니다.

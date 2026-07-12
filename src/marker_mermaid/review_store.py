@@ -21,9 +21,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from marker_mermaid.models import DiagramSceneIR, ReviewHistoryEntry
+from marker_mermaid.models import (
+    MAX_OBSERVATION_EVIDENCE,
+    DiagramSceneIR,
+    ReviewHistoryEntry,
+    VisualEvidence,
+)
 
-REVIEW_SCHEMA_VERSION = "mmx-review-0.3"
+REVIEW_SCHEMA_VERSION = "mmx-review-0.4"
+LEGACY_REVIEW_SCHEMA_VERSION = "mmx-review-0.3"
 MAX_MERMAID_BYTES = 1_000_000
 MAX_JSON_BYTES = 4_000_000
 MAX_RENDER_BYTES = 16_000_000
@@ -32,6 +38,12 @@ MAX_REASON_LENGTH = 4_096
 MAX_LIST_BUNDLES = 1_000
 MAX_LIST_CANDIDATES = 5_000
 _BUNDLE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}\Z")
+
+
+def _validated_digest(value: str | None) -> str | None:
+    if value is not None and not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise ValueError("artifact digest must be a lowercase SHA-256 digest")
+    return value
 
 
 class ReviewValidationResult(BaseModel):
@@ -80,7 +92,9 @@ class ReviewValidationError(ReviewStoreError):
 
 
 class ReviewState(BaseModel):
-    schema_version: Literal[REVIEW_SCHEMA_VERSION] = REVIEW_SCHEMA_VERSION
+    schema_version: Literal[REVIEW_SCHEMA_VERSION, LEGACY_REVIEW_SCHEMA_VERSION] = (
+        REVIEW_SCHEMA_VERSION
+    )
     version: int = Field(ge=0)
     timeline: list[str]
     cursor: int = Field(ge=0)
@@ -89,6 +103,8 @@ class ReviewState(BaseModel):
     ir_digest: str | None = None
     svg_digest: str | None = None
     png_digest: str | None = None
+    provenance_digest: str | None = None
+    legacy_provenance_digest: str | None = None
     decision: ReviewDecision = "pending"
     decision_reason: str | None = None
     selected_candidate_id: str | None = None
@@ -105,14 +121,17 @@ class ReviewState(BaseModel):
             raise ValueError("review timeline cannot contain duplicate revisions")
         return value
 
-    @field_validator("code_digest", "ir_digest", "svg_digest", "png_digest")
+    @field_validator(
+        "code_digest",
+        "ir_digest",
+        "svg_digest",
+        "png_digest",
+        "provenance_digest",
+        "legacy_provenance_digest",
+    )
     @classmethod
     def digest_is_sha256(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        if not re.fullmatch(r"[0-9a-f]{64}", value):
-            raise ValueError("artifact digest must be a lowercase SHA-256 digest")
-        return value
+        return _validated_digest(value)
 
     @field_validator("decision_reason")
     @classmethod
@@ -147,21 +166,36 @@ class ReviewBundle(BaseModel):
     scene_ir: dict[str, Any] | None = None
     svg: str | None = None
     png: bytes | None = None
+    provenance: list[VisualEvidence] | None = None
     history: list[ReviewHistoryEntry]
     state: ReviewState
 
 
 class _RevisionSnapshot(BaseModel):
-    schema_version: Literal[REVIEW_SCHEMA_VERSION] = REVIEW_SCHEMA_VERSION
+    schema_version: Literal[REVIEW_SCHEMA_VERSION, LEGACY_REVIEW_SCHEMA_VERSION] = (
+        REVIEW_SCHEMA_VERSION
+    )
     revision: str
     code_digest: str
     ir_digest: str | None = None
     svg_digest: str | None = None
     png_digest: str | None = None
+    provenance_digest: str | None = None
     decision: ReviewDecision
     decision_reason: str | None = None
     selected_candidate_id: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator(
+        "code_digest",
+        "ir_digest",
+        "svg_digest",
+        "png_digest",
+        "provenance_digest",
+    )
+    @classmethod
+    def digest_is_sha256(cls, value: str | None) -> str | None:
+        return _validated_digest(value)
 
 
 def _digest(code: str) -> str:
@@ -174,6 +208,10 @@ def _bytes_digest(payload: bytes) -> str:
 
 def _ir_bytes(value: dict[str, Any]) -> bytes:
     return _json_bytes(value)
+
+
+def _provenance_bytes(value: list[VisualEvidence]) -> bytes:
+    return _json_bytes([item.model_dump(mode="json") for item in value])
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -278,6 +316,7 @@ class ReviewStore:
             scene_ir = self._read_optional_json(bundle, "scene-ir.json", expected=dict)
         else:
             code, scene_ir, bootstrap_candidate_id = self._bootstrap_alternative(bundle)
+        provenance = self._load_provenance(bundle, manifest)
         svg_payload = self._read_optional_bytes(bundle, "final.svg", MAX_RENDER_BYTES)
         png = self._read_optional_bytes(bundle, "final.png", MAX_RENDER_BYTES)
         try:
@@ -308,12 +347,21 @@ class ReviewStore:
             actual_png_digest = _bytes_digest(png) if png is not None else None
             if state.svg_digest != actual_svg_digest or state.png_digest != actual_png_digest:
                 raise ReviewConflictError("render artifact changed outside the review store")
+            actual_provenance_digest = (
+                _bytes_digest(_provenance_bytes(provenance)) if provenance is not None else None
+            )
+            if (
+                state.schema_version == REVIEW_SCHEMA_VERSION
+                and state.provenance_digest != actual_provenance_digest
+            ):
+                raise ReviewConflictError("provenance.json changed outside the review store")
         else:
             state = self._initial_state(
                 code,
                 scene_ir,
                 svg,
                 png,
+                provenance,
                 selected_candidate_id=(
                     manifest.get("selected_candidate_id") or bootstrap_candidate_id
                 ),
@@ -325,6 +373,7 @@ class ReviewStore:
             scene_ir=scene_ir,
             svg=svg,
             png=png,
+            provenance=provenance,
             history=history,
             state=state,
         )
@@ -410,12 +459,28 @@ class ReviewStore:
         operation: str = "edit_mermaid",
         selected_candidate_id: str | None = None,
         audit_entry: ReviewHistoryEntry | None = None,
+        provenance: list[dict[str, Any] | VisualEvidence] | None = None,
+        replace_provenance: bool = False,
     ) -> ReviewBundle:
-        """Atomically persist code, IR, render artifacts, state, and audit history."""
+        """Atomically persist code, IR, render/provenance artifacts, state, and history.
+
+        Existing callers preserve provenance.  A trusted structured operation must set
+        ``replace_provenance=True`` to replace or remove it; HTTP editor payloads do not
+        expose that switch.
+        """
 
         self._validate_code(code)
         self._validate_scene_ir(scene_ir)
         self._validate_reason(reason)
+        if not isinstance(replace_provenance, bool):
+            raise ReviewValidationError("replace_provenance must be a boolean")
+        if provenance is not None and not replace_provenance:
+            raise ReviewValidationError(
+                "provenance input requires the explicit replace_provenance boundary"
+            )
+        replacement_provenance = (
+            self._validate_provenance(provenance) if replace_provenance else None
+        )
         current = self.load_bundle(bundle_id)
         self._check_expected(current, expected_version, expected_digest)
         callback = validator if validator is not None else self.validator
@@ -435,11 +500,36 @@ class ReviewStore:
         with self._locked_bundle(bundle_id):
             bundle = self.load_bundle(bundle_id)
             self._check_expected(bundle, expected_version, expected_digest)
-            before = self._state_value(bundle.state, bundle.mermaid_code, bundle.scene_ir)
+            selected_provenance = (
+                replacement_provenance if replace_provenance else bundle.provenance
+            )
+            available_evidence_ids = {item.id for item in selected_provenance or []}
+            referenced_evidence_ids = {
+                evidence_id
+                for collection in (
+                    scene_ir.get("elements", []) if scene_ir is not None else [],
+                    scene_ir.get("relations", []) if scene_ir is not None else [],
+                )
+                for item in collection
+                for evidence_id in item.get("evidence_ids", [])
+            }
+            missing_evidence_ids = referenced_evidence_ids - available_evidence_ids
+            if missing_evidence_ids:
+                raise ReviewValidationError(
+                    "Scene IR references evidence absent from provenance: "
+                    f"{sorted(missing_evidence_ids)[:10]}"
+                )
+            before = self._state_value(
+                bundle.state,
+                bundle.mermaid_code,
+                bundle.scene_ir,
+                bundle.provenance,
+            )
             return self._commit_new_revision(
                 bundle,
                 code=code,
                 scene_ir=scene_ir,
+                provenance=selected_provenance,
                 svg=validation_result.svg if validation_result else bundle.svg,
                 png=validation_result.png if validation_result else bundle.png,
                 decision="pending",
@@ -553,11 +643,17 @@ class ReviewStore:
                         )
                 elif valid is not True:
                     raise ReviewValidationError("Mermaid validation rejected approval")
-            before = self._state_value(bundle.state, bundle.mermaid_code, bundle.scene_ir)
+            before = self._state_value(
+                bundle.state,
+                bundle.mermaid_code,
+                bundle.scene_ir,
+                bundle.provenance,
+            )
             return self._commit_new_revision(
                 bundle,
                 code=bundle.mermaid_code,
                 scene_ir=bundle.scene_ir,
+                provenance=bundle.provenance,
                 svg=validation_result.svg if validation_result else bundle.svg,
                 png=validation_result.png if validation_result else bundle.png,
                 decision=decision,
@@ -600,9 +696,38 @@ class ReviewStore:
             scene_ir = self._read_revision_ir(bundle_path, revision, snapshot.ir_digest)
             svg = self._read_revision_render(bundle_path, revision, "svg", snapshot.svg_digest)
             png = self._read_revision_render(bundle_path, revision, "png", snapshot.png_digest)
-            before = self._state_value(bundle.state, bundle.mermaid_code, bundle.scene_ir)
+            current_provenance_digest = (
+                _bytes_digest(_provenance_bytes(bundle.provenance))
+                if bundle.provenance is not None
+                else None
+            )
+            legacy_provenance_digest = bundle.state.legacy_provenance_digest
+            if bundle.state.schema_version == LEGACY_REVIEW_SCHEMA_VERSION:
+                legacy_provenance_digest = current_provenance_digest
+            if snapshot.schema_version == LEGACY_REVIEW_SCHEMA_VERSION:
+                target_provenance_digest = legacy_provenance_digest
+                if bundle.state.schema_version == LEGACY_REVIEW_SCHEMA_VERSION:
+                    provenance = bundle.provenance
+                else:
+                    provenance = self._read_revision_provenance(
+                        bundle_path,
+                        target_provenance_digest,
+                    )
+            else:
+                target_provenance_digest = snapshot.provenance_digest
+                provenance = self._read_revision_provenance(
+                    bundle_path,
+                    target_provenance_digest,
+                )
+            before = self._state_value(
+                bundle.state,
+                bundle.mermaid_code,
+                bundle.scene_ir,
+                bundle.provenance,
+            )
             state = bundle.state.model_copy(
                 update={
+                    "schema_version": REVIEW_SCHEMA_VERSION,
                     "version": bundle.state.version + 1,
                     "cursor": next_cursor,
                     "current_revision": revision,
@@ -610,13 +735,15 @@ class ReviewStore:
                     "ir_digest": snapshot.ir_digest,
                     "svg_digest": snapshot.svg_digest,
                     "png_digest": snapshot.png_digest,
+                    "provenance_digest": target_provenance_digest,
+                    "legacy_provenance_digest": legacy_provenance_digest,
                     "decision": snapshot.decision,
                     "decision_reason": snapshot.decision_reason,
                     "selected_candidate_id": snapshot.selected_candidate_id,
                     "updated_at": datetime.now(UTC),
                 }
             )
-            after = self._state_value(state, code, scene_ir)
+            after = self._state_value(state, code, scene_ir, provenance)
             history = self._append_history(
                 bundle.history,
                 operation="undo" if delta < 0 else "redo",
@@ -630,11 +757,20 @@ class ReviewStore:
                 "scene-ir.json": _ir_bytes(scene_ir) if scene_ir is not None else None,
                 "final.svg": svg,
                 "final.png": png,
+                "provenance.json": (
+                    _provenance_bytes(provenance) if provenance is not None else None
+                ),
                 "review-history.json": _json_bytes(
                     [entry.model_dump(mode="json") for entry in history]
                 ),
                 "review-state.json": _json_bytes(state.model_dump(mode="json")),
             }
+            if provenance is not None:
+                if target_provenance_digest is None:
+                    raise ReviewValidationError("revision provenance is missing its digest")
+                files[f"versions/provenance/{target_provenance_digest}.json"] = _provenance_bytes(
+                    provenance
+                )
             quality_status = (
                 "automated_baseline" if revision == "r000000" else "unscored_user_revision"
             )
@@ -652,6 +788,7 @@ class ReviewStore:
         *,
         code: str,
         scene_ir: dict[str, Any] | None,
+        provenance: list[VisualEvidence] | None,
         svg: str | None,
         png: bytes | None,
         decision: ReviewDecision,
@@ -666,6 +803,17 @@ class ReviewStore:
         next_version = bundle.state.version + 1
         revision = f"r{next_version:06d}"
         timeline = bundle.state.timeline[: bundle.state.cursor + 1] + [revision]
+        current_provenance_digest = (
+            _bytes_digest(_provenance_bytes(bundle.provenance))
+            if bundle.provenance is not None
+            else None
+        )
+        provenance_digest = (
+            _bytes_digest(_provenance_bytes(provenance)) if provenance is not None else None
+        )
+        legacy_provenance_digest = bundle.state.legacy_provenance_digest
+        if bundle.state.schema_version == LEGACY_REVIEW_SCHEMA_VERSION:
+            legacy_provenance_digest = current_provenance_digest
         state = ReviewState(
             version=next_version,
             timeline=timeline,
@@ -675,11 +823,13 @@ class ReviewStore:
             ir_digest=_bytes_digest(_ir_bytes(scene_ir)) if scene_ir is not None else None,
             svg_digest=_digest(svg) if svg is not None else None,
             png_digest=_bytes_digest(png) if png is not None else None,
+            provenance_digest=provenance_digest,
+            legacy_provenance_digest=legacy_provenance_digest,
             decision=decision,
             decision_reason=decision_reason,
             selected_candidate_id=selected_candidate_id,
         )
-        after = self._state_value(state, code, scene_ir)
+        after = self._state_value(state, code, scene_ir, provenance)
         if audit_entry is not None:
             if audit_entry.source != "user":
                 raise ReviewValidationError("review audit entries must have user source")
@@ -701,6 +851,7 @@ class ReviewStore:
             ir_digest=state.ir_digest,
             svg_digest=_digest(svg) if svg is not None else None,
             png_digest=_bytes_digest(png) if png is not None else None,
+            provenance_digest=provenance_digest,
             decision=decision,
             decision_reason=decision_reason,
             selected_candidate_id=selected_candidate_id,
@@ -720,6 +871,7 @@ class ReviewStore:
                 ),
                 svg_digest=_digest(bundle.svg) if bundle.svg is not None else None,
                 png_digest=_bytes_digest(bundle.png) if bundle.png is not None else None,
+                provenance_digest=current_provenance_digest,
                 decision=bundle.state.decision,
                 decision_reason=bundle.state.decision_reason,
                 selected_candidate_id=bundle.state.selected_candidate_id,
@@ -732,6 +884,11 @@ class ReviewStore:
                 files["versions/r000000.svg"] = bundle.svg.encode("utf-8")
             if bundle.png is not None:
                 files["versions/r000000.png"] = bundle.png
+            if bundle.provenance is not None:
+                assert current_provenance_digest is not None
+                files[f"versions/provenance/{current_provenance_digest}.json"] = _provenance_bytes(
+                    bundle.provenance
+                )
         files.update(
             {
                 f"versions/{revision}.mmd": code.encode("utf-8"),
@@ -744,15 +901,33 @@ class ReviewStore:
                 "scene-ir.json": _ir_bytes(scene_ir) if scene_ir is not None else None,
                 "final.svg": svg.encode("utf-8") if svg is not None else None,
                 "final.png": png,
+                "provenance.json": (
+                    _provenance_bytes(provenance) if provenance is not None else None
+                ),
             }
         )
+        if (
+            bundle.state.schema_version == LEGACY_REVIEW_SCHEMA_VERSION
+            and legacy_provenance_digest is not None
+            and bundle.provenance is not None
+        ):
+            files[f"versions/provenance/{legacy_provenance_digest}.json"] = _provenance_bytes(
+                bundle.provenance
+            )
+        if provenance is not None:
+            assert provenance_digest is not None
+            files[f"versions/provenance/{provenance_digest}.json"] = _provenance_bytes(provenance)
         if scene_ir is not None:
             files[f"versions/{revision}.scene-ir.json"] = _ir_bytes(scene_ir)
         if svg is not None:
             files[f"versions/{revision}.svg"] = svg.encode("utf-8")
         if png is not None:
             files[f"versions/{revision}.png"] = png
-        content_changed = code != bundle.mermaid_code or scene_ir != bundle.scene_ir
+        content_changed = (
+            code != bundle.mermaid_code
+            or scene_ir != bundle.scene_ir
+            or provenance != bundle.provenance
+        )
         files["manifest.json"] = self._updated_manifest_bytes(
             bundle.manifest,
             files,
@@ -763,7 +938,10 @@ class ReviewStore:
 
     @staticmethod
     def _state_value(
-        state: ReviewState, code: str, scene_ir: dict[str, Any] | None = None
+        state: ReviewState,
+        code: str,
+        scene_ir: dict[str, Any] | None = None,
+        provenance: list[VisualEvidence] | None = None,
     ) -> dict[str, Any]:
         return {
             "revision": state.current_revision,
@@ -771,6 +949,9 @@ class ReviewStore:
             "ir_digest": _bytes_digest(_ir_bytes(scene_ir)) if scene_ir is not None else None,
             "svg_digest": state.svg_digest,
             "png_digest": state.png_digest,
+            "provenance_digest": (
+                _bytes_digest(_provenance_bytes(provenance)) if provenance is not None else None
+            ),
             "decision": state.decision,
             "decision_reason": state.decision_reason,
             "selected_candidate_id": state.selected_candidate_id,
@@ -806,6 +987,7 @@ class ReviewStore:
         scene_ir: dict[str, Any] | None,
         svg: str | None,
         png: bytes | None,
+        provenance: list[VisualEvidence] | None,
         *,
         selected_candidate_id: str | None = None,
     ) -> ReviewState:
@@ -818,6 +1000,9 @@ class ReviewStore:
             ir_digest=_bytes_digest(_ir_bytes(scene_ir)) if scene_ir is not None else None,
             svg_digest=_digest(svg) if svg is not None else None,
             png_digest=_bytes_digest(png) if png is not None else None,
+            provenance_digest=(
+                _bytes_digest(_provenance_bytes(provenance)) if provenance is not None else None
+            ),
             selected_candidate_id=selected_candidate_id,
         )
 
@@ -854,6 +1039,26 @@ class ReviewStore:
                 DiagramSceneIR.model_validate(scene_ir)
             except ValidationError as exc:
                 raise ReviewValidationError("Scene IR violates the DiagramSceneIR schema") from exc
+
+    @staticmethod
+    def _validate_provenance(
+        provenance: list[dict[str, Any] | VisualEvidence] | None,
+    ) -> list[VisualEvidence] | None:
+        if provenance is None:
+            return None
+        if not isinstance(provenance, list):
+            raise ReviewValidationError("provenance must be a JSON array")
+        if len(provenance) > MAX_OBSERVATION_EVIDENCE:
+            raise ReviewValidationError("provenance exceeds the evidence count limit")
+        try:
+            normalized = [VisualEvidence.model_validate(item) for item in provenance]
+        except ValidationError as exc:
+            raise ReviewValidationError("provenance contains invalid evidence") from exc
+        ids = [item.id for item in normalized]
+        if len(ids) != len(set(ids)):
+            raise ReviewValidationError("provenance evidence ids must be unique")
+        _provenance_bytes(normalized)
+        return normalized
 
     @staticmethod
     def _validate_manifest(manifest: dict[str, Any]) -> None:
@@ -939,6 +1144,23 @@ class ReviewStore:
             return None
         return self._read_json(bundle, relative, expected=expected)
 
+    def _load_provenance(
+        self,
+        bundle: Path,
+        manifest: dict[str, Any],
+    ) -> list[VisualEvidence] | None:
+        path = self._artifact_path(bundle, "provenance.json", must_exist=False)
+        if path.exists() and path.stat().st_size > MAX_JSON_BYTES:
+            raise ReviewValidationError("provenance.json exceeds the JSON size limit")
+        raw_digest = _bytes_digest(path.read_bytes()) if path.exists() else None
+        payload = self._read_optional_json(bundle, "provenance.json", expected=list)
+        provenance = self._validate_provenance(payload)
+        files = manifest.get("files")
+        expected_digest = files.get("provenance.json") if isinstance(files, dict) else None
+        if expected_digest is not None and expected_digest != raw_digest:
+            raise ReviewConflictError("provenance.json failed its manifest digest check")
+        return provenance
+
     def _read_optional_bytes(self, bundle: Path, relative: str, limit: int) -> bytes | None:
         path = self._artifact_path(bundle, relative, must_exist=False)
         if not path.exists():
@@ -957,6 +1179,24 @@ class ReviewStore:
         if _bytes_digest(_ir_bytes(scene_ir)) != expected_digest:
             raise ReviewValidationError(f"revision {revision} Scene IR failed its digest check")
         return scene_ir
+
+    def _read_revision_provenance(
+        self,
+        bundle: Path,
+        expected_digest: str | None,
+    ) -> list[VisualEvidence] | None:
+        if expected_digest is None:
+            return None
+        payload = self._read_json(
+            bundle,
+            f"versions/provenance/{expected_digest}.json",
+            expected=list,
+        )
+        provenance = self._validate_provenance(payload)
+        assert provenance is not None
+        if _bytes_digest(_provenance_bytes(provenance)) != expected_digest:
+            raise ReviewValidationError("revision provenance failed its digest check")
+        return provenance
 
     def _read_revision_render(
         self,
@@ -987,7 +1227,13 @@ class ReviewStore:
         if quality_status is not None:
             updated["review_quality_status"] = quality_status
         hashes = dict(updated.get("files", {}))
-        for name in ("final.mmd", "final.svg", "final.png", "scene-ir.json"):
+        for name in (
+            "final.mmd",
+            "final.svg",
+            "final.png",
+            "scene-ir.json",
+            "provenance.json",
+        ):
             payload = pending_files.get(name)
             if name in pending_files and payload is None:
                 hashes.pop(name, None)
