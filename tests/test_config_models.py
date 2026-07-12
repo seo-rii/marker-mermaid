@@ -7,9 +7,11 @@ from marker_mermaid.config import MermaidConfig, Mode, quality_grade
 from marker_mermaid.models import (
     DiagramSceneIR,
     DiagramTypePrediction,
+    EngineObservation,
     MetricResult,
     SceneElement,
     SceneRelation,
+    TypedIRCandidate,
 )
 
 
@@ -60,3 +62,19 @@ def test_prediction_and_metric_invariants():
         MetricResult(name="ocr_recall", value=None, available=True)
     with pytest.raises(ValidationError, match="descending"):
         DiagramTypePrediction(candidates=["flowchart", "architecture"], scores=[0.1, 0.9])
+
+
+def test_engine_observation_and_typed_ir_are_resource_bounded():
+    prediction = DiagramTypePrediction(candidates=["flowchart"], scores=[1.0])
+    candidate = TypedIRCandidate(diagram_type="flowchart", ir={"nodes": []})
+    with pytest.raises(ValidationError, match="too_long"):
+        EngineObservation(prediction=prediction, typed_candidates=[candidate] * 65)
+
+    deeply_nested: dict = {}
+    cursor = deeply_nested
+    for _ in range(66):
+        child: dict = {}
+        cursor["child"] = child
+        cursor = child
+    with pytest.raises(ValidationError, match="nesting depth"):
+        TypedIRCandidate(diagram_type="mindmap", ir=deeply_nested)

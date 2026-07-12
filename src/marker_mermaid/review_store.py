@@ -41,6 +41,20 @@ class ReviewValidationResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     error: str | None = None
 
+    @field_validator("svg")
+    @classmethod
+    def svg_is_bounded(cls, value: str | None) -> str | None:
+        if value is not None and len(value.encode("utf-8")) > MAX_RENDER_BYTES:
+            raise ValueError("rendered SVG exceeds the artifact size limit")
+        return value
+
+    @field_validator("png")
+    @classmethod
+    def png_is_bounded(cls, value: bytes | None) -> bytes | None:
+        if value is not None and len(value) > MAX_RENDER_BYTES:
+            raise ValueError("rendered PNG exceeds the artifact size limit")
+        return value
+
 
 ValidationCallback = Callable[[str], bool | None | ReviewValidationResult]
 ReviewDecision = Literal["pending", "approved", "rejected"]
@@ -210,8 +224,8 @@ class ReviewStore:
         self._validate_manifest(manifest)
         code = self._read_code(bundle, "final.mmd")
         scene_ir = self._read_optional_json(bundle, "scene-ir.json", expected=dict)
-        svg_payload = self._read_optional_bytes(bundle, "final.svg", MAX_JSON_BYTES)
-        png = self._read_optional_bytes(bundle, "final.png", MAX_JSON_BYTES)
+        svg_payload = self._read_optional_bytes(bundle, "final.svg", MAX_RENDER_BYTES)
+        png = self._read_optional_bytes(bundle, "final.png", MAX_RENDER_BYTES)
         try:
             svg = svg_payload.decode("utf-8") if svg_payload is not None else None
         except UnicodeDecodeError as exc:
@@ -489,11 +503,11 @@ class ReviewStore:
                 after=after,
                 reason=reason,
             )
-            files = {
+            files: dict[str, bytes | None] = {
                 "final.mmd": code.encode("utf-8"),
-                **({"scene-ir.json": _ir_bytes(scene_ir)} if scene_ir is not None else {}),
-                **({"final.svg": svg} if svg is not None else {}),
-                **({"final.png": png} if png is not None else {}),
+                "scene-ir.json": _ir_bytes(scene_ir) if scene_ir is not None else None,
+                "final.svg": svg,
+                "final.png": png,
                 "review-history.json": _json_bytes(
                     [entry.model_dump(mode="json") for entry in history]
                 ),
@@ -554,7 +568,7 @@ class ReviewStore:
             decision_reason=decision_reason,
             selected_candidate_id=selected_candidate_id,
         )
-        files: dict[str, bytes] = {}
+        files: dict[str, bytes | None] = {}
         initial_mmd = bundle_path / "versions" / "r000000.mmd"
         if not initial_mmd.exists():
             if bundle.state.version != 0:
@@ -590,17 +604,17 @@ class ReviewStore:
                     [entry.model_dump(mode="json") for entry in history]
                 ),
                 "review-state.json": _json_bytes(state.model_dump(mode="json")),
+                "scene-ir.json": _ir_bytes(scene_ir) if scene_ir is not None else None,
+                "final.svg": svg.encode("utf-8") if svg is not None else None,
+                "final.png": png,
             }
         )
         if scene_ir is not None:
             files[f"versions/{revision}.scene-ir.json"] = _ir_bytes(scene_ir)
-            files["scene-ir.json"] = _ir_bytes(scene_ir)
         if svg is not None:
             files[f"versions/{revision}.svg"] = svg.encode("utf-8")
-            files["final.svg"] = svg.encode("utf-8")
         if png is not None:
             files[f"versions/{revision}.png"] = png
-            files["final.png"] = png
         files["manifest.json"] = self._updated_manifest_bytes(bundle.manifest, files)
         self._atomic_replace_many(bundle_path, files)
         return self.load_bundle(bundle.bundle_id)
@@ -817,12 +831,16 @@ class ReviewStore:
         return payload
 
     @staticmethod
-    def _updated_manifest_bytes(manifest: dict[str, Any], pending_files: dict[str, bytes]) -> bytes:
+    def _updated_manifest_bytes(
+        manifest: dict[str, Any], pending_files: dict[str, bytes | None]
+    ) -> bytes:
         updated = dict(manifest)
         hashes = dict(updated.get("files", {}))
         for name in ("final.mmd", "final.svg", "final.png", "scene-ir.json"):
             payload = pending_files.get(name)
-            if payload is not None:
+            if name in pending_files and payload is None:
+                hashes.pop(name, None)
+            elif payload is not None:
                 hashes[name] = _bytes_digest(payload)
         updated["files"] = hashes
         return _json_bytes(updated)
@@ -851,10 +869,10 @@ class ReviewStore:
             finally:
                 os.close(fd)
 
-    def _atomic_replace_many(self, bundle: Path, files: dict[str, bytes]) -> None:
+    def _atomic_replace_many(self, bundle: Path, files: dict[str, bytes | None]) -> None:
         """Stage every payload, then replace targets; restore originals on an I/O error."""
 
-        staged: dict[Path, Path] = {}
+        staged: dict[Path, Path | None] = {}
         originals: dict[Path, bytes | None] = {}
         try:
             for relative, payload in files.items():
@@ -863,6 +881,9 @@ class ReviewStore:
                 # Re-check after mkdir so a concurrently inserted symlink cannot redirect writes.
                 target = self._artifact_path(bundle, relative, must_exist=False)
                 originals[target] = target.read_bytes() if target.exists() else None
+                if payload is None:
+                    staged[target] = None
+                    continue
                 fd, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
                 temporary = Path(temporary_name)
                 with os.fdopen(fd, "wb") as handle:
@@ -871,7 +892,10 @@ class ReviewStore:
                     os.fsync(handle.fileno())
                 staged[target] = temporary
             for target, temporary in staged.items():
-                os.replace(temporary, target)
+                if temporary is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    os.replace(temporary, target)
             directory_fd = os.open(bundle, os.O_RDONLY)
             try:
                 os.fsync(directory_fd)
@@ -889,4 +913,5 @@ class ReviewStore:
             raise
         finally:
             for temporary in staged.values():
-                temporary.unlink(missing_ok=True)
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)

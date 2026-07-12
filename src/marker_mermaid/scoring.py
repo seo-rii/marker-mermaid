@@ -50,6 +50,25 @@ def aggregate_scores(scores: dict[str, float], config: MermaidConfig) -> float |
     return sum(weight * value for weight, value in present) / total_weight
 
 
+def semantic_score(scores: dict[str, float], config: MermaidConfig) -> float | None:
+    """Return the normalized non-runtime evidence score used by publish policy.
+
+    Parse and render success remain mandatory and contribute to the displayed total,
+    but they cannot dilute a zero semantic score into a publishable grade.
+    """
+
+    weights = config.score_weights.model_dump()
+    present = [
+        (weights[key], value)
+        for key, value in scores.items()
+        if key in weights and key not in {"syntax", "render"}
+    ]
+    total_weight = sum(weight for weight, _ in present)
+    if total_weight == 0:
+        return None
+    return sum(weight * value for weight, value in present) / total_weight
+
+
 @dataclass(frozen=True, slots=True)
 class PublishDecision:
     publish: bool
@@ -72,8 +91,17 @@ def decide_publication(
         return PublishDecision(False, True, grade, "review-required policy")
     if candidate.aggregate_score is None:
         return PublishDecision(False, True, "U", "quality could not be evaluated")
+    semantic = semantic_score(candidate.scores, config)
+    if semantic is None:
+        return PublishDecision(False, True, grade, "semantic evidence is unavailable")
     if config.publish_policy == PublishPolicy.STRICT_VALIDATED:
-        passed = candidate.aggregate_score >= config.review_below_score
+        passed = (
+            candidate.aggregate_score >= config.review_below_score
+            and semantic >= config.review_below_score
+        )
         return PublishDecision(passed, not passed, grade, "strict semantic threshold")
-    passed = candidate.aggregate_score >= config.publish_min_score
+    passed = (
+        candidate.aggregate_score >= config.publish_min_score
+        and semantic >= config.publish_min_score
+    )
     return PublishDecision(passed, not passed, grade, "best-effort semantic threshold")

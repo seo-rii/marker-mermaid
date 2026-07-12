@@ -109,9 +109,10 @@ def detect_page_diagram_regions(
         max(1, round(page_image.width * scale)),
         max(1, round(page_image.height * scale)),
     )
-    gray = ImageOps.grayscale(page_image)
-    if gray.size != processing_size:
-        gray = gray.resize(processing_size, Image.Resampling.BILINEAR)
+    processing_image = page_image
+    if processing_image.size != processing_size:
+        processing_image = processing_image.resize(processing_size, Image.Resampling.BILINEAR)
+    gray = ImageOps.grayscale(processing_image)
 
     edge, backend, warnings = _edge_mask(gray, use_opencv=use_opencv)
     # Pillow's FIND_EDGES treats the image boundary as an edge. Clearing the

@@ -30,6 +30,7 @@ _EDGE = re.compile(
     r"([A-Za-z_][A-Za-z0-9_]*)\s*$",
     re.MULTILINE,
 )
+_EDGE_OPERATOR = re.compile(r"<-->|-->|-\.->|==>|---|--?>\|")
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,14 +142,25 @@ def recover_flowchart_styles(
             lines.append(f"    style {node_id} {','.join(attributes)}")
             applied_elements.append(element.id)
 
-    edge_pairs = list(_EDGE.findall(code))
+    edge_lines = [line for line in code.splitlines() if _EDGE_OPERATOR.search(line)]
+    edge_matches = [_EDGE.fullmatch(line) for line in edge_lines]
+    edge_mapping_safe = bool(edge_lines) and all(match is not None for match in edge_matches)
+    edge_pairs = [match.groups() for match in edge_matches if match is not None]
     used_edge_indexes: set[int] = set()
     applied_links: list[int] = []
+    if not edge_mapping_safe and any(
+        relation.line_style in {"dashed", "thick"} for relation in scene.relations
+    ):
+        warnings.append(
+            "edge styles were skipped because Mermaid edge ordering could not be mapped safely"
+        )
     for relation in scene.relations:
         if relation.source_id is None or relation.target_id is None:
             continue
         style = relation.line_style
         if style not in {"dashed", "thick"}:
+            continue
+        if not edge_mapping_safe:
             continue
         pair = (_identifier(relation.source_id), _identifier(relation.target_id))
         edge_index = next(

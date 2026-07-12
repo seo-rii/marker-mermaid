@@ -45,5 +45,7 @@ nested Figure/Picture는 canonical source 하나로 축약합니다.
 page/block mapping이 남습니다. 조립 전 dimension과 pixel budget을 검사하며, 한 panel/merge 실패는
 original이나 다른 source 처리를 중단하지 않습니다.
 
-현재 경계는 Marker가 이미 제공한 block과 full-page image입니다. block 밖의 missed diagram을 새로
-제안하는 page-level detector는 후속 범위입니다.
+full-page image에는 [page-level detector](page-detector.md)를 적용합니다. 기존 diagram block과 겹치지
+않는 edge/component cluster를 `page_proposal`로 만들고, proposal pixel만 crop하여 보관합니다. 같은
+page의 기존 diagram block은 Markdown 삽입 위치로만 사용하며 source evidence로 귀속하지 않습니다.
+anchor가 없는 proposal은 현재 Marker Markdown에 삽입되지 않는 sidecar 연결 한계가 있습니다.

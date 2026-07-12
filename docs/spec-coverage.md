@@ -13,7 +13,7 @@
 | page missed detector | 구현 | bounded edge/component proposal, occupied exclusion, virtual page crop와 anchor 연결 |
 | composite split | 구현 | proposal, raw-fragment crop, virtual 원본/결과 출력 |
 | fragment/multi-page merge | 구현 | caption/continued proposal, canvas assembly, first-fragment anchor 출력 |
-| Scene IR/provenance | 구현 | Pydantic 무결성, OCR/source/VLM evidence, sidecar |
+| Scene IR/provenance | 구현 | Pydantic 무결성, 생성 node attribution, Extended 80% 게시 gate, sidecar |
 | edge/Hough/arrow/OCR view | 구현 | Pillow/OpenCV priors와 보수적 geometry evidence |
 | color cluster/vector primitive | 구현 | PIL color map, duck-typed vector/text provider와 canvas affine |
 | structured Marker VLM | 구현 | response schema adapter |
@@ -35,17 +35,18 @@
 | OCR recall | 구현 | Unicode token coverage |
 | numeric consistency | 구현 | source에 존재하는 숫자만 비교 |
 | edge agreement | 구현 | aligned topology F1, 불가 시 source/render edge IoU fallback |
-| visual entailment | 기반 | evidence coverage proxy; model scorer 후속 |
+| visual entailment | 기반 | 생성 node evidence coverage proxy와 게시 gate; model scorer 후속 |
 | arrow/layout/path score | 구현 | explicit-arrow/path F1, relative layout; 근거 부족 시 unavailable |
 | render-and-compare repair | 기반 | injected repair engine, strict improvement adoption |
 | atomic sidecars | 구현 | preflight, manifest/hash/alternatives/provenance/source affine map |
 | Review Workspace | 구현 | source/render/provenance 비교, 대안 선택, 승인/거절, 이력 API |
-| code/IR edit, NL patch | 구현 | strict 재검증, atomic revision, 명시 ID 기반 한·영 deterministic patch |
+| code/IR edit, NL patch | 구현 | strict 재검증, 오류 시 rollback하는 multi-file revision, 명시 ID 기반 한·영 deterministic patch |
 | drag-and-drop | 후속 | overlay/IR editor는 구현, canvas direct manipulation은 미구현 |
 
 ## 릴리스 해석
 
-현재 버전은 Phase 1 engineering baseline이지 MMX-001의 모든 기능 gate를 달성한 production
-`extended` 릴리스가 아닙니다. 특히 연구 데이터셋 규모의 precision/recall 목표와 유형별 최소
-fixture 수량은 별도 평가 corpus가 필요합니다. 자동 게시 hard gate, 원본 보존, candidate failure
+현재 버전은 Phase 1~5 serializer를 제공하는 experimental engineering baseline이지 MMX-001의 모든
+end-to-end 기능 gate를 달성한 production `extended` 릴리스가 아닙니다. 특히 유형별 extraction schema,
+runtime-triggered fallback, document-level unanchored proposal queue, 연구 데이터셋 규모의
+precision/recall 목표와 유형별 최소 fixture 수량은 별도 평가 corpus가 필요합니다. 자동 게시 hard gate, 원본 보존, candidate failure
 isolation, budget, sidecar/review 가능성은 현재 test 대상으로 삼습니다.

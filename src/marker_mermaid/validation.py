@@ -6,6 +6,7 @@ import atexit
 import base64
 import json
 import os
+import re
 import selectors
 import signal
 import subprocess
@@ -51,6 +52,16 @@ def inspect_svg(svg: str, profile: SecurityProfile) -> list[str]:
     forbidden = {"script", "iframe", "object", "embed", "link"}
     if profile == SecurityProfile.STRICT:
         forbidden.add("foreignObject")
+
+    def has_external_css(value: str) -> bool:
+        lowered = value.casefold()
+        if "@import" in lowered:
+            return True
+        for match in re.finditer(r"url\s*\(\s*(['\"]?)(.*?)\1\s*\)", lowered):
+            if not match.group(2).strip().startswith("#"):
+                return True
+        return False
+
     for element in root.iter():
         tag = element.tag.rsplit("}", 1)[-1]
         if tag in forbidden:
@@ -62,8 +73,10 @@ def inspect_svg(svg: str, profile: SecurityProfile) -> list[str]:
                 findings.append(f"rendered SVG contains event handler {name}")
             if name == "href" and lowered and not lowered.startswith("#"):
                 findings.append("rendered SVG contains an external href")
-            if "@import" in lowered or ("url(" in lowered and "url(#" not in lowered):
+            if has_external_css(lowered):
                 findings.append("rendered SVG contains external CSS")
+        if tag == "style" and has_external_css("".join(element.itertext())):
+            findings.append("rendered SVG contains external CSS")
     return sorted(set(findings))
 
 

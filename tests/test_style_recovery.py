@@ -138,6 +138,18 @@ def test_non_flowchart_output_is_not_modified():
     assert "not flowchart" in result.warnings[0]
 
 
+def test_link_style_is_skipped_when_preceding_edge_order_is_not_fully_mappable():
+    result = recover_flowchart_styles(
+        'flowchart LR\n    A["A"] --> B["B"] --> C["C"]\n    API --> DB\n',
+        scene(),
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+    )
+
+    assert "linkStyle" not in result.code
+    assert any("edge ordering" in warning for warning in result.warnings)
+
+
 def test_pipeline_applies_style_recovery_before_the_hard_render_gate(fake_runtime):
     observation = EngineObservation(
         prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[0.9]),

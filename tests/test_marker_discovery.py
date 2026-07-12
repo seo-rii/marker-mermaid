@@ -342,9 +342,9 @@ def test_page_detector_adds_scaled_virtual_crop_and_uses_nearest_existing_anchor
         "multi_axis_structure",
     ]
     assert fragment.source_block_ids == []
-    assert fragment.crop_bbox == (160.0, 120.0, 560.0, 400.0)
+    assert fragment.crop_bbox == (0.0, 0.0, 400.0, 280.0)
     assert fragment.page_bbox == (80.0, 60.0, 280.0, 200.0)
-    assert result.images[fragment.fragment_id].size == page_image.size
+    assert result.images[fragment.fragment_id].size == (400, 280)
     assert calls == [
         (
             (640, 480),

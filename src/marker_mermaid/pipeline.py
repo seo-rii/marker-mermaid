@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import unicodedata
 from dataclasses import dataclass
 from typing import Literal
 
@@ -14,6 +15,7 @@ from marker_mermaid.config import MermaidConfig, Mode
 from marker_mermaid.fusion import FusionEngine, FusionInput
 from marker_mermaid.models import (
     CandidateFailure,
+    DiagramSceneIR,
     EngineObservation,
     MermaidCandidate,
     ReconstructionResult,
@@ -79,14 +81,84 @@ def _edge_iou(source: Image.Image, rendered: bytes | None) -> float | None:
     return intersection / union if union else None
 
 
-def _provenance_score(candidate: MermaidCandidate, evidence: list[VisualEvidence]) -> float | None:
-    if candidate.scene_ir is None or not candidate.scene_ir.elements:
+_PROVENANCE_GATED_TYPES = frozenset(
+    {
+        "architecture",
+        "block",
+        "bpmn",
+        "c4",
+        "class",
+        "component",
+        "cynefin",
+        "data_lineage",
+        "deployment",
+        "er",
+        "eventmodeling",
+        "flowchart",
+        "generic_network",
+        "gitgraph",
+        "ishikawa",
+        "journey",
+        "kanban",
+        "mindmap",
+        "organization",
+        "railroad",
+        "requirement",
+        "sankey",
+        "sequence",
+        "state",
+        "swimlane",
+        "timeline",
+        "treeview",
+        "treemap",
+        "usecase",
+        "venn",
+        "wardley",
+        "zenuml",
+    }
+)
+
+
+def _normalized_label(value: str | None) -> str:
+    return " ".join(unicodedata.normalize("NFKC", value or "").casefold().split())
+
+
+def _generated_node_provenance_score(
+    generated_scene: DiagramSceneIR | None,
+    source_scene: DiagramSceneIR | None,
+    evidence: list[VisualEvidence],
+) -> float | None:
+    """Measure attribution on emitted nodes, not merely on source observations.
+
+    Typed serializers do not always copy evidence IDs into their emitted IR.  In that
+    case a generated node may inherit attribution from a source node with the same ID,
+    or from one unique normalized label match.  Ambiguous label matches never count.
+    """
+
+    if generated_scene is None or not generated_scene.elements:
         return None
     known = {item.id for item in evidence}
-    supported = sum(
-        1 for element in candidate.scene_ir.elements if known.intersection(element.evidence_ids)
-    )
-    return supported / len(candidate.scene_ir.elements)
+    source_by_id = {
+        element.id: element for element in (source_scene.elements if source_scene else [])
+    }
+    source_by_label: dict[str, list] = {}
+    for element in source_by_id.values():
+        label = _normalized_label(element.text)
+        if label:
+            source_by_label.setdefault(label, []).append(element)
+
+    supported = 0
+    for element in generated_scene.elements:
+        if known.intersection(element.evidence_ids):
+            supported += 1
+            continue
+        source_element = source_by_id.get(element.id)
+        if source_element is None:
+            matches = source_by_label.get(_normalized_label(element.text), [])
+            source_element = matches[0] if len(matches) == 1 else None
+        if source_element is not None and known.intersection(source_element.evidence_ids):
+            supported += 1
+    return supported / len(generated_scene.elements)
 
 
 def _canonical_runtime_type(value: str | None) -> str | None:
@@ -159,6 +231,7 @@ class ReconstructionPipeline:
     ) -> ReconstructionResult:
         failures: list[CandidateFailure] = []
         all_evidence = list(evidence or [])
+        known_evidence_ids = {item.id for item in all_evidence}
         try:
             views, view_warnings = build_visual_priors(image, all_evidence, self.config)
         except Exception as exc:
@@ -206,8 +279,9 @@ class ReconstructionPipeline:
                 successful_observations.append((engine.name, fusion_source, observation))
             evidence_changed = False
             for item in observation.evidence:
-                if item.id not in {existing.id for existing in all_evidence}:
+                if item.id not in known_evidence_ids:
                     all_evidence.append(item)
+                    known_evidence_ids.add(item.id)
                     evidence_changed = True
             if evidence_changed:
                 try:
@@ -237,11 +311,10 @@ class ReconstructionPipeline:
                     (FusionEngine.name, fused),
                     *generation_observations,
                 ]
-                known_evidence = {item.id for item in all_evidence}
                 for item in fused.evidence:
-                    if item.id not in known_evidence:
+                    if item.id not in known_evidence_ids:
                         all_evidence.append(item)
-                        known_evidence.add(item.id)
+                        known_evidence_ids.add(item.id)
             except Exception as exc:
                 failures.append(
                     CandidateFailure(
@@ -262,7 +335,7 @@ class ReconstructionPipeline:
             ]
             generated: list[_Draft] = []
             if self.config.enable_typed_ir:
-                for typed in observation.typed_candidates:
+                for typed in observation.typed_candidates[:candidate_budget]:
                     if typed.diagram_type not in top_types:
                         continue
                     try:
@@ -330,7 +403,7 @@ class ReconstructionPipeline:
                     )
                 )
             if self.config.enable_direct_mermaid:
-                for direct in observation.direct_candidates:
+                for direct in observation.direct_candidates[:candidate_budget]:
                     if direct.diagram_type in top_types:
                         generated.append(
                             _Draft(
@@ -385,6 +458,7 @@ class ReconstructionPipeline:
             "sankey",
             "radar",
             "treemap",
+            "venn",
             "packet",
         }
         for index, draft in enumerate(drafts, start=1):
@@ -532,17 +606,21 @@ class ReconstructionPipeline:
                 scores["type_fitness"] = (
                     0.0 if contract_mismatch else prediction_scores[draft.diagram_type]
                 )
-            provenance = _provenance_score(candidate, all_evidence)
-            if provenance is not None:
-                scores["visual_entailment_precision"] = provenance
-                if provenance < 0.8:
-                    candidate.warnings.append("more than 20% of scene nodes lack provenance")
             generated_scene = None
             if draft.typed_ir is not None:
                 generated_scene = typed_ir_to_scene(draft.diagram_type, draft.typed_ir)
             elif draft.method == "scene_ir_fallback" and draft.observation.scene_ir is not None:
                 generated_scene = draft.observation.scene_ir.model_copy(deep=True)
             source_scene = draft.observation.scene_ir
+            provenance = _generated_node_provenance_score(
+                generated_scene,
+                source_scene,
+                all_evidence,
+            )
+            if provenance is not None:
+                scores["visual_entailment_precision"] = provenance
+                if provenance < 0.8:
+                    candidate.warnings.append("more than 20% of generated nodes lack provenance")
             structural_edge_available = False
             if source_scene is not None and generated_scene is not None:
                 structural_metrics = []
@@ -570,10 +648,31 @@ class ReconstructionPipeline:
                     scores["edge_agreement"] = edge
             candidate.scores = scores
             candidate.aggregate_score = aggregate_scores(scores, self.config)
+            provenance_gated = draft.diagram_type in _PROVENANCE_GATED_TYPES
+            if self.config.mode != Mode.STRICT and provenance_gated:
+                if provenance is None:
+                    candidate.aggregate_score = None
+                    candidate.warnings.append(
+                        "generated-node attribution is unavailable; review is required"
+                    )
+                elif provenance < 0.8:
+                    candidate.aggregate_score = None
+                    candidate.warnings.append(
+                        "generated-node provenance gate requires at least 80% attribution"
+                    )
             if draft.diagram_type in numeric_types and numeric is None:
                 candidate.aggregate_score = None
                 candidate.warnings.append(
                     "numeric diagram lacks OCR/vector numeric evidence and cannot auto-publish"
+                )
+            elif (
+                draft.diagram_type in numeric_types
+                and numeric is not None
+                and numeric < self.config.publish_min_score
+            ):
+                candidate.aggregate_score = None
+                candidate.warnings.append(
+                    "numeric consistency is below the automatic publication threshold"
                 )
             if (
                 candidate.scene_ir is not None
@@ -672,8 +771,12 @@ class ReconstructionPipeline:
                 if edge is not None:
                     scores["edge_agreement"] = edge
             aggregate = aggregate_scores(scores, self.config)
-            improved = aggregate is not None and (
-                current.aggregate_score is None or aggregate > current.aggregate_score
+            # A source-only code repair cannot create missing numeric or provenance
+            # evidence, so it must not unlock a candidate already held for review.
+            improved = (
+                aggregate is not None
+                and current.aggregate_score is not None
+                and aggregate > current.aggregate_score
             )
             event = RepairEvent(
                 iteration=iteration,

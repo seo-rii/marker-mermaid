@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
+import mimetypes
 import secrets
+import shutil
 import urllib.parse
 import webbrowser
 from functools import partial
@@ -72,6 +75,8 @@ class ReviewHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(self.review_root), **kwargs)
 
     def do_GET(self):  # noqa: N802 - stdlib handler API
+        if not self._authorized_host():
+            return
         path = urllib.parse.urlsplit(self.path).path
         if path in {"", "/"}:
             self._send_bytes(self.assets.html.encode(), "text/html; charset=utf-8")
@@ -94,12 +99,15 @@ class ReviewHandler(SimpleHTTPRequestHandler):
             except ReviewStoreError as exc:
                 self._send_store_error(exc)
             return
-        if self._allowed_static_path(path):
-            super().do_GET()
+        static_path = self._static_artifact_path(path)
+        if static_path is not None:
+            self._send_static_file(static_path)
             return
         self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
 
     def do_POST(self):  # noqa: N802 - stdlib handler API
+        if not self._authorized_host():
+            return
         path = urllib.parse.urlsplit(self.path).path
         route = self._diagram_route(path)
         if route is None or route[1] not in {
@@ -196,6 +204,37 @@ class ReviewHandler(SimpleHTTPRequestHandler):
                     {"error": "cross-origin mutation blocked"}, status=HTTPStatus.FORBIDDEN
                 )
                 return False
+        return True
+
+    def _authorized_host(self) -> bool:
+        """Reject DNS-rebinding Host values before exposing the CSRF bootstrap."""
+
+        raw_host = self.headers.get("Host", "")
+        try:
+            parsed = urllib.parse.urlsplit(f"//{raw_host}")
+            hostname = parsed.hostname
+            request_port = parsed.port
+        except ValueError:
+            hostname = None
+            request_port = None
+        listener_host, listener_port = self.server.server_address[:2]
+        allowed_hosts = {str(listener_host).casefold()}
+        try:
+            if ipaddress.ip_address(listener_host).is_loopback:
+                allowed_hosts.update({"127.0.0.1", "::1", "localhost"})
+        except ValueError:
+            if str(listener_host).casefold() == "localhost":
+                allowed_hosts.update({"127.0.0.1", "::1", "localhost"})
+        if (
+            hostname is None
+            or hostname.casefold() not in allowed_hosts
+            or (request_port is not None and request_port != listener_port)
+        ):
+            self._send_json(
+                {"error": "unrecognized review Host"},
+                status=HTTPStatus.MISDIRECTED_REQUEST,
+            )
+            return False
         return True
 
     def _read_json_body(self) -> dict[str, Any]:
@@ -380,6 +419,42 @@ class ReviewHandler(SimpleHTTPRequestHandler):
         if len(parts) == 3 and parts[1] == "images":
             return not parts[2].startswith(".")
         return len(parts) == 4 and parts[1] == "diagrams" and parts[3] in {"final.svg", "final.png"}
+
+    def _static_artifact_path(self, path: str) -> Path | None:
+        """Resolve an allowlisted artifact without following any symlink component."""
+
+        if not self._allowed_static_path(path):
+            return None
+        decoded = urllib.parse.unquote(path)
+        relative_parts = PurePosixPath(decoded).parts[1:]
+        candidate = self.review_root.joinpath(*relative_parts)
+        current = self.review_root
+        for part in relative_parts:
+            current = current / part
+            if current.is_symlink():
+                return None
+        try:
+            resolved = candidate.resolve(strict=True)
+        except (FileNotFoundError, OSError):
+            return None
+        if self.review_root not in resolved.parents or not resolved.is_file():
+            return None
+        return resolved
+
+    def _send_static_file(self, path: Path) -> None:
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        try:
+            size = path.stat().st_size
+            handle = path.open("rb")
+        except OSError:
+            self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        with handle:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            shutil.copyfileobj(handle, self.wfile)
 
     def _send_store_error(self, exc: ReviewStoreError) -> None:
         if isinstance(exc, ReviewConflictError):

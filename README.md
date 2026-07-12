@@ -4,13 +4,13 @@
 Mermaid 후보로 복원하는 `marker-pdf 1.10.2` 확장입니다. 원본 이미지를 항상 보존하고,
 보안 검사와 실제 Mermaid parse/render를 통과한 코드만 Markdown에 넣습니다.
 
-이 저장소는 MMX-001 v0.3의 Phase 1~5를 실행 가능한 기준선으로
-구현합니다. Core/계획 serializer에 더해 State, Class, ER, Requirement, Block을 native 문법으로
+이 저장소는 MMX-001 v0.3 Phase 1~5 유형의 serializer와 안전한 실행 경로를 제공하는
+experimental engineering baseline입니다. Core/계획 serializer에 더해 State, Class, ER, Requirement, Block을 native 문법으로
 생성하며 BPMN/Swimlane/C4/Deployment/Component/Use-case는 검증된 portable grammar로 명시적으로
 fallback합니다. Pie, XY, Quadrant, Sankey, Radar, Treemap, Venn도 explicit numeric/set IR을
 native 또는 loss-disclosed fallback으로 처리합니다. 대화형 workspace에서는 검증된 code/IR
 편집, provenance overlay, 대안 선택, 제한된 자연어 patch, undo/redo, 승인/거절을 제공합니다.
-아직 구현하지 않은 v0.3 범위는
+유형별 추출 schema, 외부 평가 corpus, 일부 review 조작처럼 아직 구현하지 않은 v0.3 범위는
 [스펙 대응표](docs/spec-coverage.md)에 숨김없이 구분했습니다.
 
 ## 핵심 보장
@@ -21,6 +21,8 @@ native 또는 loss-disclosed fallback으로 처리합니다. 대화형 workspace
 - 후보 하나의 실패가 문서 전체를 실패시키지 않습니다.
 - `extended` 기본 budget은 type 2개, candidate 3개, repair 3회입니다.
 - 의미 점수가 없는 결과는 성공률을 부풀리지 않고 `U` 등급과 review 대상으로 둡니다.
+- syntax/render 점수는 의미 점수를 희석할 수 없으며 게시 정책의 semantic threshold도 별도로 통과해야 합니다.
+- `extended`의 자동 생성 node는 생성 결과 기준 provenance가 80% 미만이면 review로 보냅니다.
 - node/relation의 OCR, contour, VLM observation 등 provenance를 sidecar에 보존합니다.
 - composite panel과 adjacent/continued multi-page fragment를 virtual source로 조립·출력합니다.
 - panel/merge OCR bbox와 원 page/block을 잇는 affine provenance를 sidecar에 보존합니다.

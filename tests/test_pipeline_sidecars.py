@@ -93,7 +93,56 @@ def test_pipeline_selects_valid_candidate_and_respects_budget(fake_runtime):
     assert result.selected.scores["edge_agreement"] == 1
     assert result.selected.scores["arrow_agreement"] == 1
     assert result.selected.scores["path_consistency"] == 1
+    assert result.selected.scores["visual_entailment_precision"] == 1
     assert "layout_similarity" not in result.selected.scores
+
+
+def test_generated_node_provenance_gate_holds_unattributed_typed_nodes(fake_runtime):
+    source = observation()
+    source.typed_candidates[0].ir["nodes"].append({"id": "C", "label": "Invented"})
+    source.typed_candidates[0].ir["edges"].append({"source": "B", "target": "C"})
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(source)],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is not None
+    assert result.selected.scores["visual_entailment_precision"] == pytest.approx(2 / 3)
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert result.review_required
+    assert any("provenance gate" in warning for warning in result.selected.warnings)
+
+
+def test_direct_structural_candidate_without_attribution_requires_review(fake_runtime):
+    class DirectOnlyEngine:
+        name = "direct-only"
+
+        def observe(self, context):
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[0.9]),
+                direct_candidates=[
+                    DirectMermaidCandidate(
+                        diagram_type="flowchart",
+                        code='flowchart LR\n    A["Start"] --> B["End"]\n',
+                    )
+                ],
+            )
+
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [DirectOnlyEngine()],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("attribution is unavailable" in warning for warning in result.selected.warnings)
 
 
 def test_candidate_budget_is_shared_fairly_across_engines(fake_runtime):
@@ -281,6 +330,40 @@ def test_numeric_diagram_without_source_numeric_evidence_requires_review():
     assert supported.selected is not None
     assert supported.selected.scores["numeric_consistency"] == 1
     assert supported.selected.aggregate_score is not None
+
+
+def test_numeric_diagram_with_conflicting_source_values_requires_review(fake_runtime):
+    class PieEngine:
+        name = "pie"
+
+        def observe(self, context):
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["pie"], scores=[0.9]),
+                direct_candidates=[
+                    DirectMermaidCandidate(
+                        diagram_type="pie",
+                        code='pie\n    "Approved" : 20\n',
+                    )
+                ],
+            )
+
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [PieEngine()],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        ocr_texts=["Approved 99"],
+    )
+
+    assert result.selected is not None
+    assert result.selected.scores["numeric_consistency"] == 0
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("numeric consistency" in warning for warning in result.selected.warnings)
 
 
 def test_geometry_evidence_is_available_to_later_engines(fake_runtime):

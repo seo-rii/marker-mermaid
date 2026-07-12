@@ -9,6 +9,7 @@ from marker_mermaid.scoring import (
     decide_publication,
     numeric_consistency,
     ocr_recall,
+    semantic_score,
 )
 from marker_mermaid.security import MermaidSecurityScanner
 from marker_mermaid.validation import CandidateValidator, inspect_svg
@@ -47,6 +48,25 @@ def test_aggregate_requires_a_semantic_metric():
     config = MermaidConfig()
     assert aggregate_scores({"syntax": 1, "render": 1}, config) is None
     assert aggregate_scores({"syntax": 1, "render": 1, "type_fitness": 0.5}, config) is not None
+    assert semantic_score({"syntax": 1, "render": 1, "type_fitness": 0}, config) == 0
+
+
+def test_runtime_scores_cannot_dilute_zero_semantic_evidence_into_publication():
+    config = MermaidConfig()
+    scores = {"syntax": 1.0, "render": 1.0, "type_fitness": 0.0}
+    candidate = MermaidCandidate(
+        candidate_id="c",
+        generation_method="direct_mermaid",
+        diagram_type="flowchart",
+        syntax_valid=True,
+        render_valid=True,
+        scores=scores,
+        aggregate_score=aggregate_scores(scores, config),
+    )
+
+    assert candidate.aggregate_score is not None
+    assert candidate.aggregate_score >= config.publish_min_score
+    assert not decide_publication(candidate, config).publish
 
 
 @pytest.mark.parametrize(
@@ -67,6 +87,7 @@ def test_publication_truth_table(policy, score, published):
         diagram_type="flowchart",
         syntax_valid=True,
         render_valid=True,
+        scores={"syntax": 1, "render": 1, "type_fitness": score},
         aggregate_score=score,
     )
     assert decide_publication(candidate, MermaidConfig(publish_policy=policy)).publish is published
@@ -92,6 +113,22 @@ def test_svg_inspection_rejects_external_links_and_scripts():
     findings = inspect_svg(svg, SecurityProfile.STRICT)
     assert "rendered SVG contains an external href" in findings
     assert "rendered SVG contains forbidden <script>" in findings
+
+
+@pytest.mark.parametrize(
+    "css",
+    [
+        "@import url(https://attacker.example/x.css);",
+        ".node { fill: url( https://attacker.example/fill.svg ); }",
+    ],
+)
+def test_svg_inspection_rejects_external_css_in_style_text(css):
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1">'
+        f'<style>{css}</style><rect width="1" height="1"/></svg>'
+    )
+
+    assert "rendered SVG contains external CSS" in inspect_svg(svg, SecurityProfile.STRICT)
 
 
 def test_security_failure_does_not_call_runtime(fake_runtime):

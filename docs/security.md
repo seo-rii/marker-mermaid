@@ -41,9 +41,12 @@ Style recovery는 Scene IR 색을 그대로 CSS로 복사하지 않습니다. he
 
 review server는 기본적으로 `127.0.0.1`에만 bind합니다. mutation API는 session별 CSRF token,
 same-origin `Origin` 검사, JSON content type, 1 MB body limit, optimistic version/digest를 요구합니다.
+요청 `Host`는 실제 listener와 일치해야 하므로 loopback DNS rebinding host에는 bootstrap도 제공하지 않습니다.
 HTML은 inline script/style 없이 제공하며 CSP는 `script-src 'self'`, `connect-src 'self'`,
 `frame-ancestors 'none'`을 적용합니다. artifact server는 원본 image와 `final.svg/png`만 공개하고
 revision/state 파일은 HTTP로 노출하지 않습니다.
+허용된 static 경로도 모든 path component의 symlink를 거부합니다. validator가 만든 SVG/PNG는 저장 전에
+각 16 MB로 제한하고, undo/redo는 optional IR/SVG/PNG의 생성과 삭제를 같은 rollback 경계에서 처리합니다.
 
 이 서버에는 사용자 인증이 없습니다. `--host 0.0.0.0` 같은 non-loopback bind는 신뢰하는 격리망에서만
 사용해야 하며 CLI가 경고를 출력합니다. CSRF token은 인증을 대신하지 않습니다.
@@ -51,7 +54,7 @@ revision/state 파일은 HTTP로 노출하지 않습니다.
 ## SVG 검사
 
 단일 SVG root와 dimension/viewBox를 요구합니다. script 계열 element, event handler attribute,
-외부 href, 외부 CSS를 거부합니다. strict profile은 `foreignObject`도 거부하며 runtime에서
+외부 href, style attribute 및 `<style>` text의 외부 CSS를 거부합니다. strict profile은 `foreignObject`도 거부하며 runtime에서
 `htmlLabels: false`를 강제합니다. fragment reference인 `href="#local-id"`만 허용합니다.
 
 ## Chromium 격리와 수명

@@ -11,6 +11,12 @@ from marker_mermaid.config import QualityGrade
 
 BBox = tuple[float, float, float, float]
 Point = tuple[float, float]
+MAX_OBSERVATION_CANDIDATES = 64
+MAX_OBSERVATION_EVIDENCE = 20_000
+MAX_OBSERVATION_WARNINGS = 256
+MAX_IR_DEPTH = 64
+MAX_IR_ITEMS = 100_000
+MAX_IR_TEXT_CHARS = 50_000
 
 
 class VisualEvidence(BaseModel):
@@ -148,10 +154,10 @@ class DiagramSceneIR(BaseModel):
 
 
 class DiagramTypePrediction(BaseModel):
-    candidates: list[str]
-    scores: list[float]
-    visual_signals: list[str] = Field(default_factory=list)
-    negative_signals: list[str] = Field(default_factory=list)
+    candidates: list[str] = Field(max_length=64)
+    scores: list[float] = Field(max_length=64)
+    visual_signals: list[str] = Field(default_factory=list, max_length=256)
+    negative_signals: list[str] = Field(default_factory=list, max_length=256)
 
     @model_validator(mode="after")
     def candidates_and_scores_align(self) -> DiagramTypePrediction:
@@ -171,20 +177,47 @@ class TypedIRCandidate(BaseModel):
     ir: dict[str, Any]
     confidence: float = 0.5
 
+    @field_validator("ir")
+    @classmethod
+    def ir_is_bounded(cls, value: dict[str, Any]) -> dict[str, Any]:
+        pending: list[tuple[Any, int]] = [(value, 0)]
+        item_count = 0
+        while pending:
+            item, depth = pending.pop()
+            item_count += 1
+            if item_count > MAX_IR_ITEMS:
+                raise ValueError("typed IR exceeds the item budget")
+            if depth > MAX_IR_DEPTH:
+                raise ValueError("typed IR exceeds the nesting depth budget")
+            if isinstance(item, str) and len(item) > MAX_IR_TEXT_CHARS:
+                raise ValueError("typed IR text exceeds the field size budget")
+            if isinstance(item, dict):
+                pending.extend((key, depth + 1) for key in item)
+                pending.extend((child, depth + 1) for child in item.values())
+            elif isinstance(item, list | tuple):
+                pending.extend((child, depth + 1) for child in item)
+        return value
+
 
 class DirectMermaidCandidate(BaseModel):
     diagram_type: str
-    code: str
+    code: str = Field(max_length=50_000)
     confidence: float = 0.5
 
 
 class EngineObservation(BaseModel):
     prediction: DiagramTypePrediction
     scene_ir: DiagramSceneIR | None = None
-    typed_candidates: list[TypedIRCandidate] = Field(default_factory=list)
-    direct_candidates: list[DirectMermaidCandidate] = Field(default_factory=list)
-    evidence: list[VisualEvidence] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
+    typed_candidates: list[TypedIRCandidate] = Field(
+        default_factory=list, max_length=MAX_OBSERVATION_CANDIDATES
+    )
+    direct_candidates: list[DirectMermaidCandidate] = Field(
+        default_factory=list, max_length=MAX_OBSERVATION_CANDIDATES
+    )
+    evidence: list[VisualEvidence] = Field(
+        default_factory=list, max_length=MAX_OBSERVATION_EVIDENCE
+    )
+    warnings: list[str] = Field(default_factory=list, max_length=MAX_OBSERVATION_WARNINGS)
 
 
 class RepairEvent(BaseModel):

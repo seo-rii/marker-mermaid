@@ -41,8 +41,13 @@ undo 뒤 새 편집을 하면 활성 timeline은 분기하지만 기존 snapshot
 
 브라우저 mutation에는 page bootstrap에 포함된 CSRF token과 same-origin 요청이 필요합니다.
 서버는 JSON body를 1 MB로 제한하고 bundle ID/path traversal 및 symlink artifact를 거부합니다.
+listener와 다른 `Host`도 bootstrap/API 처리 전에 거부합니다. validator render는 16 MB artifact budget을
+넘으면 어떤 bundle 파일도 바꾸기 전에 실패합니다.
 HTTP로 제공하는 파일은 `images/*`와 각 bundle의 `final.svg/png`뿐이며 review state, history,
 immutable version 파일은 API 응답이나 static route로 직접 공개하지 않습니다.
+undo/redo는 revision에 없던 optional Scene IR/SVG/PNG도 실제로 삭제하고 manifest hash를 함께 정리합니다.
+review revision은 처리 중 I/O 오류에는 rollback하지만 여러 파일을 교체하므로 process/power loss까지
+보장하는 crash-atomic transaction은 아닙니다. immutable revision directory와 단일 pointer swap은 후속입니다.
 
 review server는 인증 시스템이 아닙니다. 기본 loopback bind를 권장합니다. non-loopback host로 열면
 같은 네트워크의 사용자가 workspace를 볼 수 있으므로 별도의 인증 reverse proxy 없이 공용망에

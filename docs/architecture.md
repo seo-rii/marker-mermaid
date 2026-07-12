@@ -67,7 +67,8 @@ engine observation 하나는 type distribution, Scene IR, typed candidates, dire
 evidence를 함께 반환합니다. pipeline은 모든 engine을 failure-isolated 방식으로 호출하고, 앞선
 engine의 evidence를 다음 engine context와 view에 합칩니다. payload가 둘 이상이면 명시적
 `fusion_source`로 deterministic fusion을 수행하고 fused/원 observation 후보를 round-robin으로
-뽑습니다. type top-k와 code hash 중복 제거 후
+뽑습니다. observation list, typed IR depth/item/text와 direct source에는 입력 budget을 적용하고 각 engine은
+candidate budget까지만 직렬화합니다. type top-k와 code hash 중복 제거 후
 기본 우선순위는 typed IR, Scene IR fallback, direct Mermaid입니다. 최종 정렬은 hard gate,
 aggregate score, OCR recall, generation priority, candidate ID 순서로 결정적입니다.
 
@@ -77,7 +78,8 @@ label이 하나도 없으면 문법적으로 렌더 가능해도 `U`로 두어 �
 
 ## 점수의 의미
 
-syntax/render는 hard gate이자 score input입니다. OCR, type fitness, provenance, edge agreement 등
+syntax/render는 hard gate이자 표시용 total score input입니다. 게시 결정은 non-runtime semantic score의
+threshold도 별도로 요구합니다. OCR, type fitness, provenance, edge agreement 등
 사용 가능한 의미 지표가 하나도 없으면 aggregate는 `None`입니다. 사용할 수 없는 지표를 0으로
 간주하지 않고 남은 가중치만 정규화합니다. 숫자 지표도 원본 OCR에 숫자가 있을 때만 계산합니다.
 구조 점수의 available 조건과 한계는 [품질 평가](quality.md)에 정리합니다.

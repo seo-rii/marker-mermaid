@@ -228,6 +228,15 @@ class MarkerSourceDiscovery:
         page_id = _page_id(page, page, page_index)
         for region in detection.regions:
             crop_left, crop_top, crop_right, crop_bottom = region.bbox
+            pixel_crop = (
+                max(0, int(crop_left)),
+                max(0, int(crop_top)),
+                min(page_image.width, int(crop_right + 0.999999)),
+                min(page_image.height, int(crop_bottom + 0.999999)),
+            )
+            proposal_image = page_image.crop(pixel_crop)
+            if proposal_image.width == 0 or proposal_image.height == 0:
+                continue
             proposal_page_bbox = (
                 page_bbox[0] + crop_left / scale_x,
                 page_bbox[1] + crop_top / scale_y,
@@ -243,8 +252,8 @@ class MarkerSourceDiscovery:
                 page_id=page_id,
                 source_block_ids=[],
                 page_bbox=proposal_page_bbox,
-                crop_bbox=region.bbox,
-                image_size=page_image.size,
+                crop_bbox=(0.0, 0.0, float(proposal_image.width), float(proposal_image.height)),
+                image_size=proposal_image.size,
             )
             registry[source_id] = DiscoveredSource(
                 source_id=source_id,
@@ -262,7 +271,7 @@ class MarkerSourceDiscovery:
                 ),
                 confidence=region.confidence,
             )
-            source_images[fragment.fragment_id] = page_image.copy()
+            source_images[fragment.fragment_id] = proposal_image
 
     @staticmethod
     def _add_panels(

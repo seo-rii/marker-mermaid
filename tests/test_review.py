@@ -6,12 +6,13 @@ import threading
 import urllib.error
 import urllib.request
 from functools import partial
+from http import HTTPStatus
 from http.server import ThreadingHTTPServer
 
 import pytest
 
 from marker_mermaid.review import ReviewHandler
-from marker_mermaid.review_store import ReviewStore, ReviewValidationResult
+from marker_mermaid.review_store import MAX_RENDER_BYTES, ReviewStore, ReviewValidationResult
 
 
 def make_bundle(tmp_path, *, source_id="source-a"):
@@ -142,6 +143,31 @@ def test_review_shell_escapes_bootstrap_and_uses_strict_external_assets(tmp_path
     assert "/api/diagrams/" in javascript
 
 
+def test_review_rejects_dns_rebinding_host_before_bootstrap_or_mutation(tmp_path):
+    make_bundle(tmp_path)
+    with running_server(tmp_path) as (base, store):
+        get_request = urllib.request.Request(f"{base}/", headers={"Host": "attacker.example"})
+        with pytest.raises(urllib.error.HTTPError) as get_error:
+            urllib.request.urlopen(get_request, timeout=3)
+        current = store.load_bundle("diagram-a")
+        post_request = urllib.request.Request(
+            f"{base}/api/diagrams/diagram-a/decision",
+            data=json.dumps({**expected(current), "decision": "approve"}).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Host": "attacker.example",
+                "Origin": "http://attacker.example",
+                "X-CSRF-Token": "test-token",
+            },
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as post_error:
+            urllib.request.urlopen(post_request, timeout=3)
+
+    assert get_error.value.code == HTTPStatus.MISDIRECTED_REQUEST
+    assert post_error.value.code == HTTPStatus.MISDIRECTED_REQUEST
+
+
 def test_api_loads_complete_bundle_without_exposing_revision_files(tmp_path):
     make_bundle(tmp_path)
     with running_server(tmp_path) as (base, _):
@@ -157,6 +183,23 @@ def test_api_loads_complete_bundle_without_exposing_revision_files(tmp_path):
     assert diagram["alternatives"][0]["candidate_id"] == "candidate-b"
     assert diagram["issues"] == ["check edge direction"]
     assert error.value.code == 404
+
+
+def test_static_artifacts_never_follow_file_or_directory_symlinks(tmp_path):
+    make_bundle(tmp_path)
+    secret = tmp_path / "outside-secret.txt"
+    secret.write_text("do not expose", encoding="utf-8")
+    (tmp_path / "images" / "leak").symlink_to(secret)
+    outside_bundle = tmp_path / "outside-bundle"
+    outside_bundle.mkdir()
+    (outside_bundle / "final.svg").write_text("<svg><text>secret</text></svg>", encoding="utf-8")
+    (tmp_path / "diagrams" / "leak").symlink_to(outside_bundle, target_is_directory=True)
+
+    with running_server(tmp_path) as (base, _):
+        for path in ("/images/leak", "/diagrams/leak/final.svg"):
+            with pytest.raises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(f"{base}{path}", timeout=3)
+            assert error.value.code == 404
 
 
 def test_edit_requires_csrf_and_atomically_updates_code_ir_render_and_history(tmp_path):
@@ -188,6 +231,74 @@ def test_edit_requires_csrf_and_atomically_updates_code_ir_render_and_history(tm
         json.loads((diagram_path / "review-history.json").read_text())[0]["operation"]
         == "edit_mermaid"
     )
+
+
+def test_oversized_render_is_rejected_before_any_bundle_file_changes(tmp_path):
+    diagram = make_bundle(tmp_path)
+    store = ReviewStore(
+        tmp_path,
+        validator=lambda code: ReviewValidationResult(
+            valid=True,
+            svg="x" * (MAX_RENDER_BYTES + 1),
+        ),
+    )
+    current = store.load_bundle("diagram-a")
+    before = {
+        path.relative_to(diagram): path.read_bytes()
+        for path in diagram.rglob("*")
+        if path.is_file()
+    }
+
+    with pytest.raises(Exception, match="artifact size limit"):
+        store.apply_mermaid_edit(
+            "diagram-a",
+            "flowchart LR\n  B --> A\n",
+            **expected(current),
+        )
+
+    after = {
+        path.relative_to(diagram): path.read_bytes()
+        for path in diagram.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+
+
+def test_undo_atomically_restores_absent_optional_artifacts(tmp_path):
+    diagram = make_bundle(tmp_path)
+    (diagram / "scene-ir.json").unlink()
+    (diagram / "final.svg").unlink()
+    store = ReviewStore(
+        tmp_path,
+        validator=lambda code: ReviewValidationResult(
+            valid=True,
+            svg="<svg viewBox='0 0 1 1'/>",
+            png=b"png",
+        ),
+    )
+    current = store.load_bundle("diagram-a")
+    edited = store.apply_edit(
+        "diagram-a",
+        "flowchart LR\n  B --> A\n",
+        scene_ir={"elements": [], "relations": [], "groups": []},
+        **expected(current),
+    )
+    assert (diagram / "scene-ir.json").exists()
+    assert (diagram / "final.svg").exists()
+    assert (diagram / "final.png").exists()
+
+    undone = store.undo("diagram-a", **expected(edited))
+
+    assert undone.scene_ir is None
+    assert undone.svg is None
+    assert undone.png is None
+    assert not (diagram / "scene-ir.json").exists()
+    assert not (diagram / "final.svg").exists()
+    assert not (diagram / "final.png").exists()
+    manifest_hashes = json.loads((diagram / "manifest.json").read_text())["files"]
+    assert "scene-ir.json" not in manifest_hashes
+    assert "final.svg" not in manifest_hashes
+    assert "final.png" not in manifest_hashes
 
 
 def test_stale_edit_and_cross_origin_mutation_are_rejected(tmp_path):

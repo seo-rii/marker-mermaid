@@ -37,6 +37,13 @@
 - Unlabeled geometry-only reconstructions are retained for review but cannot auto-publish.
 - Marker OCR provenance now uses the exact, unexpanded block crop transform.
 - Output saving now preflights source/image/artifact collisions and strict metadata JSON.
+- Publication now requires an independent semantic threshold and generated-node attribution gate.
+- Numeric diagrams with missing or sub-threshold source agreement are held for review.
+- Review static serving rejects symlinks and DNS-rebinding Host values; render artifacts are bounded.
+- Undo/redo transactionally removes optional artifacts absent from the target revision.
+- Engine observations, typed IR, and per-engine serialization now have explicit resource budgets.
+- Page proposals retain bounded crops instead of one full-page copy per proposal.
+- SVG CSS inspection covers `<style>` text and edge styles require fully mapped Mermaid ordering.
 
 ## 0.1.0
 

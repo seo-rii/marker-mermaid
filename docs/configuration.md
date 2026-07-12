@@ -13,13 +13,15 @@ prefix 없는 이름을 직접 전달할 수 있습니다. prefix 설정이 conc
 
 명시한 `candidate_count`, `type_candidate_count`, `max_repair_iterations`는 모드 기본값보다
 우선합니다. 각각 12, 3, 10을 넘길 수 없습니다.
+repair 횟수는 `RepairEngine`을 주입한 경우에만 사용되며 Marker 기본 processor는 현재 repair engine을
+구성하지 않습니다.
 
 ## 게시 정책
 
 | 정책 | parse/render 통과 후 동작 |
 | --- | --- |
-| `strict_validated` | aggregate가 `review_below_score` 이상일 때만 게시 |
-| `best_effort_validated` | aggregate가 `publish_min_score` 이상인 A/B/C 게시 |
+| `strict_validated` | aggregate와 semantic score가 모두 `review_below_score` 이상일 때만 게시 |
+| `best_effort_validated` | aggregate와 semantic score가 모두 `publish_min_score` 이상인 A/B/C 게시 |
 | `review_required` | Markdown에 넣지 않고 sidecar/review만 생성 |
 | `sidecar_only` | Markdown에 넣지 않고 sidecar만 생성 |
 
@@ -71,7 +73,8 @@ State/Class/ER/Requirement/Block typed serializer와 C4/Deployment/Component/Use
 `enabled_types` allowlist에 포함할 때 활성화됩니다. 요청 type과 실제 grammar가 다를 수 있으므로
 [serializer 계약](serialization.md)의 emitted type과 fallback chain을 함께 확인해야 합니다.
 Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn도 같은 allowlist와 계약을 사용합니다. 숫자 chart의 자동
-게시에는 OCR 또는 vector numeric evidence가 필요합니다.
+게시에는 OCR 또는 vector numeric evidence와 최소 numeric consistency가 필요합니다. 구조 후보는 생성
+node attribution을 계산할 수 없거나 80% 미만이면 자동 게시하지 않습니다.
 
 기본 `strict` security profile에서는 `enable_style_recovery=true`여도 style statement를 만들지
 않습니다. 실제 style code를 원하면 `portable-rich`/`style-rich` compatibility와 `style-only` 같은
