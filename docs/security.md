@@ -43,14 +43,25 @@ review server는 기본적으로 `127.0.0.1`에만 bind합니다. mutation API�
 same-origin `Origin` 검사, JSON content type, 1 MB body limit, optimistic version/digest를 요구합니다.
 요청 `Host`는 실제 listener와 일치해야 하므로 loopback DNS rebinding host에는 bootstrap도 제공하지 않습니다.
 동시 HTTP request는 기본 8개 slot으로 제한하며 초과 요청은 thread를 만들지 않고 503을 반환합니다.
+각 accepted socket은 기본 10초 timeout을 사용해 incomplete-header slowloris가 slot을 영구 점유하지
+못합니다. Wildcard listener의 추가 hostname은 `--allowed-host` exact allowlist에 명시해야 합니다.
 HTML은 inline script/style 없이 제공하며 CSP는 `script-src 'self'`, `connect-src 'self'`,
 `frame-ancestors 'none'`을 적용합니다. artifact server는 원본 image와 `final.svg/png`만 공개하고
 revision/state 파일은 HTTP로 노출하지 않습니다.
-허용된 static 경로도 모든 path component의 symlink를 거부합니다. validator가 만든 SVG/PNG는 저장 전에
+허용된 static 경로는 `openat`-style directory descriptor와 `O_NOFOLLOW`로 모든 path component를 열고
+검사한 descriptor를 직접 stream하므로 symlink 및 check/use 교체를 거부합니다. validator가 만든 SVG/PNG는 저장 전에
 각 16 MB로 제한하고, undo/redo는 optional IR/SVG/PNG의 생성과 삭제를 같은 rollback 경계에서 처리합니다.
 
 이 서버에는 사용자 인증이 없습니다. `--host 0.0.0.0` 같은 non-loopback bind는 신뢰하는 격리망에서만
 사용해야 하며 CLI가 경고를 출력합니다. CSRF token은 인증을 대신하지 않습니다.
+
+승인은 이전 validation metadata를 재사용하지 않습니다. 현재 digest를 optimistic lock으로 확인한 뒤
+같은 strict validator에서 code를 다시 parse/render하고, 성공한 새 render artifact와 승인 revision을
+함께 기록합니다. Review validator를 구성하지 않은 API embedding은 승인할 수 없습니다.
+
+VLM/fixture JSON에는 Scene/IR 개수·깊이·문자·point·ID 상한과 finite-number 검사를 적용하며 sidecar
+JSON은 비표준 `NaN`/Infinity를 허용하지 않습니다. Marker preview image도 dimension 8,192와 5천만
+pixel 상한을 넘거나 Pillow decompression-bomb 판정이 나면 preview만 격리해 생략합니다.
 
 ## SVG 검사
 

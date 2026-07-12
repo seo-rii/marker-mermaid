@@ -6,8 +6,10 @@ import hmac
 import ipaddress
 import json
 import mimetypes
+import os
 import secrets
 import shutil
+import stat
 import threading
 import urllib.parse
 import webbrowser
@@ -45,10 +47,21 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
     daemon_threads = True
 
-    def __init__(self, *args, max_workers: int = 8, **kwargs):
+    def __init__(
+        self,
+        *args,
+        max_workers: int = 8,
+        request_timeout_seconds: float = 10.0,
+        allowed_hosts: set[str] | None = None,
+        **kwargs,
+    ):
         if max_workers < 1:
             raise ValueError("max_workers must be positive")
+        if request_timeout_seconds <= 0:
+            raise ValueError("request_timeout_seconds must be positive")
         self._request_slots = threading.BoundedSemaphore(max_workers)
+        self.request_timeout_seconds = request_timeout_seconds
+        self.allowed_hosts = {item.casefold() for item in (allowed_hosts or set())}
         super().__init__(*args, **kwargs)
 
     def process_request(self, request, client_address):
@@ -67,6 +80,7 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
                 self.shutdown_request(request)
             return
         try:
+            request.settimeout(self.request_timeout_seconds)
             super().process_request(request, client_address)
         except Exception:
             self._request_slots.release()
@@ -139,9 +153,10 @@ class ReviewHandler(SimpleHTTPRequestHandler):
             except ReviewStoreError as exc:
                 self._send_store_error(exc)
             return
-        static_path = self._static_artifact_path(path)
-        if static_path is not None:
-            self._send_static_file(static_path)
+        static_artifact = self._open_static_artifact(path)
+        if static_artifact is not None:
+            descriptor, filename, size = static_artifact
+            self._send_static_file(descriptor, filename, size)
             return
         self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
 
@@ -258,13 +273,16 @@ class ReviewHandler(SimpleHTTPRequestHandler):
             hostname = None
             request_port = None
         listener_host, listener_port = self.server.server_address[:2]
-        allowed_hosts = {str(listener_host).casefold()}
-        try:
-            if ipaddress.ip_address(listener_host).is_loopback:
-                allowed_hosts.update({"127.0.0.1", "::1", "localhost"})
-        except ValueError:
-            if str(listener_host).casefold() == "localhost":
-                allowed_hosts.update({"127.0.0.1", "::1", "localhost"})
+        configured_hosts = getattr(self.server, "allowed_hosts", set())
+        allowed_hosts = set(configured_hosts)
+        if not allowed_hosts:
+            allowed_hosts.add(str(listener_host).casefold())
+            try:
+                if ipaddress.ip_address(listener_host).is_loopback:
+                    allowed_hosts.update({"127.0.0.1", "::1", "localhost"})
+            except ValueError:
+                if str(listener_host).casefold() == "localhost":
+                    allowed_hosts.update({"127.0.0.1", "::1", "localhost"})
         if (
             hostname is None
             or hostname.casefold() not in allowed_hosts
@@ -464,36 +482,48 @@ class ReviewHandler(SimpleHTTPRequestHandler):
             return not parts[2].startswith(".")
         return len(parts) == 4 and parts[1] == "diagrams" and parts[3] in {"final.svg", "final.png"}
 
-    def _static_artifact_path(self, path: str) -> Path | None:
-        """Resolve an allowlisted artifact without following any symlink component."""
+    def _open_static_artifact(self, path: str) -> tuple[int, str, int] | None:
+        """Open an allowlisted artifact by descriptor without following symlinks."""
 
         if not self._allowed_static_path(path):
             return None
         decoded = urllib.parse.unquote(path)
         relative_parts = PurePosixPath(decoded).parts[1:]
-        candidate = self.review_root.joinpath(*relative_parts)
-        current = self.review_root
-        for part in relative_parts:
-            current = current / part
-            if current.is_symlink():
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        directory_flag = getattr(os, "O_DIRECTORY", 0)
+        directory_descriptor: int | None = None
+        try:
+            directory_descriptor = os.open(
+                self.review_root,
+                os.O_RDONLY | directory_flag | nofollow,
+            )
+            for part in relative_parts[:-1]:
+                next_descriptor = os.open(
+                    part,
+                    os.O_RDONLY | directory_flag | nofollow,
+                    dir_fd=directory_descriptor,
+                )
+                os.close(directory_descriptor)
+                directory_descriptor = next_descriptor
+            descriptor = os.open(
+                relative_parts[-1],
+                os.O_RDONLY | nofollow,
+                dir_fd=directory_descriptor,
+            )
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                os.close(descriptor)
                 return None
-        try:
-            resolved = candidate.resolve(strict=True)
-        except (FileNotFoundError, OSError):
-            return None
-        if self.review_root not in resolved.parents or not resolved.is_file():
-            return None
-        return resolved
-
-    def _send_static_file(self, path: Path) -> None:
-        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        try:
-            size = path.stat().st_size
-            handle = path.open("rb")
+            return descriptor, relative_parts[-1], metadata.st_size
         except OSError:
-            self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
-            return
-        with handle:
+            return None
+        finally:
+            if directory_descriptor is not None:
+                os.close(directory_descriptor)
+
+    def _send_static_file(self, descriptor: int, filename: str, size: int) -> None:
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        with os.fdopen(descriptor, "rb") as handle:
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(size))
@@ -532,7 +562,14 @@ class ReviewHandler(SimpleHTTPRequestHandler):
         self.wfile.write(payload)
 
 
-def serve_review(output_dir: str | Path, *, host: str, port: int, open_browser: bool) -> None:
+def serve_review(
+    output_dir: str | Path,
+    *,
+    host: str,
+    port: int,
+    open_browser: bool,
+    allowed_hosts: list[str] | None = None,
+) -> None:
     """Serve the interactive workspace until interrupted, closing Chromium cleanly."""
 
     root = Path(output_dir).resolve()
@@ -568,7 +605,21 @@ def serve_review(output_dir: str | Path, *, host: str, port: int, open_browser: 
         csrf_token=csrf_token,
         assets=assets,
     )
-    server = BoundedThreadingHTTPServer((host, port), handler)
+    host_allowlist = {item.casefold() for item in (allowed_hosts or [])}
+    if host in {"0.0.0.0", "::"}:
+        host_allowlist.update({"127.0.0.1", "::1", "localhost"})
+    else:
+        host_allowlist.add(host.casefold())
+        try:
+            if ipaddress.ip_address(host).is_loopback:
+                host_allowlist.update({"127.0.0.1", "::1", "localhost"})
+        except ValueError:
+            pass
+    server = BoundedThreadingHTTPServer(
+        (host, port),
+        handler,
+        allowed_hosts=host_allowlist,
+    )
     url_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     url = f"http://{url_host}:{server.server_port}/"
     print(f"Review workspace: {url}")

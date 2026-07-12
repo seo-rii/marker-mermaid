@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
+import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from functools import partial
@@ -213,6 +216,74 @@ def test_bounded_review_server_rejects_excess_concurrent_requests():
     assert first_result == [b"ok"]
 
 
+def test_incomplete_http_headers_time_out_and_release_worker_slot():
+    class ImmediateHandler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, format, *args):
+            pass
+
+    server = BoundedThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        ImmediateHandler,
+        max_workers=1,
+        request_timeout_seconds=0.2,
+    )
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    slow = socket.create_connection(("127.0.0.1", server.server_port), timeout=2)
+    try:
+        slow.sendall(b"GET /slow HTTP/1.1\r\nHost: 127.0.0.1")
+        time.sleep(0.4)
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{server.server_port}/healthy", timeout=2
+        ) as response:
+            assert response.read() == b"ok"
+    finally:
+        slow.close()
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=3)
+
+
+def test_wildcard_listener_accepts_only_explicit_host_allowlist(tmp_path):
+    make_bundle(tmp_path)
+    store = ReviewStore(tmp_path)
+    server = BoundedThreadingHTTPServer(
+        ("0.0.0.0", 0),
+        partial(
+            ReviewHandler,
+            directory=str(tmp_path),
+            store=store,
+            csrf_token="token",
+        ),
+        allowed_hosts={"127.0.0.1", "localhost"},
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        accepted = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/api/diagrams",
+            headers={"Host": f"127.0.0.1:{server.server_port}"},
+        )
+        with urllib.request.urlopen(accepted, timeout=2) as response:
+            assert response.status == 200
+        rejected = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/",
+            headers={"Host": f"attacker.example:{server.server_port}"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(rejected, timeout=2)
+        assert error.value.code == HTTPStatus.MISDIRECTED_REQUEST
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
 def test_review_rejects_dns_rebinding_host_before_bootstrap_or_mutation(tmp_path):
     make_bundle(tmp_path)
     with running_server(tmp_path) as (base, store):
@@ -270,6 +341,33 @@ def test_static_artifacts_never_follow_file_or_directory_symlinks(tmp_path):
             with pytest.raises(urllib.error.HTTPError) as error:
                 urllib.request.urlopen(f"{base}{path}", timeout=3)
             assert error.value.code == 404
+
+
+def test_static_artifact_open_rejects_symlink_swapped_at_final_open(monkeypatch, tmp_path):
+    make_bundle(tmp_path)
+    source = tmp_path / "images" / "source.png"
+    secret = tmp_path / "outside-secret.txt"
+    secret.write_text("do not expose", encoding="utf-8")
+    real_open = os.open
+    swapped = False
+
+    def swap_before_final_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if path == "source.png" and dir_fd is not None and not swapped:
+            swapped = True
+            source.unlink()
+            source.symlink_to(secret)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", swap_before_final_open)
+    with (
+        running_server(tmp_path) as (base, _),
+        pytest.raises(urllib.error.HTTPError) as error,
+    ):
+        urllib.request.urlopen(f"{base}/images/source.png", timeout=3)
+
+    assert swapped
+    assert error.value.code == 404
 
 
 def test_edit_requires_csrf_and_atomically_updates_code_ir_render_and_history(tmp_path):
@@ -438,3 +536,17 @@ def test_candidate_command_decision_and_undo_flow(tmp_path):
     assert reverse["target"] == "E1"
     assert reverse["before"] == {"source": "B", "target": "A"}
     assert reverse["after"] == {"source": "A", "target": "B"}
+
+
+def test_group_command_persists_member_bbox_union_through_scene_schema(tmp_path):
+    make_bundle(tmp_path)
+    with running_server(tmp_path) as (base, store):
+        current = store.load_bundle("diagram-a")
+        grouped, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/commands",
+            {**expected(current), "command": "group nodes A, B as Pair"},
+        )
+
+    [group] = grouped["diagram"]["scene_ir"]["groups"]
+    assert group["member_ids"] == ["A", "B"]
+    assert group["bbox"] == [0.0, 0.0, 30.0, 10.0]

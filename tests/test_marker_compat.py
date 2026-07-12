@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import struct
+import zlib
 from io import BytesIO
 
 import pytest
@@ -165,6 +167,24 @@ def test_marker_renderer_optionally_emits_validated_png_preview(monkeypatch):
     preview_name = "page_0_figure_1--mermaid-preview.png"
     assert f"images/{preview_name}" in rendered.markdown
     assert rendered.images[preview_name].size == (4, 3)
+
+    def chunk(kind, data):
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    result.selected.png = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 100_000, 100_000, 8, 2, 0, 0, 0))
+        + chunk(b"IEND", b"")
+    )
+    bomb_rendered = renderer(Document())
+    assert preview_name not in bomb_rendered.images
+    assert f"images/{preview_name}" not in bomb_rendered.markdown
+    assert any("preview was omitted" in warning for warning in result.selected.warnings)
 
 
 @pytest.mark.integration

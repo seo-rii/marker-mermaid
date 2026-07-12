@@ -8,9 +8,9 @@ def scene_ir() -> dict:
         "diagram_type": "flowchart",
         "diagram_type_candidates": ["flowchart"],
         "elements": [
-            {"id": "User", "text": "사용자"},
-            {"id": "API", "text": "API"},
-            {"id": "DB", "text": "DB"},
+            {"id": "User", "text": "사용자", "bbox": [0, 0, 10, 10]},
+            {"id": "API", "text": "API", "bbox": [20, 0, 30, 10]},
+            {"id": "DB", "text": "DB", "bbox": [40, 0, 50, 10]},
         ],
         "relations": [
             {"id": "E7", "source_id": "DB", "target_id": "API"},
@@ -74,6 +74,7 @@ def test_explicit_korean_group_uses_validated_node_ids() -> None:
             "id": "group_User_API_DB",
             "role": "subgraph",
             "label": None,
+            "bbox": [0, 0, 50, 10],
             "member_ids": ["User", "API", "DB"],
         }
     ]

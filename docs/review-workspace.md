@@ -7,6 +7,7 @@
 ```bash
 marker-mermaid review output/document
 marker-mermaid review output/document --port 9000 --no-open
+marker-mermaid review output/document --host 0.0.0.0 --allowed-host review.internal --no-open
 ```
 
 ## 편집과 검증
@@ -19,7 +20,9 @@ SHA-256을 포함하므로 다른 tab에서 먼저 수정했다면 `409 Conflict
 revision에 저장됩니다. code 또는 IR이 바뀐 revision은 원본 기반 점수를 자동 승계하지 않고
 `unscored_user_revision`으로 표시합니다.
 
-대안 후보 선택, 승인, 사유가 필수인 거절, undo/redo를 지원합니다. 최초 수정 시 원본 revision
+대안 후보 선택, 승인, 사유가 필수인 거절, undo/redo를 지원합니다. 승인은 저장 당시 성공 여부를
+신뢰하지 않고 현재 code를 strict validator로 다시 parse/render하며 새 SVG/PNG를 같은 revision에
+저장합니다. Validator가 없는 embedding에서는 승인 자체를 거부합니다. 최초 수정 시 원본 revision
 `versions/r000000.*`을 만들며 각 변경은 `review-history.json`에 사용자 작업과 사유를 남깁니다.
 자연어 patch는 generic edit로 축약하지 않고 `reverse_edge`, `relabel_node`, `group_nodes`의 target과
 구조화된 before/after를 그대로 commit history에 보존합니다.
@@ -47,10 +50,15 @@ undo 뒤 새 편집을 하면 활성 timeline은 분기하지만 기존 snapshot
 
 브라우저 mutation에는 page bootstrap에 포함된 CSRF token과 same-origin 요청이 필요합니다.
 서버는 JSON body를 1 MB로 제한하고 bundle ID/path traversal 및 symlink artifact를 거부합니다.
-listener와 다른 `Host`도 bootstrap/API 처리 전에 거부합니다. validator render는 16 MB artifact budget을
+허용 static artifact는 directory descriptor 기준 `O_NOFOLLOW`로 열고 열린 file descriptor를 그대로
+stream하여 검사 후 symlink 교체 경쟁도 차단합니다. listener와 다른 `Host`도 bootstrap/API 처리 전에
+거부하며 wildcard bind에서 추가 hostname은 `--allowed-host`로 정확히 지정해야 합니다. HTTP header를
+완성하지 않는 connection은 기본 10초 뒤 종료되어 8개 worker slot을 반환합니다. validator render는 16 MB artifact budget을
 넘으면 어떤 bundle 파일도 바꾸기 전에 실패합니다.
 HTTP로 제공하는 파일은 `images/*`와 각 bundle의 `final.svg/png`뿐이며 review state, history,
 immutable version 파일은 API 응답이나 static route로 직접 공개하지 않습니다.
+Diagram 목록은 최대 1,000개 summary만 반환하고 최대 5,000개 bundle 후보만 상세 검증합니다. 목록 경로는
+SVG/PNG, Scene IR, review history를 읽지 않으며 개별 bundle을 열 때만 전체 digest를 검증합니다.
 undo/redo는 revision에 없던 optional Scene IR/SVG/PNG도 실제로 삭제하고 manifest hash를 함께 정리합니다.
 review revision은 처리 중 I/O 오류에는 rollback하지만 여러 파일을 교체하므로 process/power loss까지
 보장하는 crash-atomic transaction은 아닙니다. immutable revision directory와 단일 pointer swap은 후속입니다.

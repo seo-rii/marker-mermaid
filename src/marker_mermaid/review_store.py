@@ -8,6 +8,7 @@ optimistic-concurrency API that an HTTP, CLI, or desktop frontend can share.
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import os
 import re
@@ -28,6 +29,8 @@ MAX_JSON_BYTES = 4_000_000
 MAX_RENDER_BYTES = 16_000_000
 MAX_HISTORY_ENTRIES = 10_000
 MAX_REASON_LENGTH = 4_096
+MAX_LIST_BUNDLES = 1_000
+MAX_LIST_CANDIDATES = 5_000
 _BUNDLE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}\Z")
 
 
@@ -189,34 +192,80 @@ class ReviewStore:
         self.diagrams_root = self.output_root / "diagrams"
         self.validator = validator
 
-    def list_bundles(self) -> list[ReviewBundleSummary]:
+    def list_bundles(self, *, limit: int = MAX_LIST_BUNDLES) -> list[ReviewBundleSummary]:
+        """Return bounded summaries without loading render, IR, or history artifacts."""
+
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= MAX_LIST_BUNDLES
+        ):
+            raise ReviewValidationError(
+                f"review list limit must be between 1 and {MAX_LIST_BUNDLES}"
+            )
         if not self.diagrams_root.exists():
             return []
         diagrams_root = self._safe_diagrams_root()
         summaries: list[ReviewBundleSummary] = []
         with os.scandir(diagrams_root) as entries:
-            bundle_ids = sorted(
-                entry.name
-                for entry in entries
-                if entry.is_dir(follow_symlinks=False) and _BUNDLE_ID.fullmatch(entry.name)
+            bundle_ids = heapq.nsmallest(
+                MAX_LIST_CANDIDATES,
+                (
+                    entry.name
+                    for entry in entries
+                    if entry.is_dir(follow_symlinks=False) and _BUNDLE_ID.fullmatch(entry.name)
+                ),
             )
         for bundle_id in bundle_ids:
             try:
-                bundle = self.load_bundle(bundle_id)
+                summary = self._load_summary(bundle_id)
             except ReviewStoreError:
                 continue
-            summaries.append(
-                ReviewBundleSummary(
-                    bundle_id=bundle_id,
-                    source_id=str(bundle.manifest.get("source_id", bundle_id)),
-                    status=str(bundle.manifest.get("status", "unknown")),
-                    grade=str(bundle.manifest.get("grade", "U")),
-                    version=bundle.state.version,
-                    decision=bundle.state.decision,
-                    code_digest=bundle.state.code_digest,
-                )
-            )
+            summaries.append(summary)
+            if len(summaries) >= limit:
+                break
         return summaries
+
+    def _load_summary(self, bundle_id: str) -> ReviewBundleSummary:
+        bundle = self._bundle_path(bundle_id)
+        manifest = self._read_json(bundle, "manifest.json", expected=dict)
+        self._validate_manifest(manifest)
+        final_path = self._artifact_path(bundle, "final.mmd", must_exist=False)
+        bootstrap_candidate_id: str | None = None
+        if final_path.exists():
+            code = self._read_code(bundle, "final.mmd")
+        else:
+            code, _, bootstrap_candidate_id = self._bootstrap_alternative(bundle)
+
+        state_path = self._artifact_path(bundle, "review-state.json", must_exist=False)
+        if state_path.exists():
+            payload = self._read_json(bundle, "review-state.json", expected=dict)
+            try:
+                state = ReviewState.model_validate(payload)
+            except ValidationError as exc:
+                raise ReviewValidationError("review-state.json is invalid") from exc
+            if state.code_digest != _digest(code):
+                raise ReviewConflictError("final.mmd changed outside the review store")
+        else:
+            state = ReviewState(
+                version=0,
+                timeline=["r000000"],
+                cursor=0,
+                current_revision="r000000",
+                code_digest=_digest(code),
+                selected_candidate_id=(
+                    manifest.get("selected_candidate_id") or bootstrap_candidate_id
+                ),
+            )
+        return ReviewBundleSummary(
+            bundle_id=bundle_id,
+            source_id=str(manifest.get("source_id", bundle_id)),
+            status=str(manifest.get("status", "unknown")),
+            grade=str(manifest.get("grade", "U")),
+            version=state.version,
+            decision=state.decision,
+            code_digest=state.code_digest,
+        )
 
     def load_bundle(self, bundle_id: str) -> ReviewBundle:
         bundle = self._bundle_path(bundle_id)
@@ -469,13 +518,30 @@ class ReviewStore:
         with self._locked_bundle(bundle_id):
             bundle = self.load_bundle(bundle_id)
             self._check_expected(bundle, expected_version, expected_digest)
+            validation_result: ReviewValidationResult | None = None
+            if decision == "approved":
+                if self.validator is None:
+                    raise ReviewValidationError("approval requires a configured Mermaid validator")
+                try:
+                    valid = self.validator(bundle.mermaid_code)
+                except Exception as exc:
+                    raise ReviewValidationError(f"approval validation failed: {exc}") from exc
+                if isinstance(valid, ReviewValidationResult):
+                    validation_result = valid
+                    if not valid.valid:
+                        detail = valid.error or "; ".join(valid.warnings) or "validation rejected"
+                        raise ReviewValidationError(
+                            f"Mermaid validation rejected approval: {detail}"
+                        )
+                elif valid is not True:
+                    raise ReviewValidationError("Mermaid validation rejected approval")
             before = self._state_value(bundle.state, bundle.mermaid_code, bundle.scene_ir)
             return self._commit_new_revision(
                 bundle,
                 code=bundle.mermaid_code,
                 scene_ir=bundle.scene_ir,
-                svg=bundle.svg,
-                png=bundle.png,
+                svg=validation_result.svg if validation_result else bundle.svg,
+                png=validation_result.png if validation_result else bundle.png,
                 decision=decision,
                 decision_reason=reason,
                 selected_candidate_id=bundle.state.selected_candidate_id,

@@ -41,6 +41,21 @@ def test_list_and_load_bundle_without_mutating_legacy_sidecar(tmp_path):
     assert not (bundle_path / "review-state.json").exists()
 
 
+def test_list_summaries_is_bounded_and_skips_heavy_artifacts(monkeypatch, tmp_path):
+    make_bundle(tmp_path)
+    store = ReviewStore(tmp_path)
+
+    def reject_heavy_reads(*args, **kwargs):
+        raise AssertionError("summary listing must not read render artifacts")
+
+    monkeypatch.setattr(store, "_read_optional_bytes", reject_heavy_reads)
+
+    [summary] = store.list_bundles(limit=1)
+    assert summary.bundle_id == "diagram-a"
+    with pytest.raises(ReviewValidationError, match="between 1 and"):
+        store.list_bundles(limit=0)
+
+
 def test_failed_bundle_bootstraps_review_from_alternative_and_can_be_repaired(tmp_path):
     bundle_path = make_bundle(tmp_path)
     (bundle_path / "final.mmd").unlink()
@@ -56,13 +71,28 @@ def test_failed_bundle_bootstraps_review_from_alternative_and_can_be_repaired(tm
         ),
         encoding="utf-8",
     )
-    store = ReviewStore(tmp_path, validator=lambda code: "-->\n" not in code)
+    validator_calls = []
+
+    def validator(code):
+        validator_calls.append(code)
+        return "-->\n" not in code
+
+    store = ReviewStore(tmp_path, validator=validator)
 
     [summary] = store.list_bundles()
     loaded = store.load_bundle("diagram-a")
 
     assert summary.bundle_id == "diagram-a"
     assert loaded.state.selected_candidate_id == "candidate-a"
+    assert not (bundle_path / "final.mmd").exists()
+
+    with pytest.raises(ReviewValidationError, match="rejected approval"):
+        store.approve(
+            "diagram-a",
+            expected_version=loaded.state.version,
+            expected_digest=loaded.state.code_digest,
+        )
+    assert validator_calls == [loaded.mermaid_code]
     assert not (bundle_path / "final.mmd").exists()
 
     repaired = store.apply_mermaid_edit(
@@ -75,6 +105,36 @@ def test_failed_bundle_bootstraps_review_from_alternative_and_can_be_repaired(tm
     assert repaired.mermaid_code.endswith("A --> B\n")
     assert (bundle_path / "final.mmd").is_file()
     assert (bundle_path / "versions/r000000.mmd").read_text().endswith("A -->\n")
+
+
+def test_approval_requires_validator_and_commits_fresh_render(tmp_path):
+    bundle_path = make_bundle(tmp_path)
+    current = ReviewStore(tmp_path).load_bundle("diagram-a")
+    with pytest.raises(ReviewValidationError, match="requires a configured"):
+        ReviewStore(tmp_path).approve(
+            "diagram-a",
+            expected_version=current.state.version,
+            expected_digest=current.state.code_digest,
+        )
+
+    store = ReviewStore(
+        tmp_path,
+        validator=lambda code: ReviewValidationResult(
+            valid=True,
+            svg="<svg viewBox='0 0 2 2'/>",
+            png=b"approved-png",
+        ),
+    )
+    approved = store.approve(
+        "diagram-a",
+        expected_version=current.state.version,
+        expected_digest=current.state.code_digest,
+    )
+
+    assert approved.state.decision == "approved"
+    assert approved.svg == "<svg viewBox='0 0 2 2'/>"
+    assert approved.png == b"approved-png"
+    assert (bundle_path / "final.svg").read_text() == approved.svg
 
 
 def test_bundle_and_artifact_traversal_are_rejected(tmp_path):
@@ -243,7 +303,7 @@ def test_stale_version_and_digest_are_rejected(tmp_path):
 
 def test_external_mermaid_change_after_state_creation_is_a_conflict(tmp_path):
     bundle_path = make_bundle(tmp_path)
-    store = ReviewStore(tmp_path)
+    store = ReviewStore(tmp_path, validator=lambda code: True)
     initial = store.load_bundle("diagram-a")
     store.approve(
         "diagram-a",
@@ -259,7 +319,7 @@ def test_external_mermaid_change_after_state_creation_is_a_conflict(tmp_path):
 def test_external_render_change_after_state_creation_is_a_conflict(tmp_path):
     bundle_path = make_bundle(tmp_path)
     (bundle_path / "final.svg").write_text("<svg><title>initial</title></svg>")
-    store = ReviewStore(tmp_path)
+    store = ReviewStore(tmp_path, validator=lambda code: True)
     initial = store.load_bundle("diagram-a")
     store.approve(
         "diagram-a",
@@ -274,7 +334,7 @@ def test_external_render_change_after_state_creation_is_a_conflict(tmp_path):
 
 def test_edit_approve_and_reject_append_compatible_history(tmp_path):
     make_bundle(tmp_path)
-    store = ReviewStore(tmp_path)
+    store = ReviewStore(tmp_path, validator=lambda code: True)
     state = store.load_bundle("diagram-a")
     state = store.apply_mermaid_edit(
         "diagram-a",
@@ -326,7 +386,7 @@ def test_reject_requires_a_reason_without_writing(tmp_path):
 
 def test_undo_and_redo_restore_code_and_decision_without_deleting_history(tmp_path):
     make_bundle(tmp_path)
-    store = ReviewStore(tmp_path)
+    store = ReviewStore(tmp_path, validator=lambda code: True)
     initial = store.load_bundle("diagram-a")
     edited = store.apply_mermaid_edit(
         "diagram-a",

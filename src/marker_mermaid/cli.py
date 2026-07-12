@@ -200,7 +200,13 @@ def command_install_runtime(args) -> int:
 
 
 def command_review(args) -> int:
-    serve_review(args.output, host=args.host, port=args.port, open_browser=not args.no_open)
+    serve_review(
+        args.output,
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_open,
+        allowed_hosts=args.allowed_host,
+    )
     return 0
 
 
@@ -235,6 +241,12 @@ def build_parser() -> argparse.ArgumentParser:
     review = subparsers.add_parser("review", help="serve the interactive local review workspace")
     review.add_argument("output")
     review.add_argument("--host", default="127.0.0.1")
+    review.add_argument(
+        "--allowed-host",
+        action="append",
+        default=[],
+        help="additional exact Host name allowed by the review server",
+    )
     review.add_argument("--port", type=int, default=8765)
     review.add_argument("--no-open", action="store_true")
     review.set_defaults(handler=command_review)

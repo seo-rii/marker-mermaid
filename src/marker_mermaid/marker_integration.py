@@ -34,6 +34,8 @@ from marker_mermaid.validation import CandidateValidator, NodeMermaidRuntime
 from marker_mermaid.vector import VectorPrimitiveEngine
 
 DEFAULT_BLOCK_TYPES = (BlockTypes.Figure, BlockTypes.Picture, BlockTypes.ComplexRegion)
+MAX_PREVIEW_DIMENSION = 8_192
+MAX_PREVIEW_PIXELS = 50_000_000
 
 
 class _PyMuPDFPageProvider:
@@ -226,7 +228,12 @@ class MermaidDiagramProcessor(BaseProcessor):
             if self.mermaid_config.enable_generic_scene_ir:
                 selected_engines.append(GeometryEngine())
             if llm_service:
-                selected_engines.append(MarkerStructuredVLMEngine(llm_service))
+                selected_engines.append(
+                    MarkerStructuredVLMEngine(
+                        llm_service,
+                        enabled_types=self.mermaid_config.enabled_types,
+                    )
+                )
         selected_runtime = runtime or NodeMermaidRuntime(self.mermaid_config.runtime_dir)
         self.runtime = selected_runtime
         self.pipeline = ReconstructionPipeline(
@@ -584,16 +591,26 @@ class MermaidMarkdownRenderer(MarkdownRenderer):
                                 raise ValueError(
                                     f"duplicate rendered preview image name: {preview_name}"
                                 )
+                            preview_image = None
                             try:
                                 with Image.open(BytesIO(result.selected.png)) as preview:
-                                    images[preview_name] = preview.convert("RGB")
-                            except OSError as exc:
-                                raise ValueError(
-                                    f"invalid rendered preview for {result.source_id}"
-                                ) from exc
-                            fragments.append(
-                                f"![Mermaid reconstruction preview](images/{preview_name})"
-                            )
+                                    if (
+                                        max(preview.size) > MAX_PREVIEW_DIMENSION
+                                        or preview.width * preview.height > MAX_PREVIEW_PIXELS
+                                    ):
+                                        raise ValueError(
+                                            "preview dimensions exceed the pixel budget"
+                                        )
+                                    preview_image = preview.convert("RGB")
+                            except (OSError, ValueError, Image.DecompressionBombError) as exc:
+                                result.selected.warnings.append(
+                                    f"rendered preview was omitted: {type(exc).__name__}: {exc}"
+                                )
+                            if preview_image is not None:
+                                images[preview_name] = preview_image
+                                fragments.append(
+                                    f"![Mermaid reconstruction preview](images/{preview_name})"
+                                )
                         fragments.append(reconstructed)
             if match and fragments:
                 fragment = "\n\n" + "\n\n".join(fragments)

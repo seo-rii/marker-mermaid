@@ -362,10 +362,30 @@ def _apply_ir(
             raise ReviewCommandError("unsupported_ir", "IR groups must be a list")
         if any(group.get("id") == group_id for group in groups):
             raise ReviewCommandError("ambiguous_reference", f"group id already exists: {group_id}")
+        selected_nodes = [
+            node for node in _node_container(ir)[0] if node.get("id") in intent.node_ids
+        ]
+        boxes = [node.get("bbox") for node in selected_nodes]
+        if len(boxes) != len(intent.node_ids) or any(
+            not isinstance(box, list | tuple)
+            or len(box) != 4
+            or any(not isinstance(value, int | float) for value in box)
+            for box in boxes
+        ):
+            raise ReviewCommandError(
+                "unsupported_ir", "group members require explicit four-number bbox evidence"
+            )
+        group_bbox = [
+            min(box[0] for box in boxes),
+            min(box[1] for box in boxes),
+            max(box[2] for box in boxes),
+            max(box[3] for box in boxes),
+        ]
         group = {
             "id": group_id,
             "role": "subgraph",
             "label": intent.label,
+            "bbox": group_bbox,
             "member_ids": list(intent.node_ids),
         }
         groups.append(group)
