@@ -42,6 +42,7 @@ Style recovery는 Scene IR 색을 그대로 CSS로 복사하지 않습니다. he
 review server는 기본적으로 `127.0.0.1`에만 bind합니다. mutation API는 session별 CSRF token,
 same-origin `Origin` 검사, JSON content type, 1 MB body limit, optimistic version/digest를 요구합니다.
 요청 `Host`는 실제 listener와 일치해야 하므로 loopback DNS rebinding host에는 bootstrap도 제공하지 않습니다.
+동시 HTTP request는 기본 8개 slot으로 제한하며 초과 요청은 thread를 만들지 않고 503을 반환합니다.
 HTML은 inline script/style 없이 제공하며 CSP는 `script-src 'self'`, `connect-src 'self'`,
 `frame-ancestors 'none'`을 적용합니다. artifact server는 원본 image와 `final.svg/png`만 공개하고
 revision/state 파일은 HTTP로 노출하지 않습니다.

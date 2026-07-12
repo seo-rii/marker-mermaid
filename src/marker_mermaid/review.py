@@ -8,6 +8,7 @@ import json
 import mimetypes
 import secrets
 import shutil
+import threading
 import urllib.parse
 import webbrowser
 from functools import partial
@@ -37,6 +38,45 @@ REVIEW_CSP = (
     "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
     "base-uri 'none'; frame-ancestors 'none'"
 )
+
+
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """Threading HTTP server with a hard in-flight request budget."""
+
+    daemon_threads = True
+
+    def __init__(self, *args, max_workers: int = 8, **kwargs):
+        if max_workers < 1:
+            raise ValueError("max_workers must be positive")
+        self._request_slots = threading.BoundedSemaphore(max_workers)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        if not self._request_slots.acquire(blocking=False):
+            payload = b'{"error":"review server is busy"}'
+            response = (
+                b"HTTP/1.1 503 Service Unavailable\r\n"
+                b"Content-Type: application/json; charset=utf-8\r\n"
+                + f"Content-Length: {len(payload)}\r\n".encode()
+                + b"Connection: close\r\n\r\n"
+                + payload
+            )
+            try:
+                request.sendall(response)
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
 
 
 def _safe_source_url(value: Any) -> str:
@@ -528,7 +568,7 @@ def serve_review(output_dir: str | Path, *, host: str, port: int, open_browser: 
         csrf_token=csrf_token,
         assets=assets,
     )
-    server = ThreadingHTTPServer((host, port), handler)
+    server = BoundedThreadingHTTPServer((host, port), handler)
     url_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     url = f"http://{url_host}:{server.server_port}/"
     print(f"Review workspace: {url}")

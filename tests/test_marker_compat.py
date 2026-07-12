@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+from io import BytesIO
 
 import pytest
 from PIL import Image
@@ -99,6 +100,71 @@ def test_marker_renderer_keeps_original_before_one_mermaid_block(monkeypatch):
         rendered.markdown.index("```mermaid")
     )
     assert rendered.markdown.count("```mermaid") == 1
+
+
+@pytest.mark.integration
+def test_marker_renderer_optionally_emits_validated_png_preview(monkeypatch):
+    from marker.renderers.markdown import MarkdownOutput, MarkdownRenderer
+
+    from marker_mermaid.marker_integration import MermaidMarkdownRenderer
+
+    payload = BytesIO()
+    Image.new("RGB", (4, 3), "white").save(payload, format="PNG")
+    candidate = MermaidCandidate(
+        candidate_id="candidate-1",
+        generation_method="typed_ir",
+        diagram_type="flowchart",
+        mermaid_code="flowchart LR\nA --> B\n",
+        syntax_valid=True,
+        render_valid=True,
+        aggregate_score=0.8,
+        png=payload.getvalue(),
+    )
+    result = ReconstructionResult(
+        source_id="_page_0_Figure_1",
+        source_image_name="_page_0_Figure_1.jpeg",
+        selected=candidate,
+        grade="B",
+        publish=True,
+        status="success",
+    )
+
+    class Identifier:
+        def to_path(self):
+            return "_page_0_Figure_1"
+
+    class Block:
+        id = Identifier()
+        block_type = "Figure"
+
+        def get_internal_metadata(self, key):
+            return {
+                "mermaid": {"status": "success", "errors": []},
+                "mermaid_results": [result],
+            }.get(key)
+
+    class Page:
+        def contained_blocks(self, document, block_types):
+            return [Block()]
+
+    class Document:
+        pages = [Page()]
+
+    monkeypatch.setattr(
+        MarkdownRenderer,
+        "__call__",
+        lambda self, document: MarkdownOutput(
+            markdown="![](_page_0_Figure_1.jpeg)", images={}, metadata={}
+        ),
+    )
+    renderer = MermaidMarkdownRenderer()
+    renderer.include_rendered_preview = True
+
+    rendered = renderer(Document())
+
+    preview_name = "page_0_figure_1--mermaid-preview.png"
+    assert f"images/{preview_name}" in rendered.markdown
+    assert rendered.images[preview_name].size == (4, 3)
 
 
 @pytest.mark.integration

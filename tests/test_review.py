@@ -7,11 +7,11 @@ import urllib.error
 import urllib.request
 from functools import partial
 from http import HTTPStatus
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from marker_mermaid.review import ReviewHandler
+from marker_mermaid.review import BoundedThreadingHTTPServer, ReviewHandler
 from marker_mermaid.review_store import MAX_RENDER_BYTES, ReviewStore, ReviewValidationResult
 
 
@@ -161,6 +161,56 @@ def test_review_shell_escapes_bootstrap_and_uses_strict_external_assets(tmp_path
     assert "'unsafe-inline'" not in csp
     assert "script-src 'self'" in csp
     assert "/api/diagrams/" in javascript
+
+
+def test_bounded_review_server_rejects_excess_concurrent_requests():
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingHandler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            started.set()
+            release.wait(timeout=3)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, format, *args):
+            pass
+
+    server = BoundedThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        BlockingHandler,
+        max_workers=1,
+    )
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    first_result = []
+
+    def first_request():
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{server.server_port}/first", timeout=3
+        ) as response:
+            first_result.append(response.read())
+
+    request_thread = threading.Thread(target=first_request, daemon=True)
+    server_thread.start()
+    request_thread.start()
+    try:
+        assert started.wait(timeout=2)
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(
+                f"http://127.0.0.1:{server.server_port}/second",
+                timeout=2,
+            )
+        assert error.value.code == HTTPStatus.SERVICE_UNAVAILABLE
+    finally:
+        release.set()
+        request_thread.join(timeout=3)
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=3)
+
+    assert first_result == [b"ok"]
 
 
 def test_review_rejects_dns_rebinding_host_before_bootstrap_or_mutation(tmp_path):

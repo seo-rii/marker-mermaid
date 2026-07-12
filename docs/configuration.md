@@ -60,6 +60,10 @@ bundle의 최소 감사 기록으로 항상 남습니다.
 `include_original_image`와 `extract_images`는 타입 수준에서 `true`만 허용합니다. Marker 공통
 `--disable_image_extraction`과 함께 사용할 수 없습니다.
 
+Renderer의 `MermaidMarkdownRenderer_include_rendered_preview=true`는 validation runtime이 만든 PNG를
+별도 `images/*--mermaid-preview.png`로 저장하고 원본 뒤에 삽입합니다. 기본값은 `false`이며 PNG가 없는
+후보에 preview를 추정하거나 SVG를 임의 rasterize하지 않습니다.
+
 ## 구현 상태가 있는 옵션
 
 edge map, Hough line, detected-arrow overlay, OCR/vector overlay, color cluster, thumbnail, tile,

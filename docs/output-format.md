@@ -57,6 +57,9 @@ artifact를 복원합니다. 낙관적 `version`과 code SHA-256이 stale browse
 `review-state.json.selected_candidate_id`가 현재 review 선택을 나타냅니다.
 `source-map.json`은 serialized `DiscoveredSource`, fragment crop/page bbox, canvas placement,
 source→canvas/page→canvas affine을 보존하여 canvas provenance를 PDF page와 source block으로 역추적합니다.
+
+`include_rendered_preview`를 켠 Marker Markdown 출력은 검증된 runtime PNG를 `images/`에 추가합니다.
+원본 image는 계속 먼저 유지되며 preview는 Mermaid code의 게시 결정을 우회하지 않습니다.
 requested type과 emitted/runtime type을 분리하므로 portable fallback을 native 복원처럼 표시하지 않습니다.
 
 writer는 파일을 만들기 전에 source/image/sidecar/alternative 이름 충돌, 누락 source image, 기존 bundle,

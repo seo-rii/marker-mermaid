@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from io import BytesIO
 from typing import Annotated, Any, Literal
 
 from marker.converters.pdf import PdfConverter
@@ -14,6 +15,7 @@ from marker.renderers.markdown import MarkdownOutput, MarkdownRenderer
 from marker.schema import BlockTypes
 from marker.schema.document import Document
 from marker.settings import settings
+from PIL import Image
 
 from marker_mermaid.config import MermaidConfig
 from marker_mermaid.discovery import DiscoveredSource
@@ -26,6 +28,7 @@ from marker_mermaid.marker_discovery import (
 )
 from marker_mermaid.models import ReconstructionResult, VisualEvidence
 from marker_mermaid.pipeline import ReconstructionPipeline
+from marker_mermaid.sidecars import safe_artifact_component
 from marker_mermaid.source_assembly import SourceAssemblyMetadata, assemble_discovered_source
 from marker_mermaid.validation import CandidateValidator, NodeMermaidRuntime
 from marker_mermaid.vector import VectorPrimitiveEngine
@@ -569,6 +572,28 @@ class MermaidMarkdownRenderer(MarkdownRenderer):
                         show_warning=self.show_quality_warning,
                     )
                     if reconstructed:
+                        if (
+                            self.include_rendered_preview
+                            and result.selected is not None
+                            and result.selected.png is not None
+                        ):
+                            preview_name = (
+                                f"{safe_artifact_component(result.source_id)}--mermaid-preview.png"
+                            )
+                            if preview_name in images:
+                                raise ValueError(
+                                    f"duplicate rendered preview image name: {preview_name}"
+                                )
+                            try:
+                                with Image.open(BytesIO(result.selected.png)) as preview:
+                                    images[preview_name] = preview.convert("RGB")
+                            except OSError as exc:
+                                raise ValueError(
+                                    f"invalid rendered preview for {result.source_id}"
+                                ) from exc
+                            fragments.append(
+                                f"![Mermaid reconstruction preview](images/{preview_name})"
+                            )
                         fragments.append(reconstructed)
             if match and fragments:
                 fragment = "\n\n" + "\n\n".join(fragments)

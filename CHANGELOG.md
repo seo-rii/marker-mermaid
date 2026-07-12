@@ -50,6 +50,8 @@
 - Failed bundles without `final.mmd` can be repaired from retained alternatives.
 - Natural-language review patches retain their structured operation, target, and delta history.
 - Chromium worker responses use a nonblocking bounded protocol with partial-line deadlines.
+- Review HTTP processing has a fixed in-flight worker budget and explicit busy responses.
+- The Marker rendered-preview option now emits validated PNG previews when requested.
 - SVG CSS inspection covers `<style>` text and edge styles require fully mapped Mermaid ordering.
 
 ## 0.1.0
