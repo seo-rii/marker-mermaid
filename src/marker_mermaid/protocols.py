@@ -20,6 +20,8 @@ class SourceContext:
     evidence: list[VisualEvidence] = field(default_factory=list)
     ocr_texts: list[str] = field(default_factory=list)
     source_block: Any = None
+    source_blocks: list[Any] = field(default_factory=list)
+    source_mapping: dict[str, Any] | None = None
 
 
 class CandidateEngine(Protocol):

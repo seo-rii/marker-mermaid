@@ -21,6 +21,8 @@ portable flowchart subgraph로 명시적으로 fallback합니다. 아직 구현�
 - composite panel과 adjacent/continued multi-page fragment를 virtual source로 조립·출력합니다.
 - panel/merge OCR bbox와 원 page/block을 잇는 affine provenance를 sidecar에 보존합니다.
 - geometry contour/line/arrowhead evidence를 VLM보다 먼저 수집하며 engine별 후보를 공정하게 배분합니다.
+- PDF vector/CV/OCR/VLM observation을 출처별 우선순위로 fusion하고 충돌 warning을 남깁니다.
+- 평가 가능한 경우 edge·arrow·layout·root-to-terminal path 구조 점수를 기록합니다.
 - 렌더 런타임은 외부 네트워크를 차단하며 종료 시 Chromium process group을 정리합니다.
 
 ## 설치
@@ -103,6 +105,8 @@ output/document/
 - [아키텍처와 처리 흐름](docs/architecture.md)
 - [후보 영역 발견](docs/discovery.md)
 - [Geometry engine](docs/geometry.md)
+- [Vector extraction과 fusion](docs/vector-fusion.md)
+- [품질 평가와 점수 availability](docs/quality.md)
 - [설정 레퍼런스](docs/configuration.md)
 - [Marker 1.10.2 통합](docs/marker-integration.md)
 - [보안 모델](docs/security.md)

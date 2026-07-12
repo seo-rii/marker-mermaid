@@ -63,7 +63,34 @@ def build_visual_priors(
                 )
         views["ocr_overlay"] = overlay
 
-    if config.use_hough_line_map or config.use_arrow_overlay:
+    if config.use_color_group_map:
+        # Quantization is a structural prior, not a style reconstruction.  Keeping
+        # eight deterministic color clusters makes lanes/series visible without
+        # exposing a palette learned from unrelated documents.
+        views["color_cluster_map"] = original.quantize(
+            colors=8,
+            method=Image.Quantize.MEDIANCUT,
+        ).convert("RGB")
+
+    if config.use_vector_primitives:
+        vector_items = [
+            item
+            for item in evidence
+            if item.bbox is not None
+            and (item.kind == "vector_text" or item.id.startswith("vector-"))
+        ]
+        if vector_items:
+            overlay = original.copy()
+            draw = ImageDraw.Draw(overlay)
+            for item in vector_items:
+                box = tuple(
+                    value * (scale_x if index % 2 == 0 else scale_y)
+                    for index, value in enumerate(item.bbox or ())
+                )
+                draw.rectangle(box, outline=(135, 65, 190), width=2)
+            views["vector_overlay"] = overlay
+
+    if config.use_hough_line_map:
         try:
             import cv2
             import numpy as np
@@ -80,19 +107,41 @@ def build_visual_priors(
                 maxLineGap=12,
             )
             line_map = np.full_like(array, 255)
-            arrow_overlay = array.copy()
             if lines is not None:
                 for x1, y1, x2, y2 in lines[:, 0]:
                     cv2.line(line_map, (x1, y1), (x2, y2), (0, 0, 0), 2)
-                    cv2.arrowedLine(
-                        arrow_overlay, (x1, y1), (x2, y2), (255, 80, 30), 2, tipLength=0.08
-                    )
-            if config.use_hough_line_map:
-                views["hough_line_map"] = Image.fromarray(line_map)
-            if config.use_arrow_overlay:
-                views["arrow_overlay"] = Image.fromarray(arrow_overlay)
+            views["hough_line_map"] = Image.fromarray(line_map)
         except ImportError:
-            warnings.append("OpenCV is unavailable; Hough and arrow priors were omitted")
+            warnings.append("OpenCV is unavailable; Hough line prior was omitted")
+
+    if config.use_arrow_overlay:
+        overlay = original.copy()
+        draw = ImageDraw.Draw(overlay)
+        for item in evidence:
+            if item.kind != "arrowhead" or item.bbox is None:
+                continue
+            scaled_box = (
+                item.bbox[0] * scale_x,
+                item.bbox[1] * scale_y,
+                item.bbox[2] * scale_x,
+                item.bbox[3] * scale_y,
+            )
+            draw.rectangle(scaled_box, outline=(255, 80, 30), width=3)
+            center = (
+                (scaled_box[0] + scaled_box[2]) / 2,
+                (scaled_box[1] + scaled_box[3]) / 2,
+            )
+            radius = 3
+            draw.ellipse(
+                (
+                    center[0] - radius,
+                    center[1] - radius,
+                    center[0] + radius,
+                    center[1] + radius,
+                ),
+                fill=(255, 80, 30),
+            )
+        views["arrow_overlay"] = overlay
 
     if config.use_tiled_images and max(original.size) > config.tile_size:
         step = config.tile_size - config.tile_overlap

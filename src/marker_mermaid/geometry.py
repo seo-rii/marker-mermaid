@@ -236,6 +236,7 @@ class GeometryEngine:
     """Optional OpenCV CandidateEngine that emits conservative Scene IR."""
 
     name = "geometry"
+    fusion_source = "geometry"
 
     def __init__(
         self,

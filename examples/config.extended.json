@@ -16,6 +16,11 @@
   "MermaidDiagramProcessor_candidate_count": 3,
   "MermaidDiagramProcessor_type_candidate_count": 2,
   "MermaidDiagramProcessor_max_repair_iterations": 3,
+  "MermaidDiagramProcessor_use_vector_primitives": true,
+  "MermaidDiagramProcessor_enable_fusion": true,
+  "MermaidDiagramProcessor_enable_reference_free_scoring": true,
+  "MermaidDiagramProcessor_enable_render_compare": true,
+  "MermaidDiagramProcessor_enable_path_scoring": true,
   "MermaidDiagramProcessor_publish_min_score": 0.5,
   "MermaidDiagramProcessor_review_below_score": 0.7,
   "MermaidDiagramProcessor_security_profile": "strict",
@@ -25,4 +30,3 @@
   "MermaidMarkdownRenderer_show_quality_warning": true,
   "MermaidMarkdownRenderer_show_quality_score": false
 }
-

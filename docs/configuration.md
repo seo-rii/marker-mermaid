@@ -40,6 +40,7 @@ prefix 없는 이름을 직접 전달할 수 있습니다. prefix 설정이 conc
 | `candidate_count` | 모드별 | source당 candidate 상한 |
 | `type_candidate_count` | 모드별 | source당 type top-k |
 | `max_repair_iterations` | 모드별 | 개선 후보 repair 상한 |
+| `enable_fusion` | `true` | 여러 engine observation의 결정적 병합 |
 | `runtime_dir` | cache 자동 탐색 | Node worker와 dependencies 위치 |
 | `render_timeout_seconds` | `20` | candidate당 parse/render 제한 |
 | `max_mermaid_chars` | `50000` | browser 전달 전 source 문자 상한 |
@@ -57,8 +58,8 @@ bundle의 최소 감사 기록으로 항상 남습니다.
 
 ## 구현 상태가 있는 옵션
 
-edge map, Hough line, arrow overlay, OCR overlay, thumbnail, tile과 보수적 GeometryEngine은
-구현되어 있습니다. composite split, fragment/multi-page merge, full-page coverage는 Marker virtual
-source 조립·출력과 OCR affine provenance까지 연결됩니다. page-level missed detector와 PDF vector
-primitive extraction은 아직 예약 상태입니다. 자세한 구분은 [스펙 대응표](spec-coverage.md)를
-참고하세요.
+edge map, Hough line, detected-arrow overlay, OCR/vector overlay, color cluster, thumbnail, tile,
+GeometryEngine과 duck-typed VectorPrimitiveEngine이 구현되어 있습니다. vector engine은
+`get_drawings()`, `get_text()`, `vector_primitives`, `vector_texts`를 노출하는 provider에서만 추출하며
+없으면 fail-closed empty observation을 반환합니다. page-level missed detector는 아직 예약 상태입니다.
+자세한 구분은 [스펙 대응표](spec-coverage.md)를 참고하세요.

@@ -140,6 +140,7 @@ class MermaidConfig(BaseModel):
     enable_generic_scene_ir: bool = True
     enable_direct_mermaid: bool = True
     enable_style_recovery: bool = True
+    enable_fusion: bool = True
 
     candidate_count: int | None = None
     type_candidate_count: int | None = None

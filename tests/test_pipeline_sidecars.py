@@ -89,6 +89,10 @@ def test_pipeline_selects_valid_candidate_and_respects_budget(fake_runtime):
     assert result.publish
     assert len(fake_runtime.calls) == 1
     assert result.selected.generation_method == "typed_ir"
+    assert result.selected.scores["edge_agreement"] == 1
+    assert result.selected.scores["arrow_agreement"] == 1
+    assert result.selected.scores["path_consistency"] == 1
+    assert "layout_similarity" not in result.selected.scores
 
 
 def test_candidate_budget_is_shared_fairly_across_engines(fake_runtime):
@@ -117,6 +121,7 @@ def test_candidate_budget_is_shared_fairly_across_engines(fake_runtime):
         *(item.generation_method for item in result.alternatives),
     }
     assert methods == {"typed_ir", "direct_mermaid"}
+    assert result.selected.generation_engine == "deterministic_fusion"
     assert len(fake_runtime.calls) == 2
 
 
@@ -127,14 +132,23 @@ def test_geometry_evidence_is_available_to_later_engines(fake_runtime):
         def observe(self, context):
             return EngineObservation(
                 prediction=DiagramTypePrediction(candidates=["unknown"], scores=[1.0]),
-                evidence=[VisualEvidence(id="contour-1", kind="contour", bbox=(0, 0, 5, 5))],
+                evidence=[
+                    VisualEvidence(id="contour-1", kind="contour", bbox=(0, 0, 5, 5)),
+                    VisualEvidence(
+                        id="vector-text-1",
+                        kind="vector_text",
+                        bbox=(10, 10, 30, 20),
+                        text="API",
+                    ),
+                ],
             )
 
     class CapturingEngine:
         name = "capturing"
 
         def observe(self, context):
-            assert [item.id for item in context.evidence] == ["contour-1"]
+            assert [item.id for item in context.evidence] == ["contour-1", "vector-text-1"]
+            assert "vector_overlay" in context.views
             return observation()
 
     config = MermaidConfig(candidate_count=1)

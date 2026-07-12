@@ -15,10 +15,10 @@
 | fragment/multi-page merge | 구현 | caption/continued proposal, canvas assembly, first-fragment anchor 출력 |
 | Scene IR/provenance | 구현 | Pydantic 무결성, OCR/source/VLM evidence, sidecar |
 | edge/Hough/arrow/OCR view | 구현 | Pillow/OpenCV priors와 보수적 geometry evidence |
-| color cluster/vector primitive | 후속 | config 예약 |
+| color cluster/vector primitive | 구현 | PIL color map, duck-typed vector/text provider와 canvas affine |
 | structured Marker VLM | 구현 | response schema adapter |
 | Direct Mermaid | 구현 | extended/maximal, 동일 hard gate |
-| Fusion engine | 기반 | evidence 선행 전달/engine round-robin; label/edge consensus 후속 |
+| Fusion engine | 구현 | source-explicit precedence, spatial match, label/edge/type/provenance consensus |
 | Flowchart | 구현 | typed serializer + real render fixture |
 | Architecture | 구현 | `architecture-beta` serializer + real render fixture |
 | Sequence | 구현 | typed serializer + real render fixture |
@@ -32,9 +32,9 @@
 | style recovery | 기반 | profile/security allowlist; visual style fusion 후속 |
 | OCR recall | 구현 | Unicode token coverage |
 | numeric consistency | 구현 | source에 존재하는 숫자만 비교 |
-| edge agreement | 구현 | source/render edge IoU baseline |
+| edge agreement | 구현 | aligned topology F1, 불가 시 source/render edge IoU fallback |
 | visual entailment | 기반 | evidence coverage proxy; model scorer 후속 |
-| arrow/layout/path score | 후속 | score slots/config 예약 |
+| arrow/layout/path score | 구현 | explicit-arrow/path F1, relative layout; 근거 부족 시 unavailable |
 | render-and-compare repair | 기반 | injected repair engine, strict improvement adoption |
 | atomic sidecars | 구현 | preflight, manifest/hash/alternatives/provenance/source affine map |
 | Review Workspace | 기반 | read-only source/render/artifact viewer |

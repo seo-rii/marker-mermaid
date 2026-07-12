@@ -216,12 +216,15 @@ def test_marker_renderer_emits_multiple_virtual_sources_after_anchor(monkeypatch
 
 
 @pytest.mark.integration
-def test_marker_processor_uses_geometry_without_an_llm(fake_runtime):
+def test_marker_processor_uses_vector_and_geometry_without_an_llm(fake_runtime):
     from marker_mermaid.marker_integration import MermaidDiagramProcessor
 
     processor = MermaidDiagramProcessor(llm_service=None, runtime=fake_runtime)
 
-    assert [engine.name for engine in processor.pipeline.engines] == ["geometry"]
+    assert [engine.name for engine in processor.pipeline.engines] == [
+        "vector_primitives",
+        "geometry",
+    ]
 
 
 @pytest.mark.integration

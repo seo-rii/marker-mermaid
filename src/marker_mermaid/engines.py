@@ -21,6 +21,7 @@ class MarkerStructuredVLMEngine:
     """Adapter around Marker 1.10.2's BaseService response-schema API."""
 
     name = "marker_structured_vlm"
+    fusion_source = "vlm"
 
     def __init__(self, llm_service: Any):
         self.llm_service = llm_service
@@ -53,6 +54,7 @@ class JsonFixtureEngine:
     """Deterministic offline engine for examples, CI, and reproducible debugging."""
 
     name = "json_fixture"
+    fusion_source = "other"
 
     def __init__(self, observation: EngineObservation):
         self.observation = observation

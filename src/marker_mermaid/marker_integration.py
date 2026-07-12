@@ -28,6 +28,7 @@ from marker_mermaid.models import ReconstructionResult, VisualEvidence
 from marker_mermaid.pipeline import ReconstructionPipeline
 from marker_mermaid.source_assembly import SourceAssemblyMetadata, assemble_discovered_source
 from marker_mermaid.validation import CandidateValidator, NodeMermaidRuntime
+from marker_mermaid.vector import VectorPrimitiveEngine
 
 DEFAULT_BLOCK_TYPES = (BlockTypes.Figure, BlockTypes.Picture, BlockTypes.ComplexRegion)
 
@@ -153,9 +154,11 @@ class MermaidDiagramProcessor(BaseProcessor):
         self.mermaid_config = MermaidConfig.from_marker_config(config)
         selected_engines = engines
         if selected_engines is None:
-            selected_engines = (
-                [GeometryEngine()] if self.mermaid_config.enable_generic_scene_ir else []
-            )
+            selected_engines = []
+            if self.mermaid_config.use_vector_primitives:
+                selected_engines.append(VectorPrimitiveEngine())
+            if self.mermaid_config.enable_generic_scene_ir:
+                selected_engines.append(GeometryEngine())
             if llm_service:
                 selected_engines.append(MarkerStructuredVLMEngine(llm_service))
         selected_runtime = runtime or NodeMermaidRuntime(self.mermaid_config.runtime_dir)
@@ -234,6 +237,11 @@ class MermaidDiagramProcessor(BaseProcessor):
                             evidence=evidence,
                             ocr_texts=texts,
                             source_block=block,
+                            source_blocks=[
+                                blocks[block_id]
+                                for block_id in source_block_ids
+                                if block_id in blocks
+                            ],
                         )
                         results.append(result)
                         anchor_image_name = (

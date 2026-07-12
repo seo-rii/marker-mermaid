@@ -8,7 +8,9 @@ from typing import Literal
 
 from PIL import Image, ImageChops, ImageFilter, ImageOps
 
+from marker_mermaid.candidate_scene import typed_ir_to_scene
 from marker_mermaid.config import MermaidConfig, Mode
+from marker_mermaid.fusion import FusionEngine, FusionInput
 from marker_mermaid.models import (
     CandidateFailure,
     EngineObservation,
@@ -18,6 +20,12 @@ from marker_mermaid.models import (
     VisualEvidence,
 )
 from marker_mermaid.protocols import CandidateEngine, RepairEngine, RuntimeResult, SourceContext
+from marker_mermaid.quality import (
+    arrow_agreement,
+    edge_topology_agreement,
+    path_consistency,
+    relative_layout_similarity,
+)
 from marker_mermaid.scoring import (
     aggregate_scores,
     decide_publication,
@@ -101,6 +109,7 @@ class ReconstructionPipeline:
         evidence: list[VisualEvidence] | None = None,
         ocr_texts: list[str] | None = None,
         source_block: object | None = None,
+        source_blocks: list[object] | None = None,
     ) -> ReconstructionResult:
         failures: list[CandidateFailure] = []
         all_evidence = list(evidence or [])
@@ -118,10 +127,13 @@ class ReconstructionPipeline:
             evidence=all_evidence,
             ocr_texts=list(ocr_texts or []),
             source_block=source_block,
+            source_blocks=list(
+                source_blocks or ([source_block] if source_block is not None else [])
+            ),
+            source_mapping=source_mapping,
         )
 
-        draft_groups: list[list[_Draft]] = []
-        candidate_budget = int(self.config.candidate_count or 1)
+        successful_observations: list[tuple[str, str, EngineObservation]] = []
         for engine in self.engines:
             try:
                 observation = engine.observe(context)
@@ -135,14 +147,73 @@ class ReconstructionPipeline:
                     )
                 )
                 continue
+            fusion_source = getattr(engine, "fusion_source", "other")
+            if fusion_source not in {"vector", "geometry", "ocr", "vlm", "other"}:
+                fusion_source = "other"
+            has_payload = bool(
+                observation.scene_ir is not None
+                or observation.typed_candidates
+                or observation.direct_candidates
+                or observation.evidence
+            )
+            if has_payload:
+                successful_observations.append((engine.name, fusion_source, observation))
+            evidence_changed = False
+            for item in observation.evidence:
+                if item.id not in {existing.id for existing in all_evidence}:
+                    all_evidence.append(item)
+                    evidence_changed = True
+            if evidence_changed:
+                try:
+                    context.views, new_warnings = build_visual_priors(
+                        image,
+                        all_evidence,
+                        self.config,
+                    )
+                    view_warnings = list(dict.fromkeys([*view_warnings, *new_warnings]))
+                except Exception as exc:
+                    view_warnings = list(
+                        dict.fromkeys([*view_warnings, f"visual prior enrichment failed: {exc}"])
+                    )
+
+        generation_observations = [
+            (name, observation) for name, _source, observation in successful_observations
+        ]
+        if self.config.enable_fusion and len(successful_observations) >= 2:
+            try:
+                fused = FusionEngine().fuse(
+                    [
+                        FusionInput(source=source, observation=observation, name=name)
+                        for name, source, observation in successful_observations
+                    ]
+                )
+                generation_observations = [
+                    (FusionEngine.name, fused),
+                    *generation_observations,
+                ]
+                known_evidence = {item.id for item in all_evidence}
+                for item in fused.evidence:
+                    if item.id not in known_evidence:
+                        all_evidence.append(item)
+                        known_evidence.add(item.id)
+            except Exception as exc:
+                failures.append(
+                    CandidateFailure(
+                        stage="fusion",
+                        engine=FusionEngine.name,
+                        error_type=type(exc).__name__,
+                        message=str(exc),
+                    )
+                )
+
+        draft_groups: list[list[_Draft]] = []
+        candidate_budget = int(self.config.candidate_count or 1)
+        for engine_name, observation in generation_observations:
             top_types = [
                 item
                 for item in observation.prediction.candidates[: self.config.type_candidate_count]
                 if item in self.config.enabled_types
             ]
-            for item in observation.evidence:
-                if item.id not in {existing.id for existing in all_evidence}:
-                    all_evidence.append(item)
             generated: list[_Draft] = []
             if self.config.enable_typed_ir:
                 for typed in observation.typed_candidates:
@@ -158,7 +229,7 @@ class ReconstructionPipeline:
                         failures.append(
                             CandidateFailure(
                                 stage="serialization",
-                                engine=engine.name,
+                                engine=engine_name,
                                 error_type=type(exc).__name__,
                                 message=str(exc),
                             )
@@ -167,7 +238,7 @@ class ReconstructionPipeline:
                     generated.append(
                         _Draft(
                             "typed_ir",
-                            engine.name,
+                            engine_name,
                             typed.diagram_type,
                             code,
                             observation,
@@ -186,7 +257,7 @@ class ReconstructionPipeline:
                 generated.append(
                     _Draft(
                         "scene_ir_fallback",
-                        engine.name,
+                        engine_name,
                         "flowchart",
                         code,
                         observation,
@@ -199,7 +270,7 @@ class ReconstructionPipeline:
                         generated.append(
                             _Draft(
                                 "direct_mermaid",
-                                engine.name,
+                                engine_name,
                                 direct.diagram_type,
                                 direct.code,
                                 observation,
@@ -293,20 +364,47 @@ class ReconstructionPipeline:
                 scores["visual_entailment_precision"] = provenance
                 if provenance < 0.8:
                     candidate.warnings.append("more than 20% of scene nodes lack provenance")
-            if self.config.enable_render_compare:
+            generated_scene = None
+            if draft.typed_ir is not None:
+                generated_scene = typed_ir_to_scene(draft.diagram_type, draft.typed_ir)
+            elif draft.method == "scene_ir_fallback" and draft.observation.scene_ir is not None:
+                generated_scene = draft.observation.scene_ir.model_copy(deep=True)
+            source_scene = draft.observation.scene_ir
+            structural_edge_available = False
+            if source_scene is not None and generated_scene is not None:
+                structural_metrics = []
+                if self.config.enable_render_compare:
+                    structural_metrics.append(
+                        edge_topology_agreement(source_scene, generated_scene)
+                    )
+                if self.config.enable_reference_free_scoring:
+                    structural_metrics.extend(
+                        [
+                            arrow_agreement(source_scene, generated_scene),
+                            relative_layout_similarity(source_scene, generated_scene),
+                        ]
+                    )
+                if self.config.enable_path_scoring:
+                    structural_metrics.append(path_consistency(source_scene, generated_scene))
+                for metric in structural_metrics:
+                    if metric.available and metric.value is not None:
+                        scores[metric.name] = metric.value
+                        if metric.name == "edge_agreement":
+                            structural_edge_available = True
+            if self.config.enable_render_compare and not structural_edge_available:
                 edge = _edge_iou(context.image, runtime.png)
                 if edge is not None:
                     scores["edge_agreement"] = edge
             candidate.scores = scores
             candidate.aggregate_score = aggregate_scores(scores, self.config)
             if (
-                draft.engine_name == "geometry"
-                and candidate.scene_ir is not None
+                candidate.scene_ir is not None
                 and not any(element.text for element in candidate.scene_ir.elements)
+                and draft.method == "scene_ir_fallback"
             ):
                 candidate.aggregate_score = None
                 candidate.warnings.append(
-                    "unlabeled geometry-only candidates require OCR/VLM fusion before publishing"
+                    "unlabeled scene-only candidates require OCR/VLM fusion before publishing"
                 )
             candidates.append(candidate)
 

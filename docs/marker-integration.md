@@ -39,9 +39,11 @@ OCR recall에 섞이지 않고 다음 page의 label에는 올바른 canvas offse
 
 Marker의 dependency resolver가 `llm_service`라는 생성자 parameter에 service를 주입합니다.
 `MarkerStructuredVLMEngine`만 Marker service API를 알고 core pipeline은 `CandidateEngine` Protocol만
-사용합니다. 기본 engine 순서는 Geometry, Structured VLM입니다. VLM 호출은 OCR token과 앞선 geometry
-evidence가 포함된 `prompt`, 다중 view image list, 원 block, `EngineObservation` response schema를
-전달합니다. candidate budget은 두 engine 후보에 round-robin으로 적용됩니다.
+사용합니다. 기본 engine 순서는 Vector Primitive, Geometry, Structured VLM입니다. merged source는
+모든 source block과 assembly `page_to_canvas` mapping을 vector engine에 전달합니다. VLM 호출은 OCR
+token과 앞선 vector/geometry evidence가 포함된 `prompt`, 갱신된 다중 view image list, anchor block,
+`EngineObservation` response schema를 전달합니다. fused 후보와 개별 engine 후보에 candidate budget을
+round-robin으로 적용합니다.
 
 ## 전용 renderer가 필요한 이유
 

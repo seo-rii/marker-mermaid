@@ -18,13 +18,14 @@ observation을 반환하여 다른 engine이 계속 동작합니다.
 
 ## Ensemble 위치
 
-Marker 기본 engine 순서는 Geometry → Structured VLM입니다. pipeline의 evidence list는 같은 source
-context와 공유되므로 VLM prompt가 geometry evidence를 확인할 수 있습니다. 후보는 engine별
-round-robin으로 candidate budget을 나눕니다.
+Marker 기본 engine 순서는 Vector Primitive → Geometry → Structured VLM입니다. pipeline의 evidence
+list는 같은 source context와 공유되며 새 evidence가 생길 때 visual prior를 다시 생성합니다. 따라서
+VLM은 vector text/shape, contour/line, 실제 검출된 arrowhead endpoint overlay를 prompt와 image view에서
+함께 확인합니다.
 
-현재 visual-prior image는 engine 호출 전에 만들어지므로 새 geometry evidence overlay 자체는 VLM
-image list에 다시 렌더되지 않습니다. 다음 fusion 단계에서 `VisualPriorBundle`을 도입해 evidence와
-overlay 생성을 한 단계로 통합할 예정입니다.
+`FusionEngine`은 vector geometry, CV geometry, OCR/VLM label, VLM semantic relation을 각각 명시된
+우선순위로 합칩니다. fused 후보와 원 engine 후보를 함께 candidate budget에 round-robin으로 넣어
+fusion 실패나 과도한 병합에도 원 관찰을 대안으로 유지합니다.
 
 ## 게시 안전성
 
