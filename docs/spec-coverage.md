@@ -26,7 +26,7 @@
 | Timeline/Gantt | 구현 | typed serializer + real render fixture |
 | BPMN/Swimlane | 구현 | portable flowchart subgraph fallback |
 | Phase 2 software types | 구현 | State/Class/ER/Requirement/Block native; C4/Deployment/Component/Use-case 명시 fallback |
-| Phase 3 charts | 기반 | direct Mermaid, numeric OCR consistency; typed extraction 후속 |
+| Phase 3 charts | 구현 | Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn typed native/fallback과 numeric gate |
 | Phase 5 special types | 기반 | direct Mermaid/security gate; typed extraction 후속 |
 | AST repair/mermaid-ast | 후속 | Protocol/repair history만 존재 |
 | style recovery | 기반 | profile/security allowlist; visual style fusion 후속 |

@@ -67,3 +67,5 @@ GeometryEngine과 duck-typed VectorPrimitiveEngine이 구현되어 있습니다.
 State/Class/ER/Requirement/Block typed serializer와 C4/Deployment/Component/Use-case fallback은
 `enabled_types` allowlist에 포함할 때 활성화됩니다. 요청 type과 실제 grammar가 다를 수 있으므로
 [serializer 계약](serialization.md)의 emitted type과 fallback chain을 함께 확인해야 합니다.
+Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn도 같은 allowlist와 계약을 사용합니다. 숫자 chart의 자동
+게시에는 OCR 또는 vector numeric evidence가 필요합니다.

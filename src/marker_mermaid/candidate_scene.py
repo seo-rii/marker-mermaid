@@ -66,6 +66,9 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
     elif diagram_type == "usecase":
         node_records = [*(ir.get("actors") or []), *(ir.get("use_cases") or [])]
         edge_records = list(ir.get("relations") or [])
+    elif diagram_type == "sankey":
+        node_records = list(ir.get("nodes") or [])
+        edge_records = list(ir.get("flows") or ir.get("links") or [])
     elif diagram_type == "sequence":
         for index, participant in enumerate(ir.get("participants") or [], start=1):
             if isinstance(participant, str):
@@ -78,7 +81,7 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
                     }
                 )
         edge_records = list(ir.get("messages") or [])
-    elif diagram_type == "mindmap" and isinstance(ir.get("root"), dict):
+    elif diagram_type in {"mindmap", "treemap"} and isinstance(ir.get("root"), dict):
         pending = [(ir["root"], None, "root")]
         while pending:
             node, parent_id, fallback_id = pending.pop(0)

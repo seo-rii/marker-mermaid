@@ -18,6 +18,13 @@
     "deployment",
     "component",
     "usecase",
+    "pie",
+    "xychart",
+    "quadrant",
+    "sankey",
+    "radar",
+    "treemap",
+    "venn",
     "mindmap",
     "timeline",
     "gantt"

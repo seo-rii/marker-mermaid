@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 
 from marker_mermaid.config import MermaidConfig, PublishPolicy, quality_grade
@@ -25,11 +26,16 @@ def ocr_recall(source_texts: list[str], mermaid_code: str) -> float | None:
 
 def numeric_consistency(source_texts: list[str], mermaid_code: str) -> float | None:
     number_pattern = re.compile(r"(?<!\w)[+-]?(?:\d+(?:\.\d+)?|\.\d+)%?")
-    source = set(number_pattern.findall(" ".join(source_texts)))
+    source = Counter(number_pattern.findall(" ".join(source_texts)))
     if not source:
         return None
-    generated = set(number_pattern.findall(mermaid_code))
-    return len(source & generated) / len(source)
+    generated = Counter(number_pattern.findall(mermaid_code))
+    if not generated:
+        return 0.0
+    overlap = sum((source & generated).values())
+    precision = overlap / generated.total()
+    recall = overlap / source.total()
+    return 2 * precision * recall / (precision + recall) if precision + recall else 0.0
 
 
 def aggregate_scores(scores: dict[str, float], config: MermaidConfig) -> float | None:

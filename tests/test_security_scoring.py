@@ -39,7 +39,8 @@ def test_style_only_allows_local_style_but_not_remote_css():
 
 def test_reference_free_text_scores_do_not_invent_numbers():
     assert ocr_recall(["결제 승인 거절"], 'flowchart LR\nA["결제 승인"]') == pytest.approx(2 / 3)
-    assert numeric_consistency(["1.5 20% 99"], "pie\n X : 20%") == pytest.approx(1 / 3)
+    assert numeric_consistency(["1.5 20% 99"], "pie\n X : 20%") == pytest.approx(0.5)
+    assert numeric_consistency(["20"], "pie\n X : 20\n Y : 999") == pytest.approx(2 / 3)
 
 
 def test_aggregate_requires_a_semantic_metric():

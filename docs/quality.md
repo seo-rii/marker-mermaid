@@ -25,8 +25,11 @@ layout을 추측하지 않습니다. Scene IR portable fallback은 deterministic
 
 - syntax/render는 게시 hard gate이면서 score input입니다.
 - OCR recall은 원 OCR token coverage입니다.
-- numeric consistency는 source에 실제 숫자가 있을 때만 사용합니다.
+- numeric consistency는 source/generated 숫자 multiset의 precision·recall F1입니다. source에 실제
+  숫자가 있을 때만 사용하며 추가 생성한 숫자도 precision을 낮춥니다.
 - visual entailment precision은 현재 evidence coverage proxy이며 model scorer는 후속입니다.
 - 구조 edge를 평가할 수 없고 render PNG가 있으면 raster edge IoU를 fallback으로 사용합니다.
 
 path enumeration은 기본 10,000개 path에서 중단합니다. budget을 넘은 부분 결과로 점수를 만들지 않습니다.
+Gantt/Pie/XY/Quadrant/Sankey/Radar/Treemap/Packet 후보는 OCR/vector numeric evidence가 하나도 없으면
+aggregate를 `None`으로 두어 자동 게시하지 않습니다.

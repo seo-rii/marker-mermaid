@@ -313,6 +313,9 @@ def _ensure_extended_serializers() -> None:
     global _EXTENDED_SERIALIZERS_REGISTERED
     if _EXTENDED_SERIALIZERS_REGISTERED:
         return
+    from marker_mermaid.serializers_charts_core import serialize_chart_core
+    from marker_mermaid.serializers_charts_flow import serialize_chart_flow
+    from marker_mermaid.serializers_charts_sets import serialize_chart_set
     from marker_mermaid.serializers_phase2 import (
         BLOCK_ACCESSIBILITY_LIMITATION,
         serialize_phase2,
@@ -370,6 +373,69 @@ def _ensure_extended_serializers() -> None:
             )
 
         SERIALIZATION_REGISTRY.register_result(requested_type, serialize_result)
+
+    chart_stabilities = {
+        "pie": "extended",
+        "xychart": "experimental",
+        "quadrant": "experimental",
+        "treemap": "experimental",
+        "venn": "experimental",
+    }
+    for requested_type in ("pie", "xychart", "quadrant", "treemap", "venn"):
+
+        def serialize_chart_result(
+            ir: dict[str, Any],
+            *,
+            experimental: bool = False,
+            _requested_type: str = requested_type,
+        ) -> SerializationResult:
+            if _requested_type in {"pie", "xychart", "quadrant"}:
+                code, emitted_type, fallback_reason = serialize_chart_core(
+                    _requested_type,
+                    ir,
+                    experimental=experimental,
+                )
+            else:
+                code, emitted_type, fallback_reason = serialize_chart_set(
+                    _requested_type,
+                    ir,
+                    experimental=experimental,
+                )
+            stability = chart_stabilities[_requested_type]
+            if emitted_type == _requested_type:
+                return SerializationResult.native(
+                    _requested_type,
+                    code,
+                    stability=stability,
+                )
+            return SerializationResult.fallback(
+                _requested_type,
+                emitted_type,
+                code,
+                warnings=(fallback_reason or f"Portable fallback from {_requested_type}.",),
+                stability=stability,
+            )
+
+        SERIALIZATION_REGISTRY.register_result(requested_type, serialize_chart_result)
+
+    for requested_type in ("sankey", "radar"):
+
+        def serialize_flow_chart_result(
+            ir: dict[str, Any],
+            *,
+            experimental: bool = False,
+            _requested_type: str = requested_type,
+        ) -> SerializationResult:
+            return serialize_chart_flow(
+                _requested_type,
+                ir,
+                experimental=experimental,
+            )
+
+        SERIALIZATION_REGISTRY.register_result(
+            requested_type,
+            serialize_flow_chart_result,
+        )
     _EXTENDED_SERIALIZERS_REGISTERED = True
 
 

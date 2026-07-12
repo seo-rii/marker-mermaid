@@ -18,6 +18,8 @@
 - Native State, Class, ER, Requirement, and Block typed serializers.
 - Strict-safe C4, Deployment, Component, and Use-case portable fallbacks.
 - Requested/emitted/runtime diagram type and fallback-chain metadata.
+- Evidence-strict Pie, XY, Quadrant, Sankey, Radar, Treemap, and Venn serializers.
+- Numeric multiset precision/recall scoring and no-evidence publication guard.
 
 ### Changed
 

@@ -104,6 +104,13 @@ def _canonical_runtime_type(value: str | None) -> str | None:
         "timeline": "timeline",
         "gantt": "gantt",
         "c4": "c4",
+        "pie": "pie",
+        "xychart": "xychart",
+        "quadrantchart": "quadrant",
+        "sankey": "sankey",
+        "radar": "radar",
+        "treemap": "treemap",
+        "venn": "venn",
     }
     return aliases.get(normalized, normalized)
 
@@ -349,6 +356,28 @@ class ReconstructionPipeline:
             draft_groups = remaining_groups
 
         candidates: list[MermaidCandidate] = []
+        reference_texts = list(
+            dict.fromkeys(
+                [
+                    *context.ocr_texts,
+                    *(
+                        item.text
+                        for item in all_evidence
+                        if item.text and item.kind in {"ocr_token", "vector_text"}
+                    ),
+                ]
+            )
+        )
+        numeric_types = {
+            "gantt",
+            "pie",
+            "xychart",
+            "quadrant",
+            "sankey",
+            "radar",
+            "treemap",
+            "packet",
+        }
         for index, draft in enumerate(drafts, start=1):
             candidate = MermaidCandidate(
                 candidate_id=f"candidate-{index}",
@@ -409,20 +438,11 @@ class ReconstructionPipeline:
                 "syntax": float(candidate.syntax_valid),
                 "render": float(candidate.render_valid),
             }
-            recall = ocr_recall(context.ocr_texts, draft.code)
+            recall = ocr_recall(reference_texts, draft.code)
             if recall is not None:
                 scores["ocr_recall"] = recall
-            numeric = numeric_consistency(context.ocr_texts, draft.code)
-            if numeric is not None and draft.diagram_type in {
-                "gantt",
-                "pie",
-                "xychart",
-                "quadrant",
-                "sankey",
-                "radar",
-                "treemap",
-                "packet",
-            }:
+            numeric = numeric_consistency(reference_texts, draft.code)
+            if numeric is not None and draft.diagram_type in numeric_types:
                 scores["numeric_consistency"] = numeric
             prediction_scores = dict(
                 zip(
@@ -473,6 +493,11 @@ class ReconstructionPipeline:
                     scores["edge_agreement"] = edge
             candidate.scores = scores
             candidate.aggregate_score = aggregate_scores(scores, self.config)
+            if draft.diagram_type in numeric_types and numeric is None:
+                candidate.aggregate_score = None
+                candidate.warnings.append(
+                    "numeric diagram lacks OCR/vector numeric evidence and cannot auto-publish"
+                )
             if (
                 candidate.scene_ir is not None
                 and not any(element.text for element in candidate.scene_ir.elements)

@@ -215,6 +215,74 @@ def test_typed_serializer_runtime_type_mismatch_fails_the_render_gate():
     assert result.alternatives[0].scores["render"] == 0
 
 
+def test_numeric_diagram_without_source_numeric_evidence_requires_review():
+    class PieEngine:
+        name = "pie"
+
+        def observe(self, context):
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["pie"], scores=[0.9]),
+                direct_candidates=[
+                    DirectMermaidCandidate(
+                        diagram_type="pie",
+                        code='pie\n    "Approved" : 20\n',
+                    )
+                ],
+            )
+
+    class PieRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="pie",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [PieEngine()],
+        CandidateValidator(PieRuntime(), config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert result.status == "review_required"
+    assert any("lacks OCR/vector numeric evidence" in item for item in result.selected.warnings)
+
+    class VectorNumberEngine:
+        name = "vector-number"
+        fusion_source = "vector"
+
+        def observe(self, context):
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["pie"], scores=[0.7]),
+                evidence=[
+                    VisualEvidence(
+                        id="vector-number-1",
+                        kind="vector_text",
+                        text="20",
+                        bbox=(0, 0, 10, 10),
+                    )
+                ],
+            )
+
+    supported = ReconstructionPipeline(
+        config,
+        [VectorNumberEngine(), PieEngine()],
+        CandidateValidator(PieRuntime(), config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert supported.selected is not None
+    assert supported.selected.scores["numeric_consistency"] == 1
+    assert supported.selected.aggregate_score is not None
+
+
 def test_geometry_evidence_is_available_to_later_engines(fake_runtime):
     class EvidenceEngine:
         name = "evidence"

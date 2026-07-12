@@ -37,7 +37,7 @@ flowchart TB
 | `fusion.py` | vector/geometry/OCR/VLM Scene IR와 후보의 결정적 병합 |
 | `views.py` | thumbnail, edge, Hough, detected-arrow, OCR/vector/color overlay, tile 생성 |
 | `engines.py` | Marker BaseService adapter와 offline fixture engine |
-| `serializers*.py`, `serialization.py` | typed IR, requested/emitted type와 fallback 계약 |
+| `serializers*.py`, `serialization.py` | software/chart typed IR, requested/emitted type와 fallback 계약 |
 | `security.py` | active/external Mermaid syntax의 fail-closed 검사 |
 | `validation.py` | reusable Chromium worker, parse/render, SVG 재검사, process 정리 |
 | `scoring.py` | OCR/numeric score, available-weight aggregation, 게시 결정 |

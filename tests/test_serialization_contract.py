@@ -218,3 +218,32 @@ def test_project_dispatch_records_native_and_portable_fallback_grammars() -> Non
     assert bpmn.fallback_chain == ("bpmn", "swimlane", "flowchart")
     assert c4.emitted_type == "architecture" and c4.used_fallback
     assert block.emitted_type == "block" and "accTitle" in block.warnings[0]
+
+
+def test_chart_dispatch_records_numeric_native_and_fallback_grammars() -> None:
+    pie = serialize_typed_ir_result(
+        "pie",
+        {"slices": [{"label": "Approved", "value": 20}]},
+    )
+    sankey = serialize_typed_ir_result(
+        "sankey",
+        {
+            "nodes": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],
+            "flows": [{"source": "a", "target": "b", "value": 5}],
+        },
+    )
+    treemap = serialize_typed_ir_result(
+        "treemap",
+        {
+            "root": {
+                "label": "All",
+                "value": 5,
+                "children": [{"label": "Leaf", "value": 5}],
+            }
+        },
+    )
+
+    assert pie.emitted_type == "pie" and pie.stability == "extended"
+    assert sankey.emitted_type == "sankey" and not sankey.used_fallback
+    assert treemap.emitted_type == "flowchart" and treemap.used_fallback
+    assert "non-leaf" in treemap.warnings[0]

@@ -26,6 +26,11 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 | C4 | `architecture` | native C4 SVG가 strict gate의 data/xlink 정책과 불일치 |
 | Deployment, Component | `architecture` | stereotype/interface/link label 일부는 typed IR에 유지 |
 | Use-case | `flowchart` | actor glyph와 system boundary는 typed IR에 유지 |
+| Pie, XY, Quadrant | 동일 | explicit finite values/axis/coordinates 필수 |
+| Sankey | `sankey` 또는 `flowchart` | native-safe positive DAG, 그 외 exact-weight fallback |
+| Radar | `radar` 또는 `flowchart` | non-negative native domain, 음수 domain은 tabular fallback |
+| Treemap | `treemap` 또는 `flowchart` | leaf value 필수, internal-node value는 fallback에서 보존 |
+| Venn | `venn` 또는 `flowchart` | 모든 크기가 관측되면 native, 누락 시 숫자 합성 없는 set graph |
 
 State/Class/ER serializer는 provenance 없는 구조를 문법적으로 만들 수 있어도 거부합니다. unknown
 endpoint, 추측 cardinality, ER의 identifying flag 누락도 `SerializationError`입니다. Requirement/Block과
