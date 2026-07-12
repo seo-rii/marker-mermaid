@@ -21,6 +21,8 @@ revision에 저장됩니다. code 또는 IR이 바뀐 revision은 원본 기반 
 
 대안 후보 선택, 승인, 사유가 필수인 거절, undo/redo를 지원합니다. 최초 수정 시 원본 revision
 `versions/r000000.*`을 만들며 각 변경은 `review-history.json`에 사용자 작업과 사유를 남깁니다.
+자연어 patch는 generic edit로 축약하지 않고 `reverse_edge`, `relabel_node`, `group_nodes`의 target과
+구조화된 before/after를 그대로 commit history에 보존합니다.
 undo 뒤 새 편집을 하면 활성 timeline은 분기하지만 기존 snapshot과 audit entry는 삭제하지 않습니다.
 모든 자동 후보가 실패해 `final.mmd`가 없는 bundle도 첫 번째 bounded alternative를 편집 baseline으로
 불러옵니다. 저장 전 validation은 동일하며, 최초 성공 편집 때만 `final.mmd`를 공개합니다.

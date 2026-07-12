@@ -356,7 +356,7 @@ def test_stale_edit_and_cross_origin_mutation_are_rejected(tmp_path):
 
 
 def test_candidate_command_decision_and_undo_flow(tmp_path):
-    make_bundle(tmp_path)
+    diagram_path = make_bundle(tmp_path)
     with running_server(tmp_path) as (base, store):
         current = store.load_bundle("diagram-a")
         selected, _ = post_json(
@@ -383,3 +383,8 @@ def test_candidate_command_decision_and_undo_flow(tmp_path):
     assert "A --> B" in patched["diagram"]["mermaid_code"]
     assert approved["diagram"]["decision"] == "approved"
     assert undone["diagram"]["decision"] == "pending"
+    entries = json.loads((diagram_path / "review-history.json").read_text())
+    reverse = next(entry for entry in entries if entry["operation"] == "reverse_edge")
+    assert reverse["target"] == "E1"
+    assert reverse["before"] == {"source": "B", "target": "A"}
+    assert reverse["after"] == {"source": "A", "target": "B"}

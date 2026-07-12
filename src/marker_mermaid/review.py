@@ -314,6 +314,7 @@ class ReviewHandler(SimpleHTTPRequestHandler):
                 "diagram type changes require an explicit matching Mermaid edit or candidate"
             )
         assert result.mermaid_code is not None
+        assert result.history_entry is not None
         return self.store.apply_edit(
             bundle_id,
             result.mermaid_code,
@@ -322,6 +323,7 @@ class ReviewHandler(SimpleHTTPRequestHandler):
             expected_digest=digest,
             reason=command,
             operation="natural_language_patch",
+            audit_entry=result.history_entry,
         )
 
     def _bundle_payload(self, bundle: ReviewBundle) -> dict[str, Any]:

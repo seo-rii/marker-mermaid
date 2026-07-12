@@ -42,7 +42,7 @@ flowchart TB
 | `ast_repair.py` | 의미를 추가하지 않는 bounded lexical/structural repair와 AST adapter seam |
 | `style_recovery.py` | profile-gated flowchart fill/border/link style allowlist |
 | `security.py` | active/external Mermaid syntax의 fail-closed 검사 |
-| `validation.py` | reusable Chromium worker, parse/render, SVG 재검사, process 정리 |
+| `validation.py` | bounded nonblocking Chromium protocol, parse/render, SVG 재검사, process-group 정리 |
 | `scoring.py` | OCR/numeric score, available-weight aggregation, 게시 결정 |
 | `quality.py` | edge/arrow/layout/path 구조 점수와 unavailable 판정 |
 | `candidate_scene.py` | typed serializer가 실제 방출한 구조를 평가 Scene으로 변환 |

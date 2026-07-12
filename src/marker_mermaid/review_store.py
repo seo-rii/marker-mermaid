@@ -342,6 +342,7 @@ class ReviewStore:
         validator: ValidationCallback | None = None,
         operation: str = "edit_mermaid",
         selected_candidate_id: str | None = None,
+        audit_entry: ReviewHistoryEntry | None = None,
     ) -> ReviewBundle:
         """Atomically persist code, IR, render artifacts, state, and audit history."""
 
@@ -384,6 +385,7 @@ class ReviewStore:
                 operation=operation,
                 reason=reason,
                 before=before,
+                audit_entry=audit_entry,
             )
 
     edit_mermaid = apply_mermaid_edit
@@ -574,6 +576,7 @@ class ReviewStore:
         operation: str,
         reason: str | None,
         before: dict[str, Any],
+        audit_entry: ReviewHistoryEntry | None = None,
     ) -> ReviewBundle:
         bundle_path = self._bundle_path(bundle.bundle_id)
         next_version = bundle.state.version + 1
@@ -593,14 +596,21 @@ class ReviewStore:
             selected_candidate_id=selected_candidate_id,
         )
         after = self._state_value(state, code, scene_ir)
-        history = self._append_history(
-            bundle.history,
-            operation=operation,
-            target=bundle.bundle_id,
-            before=before,
-            after=after,
-            reason=reason,
-        )
+        if audit_entry is not None:
+            if audit_entry.source != "user":
+                raise ReviewValidationError("review audit entries must have user source")
+            if len(bundle.history) >= MAX_HISTORY_ENTRIES:
+                raise ReviewValidationError("review history has reached the entry limit")
+            history = [*bundle.history, audit_entry]
+        else:
+            history = self._append_history(
+                bundle.history,
+                operation=operation,
+                target=bundle.bundle_id,
+                before=before,
+                after=after,
+                reason=reason,
+            )
         snapshot = _RevisionSnapshot(
             revision=revision,
             code_digest=state.code_digest,

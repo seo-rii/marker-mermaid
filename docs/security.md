@@ -61,8 +61,10 @@ revision/state 파일은 HTTP로 노출하지 않습니다.
 
 Playwright context의 모든 network route를 abort합니다. remote font/icon을 등록하지 않습니다.
 worker는 browser 하나를 재사용하지만 candidate마다 DOM을 초기화하고 deterministic ID seed를
-사용합니다. Python timeout 또는 종료 시 worker process group에 SIGTERM을 보내고 제한 시간 후
-SIGKILL합니다. `bindFunctions`는 호출하지 않습니다.
+사용합니다. worker stdout은 nonblocking JSONL buffer로 읽으며 응답 전체를 64 MB로 제한합니다.
+newline이 오지 않는 partial 응답도 Python deadline을 넘기지 않습니다. timeout, malformed/oversized
+response 또는 종료 시 기록한 worker process group에 SIGTERM을 보내고 제한 시간 후 SIGKILL합니다.
+`bindFunctions`는 호출하지 않습니다.
 
 `sandbox-experimental`은 config enum에는 예약되어 있지만 별도의 OS sandbox implementation은
 아직 없습니다. 현재 runtime은 어떤 profile에서도 동일한 network isolation을 유지합니다.

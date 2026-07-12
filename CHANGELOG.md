@@ -48,6 +48,8 @@
 - Marker now supplies real PyMuPDF page providers to vector extraction when available.
 - Review edits validate full Scene IR integrity and invalidate stale automated quality metadata.
 - Failed bundles without `final.mmd` can be repaired from retained alternatives.
+- Natural-language review patches retain their structured operation, target, and delta history.
+- Chromium worker responses use a nonblocking bounded protocol with partial-line deadlines.
 - SVG CSS inspection covers `<style>` text and edge styles require fully mapped Mermaid ordering.
 
 ## 0.1.0

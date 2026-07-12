@@ -21,6 +21,8 @@ from marker_mermaid.config import SecurityProfile
 from marker_mermaid.protocols import MermaidRuntime, RuntimeResult
 from marker_mermaid.security import MermaidSecurityScanner
 
+MAX_RUNTIME_RESPONSE_BYTES = 64_000_000
+
 
 @dataclass(frozen=True, slots=True)
 class ValidationOutcome:
@@ -85,12 +87,14 @@ class NodeMermaidRuntime(MermaidRuntime):
 
     def __init__(self, runtime_dir: str | Path | None = None):
         self.runtime_dir = Path(runtime_dir) if runtime_dir else default_runtime_dir()
-        self._process: subprocess.Popen[str] | None = None
+        self._process: subprocess.Popen[bytes] | None = None
+        self._process_group_id: int | None = None
+        self._stdout_buffer = bytearray()
         self._lock = threading.RLock()
         self._next_id = 0
         atexit.register(self.close)
 
-    def _start(self) -> subprocess.Popen[str]:
+    def _start(self) -> subprocess.Popen[bytes]:
         worker = self.runtime_dir / "worker.mjs"
         if not worker.is_file():
             raise RuntimeError(f"Mermaid worker not found: {worker}")
@@ -100,11 +104,14 @@ class NodeMermaidRuntime(MermaidRuntime):
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
+            bufsize=0,
             start_new_session=True,
         )
         self._process = process
+        self._process_group_id = process.pid
+        self._stdout_buffer.clear()
+        assert process.stdout is not None
+        os.set_blocking(process.stdout.fileno(), False)
         return process
 
     def validate_and_render(self, code: str, timeout_seconds: float) -> RuntimeResult:
@@ -115,53 +122,91 @@ class NodeMermaidRuntime(MermaidRuntime):
             self._next_id += 1
             request_id = str(self._next_id)
             assert process.stdin is not None and process.stdout is not None
-            process.stdin.write(json.dumps({"id": request_id, "code": code}) + "\n")
+            process.stdin.write((json.dumps({"id": request_id, "code": code}) + "\n").encode())
             process.stdin.flush()
             selector = selectors.DefaultSelector()
             selector.register(process.stdout, selectors.EVENT_READ)
             deadline = time.monotonic() + timeout_seconds
-            while time.monotonic() < deadline:
-                events = selector.select(max(0, deadline - time.monotonic()))
-                if not events:
-                    break
-                line = process.stdout.readline()
-                if not line:
-                    break
-                payload = json.loads(line)
-                if payload.get("id") != request_id:
-                    continue
-                if not payload.get("ok"):
-                    selector.close()
-                    return RuntimeResult(
-                        syntax_valid=bool(payload.get("syntaxValid")),
-                        render_valid=False,
-                        error=payload.get("error", "Mermaid runtime failed"),
-                    )
-                png = base64.b64decode(payload["png"]) if payload.get("png") else None
+            try:
+                while time.monotonic() < deadline:
+                    while b"\n" in self._stdout_buffer:
+                        raw_line, _, remainder = self._stdout_buffer.partition(b"\n")
+                        self._stdout_buffer = bytearray(remainder)
+                        try:
+                            payload = json.loads(raw_line)
+                        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                            self.close()
+                            return RuntimeResult(
+                                False,
+                                False,
+                                error=f"Mermaid runtime returned invalid JSON: {exc}",
+                            )
+                        if payload.get("id") != request_id:
+                            continue
+                        if not payload.get("ok"):
+                            return RuntimeResult(
+                                syntax_valid=bool(payload.get("syntaxValid")),
+                                render_valid=False,
+                                error=payload.get("error", "Mermaid runtime failed"),
+                            )
+                        try:
+                            png = (
+                                base64.b64decode(payload["png"], validate=True)
+                                if payload.get("png")
+                                else None
+                            )
+                        except (ValueError, TypeError) as exc:
+                            self.close()
+                            return RuntimeResult(
+                                False,
+                                False,
+                                error=f"Mermaid runtime returned invalid PNG data: {exc}",
+                            )
+                        return RuntimeResult(
+                            syntax_valid=True,
+                            render_valid=True,
+                            diagram_type=payload.get("diagramType"),
+                            svg=payload.get("svg"),
+                            png=png,
+                        )
+                    events = selector.select(max(0, deadline - time.monotonic()))
+                    if not events:
+                        break
+                    try:
+                        chunk = os.read(process.stdout.fileno(), 65_536)
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        break
+                    self._stdout_buffer.extend(chunk)
+                    if len(self._stdout_buffer) > MAX_RUNTIME_RESPONSE_BYTES:
+                        self.close()
+                        return RuntimeResult(
+                            False,
+                            False,
+                            error="Mermaid runtime response exceeds the size limit",
+                        )
+            finally:
                 selector.close()
-                return RuntimeResult(
-                    syntax_valid=True,
-                    render_valid=True,
-                    diagram_type=payload.get("diagramType"),
-                    svg=payload.get("svg"),
-                    png=png,
-                )
-            selector.close()
             self.close()
             return RuntimeResult(False, False, error=f"Mermaid runtime exceeded {timeout_seconds}s")
 
     def close(self) -> None:
         with self._lock:
             process, self._process = self._process, None
-            if process is None or process.poll() is not None:
+            process_group_id, self._process_group_id = self._process_group_id, None
+            self._stdout_buffer.clear()
+            if process_group_id is None:
                 return
             try:
-                os.killpg(process.pid, signal.SIGTERM)
-                process.wait(timeout=3)
+                os.killpg(process_group_id, signal.SIGTERM)
+                if process is not None and process.poll() is None:
+                    process.wait(timeout=3)
             except (ProcessLookupError, subprocess.TimeoutExpired):
                 with suppress(ProcessLookupError):
-                    os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout=3)
+                    os.killpg(process_group_id, signal.SIGKILL)
+                if process is not None and process.poll() is None:
+                    process.wait(timeout=3)
 
 
 class CandidateValidator:
