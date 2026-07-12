@@ -30,6 +30,10 @@ native C4는 Mermaid 11.16에서 parse/render되지만 생성 SVG가 undeclared 
 `style-only`은 마지막 세 Mermaid style statement만 허용하고 외부 URL/CSS는 계속 거부합니다.
 `trusted-local`은 자동 Markdown에 게시할 수 없습니다.
 
+Style recovery는 Scene IR 색을 그대로 CSS로 복사하지 않습니다. hex와 제한된 named color,
+`stroke-width`, `stroke-dasharray`만 허용하며 `strict` 또는 `portable-basic` 조합에서는 code를 바꾸지
+않고 evidence를 IR에만 남깁니다. 생성 style code도 동일한 source scanner와 SVG 검사를 통과해야 합니다.
+
 대화형 review workspace도 저장 전 strict scanner와 parse/render/SVG 검사를 동일하게 적용합니다.
 `trusted-local` callback 실행기는 제공하지 않으므로 `click`과 callback은 계속 거부됩니다.
 

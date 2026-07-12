@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 from PIL import Image, ImageDraw
 
 from marker_mermaid.config import MermaidConfig
-from marker_mermaid.marker_discovery import discover_marker_sources
+from marker_mermaid.marker_discovery import MarkerSourceDiscovery, discover_marker_sources
+from marker_mermaid.page_detector import DiagramRegion, PageDiagramDetection
 from marker_mermaid.source_assembly import assemble_discovered_source
 
 
@@ -49,12 +50,16 @@ class Page:
     bbox: tuple[float, float, float, float]
     structured: list[Block]
     current_children: list[object] = field(default_factory=list)
+    image: Image.Image | None = None
 
     def __post_init__(self):
         self.polygon = Polygon(self.bbox)
 
     def contained_blocks(self, document, block_types):
         return list(self.structured)
+
+    def get_image(self, document, highres=True):
+        return self.image
 
 
 class Document:
@@ -298,3 +303,104 @@ def test_caption_block_references_are_resolved_without_using_diagram_raw_text():
     result = discover_marker_sources(document, MermaidConfig(split_composite_figures=False))
 
     assert any(source.kind == "merged" for source in result.registry.values())
+
+
+def test_page_detector_adds_scaled_virtual_crop_and_uses_nearest_existing_anchor():
+    anchor = Block("/page/0/Figure/1", (10, 10, 60, 60), _diagram((50, 50)), 0)
+    page_image = Image.new("RGB", (640, 480), "white")
+    page = Page(0, (0, 0, 320, 240), [anchor], image=page_image)
+    calls = []
+
+    def detector(image, occupied, **kwargs):
+        calls.append((image.size, occupied, kwargs))
+        return PageDiagramDetection(
+            page_size=image.size,
+            edge_backend="pillow",
+            regions=[
+                DiagramRegion(
+                    region_id="page-diagram-001",
+                    bbox=(160, 120, 560, 400),
+                    confidence=0.81,
+                    signals=["multi_axis_structure"],
+                    component_count=4,
+                    edge_density=0.08,
+                )
+            ],
+        )
+
+    result = MarkerSourceDiscovery(
+        MermaidConfig(split_composite_figures=False),
+        page_region_detector=detector,
+    ).discover(Document([page]))
+
+    proposal = next(source for source in result.registry.values() if source.kind == "page_proposal")
+    fragment = proposal.fragments[0]
+    assert proposal.anchor_block_id == str(anchor.id)
+    assert proposal.signals == [
+        "page_level_detector",
+        "pillow_edge_backend",
+        "multi_axis_structure",
+    ]
+    assert fragment.source_block_ids == []
+    assert fragment.crop_bbox == (160.0, 120.0, 560.0, 400.0)
+    assert fragment.page_bbox == (80.0, 60.0, 280.0, 200.0)
+    assert result.images[fragment.fragment_id].size == page_image.size
+    assert calls == [
+        (
+            (640, 480),
+            [(20.0, 20.0, 120.0, 120.0)],
+            {"use_opencv": True},
+        )
+    ]
+
+
+def test_unanchored_page_proposal_remains_discoverable_without_registry_mutation():
+    page = Page(2, (0, 0, 100, 100), [], image=Image.new("RGB", (100, 100), "white"))
+
+    def detector(image, occupied, **kwargs):
+        return PageDiagramDetection(
+            page_size=image.size,
+            edge_backend="pillow",
+            regions=[
+                DiagramRegion(
+                    region_id="page-diagram-001",
+                    bbox=(10, 10, 90, 90),
+                    confidence=0.7,
+                    signals=["multi_axis_structure"],
+                    component_count=2,
+                    edge_density=0.05,
+                )
+            ],
+        )
+
+    result = MarkerSourceDiscovery(
+        MermaidConfig(split_composite_figures=False),
+        page_region_detector=detector,
+    ).discover(Document([page]))
+
+    [proposal] = list(result.registry.values())
+    assert proposal.kind == "page_proposal"
+    assert proposal.anchor_block_id is None
+    assert proposal.fragments[0].source_block_ids == []
+
+
+def test_page_detector_failure_is_isolated_from_marker_block_sources():
+    anchor = Block("/page/3/Figure/1", (10, 10, 80, 80), _diagram((70, 70)), 3)
+    page = Page(3, (0, 0, 100, 100), [anchor], image=Image.new("RGB", (100, 100), "white"))
+
+    def detector(image, occupied, **kwargs):
+        raise RuntimeError("broken detector")
+
+    result = MarkerSourceDiscovery(
+        MermaidConfig(split_composite_figures=False),
+        page_region_detector=detector,
+    ).discover(Document([page]))
+
+    assert [source.kind for source in result.registry.values()] == ["original"]
+    assert result.errors == [
+        {
+            "stage": "page_detector",
+            "source_id": "page-3",
+            "error": "RuntimeError: broken detector",
+        }
+    ]

@@ -30,7 +30,7 @@ flowchart TB
 | 모듈 | 책임 |
 | --- | --- |
 | `models.py` | scene, evidence, prediction, candidate, result 모델과 참조 무결성 |
-| `discovery.py` | panel/full-page/fragment proposal와 virtual source fragment 모델 |
+| `discovery.py`, `page_detector.py` | panel/full-page/fragment와 missed page region proposal |
 | `marker_discovery.py` | Marker block/current_children adapter, source registry와 dedupe |
 | `source_assembly.py` | panel/merged canvas 조립과 source/page affine mapping |
 | `geometry.py` | contour, Hough line, arrowhead의 보수적 Scene IR/provenance 변환 |
@@ -40,6 +40,7 @@ flowchart TB
 | `engines.py` | Marker BaseService adapter와 offline fixture engine |
 | `serializers*.py`, `serialization.py` | software/chart typed IR, requested/emitted type와 fallback 계약 |
 | `ast_repair.py` | 의미를 추가하지 않는 bounded lexical/structural repair와 AST adapter seam |
+| `style_recovery.py` | profile-gated flowchart fill/border/link style allowlist |
 | `security.py` | active/external Mermaid syntax의 fail-closed 검사 |
 | `validation.py` | reusable Chromium worker, parse/render, SVG 재검사, process 정리 |
 | `scoring.py` | OCR/numeric score, available-weight aggregation, 게시 결정 |

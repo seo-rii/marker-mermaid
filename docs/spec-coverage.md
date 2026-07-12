@@ -10,7 +10,7 @@
 | 4개 게시 정책 | 구현 | hard gate와 등급/threshold truth table |
 | Figure/Picture/ComplexRegion | 구현 | Marker discovery와 원본 추출 |
 | full-page candidate | 구현 | coverage/edge 판정과 Marker source 분류/출력 |
-| page missed detector | 후속 | config 예약 |
+| page missed detector | 구현 | bounded edge/component proposal, occupied exclusion, virtual page crop와 anchor 연결 |
 | composite split | 구현 | proposal, raw-fragment crop, virtual 원본/결과 출력 |
 | fragment/multi-page merge | 구현 | caption/continued proposal, canvas assembly, first-fragment anchor 출력 |
 | Scene IR/provenance | 구현 | Pydantic 무결성, OCR/source/VLM evidence, sidecar |
@@ -31,7 +31,7 @@
 | Phase 5 special types | 구현 | Packet/Ishikawa/TreeView/Wardley/Cynefin/Railroad native, EventModeling/ZenUML fallback |
 | Organization/Data Lineage | 구현 | TreeView/Flowchart portable fallback과 endpoint 검증 |
 | AST repair/mermaid-ast | 기반 | pre-validation bounded repair, event/history, AST adapter seam; mermaid-ast package adapter 후속 |
-| style recovery | 기반 | profile/security allowlist; visual style fusion 후속 |
+| style recovery | 기반 | Flowchart fill/border/link style 구현; group/font/lane/chart series style 후속 |
 | OCR recall | 구현 | Unicode token coverage |
 | numeric consistency | 구현 | source에 존재하는 숫자만 비교 |
 | edge agreement | 구현 | aligned topology F1, 불가 시 source/render edge IoU fallback |

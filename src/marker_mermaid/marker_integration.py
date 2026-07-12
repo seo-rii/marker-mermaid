@@ -238,7 +238,7 @@ class MermaidDiagramProcessor(BaseProcessor):
                             },
                             evidence=evidence,
                             ocr_texts=texts,
-                            source_block=block,
+                            source_block=(None if source.kind == "page_proposal" else block),
                             source_blocks=[
                                 blocks[block_id]
                                 for block_id in source_block_ids

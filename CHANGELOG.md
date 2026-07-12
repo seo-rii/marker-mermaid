@@ -27,6 +27,8 @@
 - Evidence-strict Journey, Kanban, GitGraph, Packet, Ishikawa, TreeView, and Event Modeling serializers.
 - Native Wardley, Cynefin, and Railroad serializers plus explicit ZenUML, organization, and lineage fallbacks.
 - Bounded pre-validation source repair with audit events, diagnostics, idempotence, and AST adapter seam.
+- Page-level missed-diagram proposals with occupied-region exclusion and virtual source crops.
+- Profile-gated flowchart fill, border, and link style recovery with strict CSS allowlists.
 
 ### Changed
 

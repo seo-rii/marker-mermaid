@@ -14,7 +14,7 @@ tests and for compatible downstream document implementations.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from hashlib import sha256
 from io import BytesIO
@@ -33,6 +33,7 @@ from marker_mermaid.discovery import (
     propose_fragment_merges,
 )
 from marker_mermaid.models import BBox
+from marker_mermaid.page_detector import PageDiagramDetection, detect_page_diagram_regions
 
 _TARGET_BLOCK_NAMES = frozenset({"figure", "picture", "complexregion"})
 
@@ -83,12 +84,18 @@ class MarkerSourceDiscovery:
     additive candidates governed by :class:`MermaidConfig` switches.
     """
 
-    def __init__(self, config: MermaidConfig | Mapping[str, Any] | None = None):
+    def __init__(
+        self,
+        config: MermaidConfig | Mapping[str, Any] | None = None,
+        *,
+        page_region_detector: Callable[..., PageDiagramDetection] | None = None,
+    ):
         self.config = (
             config
             if isinstance(config, MermaidConfig)
             else MermaidConfig.from_marker_config(config)
         )
+        self.page_region_detector = page_region_detector or detect_page_diagram_regions
 
     def discover(self, document: Any) -> MarkerDiscoveryResult:
         registry: dict[str, DiscoveredSource] = {}
@@ -100,6 +107,7 @@ class MarkerSourceDiscovery:
         for page_index, page in enumerate(_iter_pages(document)):
             page_bbox = _object_bbox(page)
             page_size = _bbox_size(page_bbox)
+            page_sources: list[_BlockSource] = []
             for block in _iter_candidate_blocks(page, document):
                 block_id = _block_id(block)
                 if block_id in block_sources:
@@ -129,6 +137,7 @@ class MarkerSourceDiscovery:
                     caption=_caption_text(block, document),
                 )
                 block_sources[block_id] = source
+                page_sources.append(source)
                 kind = "original"
                 signals = ["marker_block"]
                 if self.config.enable_page_detector:
@@ -159,12 +168,101 @@ class MarkerSourceDiscovery:
                             }
                         )
 
+            if self.config.enable_page_detector:
+                try:
+                    self._add_page_proposals(
+                        page,
+                        document,
+                        page_index,
+                        page_bbox,
+                        page_sources,
+                        registry,
+                        source_images,
+                    )
+                except Exception as exc:
+                    errors.append(
+                        {
+                            "stage": "page_detector",
+                            "source_id": f"page-{_page_id(page, page, page_index)}",
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+
         self._add_merges(block_sources, registry, errors)
         return MarkerDiscoveryResult(
             registry=registry,
             images=source_images,
             errors=errors,
         )
+
+    def _add_page_proposals(
+        self,
+        page: Any,
+        document: Any,
+        page_index: int,
+        page_bbox: BBox,
+        page_sources: Sequence[_BlockSource],
+        registry: dict[str, DiscoveredSource],
+        source_images: dict[str, Image.Image],
+    ) -> None:
+        page_image = _block_image(page, document)
+        if page_image is None:
+            return
+        page_width, page_height = _bbox_size(page_bbox)
+        scale_x = page_image.width / page_width
+        scale_y = page_image.height / page_height
+        occupied = [
+            (
+                (source.page_bbox[0] - page_bbox[0]) * scale_x,
+                (source.page_bbox[1] - page_bbox[1]) * scale_y,
+                (source.page_bbox[2] - page_bbox[0]) * scale_x,
+                (source.page_bbox[3] - page_bbox[1]) * scale_y,
+            )
+            for source in page_sources
+        ]
+        detection = self.page_region_detector(
+            page_image,
+            occupied,
+            use_opencv=self.config.use_canny_edge_map,
+        )
+        page_id = _page_id(page, page, page_index)
+        for region in detection.regions:
+            crop_left, crop_top, crop_right, crop_bottom = region.bbox
+            proposal_page_bbox = (
+                page_bbox[0] + crop_left / scale_x,
+                page_bbox[1] + crop_top / scale_y,
+                page_bbox[0] + crop_right / scale_x,
+                page_bbox[1] + crop_bottom / scale_y,
+            )
+            anchor = _nearest_page_anchor(proposal_page_bbox, page_sources)
+            source_id = _unique_source_id(
+                f"page_{page_id}_{region.region_id.replace('-', '_')}", registry
+            )
+            fragment = SourceFragment(
+                fragment_id=f"{source_id}--fragment",
+                page_id=page_id,
+                source_block_ids=[],
+                page_bbox=proposal_page_bbox,
+                crop_bbox=region.bbox,
+                image_size=page_image.size,
+            )
+            registry[source_id] = DiscoveredSource(
+                source_id=source_id,
+                anchor_block_id=anchor.block_id if anchor is not None else None,
+                kind="page_proposal",
+                fragments=[fragment],
+                signals=list(
+                    dict.fromkeys(
+                        [
+                            "page_level_detector",
+                            f"{detection.edge_backend}_edge_backend",
+                            *region.signals,
+                        ]
+                    )
+                ),
+                confidence=region.confidence,
+            )
+            source_images[fragment.fragment_id] = page_image.copy()
 
     @staticmethod
     def _add_panels(
@@ -488,6 +586,23 @@ def _object_bbox(value: Any) -> BBox:
 
 def _bbox_size(bbox: BBox) -> tuple[float, float]:
     return bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+
+def _nearest_page_anchor(bbox: BBox, sources: Sequence[_BlockSource]) -> _BlockSource | None:
+    if not sources:
+        return None
+    center_x = (bbox[0] + bbox[2]) / 2
+    center_y = (bbox[1] + bbox[3]) / 2
+    return min(
+        sources,
+        key=lambda source: (
+            ((source.page_bbox[0] + source.page_bbox[2]) / 2 - center_x) ** 2
+            + ((source.page_bbox[1] + source.page_bbox[3]) / 2 - center_y) ** 2,
+            source.page_bbox[1],
+            source.page_bbox[0],
+            source.block_id,
+        ),
+    )
 
 
 def _block_id(block: Any) -> str:

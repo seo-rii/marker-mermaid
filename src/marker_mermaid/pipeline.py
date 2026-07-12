@@ -40,6 +40,7 @@ from marker_mermaid.serializers import (
     scene_to_flowchart,
     serialize_typed_ir_result,
 )
+from marker_mermaid.style_recovery import recover_flowchart_styles
 from marker_mermaid.validation import CandidateValidator
 from marker_mermaid.views import build_visual_priors
 
@@ -387,14 +388,42 @@ class ReconstructionPipeline:
             "packet",
         }
         for index, draft in enumerate(drafts, start=1):
-            source_repair = self.source_repair.repair(draft.code)
+            if self.config.enable_style_recovery:
+                style_recovery = recover_flowchart_styles(
+                    draft.code,
+                    draft.observation.scene_ir,
+                    compatibility_profile=self.config.compatibility_profile,
+                    security_profile=self.config.security_profile,
+                )
+                styled_code = style_recovery.code
+                style_repair_history = (
+                    [
+                        RepairEvent(
+                            iteration=0,
+                            operation="recover_style",
+                            accepted=True,
+                            details={
+                                "element_ids": list(style_recovery.applied_element_ids),
+                                "link_indexes": list(style_recovery.applied_link_indexes),
+                                "stage": "pre_validation",
+                            },
+                        )
+                    ]
+                    if style_recovery.changed
+                    else []
+                )
+            else:
+                styled_code = draft.code
+                style_recovery = None
+                style_repair_history = []
+            source_repair = self.source_repair.repair(styled_code)
             repair_accepted = bool(
                 source_repair.changed
                 and source_repair.security_preserved
                 and source_repair.idempotent
                 and not source_repair.budget_exhausted
             )
-            candidate_code = source_repair.source if repair_accepted else draft.code
+            candidate_code = source_repair.source if repair_accepted else styled_code
             source_repair_history = [
                 RepairEvent(
                     iteration=0,
@@ -434,9 +463,10 @@ class ReconstructionPipeline:
                     *view_warnings,
                     *draft.observation.warnings,
                     *(draft.warnings or []),
+                    *(style_recovery.warnings if style_recovery is not None else ()),
                     *source_repair_warnings,
                 ],
-                repair_history=source_repair_history,
+                repair_history=[*style_repair_history, *source_repair_history],
             )
             try:
                 outcome = self.validator.validate(
