@@ -31,10 +31,22 @@ class CandidateEngine(Protocol):
     def observe(self, context: SourceContext) -> EngineObservation: ...
 
 
+@dataclass(frozen=True, slots=True)
+class RepairProposal:
+    """A semantic repair together with the structured state that produced it."""
+
+    code: str
+    operation: str
+    typed_ir: dict[str, Any] | None = None
+    details: dict[str, Any] = field(default_factory=dict)
+
+
 class RepairEngine(Protocol):
     name: str
 
-    def repair(self, context: SourceContext, candidate: MermaidCandidate) -> str | None: ...
+    def repair(
+        self, context: SourceContext, candidate: MermaidCandidate
+    ) -> RepairProposal | None: ...
 
 
 @dataclass(frozen=True, slots=True)

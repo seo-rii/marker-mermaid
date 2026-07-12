@@ -40,6 +40,7 @@ flowchart TB
 | `engines.py` | Marker BaseService adapter와 offline fixture engine |
 | `serializers*.py`, `serialization.py` | software/chart typed IR, requested/emitted type와 fallback 계약 |
 | `ast_repair.py` | 의미를 추가하지 않는 bounded lexical/structural repair와 AST adapter seam |
+| `semantic_repair.py` | exact OCR/vector 근거가 있는 typed flowchart label 교정 |
 | `style_recovery.py` | profile-gated flowchart fill/border/link style allowlist |
 | `security.py` | active/external Mermaid syntax의 fail-closed 검사 |
 | `validation.py` | bounded nonblocking Chromium protocol, parse/render, SVG 재검사, process-group 정리 |
@@ -51,7 +52,8 @@ flowchart TB
 | `marker_integration.py` | processor 순서, Marker OCR provenance, 전용 renderer/converter |
 | `sidecars.py`, `output.py` | atomic diagram bundle과 문서 출력 |
 
-`CandidateEngine`, `RepairEngine`, `MermaidRuntime`은 Protocol로 주입됩니다. 테스트와 offline
+`CandidateEngine`, `RepairEngine`, `MermaidRuntime`은 Protocol로 주입됩니다. 기본 Marker/fixture CLI는
+evidence-backed label repair를 연결하며 다른 repair engine도 구조화 proposal 계약으로 주입할 수 있습니다. 테스트와 offline
 재현은 Marker/LLM/Chromium을 각각 fake로 대체할 수 있습니다.
 
 page proposal에 Figure/Picture/ComplexRegion anchor가 없으면 PageGroup 내부 metadata queue가 processor

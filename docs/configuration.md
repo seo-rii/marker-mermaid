@@ -13,8 +13,9 @@ prefix 없는 이름을 직접 전달할 수 있습니다. prefix 설정이 conc
 
 명시한 `candidate_count`, `type_candidate_count`, `max_repair_iterations`는 모드 기본값보다
 우선합니다. 각각 12, 3, 10을 넘길 수 없습니다.
-repair 횟수는 `RepairEngine`을 주입한 경우에만 사용되며 Marker 기본 processor는 현재 repair engine을
-구성하지 않습니다.
+repair 횟수는 structured `RepairEngine` proposal 상한입니다. Marker 기본 processor와 fixture CLI는
+exact OCR/vector 근거가 있는 Flowchart label만 교정하는 기본 engine을 구성합니다. Edge/방향/layout
+repair는 아직 기본 연결하지 않습니다.
 
 ## 게시 정책
 

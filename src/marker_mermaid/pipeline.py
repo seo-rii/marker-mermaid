@@ -28,7 +28,13 @@ from marker_mermaid.models import (
     RepairEvent,
     VisualEvidence,
 )
-from marker_mermaid.protocols import CandidateEngine, RepairEngine, RuntimeResult, SourceContext
+from marker_mermaid.protocols import (
+    CandidateEngine,
+    RepairEngine,
+    RepairProposal,
+    RuntimeResult,
+    SourceContext,
+)
 from marker_mermaid.quality import (
     arrow_agreement,
     edge_topology_agreement,
@@ -40,6 +46,7 @@ from marker_mermaid.scoring import (
     decide_publication,
     numeric_consistency,
     ocr_recall,
+    semantic_score,
 )
 from marker_mermaid.security import MermaidSecurityScanner
 from marker_mermaid.serialization import SerializationContractError, SerializationResult
@@ -67,6 +74,13 @@ class _Draft:
     typed_ir: dict | None = None
     raw_mermaid: str | None = None
     warnings: list[str] | None = None
+
+
+@dataclass(slots=True)
+class _CandidateEvaluation:
+    scores: dict[str, float]
+    aggregate_score: float | None
+    warnings: list[str]
 
 
 def _edge_iou(source: Image.Image, rendered: bytes | None) -> float | None:
@@ -124,6 +138,35 @@ _PROVENANCE_GATED_TYPES = frozenset(
         "zenuml",
     }
 )
+
+_NUMERIC_TYPES = frozenset(
+    {
+        "gantt",
+        "packet",
+        "pie",
+        "quadrant",
+        "radar",
+        "sankey",
+        "treemap",
+        "venn",
+        "xychart",
+    }
+)
+
+_EVALUATION_WARNING_TEXT = frozenset(
+    {
+        "generated-node attribution is unavailable; review is required",
+        "generated-node provenance gate requires at least 80% attribution",
+        "more than 20% of generated nodes lack provenance",
+        "numeric consistency is below the automatic publication threshold",
+        "numeric diagram lacks OCR/vector numeric evidence and cannot auto-publish",
+        "unlabeled scene-only candidates require OCR/VLM fusion before publishing",
+    }
+)
+
+
+def _without_evaluation_warnings(warnings: list[str]) -> list[str]:
+    return [warning for warning in warnings if warning not in _EVALUATION_WARNING_TEXT]
 
 
 def _normalized_label(value: str | None) -> str:
@@ -508,17 +551,6 @@ class ReconstructionPipeline:
                 ]
             )
         )
-        numeric_types = {
-            "gantt",
-            "pie",
-            "xychart",
-            "quadrant",
-            "sankey",
-            "radar",
-            "treemap",
-            "venn",
-            "packet",
-        }
         for index, draft in enumerate(drafts, start=1):
             if self.config.enable_style_recovery:
                 style_recovery = recover_flowchart_styles(
@@ -747,16 +779,6 @@ class ReconstructionPipeline:
             candidate.warnings.extend(validation_warnings)
             if runtime.error:
                 candidate.warnings.append(runtime.error)
-            scores: dict[str, float] = {
-                "syntax": float(candidate.syntax_valid),
-                "render": float(candidate.render_valid),
-            }
-            recall = ocr_recall(reference_texts, candidate_code)
-            if recall is not None:
-                scores["ocr_recall"] = recall
-            numeric = numeric_consistency(reference_texts, candidate_code)
-            if numeric is not None and draft.diagram_type in numeric_types:
-                scores["numeric_consistency"] = numeric
             prediction_scores = dict(
                 zip(
                     draft.observation.prediction.candidates,
@@ -764,87 +786,26 @@ class ReconstructionPipeline:
                     strict=True,
                 )
             )
-            if draft.diagram_type in prediction_scores:
-                scores["type_fitness"] = (
-                    0.0 if contract_mismatch else prediction_scores[draft.diagram_type]
-                )
-            generated_scene = None
-            if draft.typed_ir is not None:
-                generated_scene = typed_ir_to_scene(draft.diagram_type, draft.typed_ir)
-            elif draft.method == "scene_ir_fallback" and draft.observation.scene_ir is not None:
-                generated_scene = draft.observation.scene_ir.model_copy(deep=True)
-            source_scene = draft.observation.scene_ir
-            provenance = _generated_node_provenance_score(
-                generated_scene,
-                source_scene,
-                all_evidence,
+            type_fitness = prediction_scores.get(draft.diagram_type)
+            if contract_mismatch and type_fitness is not None:
+                type_fitness = 0.0
+            evaluation = self._evaluate_candidate(
+                code=candidate_code,
+                runtime=runtime,
+                syntax_valid=candidate.syntax_valid,
+                render_valid=candidate.render_valid,
+                diagram_type=draft.diagram_type,
+                method=draft.method,
+                typed_ir=draft.typed_ir,
+                source_scene=draft.observation.scene_ir,
+                evidence=all_evidence,
+                reference_texts=reference_texts,
+                type_fitness=type_fitness,
+                image=context.image,
             )
-            if provenance is not None:
-                scores["visual_entailment_precision"] = provenance
-                if provenance < 0.8:
-                    candidate.warnings.append("more than 20% of generated nodes lack provenance")
-            structural_edge_available = False
-            if source_scene is not None and generated_scene is not None:
-                structural_metrics = []
-                if self.config.enable_render_compare:
-                    structural_metrics.append(
-                        edge_topology_agreement(source_scene, generated_scene)
-                    )
-                if self.config.enable_reference_free_scoring:
-                    structural_metrics.extend(
-                        [
-                            arrow_agreement(source_scene, generated_scene),
-                            relative_layout_similarity(source_scene, generated_scene),
-                        ]
-                    )
-                if self.config.enable_path_scoring:
-                    structural_metrics.append(path_consistency(source_scene, generated_scene))
-                for metric in structural_metrics:
-                    if metric.available and metric.value is not None:
-                        scores[metric.name] = metric.value
-                        if metric.name == "edge_agreement":
-                            structural_edge_available = True
-            if self.config.enable_render_compare and not structural_edge_available:
-                edge = _edge_iou(context.image, runtime.png)
-                if edge is not None:
-                    scores["edge_agreement"] = edge
-            candidate.scores = scores
-            candidate.aggregate_score = aggregate_scores(scores, self.config)
-            provenance_gated = draft.diagram_type in _PROVENANCE_GATED_TYPES
-            if self.config.mode != Mode.STRICT and provenance_gated:
-                if provenance is None:
-                    candidate.aggregate_score = None
-                    candidate.warnings.append(
-                        "generated-node attribution is unavailable; review is required"
-                    )
-                elif provenance < 0.8:
-                    candidate.aggregate_score = None
-                    candidate.warnings.append(
-                        "generated-node provenance gate requires at least 80% attribution"
-                    )
-            if draft.diagram_type in numeric_types and numeric is None:
-                candidate.aggregate_score = None
-                candidate.warnings.append(
-                    "numeric diagram lacks OCR/vector numeric evidence and cannot auto-publish"
-                )
-            elif (
-                draft.diagram_type in numeric_types
-                and numeric is not None
-                and numeric < self.config.publish_min_score
-            ):
-                candidate.aggregate_score = None
-                candidate.warnings.append(
-                    "numeric consistency is below the automatic publication threshold"
-                )
-            if (
-                candidate.scene_ir is not None
-                and not any(element.text for element in candidate.scene_ir.elements)
-                and draft.method == "scene_ir_fallback"
-            ):
-                candidate.aggregate_score = None
-                candidate.warnings.append(
-                    "unlabeled scene-only candidates require OCR/VLM fusion before publishing"
-                )
+            candidate.scores = evaluation.scores
+            candidate.aggregate_score = evaluation.aggregate_score
+            candidate.warnings.extend(evaluation.warnings)
             candidates.append(candidate)
 
         selected = self._select(candidates)
@@ -890,71 +851,239 @@ class ReconstructionPipeline:
             ),
         )
 
+    def _evaluate_candidate(
+        self,
+        *,
+        code: str,
+        runtime: RuntimeResult,
+        syntax_valid: bool,
+        render_valid: bool,
+        diagram_type: str,
+        method: str,
+        typed_ir: dict | None,
+        source_scene: DiagramSceneIR | None,
+        evidence: list[VisualEvidence],
+        reference_texts: list[str],
+        type_fitness: float | None,
+        image: Image.Image,
+    ) -> _CandidateEvaluation:
+        """Score initial and repaired candidates through one availability/gating path."""
+
+        scores: dict[str, float] = {
+            "syntax": float(syntax_valid),
+            "render": float(render_valid),
+        }
+        warnings: list[str] = []
+        recall = ocr_recall(reference_texts, code)
+        if recall is not None:
+            scores["ocr_recall"] = recall
+        numeric = numeric_consistency(reference_texts, code)
+        if numeric is not None and diagram_type in _NUMERIC_TYPES:
+            scores["numeric_consistency"] = numeric
+        if type_fitness is not None:
+            scores["type_fitness"] = type_fitness
+
+        generated_scene = None
+        if typed_ir is not None:
+            generated_scene = typed_ir_to_scene(diagram_type, typed_ir)
+        elif method == "scene_ir_fallback" and source_scene is not None:
+            generated_scene = source_scene.model_copy(deep=True)
+        provenance = _generated_node_provenance_score(
+            generated_scene,
+            source_scene,
+            evidence,
+        )
+        if provenance is not None:
+            scores["visual_entailment_precision"] = provenance
+            if provenance < 0.8:
+                warnings.append("more than 20% of generated nodes lack provenance")
+
+        structural_edge_available = False
+        if source_scene is not None and generated_scene is not None:
+            structural_metrics = []
+            if self.config.enable_render_compare:
+                structural_metrics.append(edge_topology_agreement(source_scene, generated_scene))
+            if self.config.enable_reference_free_scoring:
+                structural_metrics.extend(
+                    [
+                        arrow_agreement(source_scene, generated_scene),
+                        relative_layout_similarity(source_scene, generated_scene),
+                    ]
+                )
+            if self.config.enable_path_scoring:
+                structural_metrics.append(path_consistency(source_scene, generated_scene))
+            for metric in structural_metrics:
+                if metric.available and metric.value is not None:
+                    scores[metric.name] = metric.value
+                    if metric.name == "edge_agreement":
+                        structural_edge_available = True
+        if self.config.enable_render_compare and not structural_edge_available:
+            edge = _edge_iou(image, runtime.png)
+            if edge is not None:
+                scores["edge_agreement"] = edge
+
+        aggregate = aggregate_scores(scores, self.config)
+        if self.config.mode != Mode.STRICT and diagram_type in _PROVENANCE_GATED_TYPES:
+            if provenance is None:
+                aggregate = None
+                warnings.append("generated-node attribution is unavailable; review is required")
+            elif provenance < 0.8:
+                aggregate = None
+                warnings.append("generated-node provenance gate requires at least 80% attribution")
+        if diagram_type in _NUMERIC_TYPES and numeric is None:
+            aggregate = None
+            warnings.append(
+                "numeric diagram lacks OCR/vector numeric evidence and cannot auto-publish"
+            )
+        elif (
+            diagram_type in _NUMERIC_TYPES
+            and numeric is not None
+            and numeric < self.config.publish_min_score
+        ):
+            aggregate = None
+            warnings.append("numeric consistency is below the automatic publication threshold")
+        if (
+            source_scene is not None
+            and not any(element.text for element in source_scene.elements)
+            and method == "scene_ir_fallback"
+        ):
+            aggregate = None
+            warnings.append(
+                "unlabeled scene-only candidates require OCR/VLM fusion before publishing"
+            )
+        return _CandidateEvaluation(scores, aggregate, warnings)
+
     def _repair(self, context: SourceContext, selected: MermaidCandidate) -> MermaidCandidate:
         current = selected
+        reference_texts = list(
+            dict.fromkeys(
+                [
+                    *context.ocr_texts,
+                    *(
+                        item.text
+                        for item in context.evidence
+                        if item.text and item.kind in {"ocr_token", "vector_text"}
+                    ),
+                ]
+            )
+        )
         for iteration in range(1, int(self.config.max_repair_iterations or 0) + 1):
             try:
-                code = self.repair_engine.repair(context, current)  # type: ignore[union-attr]
+                proposal = self.repair_engine.repair(context, current)  # type: ignore[union-attr]
             except Exception as exc:
-                current.warnings.append(f"repair engine failed: {exc}")
+                failed = current.model_copy(deep=True)
+                failed.warnings.append(f"repair engine failed: {exc}")
+                return failed
+            if proposal is None:
                 break
-            if not code or code == current.mermaid_code:
+            if not isinstance(proposal, RepairProposal):
+                failed = current.model_copy(deep=True)
+                failed.warnings.append("repair engine returned an invalid structured proposal")
+                return failed
+            if (
+                not proposal.code
+                or proposal.code == current.mermaid_code
+                or proposal.typed_ir is None
+            ):
                 break
+            attempted = current.model_copy(deep=True)
+            attempted.candidate_id = f"{selected.candidate_id}-repair-{iteration}"
             try:
-                outcome = self.validator.validate(code, self.config.render_timeout_seconds)
-            except Exception as exc:
-                current.warnings.append(f"repair validation failed: {exc}")
-                break
-            if not outcome.runtime.render_valid:
-                current.repair_history.append(
-                    RepairEvent(iteration=iteration, operation="repair", accepted=False)
+                outcome = self.validator.validate(
+                    proposal.code,
+                    self.config.render_timeout_seconds,
                 )
-                continue
-            recall = ocr_recall(context.ocr_texts, code)
-            scores = dict(current.scores)
-            scores["syntax"] = 1.0
-            scores["render"] = 1.0
-            if recall is not None:
-                scores["ocr_recall"] = recall
-            numeric = numeric_consistency(context.ocr_texts, code)
-            if numeric is not None and current.diagram_type in {
-                "gantt",
-                "pie",
-                "xychart",
-                "quadrant",
-                "sankey",
-                "radar",
-                "treemap",
-                "packet",
-            }:
-                scores["numeric_consistency"] = numeric
-            if self.config.enable_render_compare:
-                edge = _edge_iou(context.image, outcome.runtime.png)
-                if edge is not None:
-                    scores["edge_agreement"] = edge
-            aggregate = aggregate_scores(scores, self.config)
-            # A source-only code repair cannot create missing numeric or provenance
-            # evidence, so it must not unlock a candidate already held for review.
+            except Exception as exc:
+                attempted.warnings.append(f"repair validation failed: {exc}")
+                attempted.repair_history.append(
+                    RepairEvent(
+                        iteration=iteration,
+                        operation=proposal.operation,
+                        before_score=current.aggregate_score,
+                        accepted=False,
+                        details=proposal.details,
+                    )
+                )
+                return attempted
+            runtime_type = _canonical_runtime_type(outcome.runtime.diagram_type)
+            expected_type = _canonical_runtime_type(current.emitted_diagram_type)
+            if not outcome.runtime.render_valid:
+                attempted.repair_history.append(
+                    RepairEvent(
+                        iteration=iteration,
+                        operation=proposal.operation,
+                        before_score=current.aggregate_score,
+                        accepted=False,
+                        details=proposal.details,
+                    )
+                )
+                return attempted
+            if runtime_type is None or runtime_type != expected_type:
+                attempted.warnings.append(
+                    "semantic repair was discarded because runtime diagram type changed"
+                )
+                attempted.repair_history.append(
+                    RepairEvent(
+                        iteration=iteration,
+                        operation=proposal.operation,
+                        before_score=current.aggregate_score,
+                        accepted=False,
+                        details=proposal.details,
+                    )
+                )
+                return attempted
+            evaluation = self._evaluate_candidate(
+                code=proposal.code,
+                runtime=outcome.runtime,
+                syntax_valid=outcome.runtime.syntax_valid,
+                render_valid=outcome.runtime.render_valid,
+                diagram_type=current.diagram_type,
+                method=current.generation_method,
+                typed_ir=proposal.typed_ir,
+                source_scene=current.scene_ir,
+                evidence=context.evidence,
+                reference_texts=reference_texts,
+                type_fitness=current.scores.get("type_fitness"),
+                image=context.image,
+            )
+            before_semantic = semantic_score(current.scores, self.config)
+            after_semantic = semantic_score(evaluation.scores, self.config)
             improved = (
-                aggregate is not None
+                evaluation.aggregate_score is not None
                 and current.aggregate_score is not None
-                and aggregate > current.aggregate_score
+                and evaluation.aggregate_score > current.aggregate_score + 1e-12
+                and before_semantic is not None
+                and after_semantic is not None
+                and after_semantic + 1e-12 >= before_semantic
             )
             event = RepairEvent(
                 iteration=iteration,
-                operation="repair",
+                operation=proposal.operation,
                 before_score=current.aggregate_score,
-                after_score=aggregate,
+                after_score=evaluation.aggregate_score,
                 accepted=improved,
+                details=proposal.details,
             )
-            current.repair_history.append(event)
-            if improved:
-                current = current.model_copy(deep=True)
-                current.candidate_id = f"{selected.candidate_id}-repair-{iteration}"
-                current.mermaid_code = code
-                current.svg = outcome.runtime.svg
-                current.png = outcome.runtime.png
-                current.scores = scores
-                current.aggregate_score = aggregate
-                current.warnings.extend(outcome.warnings)
+            attempted.repair_history.append(event)
+            if not improved:
+                return attempted
+            attempted.mermaid_code = proposal.code
+            attempted.typed_ir = proposal.typed_ir
+            attempted.syntax_valid = outcome.runtime.syntax_valid
+            attempted.render_valid = outcome.runtime.render_valid
+            attempted.runtime_diagram_type = outcome.runtime.diagram_type
+            attempted.svg = outcome.runtime.svg
+            attempted.png = outcome.runtime.png
+            attempted.scores = evaluation.scores
+            attempted.aggregate_score = evaluation.aggregate_score
+            attempted.warnings = list(
+                dict.fromkeys(
+                    [
+                        *_without_evaluation_warnings(attempted.warnings),
+                        *outcome.warnings,
+                        *evaluation.warnings,
+                    ]
+                )
+            )
+            current = attempted
         return current

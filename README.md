@@ -124,6 +124,7 @@ output/document/
 - [차트 serializer와 숫자 안전성](docs/charts.md)
 - [계획·특수 다이어그램 serializer](docs/specialized-diagrams.md)
 - [결정적 source repair](docs/source-repair.md)
+- [Evidence-backed semantic repair](docs/semantic-repair.md)
 - [Style recovery](docs/style-recovery.md)
 - [설정 레퍼런스](docs/configuration.md)
 - [Marker 1.10.2 통합](docs/marker-integration.md)

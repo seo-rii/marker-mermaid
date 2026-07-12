@@ -39,5 +39,9 @@ path enumeration은 기본 10,000개 path에서 중단합니다. budget을 넘�
 score에는 참여하지만 0인 의미 점수를 게시 가능 등급으로 희석할 수 없습니다. `extended`/`maximal`의
 구조 후보는 생성 node provenance가 80% 미만이거나 계산 불가능하면 review 대상으로 둡니다.
 
+Semantic repair 후보도 초기 후보와 같은 reference text 집합과 평가 함수를 사용합니다. OCR/vector,
+provenance, edge, arrow, layout, path, numeric gate를 새 typed IR에서 다시 계산하며 aggregate 엄격 개선과
+semantic score 비감소를 동시에 요구합니다. Held aggregate를 repair가 임의로 해제하지 않습니다.
+
 Gantt/Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn/Packet 후보는 OCR/vector numeric evidence가 하나도
 없거나 numeric consistency가 게시 threshold보다 낮으면 aggregate를 `None`으로 두어 자동 게시하지 않습니다.
