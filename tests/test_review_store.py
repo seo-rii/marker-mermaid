@@ -41,6 +41,42 @@ def test_list_and_load_bundle_without_mutating_legacy_sidecar(tmp_path):
     assert not (bundle_path / "review-state.json").exists()
 
 
+def test_failed_bundle_bootstraps_review_from_alternative_and_can_be_repaired(tmp_path):
+    bundle_path = make_bundle(tmp_path)
+    (bundle_path / "final.mmd").unlink()
+    alternatives = bundle_path / "alternatives"
+    alternatives.mkdir()
+    (alternatives / "candidate-a.json").write_text(
+        json.dumps(
+            {
+                "candidate_id": "candidate-a",
+                "mermaid_code": "flowchart LR\n  A -->\n",
+                "scene_ir": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = ReviewStore(tmp_path, validator=lambda code: "-->\n" not in code)
+
+    [summary] = store.list_bundles()
+    loaded = store.load_bundle("diagram-a")
+
+    assert summary.bundle_id == "diagram-a"
+    assert loaded.state.selected_candidate_id == "candidate-a"
+    assert not (bundle_path / "final.mmd").exists()
+
+    repaired = store.apply_mermaid_edit(
+        "diagram-a",
+        "flowchart LR\n  A --> B\n",
+        expected_version=loaded.state.version,
+        expected_digest=loaded.state.code_digest,
+    )
+
+    assert repaired.mermaid_code.endswith("A --> B\n")
+    assert (bundle_path / "final.mmd").is_file()
+    assert (bundle_path / "versions/r000000.mmd").read_text().endswith("A -->\n")
+
+
 def test_bundle_and_artifact_traversal_are_rejected(tmp_path):
     make_bundle(tmp_path)
     outside = tmp_path / "outside"
@@ -94,6 +130,59 @@ def test_edit_uses_validator_and_is_atomic_on_rejection(tmp_path):
         )
 
     assert {path.name: path.read_bytes() for path in bundle_path.iterdir()} == before
+
+
+@pytest.mark.parametrize(
+    "scene_ir",
+    [
+        {"elements": [{"id": "A", "role": "node"}], "relations": [], "groups": []},
+        {
+            "elements": [
+                {"id": "A", "role": "node", "bbox": [0, 0, 1, 1]},
+                {"id": "A", "role": "node", "bbox": [2, 0, 3, 1]},
+            ],
+            "relations": [],
+            "groups": [],
+        },
+        {
+            "elements": [{"id": "A", "role": "node", "bbox": [0, 0, 1, 1]}],
+            "relations": [
+                {
+                    "id": "E",
+                    "source_id": "A",
+                    "target_id": "missing",
+                    "relation_type": "edge",
+                }
+            ],
+            "groups": [],
+        },
+    ],
+)
+def test_edit_rejects_invalid_scene_ir_without_writing(tmp_path, scene_ir):
+    bundle_path = make_bundle(tmp_path)
+    store = ReviewStore(tmp_path)
+    current = store.load_bundle("diagram-a")
+    before = {
+        path.relative_to(bundle_path): path.read_bytes()
+        for path in bundle_path.rglob("*")
+        if path.is_file()
+    }
+
+    with pytest.raises(ReviewValidationError, match="DiagramSceneIR schema"):
+        store.apply_edit(
+            "diagram-a",
+            current.mermaid_code,
+            scene_ir=scene_ir,
+            expected_version=current.state.version,
+            expected_digest=current.state.code_digest,
+        )
+
+    after = {
+        path.relative_to(bundle_path): path.read_bytes()
+        for path in bundle_path.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
 
 
 def test_io_failure_restores_code_history_and_state(monkeypatch, tmp_path):
@@ -328,7 +417,11 @@ def test_invalid_json_is_rejected(tmp_path):
 
 def test_ir_and_render_artifacts_are_revisioned_and_restored_by_undo(tmp_path):
     bundle_path = make_bundle(tmp_path)
-    original_ir = {"elements": [{"id": "A"}], "relations": [], "groups": []}
+    original_ir = {
+        "elements": [{"id": "A", "role": "node", "bbox": [0, 0, 10, 10]}],
+        "relations": [],
+        "groups": [],
+    }
     (bundle_path / "scene-ir.json").write_text(json.dumps(original_ir), encoding="utf-8")
     (bundle_path / "final.svg").write_text("<svg><title>old</title></svg>", encoding="utf-8")
     (bundle_path / "final.png").write_bytes(b"old-png")
@@ -341,7 +434,11 @@ def test_ir_and_render_artifacts_are_revisioned_and_restored_by_undo(tmp_path):
         ),
     )
     initial = store.load_bundle("diagram-a")
-    new_ir = {"elements": [{"id": "C"}], "relations": [], "groups": []}
+    new_ir = {
+        "elements": [{"id": "C", "role": "node", "bbox": [0, 0, 10, 10]}],
+        "relations": [],
+        "groups": [],
+    }
 
     edited = store.apply_edit(
         "diagram-a",
@@ -354,6 +451,7 @@ def test_ir_and_render_artifacts_are_revisioned_and_restored_by_undo(tmp_path):
     assert edited.scene_ir == new_ir
     assert edited.svg == "<svg><title>new</title></svg>"
     assert edited.png == b"new-png"
+    assert edited.manifest["review_quality_status"] == "unscored_user_revision"
     assert (bundle_path / "versions/r000000.scene-ir.json").exists()
     assert (bundle_path / "versions/r000001.svg").exists()
 
@@ -366,5 +464,6 @@ def test_ir_and_render_artifacts_are_revisioned_and_restored_by_undo(tmp_path):
     assert restored.scene_ir == original_ir
     assert restored.svg == "<svg><title>old</title></svg>"
     assert restored.png == b"old-png"
+    assert restored.manifest["review_quality_status"] == "automated_baseline"
     hashes = json.loads((bundle_path / "manifest.json").read_text())["files"]
     assert set(hashes) >= {"final.mmd", "scene-ir.json", "final.svg", "final.png"}

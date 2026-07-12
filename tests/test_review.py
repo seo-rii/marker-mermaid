@@ -42,8 +42,18 @@ def make_bundle(tmp_path, *, source_id="source-a"):
         json.dumps(
             {
                 "diagram_type": "flowchart",
-                "elements": [{"id": "A"}, {"id": "B"}],
-                "relations": [{"id": "E1", "source_id": "A", "target_id": "B"}],
+                "elements": [
+                    {"id": "A", "role": "node", "bbox": [0, 0, 10, 10]},
+                    {"id": "B", "role": "node", "bbox": [20, 0, 30, 10]},
+                ],
+                "relations": [
+                    {
+                        "id": "E1",
+                        "source_id": "A",
+                        "target_id": "B",
+                        "relation_type": "edge",
+                    }
+                ],
                 "groups": [],
             }
         ),
@@ -66,8 +76,18 @@ def make_bundle(tmp_path, *, source_id="source-a"):
                 "mermaid_code": "flowchart LR\n  B --> A\n",
                 "scene_ir": {
                     "diagram_type": "flowchart",
-                    "elements": [{"id": "A"}, {"id": "B"}],
-                    "relations": [{"id": "E1", "source_id": "B", "target_id": "A"}],
+                    "elements": [
+                        {"id": "A", "role": "node", "bbox": [0, 0, 10, 10]},
+                        {"id": "B", "role": "node", "bbox": [20, 0, 30, 10]},
+                    ],
+                    "relations": [
+                        {
+                            "id": "E1",
+                            "source_id": "B",
+                            "target_id": "A",
+                            "relation_type": "edge",
+                        }
+                    ],
                     "groups": [],
                 },
             }
@@ -211,8 +231,18 @@ def test_edit_requires_csrf_and_atomically_updates_code_ir_render_and_history(tm
             "mermaid_code": "flowchart LR\n  A --> C\n",
             "scene_ir": {
                 "diagram_type": "flowchart",
-                "elements": [{"id": "A"}, {"id": "C"}],
-                "relations": [{"id": "E1", "source_id": "A", "target_id": "C"}],
+                "elements": [
+                    {"id": "A", "role": "node", "bbox": [0, 0, 10, 10]},
+                    {"id": "C", "role": "node", "bbox": [20, 0, 30, 10]},
+                ],
+                "relations": [
+                    {
+                        "id": "E1",
+                        "source_id": "A",
+                        "target_id": "C",
+                        "relation_type": "edge",
+                    }
+                ],
                 "groups": [],
             },
         }

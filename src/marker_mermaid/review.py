@@ -331,6 +331,8 @@ class ReviewHandler(SimpleHTTPRequestHandler):
         warnings = scores.get("warnings", []) if isinstance(scores, dict) else []
         failures = manifest.get("failures", [])
         issues = [*warnings, *failures] if isinstance(warnings, list) else list(failures)
+        if manifest.get("review_quality_status") == "unscored_user_revision":
+            issues.insert(0, "User-edited revision has not been rescored against the source.")
         return {
             "id": bundle.bundle_id,
             "source_id": str(manifest.get("source_id", bundle.bundle_id)),

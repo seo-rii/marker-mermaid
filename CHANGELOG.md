@@ -46,6 +46,8 @@
 - Unanchored page proposals now flow through PageGroup metadata into sidecar output.
 - Declared portable fallbacks are revalidated after supported native runtime failures.
 - Marker now supplies real PyMuPDF page providers to vector extraction when available.
+- Review edits validate full Scene IR integrity and invalidate stale automated quality metadata.
+- Failed bundles without `final.mmd` can be repaired from retained alternatives.
 - SVG CSS inspection covers `<style>` text and edge styles require fully mapped Mermaid ordering.
 
 ## 0.1.0

@@ -20,7 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from marker_mermaid.models import ReviewHistoryEntry
+from marker_mermaid.models import DiagramSceneIR, ReviewHistoryEntry
 
 REVIEW_SCHEMA_VERSION = "mmx-review-0.3"
 MAX_MERMAID_BYTES = 1_000_000
@@ -222,8 +222,13 @@ class ReviewStore:
         bundle = self._bundle_path(bundle_id)
         manifest = self._read_json(bundle, "manifest.json", expected=dict)
         self._validate_manifest(manifest)
-        code = self._read_code(bundle, "final.mmd")
-        scene_ir = self._read_optional_json(bundle, "scene-ir.json", expected=dict)
+        final_path = self._artifact_path(bundle, "final.mmd", must_exist=False)
+        bootstrap_candidate_id: str | None = None
+        if final_path.exists():
+            code = self._read_code(bundle, "final.mmd")
+            scene_ir = self._read_optional_json(bundle, "scene-ir.json", expected=dict)
+        else:
+            code, scene_ir, bootstrap_candidate_id = self._bootstrap_alternative(bundle)
         svg_payload = self._read_optional_bytes(bundle, "final.svg", MAX_RENDER_BYTES)
         png = self._read_optional_bytes(bundle, "final.png", MAX_RENDER_BYTES)
         try:
@@ -260,7 +265,9 @@ class ReviewStore:
                 scene_ir,
                 svg,
                 png,
-                selected_candidate_id=manifest.get("selected_candidate_id"),
+                selected_candidate_id=(
+                    manifest.get("selected_candidate_id") or bootstrap_candidate_id
+                ),
             )
         return ReviewBundle(
             bundle_id=bundle_id,
@@ -272,6 +279,35 @@ class ReviewStore:
             history=history,
             state=state,
         )
+
+    def _bootstrap_alternative(self, bundle: Path) -> tuple[str, dict[str, Any] | None, str]:
+        alternatives = self._artifact_path(bundle, "alternatives", must_exist=False)
+        if not alternatives.is_dir() or alternatives.is_symlink():
+            raise ReviewValidationError("bundle has no final Mermaid or reviewable alternative")
+        for path in sorted(alternatives.glob("*.json")):
+            if path.is_symlink() or path.parent != alternatives:
+                continue
+            payload = self._read_json(
+                bundle,
+                f"alternatives/{path.name}",
+                expected=dict,
+            )
+            code = payload.get("mermaid_code")
+            candidate_id = payload.get("candidate_id")
+            if not isinstance(code, str) or not isinstance(candidate_id, str):
+                continue
+            try:
+                self._validate_code(code)
+            except ReviewValidationError:
+                continue
+            scene_ir = payload.get("scene_ir")
+            if scene_ir is not None:
+                try:
+                    self._validate_scene_ir(scene_ir)
+                except ReviewValidationError:
+                    scene_ir = None
+            return code, scene_ir, candidate_id
+        raise ReviewValidationError("bundle has no final Mermaid or reviewable alternative")
 
     def apply_mermaid_edit(
         self,
@@ -513,7 +549,14 @@ class ReviewStore:
                 ),
                 "review-state.json": _json_bytes(state.model_dump(mode="json")),
             }
-            files["manifest.json"] = self._updated_manifest_bytes(bundle.manifest, files)
+            quality_status = (
+                "automated_baseline" if revision == "r000000" else "unscored_user_revision"
+            )
+            files["manifest.json"] = self._updated_manifest_bytes(
+                bundle.manifest,
+                files,
+                quality_status=quality_status,
+            )
             self._atomic_replace_many(bundle_path, files)
         return self.load_bundle(bundle_id)
 
@@ -615,7 +658,12 @@ class ReviewStore:
             files[f"versions/{revision}.svg"] = svg.encode("utf-8")
         if png is not None:
             files[f"versions/{revision}.png"] = png
-        files["manifest.json"] = self._updated_manifest_bytes(bundle.manifest, files)
+        content_changed = code != bundle.mermaid_code or scene_ir != bundle.scene_ir
+        files["manifest.json"] = self._updated_manifest_bytes(
+            bundle.manifest,
+            files,
+            quality_status=("unscored_user_revision" if content_changed else None),
+        )
         self._atomic_replace_many(bundle_path, files)
         return self.load_bundle(bundle.bundle_id)
 
@@ -708,6 +756,10 @@ class ReviewStore:
             raise ReviewValidationError("Scene IR must be a JSON object")
         if scene_ir is not None:
             _ir_bytes(scene_ir)
+            try:
+                DiagramSceneIR.model_validate(scene_ir)
+            except ValidationError as exc:
+                raise ReviewValidationError("Scene IR violates the DiagramSceneIR schema") from exc
 
     @staticmethod
     def _validate_manifest(manifest: dict[str, Any]) -> None:
@@ -832,9 +884,14 @@ class ReviewStore:
 
     @staticmethod
     def _updated_manifest_bytes(
-        manifest: dict[str, Any], pending_files: dict[str, bytes | None]
+        manifest: dict[str, Any],
+        pending_files: dict[str, bytes | None],
+        *,
+        quality_status: str | None = None,
     ) -> bytes:
         updated = dict(manifest)
+        if quality_status is not None:
+            updated["review_quality_status"] = quality_status
         hashes = dict(updated.get("files", {}))
         for name in ("final.mmd", "final.svg", "final.png", "scene-ir.json"):
             payload = pending_files.get(name)

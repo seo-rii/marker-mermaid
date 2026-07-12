@@ -39,8 +39,8 @@
 | arrow/layout/path score | 구현 | explicit-arrow/path F1, relative layout; 근거 부족 시 unavailable |
 | render-and-compare repair | 기반 | injected repair engine, strict improvement adoption |
 | atomic sidecars | 구현 | preflight, manifest/hash/alternatives/provenance/source affine map |
-| Review Workspace | 구현 | source/render/provenance 비교, 대안 선택, 승인/거절, 이력 API |
-| code/IR edit, NL patch | 구현 | strict 재검증, 오류 시 rollback하는 multi-file revision, 명시 ID 기반 한·영 deterministic patch |
+| Review Workspace | 구현 | source/render/provenance 비교, 실패 bundle bootstrap, 대안 선택, 승인/거절, 이력 API |
+| code/IR edit, NL patch | 구현 | strict code/Scene schema 재검증, 품질 invalidation, rollback revision, 명시 ID 기반 patch |
 | drag-and-drop | 후속 | overlay/IR editor는 구현, canvas direct manipulation은 미구현 |
 
 ## 릴리스 해석

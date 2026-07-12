@@ -14,12 +14,16 @@ marker-mermaid review output/document --port 9000 --no-open
 Mermaid editor와 Scene IR JSON editor는 함께 저장됩니다. 저장 요청은 현재 revision의 version과
 SHA-256을 포함하므로 다른 tab에서 먼저 수정했다면 `409 Conflict`가 나고 최신 내용을 다시 불러와야
 합니다. Mermaid code는 자동 생성 후보와 같은 strict security scan, `mermaid.parse()`,
-`mermaid.render()`, SVG 검사를 모두 통과해야 합니다. 성공한 render의 SVG/PNG도 code와 같은
-revision에 저장됩니다.
+`mermaid.render()`, SVG 검사를 모두 통과해야 합니다. Scene IR도 bbox, 고유 ID, group/relation endpoint
+참조를 포함한 `DiagramSceneIR` schema를 통과해야 합니다. 성공한 render의 SVG/PNG도 code와 같은
+revision에 저장됩니다. code 또는 IR이 바뀐 revision은 원본 기반 점수를 자동 승계하지 않고
+`unscored_user_revision`으로 표시합니다.
 
 대안 후보 선택, 승인, 사유가 필수인 거절, undo/redo를 지원합니다. 최초 수정 시 원본 revision
 `versions/r000000.*`을 만들며 각 변경은 `review-history.json`에 사용자 작업과 사유를 남깁니다.
 undo 뒤 새 편집을 하면 활성 timeline은 분기하지만 기존 snapshot과 audit entry는 삭제하지 않습니다.
+모든 자동 후보가 실패해 `final.mmd`가 없는 bundle도 첫 번째 bounded alternative를 편집 baseline으로
+불러옵니다. 저장 전 validation은 동일하며, 최초 성공 편집 때만 `final.mmd`를 공개합니다.
 
 ## 자연어 patch
 
