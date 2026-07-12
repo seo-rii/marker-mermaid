@@ -215,6 +215,7 @@ class MetricResult(BaseModel):
 class MermaidCandidate(BaseModel):
     candidate_id: str
     generation_method: str
+    generation_engine: str | None = None
     diagram_type: str
     scene_ir: DiagramSceneIR | None = None
     typed_ir: dict[str, Any] | None = None

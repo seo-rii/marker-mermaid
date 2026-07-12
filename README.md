@@ -18,6 +18,8 @@ portable flowchart subgraph로 명시적으로 fallback합니다. 아직 구현�
 - `extended` 기본 budget은 type 2개, candidate 3개, repair 3회입니다.
 - 의미 점수가 없는 결과는 성공률을 부풀리지 않고 `U` 등급과 review 대상으로 둡니다.
 - node/relation의 OCR, contour, VLM observation 등 provenance를 sidecar에 보존합니다.
+- composite panel, full-page coverage, adjacent/continued fragment merge를 결정적으로 제안합니다.
+- geometry contour/line/arrowhead evidence를 VLM보다 먼저 수집하며 engine별 후보를 공정하게 배분합니다.
 - 렌더 런타임은 외부 네트워크를 차단하며 종료 시 Chromium process group을 정리합니다.
 
 ## 설치
@@ -97,6 +99,8 @@ output/document/
 ## 문서
 
 - [아키텍처와 처리 흐름](docs/architecture.md)
+- [후보 영역 발견](docs/discovery.md)
+- [Geometry engine](docs/geometry.md)
 - [설정 레퍼런스](docs/configuration.md)
 - [Marker 1.10.2 통합](docs/marker-integration.md)
 - [보안 모델](docs/security.md)
@@ -104,6 +108,7 @@ output/document/
 - [스펙 대응표와 로드맵](docs/spec-coverage.md)
 - [개발 및 테스트](docs/development.md)
 - [연구 배경](docs/references.md)
+- [변경 이력](CHANGELOG.md)
 
 Mermaid 브라우저 API는 공식 [usage 문서](https://mermaid.js.org/config/usage)와
 [API interface](https://mermaid.js.org/config/setup/mermaid/interfaces/Mermaid.html)를 기준으로

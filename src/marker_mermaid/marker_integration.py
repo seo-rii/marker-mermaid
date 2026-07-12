@@ -16,6 +16,7 @@ from marker.settings import settings
 
 from marker_mermaid.config import MermaidConfig
 from marker_mermaid.engines import MarkerStructuredVLMEngine
+from marker_mermaid.geometry import GeometryEngine
 from marker_mermaid.models import ReconstructionResult, VisualEvidence
 from marker_mermaid.pipeline import ReconstructionPipeline
 from marker_mermaid.validation import CandidateValidator, NodeMermaidRuntime
@@ -60,7 +61,11 @@ class MermaidDiagramProcessor(BaseProcessor):
         self.mermaid_config = MermaidConfig.from_marker_config(config)
         selected_engines = engines
         if selected_engines is None:
-            selected_engines = [MarkerStructuredVLMEngine(llm_service)] if llm_service else []
+            selected_engines = (
+                [GeometryEngine()] if self.mermaid_config.enable_generic_scene_ir else []
+            )
+            if llm_service:
+                selected_engines.append(MarkerStructuredVLMEngine(llm_service))
         selected_runtime = runtime or NodeMermaidRuntime(self.mermaid_config.runtime_dir)
         self.runtime = selected_runtime
         self.pipeline = ReconstructionPipeline(
@@ -81,7 +86,9 @@ class MermaidDiagramProcessor(BaseProcessor):
                 if not discovery:
                     continue
                 try:
-                    image = block.get_image(document, highres=True, expansion=(0.01, 0.01))
+                    # OCR evidence is transformed from the exact block polygon below;
+                    # using an expanded crop would shift every provenance bbox.
+                    image = block.get_image(document, highres=True)
                     if image is None:
                         raise ValueError("no image")
                     evidence, texts = self._ocr_evidence(block, document, image.size)

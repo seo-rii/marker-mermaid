@@ -31,6 +31,7 @@ from marker_mermaid.views import build_visual_priors
 @dataclass(slots=True)
 class _Draft:
     method: str
+    engine_name: str
     diagram_type: str
     code: str
     observation: EngineObservation
@@ -112,12 +113,9 @@ class ReconstructionPipeline:
             source_block=source_block,
         )
 
-        drafts: list[_Draft] = []
-        code_hashes: set[str] = set()
+        draft_groups: list[list[_Draft]] = []
         candidate_budget = int(self.config.candidate_count or 1)
         for engine in self.engines:
-            if len(drafts) >= candidate_budget:
-                break
             try:
                 observation = engine.observe(context)
             except Exception as exc:  # Candidate failures never fail the document.
@@ -160,7 +158,14 @@ class ReconstructionPipeline:
                         )
                         continue
                     generated.append(
-                        _Draft("typed_ir", typed.diagram_type, code, observation, typed_ir=typed.ir)
+                        _Draft(
+                            "typed_ir",
+                            engine.name,
+                            typed.diagram_type,
+                            code,
+                            observation,
+                            typed_ir=typed.ir,
+                        )
                     )
             if (
                 self.config.enable_generic_scene_ir
@@ -174,6 +179,7 @@ class ReconstructionPipeline:
                 generated.append(
                     _Draft(
                         "scene_ir_fallback",
+                        engine.name,
                         "flowchart",
                         code,
                         observation,
@@ -186,26 +192,38 @@ class ReconstructionPipeline:
                         generated.append(
                             _Draft(
                                 "direct_mermaid",
+                                engine.name,
                                 direct.diagram_type,
                                 direct.code,
                                 observation,
                                 raw_mermaid=direct.code,
                             )
                         )
-            for draft in generated:
-                digest = hashlib.sha256(draft.code.encode()).hexdigest()
-                if digest in code_hashes:
-                    continue
-                code_hashes.add(digest)
-                drafts.append(draft)
+            if generated:
+                draft_groups.append(generated)
+
+        drafts: list[_Draft] = []
+        code_hashes: set[str] = set()
+        while draft_groups and len(drafts) < candidate_budget:
+            remaining_groups: list[list[_Draft]] = []
+            for group in draft_groups:
                 if len(drafts) >= candidate_budget:
                     break
+                draft = group.pop(0)
+                digest = hashlib.sha256(draft.code.encode()).hexdigest()
+                if digest not in code_hashes:
+                    code_hashes.add(digest)
+                    drafts.append(draft)
+                if group:
+                    remaining_groups.append(group)
+            draft_groups = remaining_groups
 
         candidates: list[MermaidCandidate] = []
         for index, draft in enumerate(drafts, start=1):
             candidate = MermaidCandidate(
                 candidate_id=f"candidate-{index}",
                 generation_method=draft.method,
+                generation_engine=draft.engine_name,
                 diagram_type=draft.diagram_type,
                 scene_ir=draft.observation.scene_ir,
                 typed_ir=draft.typed_ir,
@@ -223,7 +241,7 @@ class ReconstructionPipeline:
                 failures.append(
                     CandidateFailure(
                         stage="validation",
-                        engine=draft.method,
+                        engine=draft.engine_name,
                         error_type=type(exc).__name__,
                         message=str(exc),
                     )
@@ -274,6 +292,15 @@ class ReconstructionPipeline:
                     scores["edge_agreement"] = edge
             candidate.scores = scores
             candidate.aggregate_score = aggregate_scores(scores, self.config)
+            if (
+                draft.engine_name == "geometry"
+                and candidate.scene_ir is not None
+                and not any(element.text for element in candidate.scene_ir.elements)
+            ):
+                candidate.aggregate_score = None
+                candidate.warnings.append(
+                    "unlabeled geometry-only candidates require OCR/VLM fusion before publishing"
+                )
             candidates.append(candidate)
 
         selected = self._select(candidates)

@@ -9,16 +9,16 @@
 | strict/extended/maximal | 구현 | mode-derived top-k/candidate/repair budget |
 | 4개 게시 정책 | 구현 | hard gate와 등급/threshold truth table |
 | Figure/Picture/ComplexRegion | 구현 | Marker discovery와 원본 추출 |
-| full-page candidate | 기반 | Marker가 Figure/Picture로 분류한 경우 포함 |
+| full-page candidate | 기반 | coverage/edge 판정 구현; Marker virtual source 연결 후속 |
 | page missed detector | 후속 | config 예약 |
-| composite split | 후속 | config 예약 |
-| fragment/multi-page merge | 후속 | source mapping model만 존재 |
+| composite split | 기반 | whitespace/line/component proposal와 crop 구현; 출력 연결 후속 |
+| fragment/multi-page merge | 기반 | adjacency/caption/continued proposal와 page별 SourceFragment 구현 |
 | Scene IR/provenance | 구현 | Pydantic 무결성, OCR/source/VLM evidence, sidecar |
-| edge/Hough/arrow/OCR view | 구현 | Pillow/OpenCV best-effort priors |
+| edge/Hough/arrow/OCR view | 구현 | Pillow/OpenCV priors와 보수적 geometry evidence |
 | color cluster/vector primitive | 후속 | config 예약 |
 | structured Marker VLM | 구현 | response schema adapter |
 | Direct Mermaid | 구현 | extended/maximal, 동일 hard gate |
-| Fusion engine | 기반 | deterministic candidate selection; primitive fusion은 후속 |
+| Fusion engine | 기반 | evidence 선행 전달/engine round-robin; label/edge consensus 후속 |
 | Flowchart | 구현 | typed serializer + real render fixture |
 | Architecture | 구현 | `architecture-beta` serializer + real render fixture |
 | Sequence | 구현 | typed serializer + real render fixture |
@@ -46,4 +46,3 @@
 `extended` 릴리스가 아닙니다. 특히 연구 데이터셋 규모의 precision/recall 목표와 유형별 최소
 fixture 수량은 별도 평가 corpus가 필요합니다. 자동 게시 hard gate, 원본 보존, candidate failure
 isolation, budget, sidecar/review 가능성은 현재 test 대상으로 삼습니다.
-

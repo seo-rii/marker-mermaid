@@ -27,15 +27,17 @@ DEFAULT_BLOCK_TYPES = (
 ```
 
 Discovery는 구조에 포함된 block과 page의 current children을 함께 보며 ID로 중복을 제거합니다.
-Reconstruction은 `Block.get_image(document, highres=True)`를 사용합니다. Span bbox는 page 좌표에서
-crop pixel 좌표로 변환되어 OCR evidence가 됩니다.
+Reconstruction은 `Block.get_image(document, highres=True)`를 expansion 없이 사용합니다. Span bbox는
+정확히 같은 block polygon을 기준으로 page 좌표에서 crop pixel 좌표로 변환됩니다. crop만 1% 넓히고
+기존 polygon으로 변환하던 방식은 모든 provenance bbox를 이동시키므로 사용하지 않습니다.
 
 ## LLM service adapter
 
 Marker의 dependency resolver가 `llm_service`라는 생성자 parameter에 service를 주입합니다.
 `MarkerStructuredVLMEngine`만 Marker service API를 알고 core pipeline은 `CandidateEngine` Protocol만
-사용합니다. 호출은 `prompt`, 다중 view image list, 원 block, `EngineObservation` response schema를
-전달합니다.
+사용합니다. 기본 engine 순서는 Geometry, Structured VLM입니다. VLM 호출은 OCR token과 앞선 geometry
+evidence가 포함된 `prompt`, 다중 view image list, 원 block, `EngineObservation` response schema를
+전달합니다. candidate budget은 두 engine 후보에 round-robin으로 적용됩니다.
 
 ## 전용 renderer가 필요한 이유
 
@@ -57,4 +59,3 @@ Marker 기본 `save_output`은 nested sidecar를 지원하지 않으므로 CLI�
 각 block에는 `set_internal_metadata("mermaid", data)`로 status, stability, type, score, selected ID,
 code, sidecar path가 저장됩니다. Pydantic private metadata는 기본 renderer에 노출되지 않으므로
 전용 renderer가 JSON-safe summary를 생성합니다.
-

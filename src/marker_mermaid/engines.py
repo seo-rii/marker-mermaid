@@ -28,8 +28,13 @@ class MarkerStructuredVLMEngine:
     def observe(self, context: SourceContext) -> EngineObservation:
         if self.llm_service is None:
             raise RuntimeError("Marker LLM service is not configured")
+        prior_evidence = [item.model_dump(mode="json") for item in context.evidence[:256]]
         prompt = (
-            SYSTEM_PROMPT + "\nOCR tokens: " + json.dumps(context.ocr_texts, ensure_ascii=False)
+            SYSTEM_PROMPT
+            + "\nOCR tokens: "
+            + json.dumps(context.ocr_texts, ensure_ascii=False)
+            + "\nPrior evidence: "
+            + json.dumps(prior_evidence, ensure_ascii=False)
         )
         response = self.llm_service(
             prompt=prompt,

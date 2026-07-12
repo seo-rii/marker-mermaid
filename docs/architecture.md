@@ -28,6 +28,8 @@ flowchart TB
 | 모듈 | 책임 |
 | --- | --- |
 | `models.py` | scene, evidence, prediction, candidate, result 모델과 참조 무결성 |
+| `discovery.py` | panel/full-page/fragment proposal와 virtual source fragment 모델 |
+| `geometry.py` | contour, Hough line, arrowhead의 보수적 Scene IR/provenance 변환 |
 | `views.py` | thumbnail, edge, Hough, arrow, OCR overlay, tile 생성 |
 | `engines.py` | Marker BaseService adapter와 offline fixture engine |
 | `serializers.py` | Phase 1 typed IR 및 portable Scene IR fallback |
@@ -51,10 +53,15 @@ Scene relation은 endpoint가 아직 불명확할 때 `None`을 허용하지만,
 ## 후보와 budget
 
 engine observation 하나는 type distribution, Scene IR, typed candidates, direct candidates,
-evidence를 함께 반환합니다. pipeline은 type top-k를 먼저 적용하고 code hash로 중복을 제거한
-후 candidate budget에서 정확히 멈춥니다. 기본 우선순위는 typed IR, Scene IR fallback,
-direct Mermaid입니다. 최종 정렬은 hard gate, aggregate score, OCR recall, generation priority,
-candidate ID 순서로 결정적입니다.
+evidence를 함께 반환합니다. pipeline은 모든 engine을 failure-isolated 방식으로 호출하고, 앞선
+engine의 evidence를 다음 engine context에 합친 뒤 후보를 engine별 round-robin으로 뽑습니다.
+따라서 candidate budget을 한 engine이 독점하지 않습니다. type top-k와 code hash 중복 제거 후
+기본 우선순위는 typed IR, Scene IR fallback, direct Mermaid입니다. 최종 정렬은 hard gate,
+aggregate score, OCR recall, generation priority, candidate ID 순서로 결정적입니다.
+
+Marker 기본 구성에서는 GeometryEngine이 먼저 contour/line/arrowhead evidence를 만들고
+Structured VLM이 그 evidence와 OCR token을 prompt에서 함께 봅니다. geometry node에 읽을 수 있는
+label이 하나도 없으면 문법적으로 렌더 가능해도 `U`로 두어 자동 Markdown 게시를 막습니다.
 
 ## 점수의 의미
 

@@ -55,7 +55,8 @@ bundle의 최소 감사 기록으로 항상 남습니다.
 
 ## 구현 상태가 있는 옵션
 
-edge map, Hough line, arrow overlay, OCR overlay, thumbnail, tile은 구현되어 있습니다. page-level
-missed detector, composite split, fragment/multi-page merge, PDF vector primitive extraction은 모델과
-설정 예약 상태이며 아직 실제 동작하지 않습니다. 자세한 구분은 [스펙 대응표](spec-coverage.md)를
-참고하세요.
+edge map, Hough line, arrow overlay, OCR overlay, thumbnail, tile과 보수적 GeometryEngine은
+구현되어 있습니다. composite split, fragment/multi-page merge, full-page coverage는 결정적 heuristic과
+직렬화 가능한 fragment registry까지 구현됐지만 Marker virtual source 출력 연결은 다음 단계입니다.
+page-level missed detector와 PDF vector primitive extraction은 아직 예약 상태입니다. 자세한 구분은
+[스펙 대응표](spec-coverage.md)를 참고하세요.

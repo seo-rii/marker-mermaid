@@ -83,3 +83,51 @@ def test_marker_renderer_keeps_original_before_one_mermaid_block(monkeypatch):
         rendered.markdown.index("```mermaid")
     )
     assert rendered.markdown.count("```mermaid") == 1
+
+
+@pytest.mark.integration
+def test_marker_processor_uses_geometry_without_an_llm(fake_runtime):
+    from marker_mermaid.marker_integration import MermaidDiagramProcessor
+
+    processor = MermaidDiagramProcessor(llm_service=None, runtime=fake_runtime)
+
+    assert [engine.name for engine in processor.pipeline.engines] == ["geometry"]
+
+
+@pytest.mark.integration
+def test_marker_ocr_evidence_uses_exact_block_crop_coordinates():
+    from marker_mermaid.marker_integration import MermaidDiagramProcessor
+
+    class Identifier:
+        def __init__(self, value):
+            self.value = value
+
+        def __str__(self):
+            return self.value
+
+        def to_path(self):
+            return self.value.replace("/", "_")
+
+    class Polygon:
+        def __init__(self, bbox):
+            self.bbox = bbox
+
+    class Span:
+        id = Identifier("/page/0/Span/1")
+        polygon = Polygon((20, 40, 60, 80))
+        text = "Label"
+
+    class Block:
+        id = Identifier("/page/0/Figure/1")
+        polygon = Polygon((10, 20, 110, 220))
+
+        def contained_blocks(self, document, block_types):
+            return [Span()]
+
+        def raw_text(self, document):
+            return "Label"
+
+    evidence, texts = MermaidDiagramProcessor._ocr_evidence(Block(), object(), (200, 400))
+
+    assert evidence[1].bbox == (20.0, 40.0, 100.0, 120.0)
+    assert texts == ["Label"]

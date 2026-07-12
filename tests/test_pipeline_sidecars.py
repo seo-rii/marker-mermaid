@@ -7,10 +7,12 @@ from PIL import Image
 
 from marker_mermaid.config import MermaidConfig
 from marker_mermaid.engines import JsonFixtureEngine
+from marker_mermaid.geometry import ContourObservation, GeometryEngine, GeometryObservation
 from marker_mermaid.markdown import standalone_document_markdown
 from marker_mermaid.models import (
     DiagramSceneIR,
     DiagramTypePrediction,
+    DirectMermaidCandidate,
     EngineObservation,
     ReconstructionResult,
     SceneElement,
@@ -87,6 +89,79 @@ def test_pipeline_selects_valid_candidate_and_respects_budget(fake_runtime):
     assert result.publish
     assert len(fake_runtime.calls) == 1
     assert result.selected.generation_method == "typed_ir"
+
+
+def test_candidate_budget_is_shared_fairly_across_engines(fake_runtime):
+    class DirectEngine:
+        name = "direct"
+
+        def observe(self, context):
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[0.8]),
+                direct_candidates=[
+                    DirectMermaidCandidate(
+                        diagram_type="flowchart",
+                        code='flowchart LR\n    X["One"] --> Y["Two"]\n',
+                    )
+                ],
+            )
+
+    config = MermaidConfig(candidate_count=2)
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation()), DirectEngine()],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+    methods = {
+        result.selected.generation_method,
+        *(item.generation_method for item in result.alternatives),
+    }
+    assert methods == {"typed_ir", "direct_mermaid"}
+    assert len(fake_runtime.calls) == 2
+
+
+def test_geometry_evidence_is_available_to_later_engines(fake_runtime):
+    class EvidenceEngine:
+        name = "evidence"
+
+        def observe(self, context):
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["unknown"], scores=[1.0]),
+                evidence=[VisualEvidence(id="contour-1", kind="contour", bbox=(0, 0, 5, 5))],
+            )
+
+    class CapturingEngine:
+        name = "capturing"
+
+        def observe(self, context):
+            assert [item.id for item in context.evidence] == ["contour-1"]
+            return observation()
+
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [EvidenceEngine(), CapturingEngine()],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+    assert result.selected is not None
+
+
+def test_unlabeled_geometry_only_candidate_requires_review(fake_runtime):
+    geometry = GeometryObservation(
+        canvas_size=(100, 50),
+        contours=(ContourObservation(bbox=(10, 10, 40, 40), confidence=0.9),),
+    )
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [GeometryEngine(detector=lambda image: geometry)],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+    assert result.selected is not None
+    assert result.selected.generation_engine == "geometry"
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert result.status == "review_required"
 
 
 def test_engine_failure_is_isolated(fake_runtime):
