@@ -65,11 +65,19 @@ def _color(value: str | None) -> str | None:
     return None
 
 
+def _warning_value(value: str, limit: int = 160) -> str:
+    bounded = value if len(value) <= limit else value[: limit - 3] + "..."
+    return repr(bounded)
+
+
 def _has_style_evidence(scene: DiagramSceneIR) -> bool:
     return any(
         element.fill_color or element.border_color or element.border_style
         for element in scene.elements
-    ) or any(relation.line_style in {"dashed", "thick"} for relation in scene.relations)
+    ) or any(
+        relation.line_color or relation.line_style in {"dashed", "thick"}
+        for relation in scene.relations
+    )
 
 
 def recover_flowchart_styles(
@@ -125,9 +133,13 @@ def recover_flowchart_styles(
         fill = _color(element.fill_color)
         border = _color(element.border_color)
         if element.fill_color and fill is None:
-            warnings.append(f"unsupported fill color for {element.id}: {element.fill_color}")
+            warnings.append(
+                f"unsupported fill color for {element.id}: {_warning_value(element.fill_color)}"
+            )
         if element.border_color and border is None:
-            warnings.append(f"unsupported border color for {element.id}: {element.border_color}")
+            warnings.append(
+                f"unsupported border color for {element.id}: {_warning_value(element.border_color)}"
+            )
         if fill is not None:
             attributes.append(f"fill:{fill}")
         if border is not None:
@@ -149,7 +161,8 @@ def recover_flowchart_styles(
     used_edge_indexes: set[int] = set()
     applied_links: list[int] = []
     if not edge_mapping_safe and any(
-        relation.line_style in {"dashed", "thick"} for relation in scene.relations
+        relation.line_color or relation.line_style in {"dashed", "thick"}
+        for relation in scene.relations
     ):
         warnings.append(
             "edge styles were skipped because Mermaid edge ordering could not be mapped safely"
@@ -157,8 +170,13 @@ def recover_flowchart_styles(
     for relation in scene.relations:
         if relation.source_id is None or relation.target_id is None:
             continue
+        color = _color(relation.line_color)
         style = relation.line_style
-        if style not in {"dashed", "thick"}:
+        if relation.line_color and color is None:
+            warnings.append(
+                f"unsupported line color for {relation.id}: {_warning_value(relation.line_color)}"
+            )
+        if color is None and style not in {"dashed", "thick"}:
             continue
         if not edge_mapping_safe:
             continue
@@ -175,8 +193,14 @@ def recover_flowchart_styles(
             warnings.append(f"edge style could not be mapped for {relation.id}")
             continue
         used_edge_indexes.add(edge_index)
-        declaration = "stroke-dasharray:5 5" if style == "dashed" else "stroke-width:3px"
-        lines.append(f"    linkStyle {edge_index} {declaration}")
+        attributes: list[str] = []
+        if color is not None:
+            attributes.append(f"stroke:{color}")
+        if style == "dashed":
+            attributes.append("stroke-dasharray:5 5")
+        elif style == "thick":
+            attributes.append("stroke-width:3px")
+        lines.append(f"    linkStyle {edge_index} {','.join(attributes)}")
         applied_links.append(edge_index)
 
     if not lines:

@@ -35,6 +35,7 @@
 - Requested-type accessibility enrichment with emitted-grammar limitations and validated direct-code augmentation.
 - Evidence-backed typed Flowchart label repair with structured IR/code proposals.
 - Validated Review Workspace edge reconnection and node deletion with synchronized IR/code audit history.
+- Vector-backed flowchart edge color recovery with allowlisted, exact-order `linkStyle` mapping.
 
 ### Changed
 

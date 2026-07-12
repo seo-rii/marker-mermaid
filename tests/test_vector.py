@@ -45,6 +45,7 @@ def test_vector_observation_assigns_text_colors_and_unambiguous_relation() -> No
                 kind="line",
                 bbox=(70, 30, 130, 30),
                 points=((70, 30), (130, 30)),
+                stroke_color="#445566",
                 arrow_at_end=True,
             ),
         ),
@@ -61,6 +62,7 @@ def test_vector_observation_assigns_text_colors_and_unambiguous_relation() -> No
     assert result.scene_ir.relations[0].source_id == "vector-node-001"
     assert result.scene_ir.relations[0].target_id == "vector-node-002"
     assert result.scene_ir.relations[0].arrow_at_end is True
+    assert result.scene_ir.relations[0].line_color == "#445566"
     assert result.scene_ir.reading_direction == "LR"
     assert {item.kind for item in result.evidence} == {
         "contour",

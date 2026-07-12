@@ -252,6 +252,7 @@ def test_vector_direction_and_vlm_relation_semantics_are_combined() -> None:
                 target_id="b",
                 relation_type="connector",
                 polyline=[(20, 10), (80, 10)],
+                line_color="#445566",
             )
         ],
         canvas_size=(100, 100),
@@ -284,6 +285,7 @@ def test_vector_direction_and_vlm_relation_semantics_are_combined() -> None:
     edge = fused.scene_ir.relations[0]
     assert (edge.source_id, edge.target_id) == ("a", "b")
     assert edge.polyline == [(20, 10), (80, 10)]
+    assert edge.line_color == "#445566"
     assert edge.semantic_relation == "data_flow"
     assert edge.relation_type == "query"
     assert any("direction conflict" in warning for warning in fused.warnings)

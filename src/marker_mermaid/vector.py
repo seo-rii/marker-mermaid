@@ -182,6 +182,7 @@ class VectorObservation:
                     polyline=points,
                     arrow_at_start=arrow_start,
                     arrow_at_end=arrow_end,
+                    line_color=primitive.stroke_color,
                     line_style=primitive.line_style,
                     confidence=_probability(primitive.confidence),
                     evidence_ids=[line_evidence_id],

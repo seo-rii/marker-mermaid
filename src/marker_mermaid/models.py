@@ -180,6 +180,7 @@ class SceneRelation(BaseModel):
     polyline: list[Point] = Field(default_factory=list)
     arrow_at_start: bool = False
     arrow_at_end: bool = True
+    line_color: str | None = None
     line_style: str | None = None
     confidence: float = 0.0
     evidence_ids: list[str] = Field(default_factory=list)
@@ -205,7 +206,7 @@ class SceneRelation(BaseModel):
             raise ValueError("scene relation endpoint must be a non-empty bounded identifier")
         return value
 
-    @field_validator("label", "line_style")
+    @field_validator("label", "line_color", "line_style")
     @classmethod
     def text_fields_are_bounded(cls, value: str | None) -> str | None:
         return _bounded_text(value, "scene relation text")

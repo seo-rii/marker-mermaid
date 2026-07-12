@@ -46,6 +46,7 @@ def scene():
                 source_id="API",
                 target_id="DB",
                 relation_type="flow",
+                line_color="#445566",
                 line_style="thick",
             )
         ],
@@ -66,7 +67,7 @@ def test_style_only_profile_emits_allowlisted_node_and_link_styles():
     assert result.applied_link_indexes == (0,)
     assert "style API fill:#ffeeaa,stroke:#112233,stroke-width:3px" in result.code
     assert "style DB fill:blue,stroke-dasharray:5 5" in result.code
-    assert "linkStyle 0 stroke-width:3px" in result.code
+    assert "linkStyle 0 stroke:#445566,stroke-width:3px" in result.code
     assert MermaidSecurityScanner(SecurityProfile.STYLE_ONLY).scan(result.code).safe
 
 
@@ -136,6 +137,55 @@ def test_non_flowchart_output_is_not_modified():
 
     assert not result.changed
     assert "not flowchart" in result.warnings[0]
+
+
+def test_color_only_edge_uses_the_existing_allowlist_and_exact_mapping():
+    evidence = scene()
+    evidence.relations[0].line_style = None
+
+    result = recover_flowchart_styles(
+        'flowchart LR\n    API["API"]\n    DB[("DB")]\n    API --> DB\n',
+        evidence,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+    )
+
+    assert "linkStyle 0 stroke:#445566" in result.code
+    assert result.applied_link_indexes == (0,)
+
+
+def test_unsupported_edge_color_is_disclosed_but_never_emitted():
+    evidence = scene()
+    evidence.relations[0].line_color = "url(https://attacker.example/edge)"
+    evidence.relations[0].line_style = None
+
+    result = recover_flowchart_styles(
+        'flowchart LR\n    API["API"]\n    DB[("DB")]\n    API --> DB\n',
+        evidence,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+    )
+
+    assert "url(" not in result.code
+    assert "linkStyle" not in result.code
+    assert any("unsupported line color" in warning for warning in result.warnings)
+
+
+def test_hostile_color_warning_is_single_line_and_bounded():
+    evidence = scene()
+    evidence.relations[0].line_color = "bad\n" + "x" * 10_000
+    evidence.relations[0].line_style = None
+
+    result = recover_flowchart_styles(
+        'flowchart LR\n    API["API"]\n    DB[("DB")]\n    API --> DB\n',
+        evidence,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+    )
+
+    warning = next(item for item in result.warnings if "unsupported line color" in item)
+    assert "\n" not in warning
+    assert len(warning) < 256
 
 
 def test_link_style_is_skipped_when_preceding_edge_order_is_not_fully_mappable():
