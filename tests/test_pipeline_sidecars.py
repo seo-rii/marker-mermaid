@@ -1081,6 +1081,256 @@ def test_nested_organization_runtime_rejection_retries_flowchart_fallback():
     assert result.selected.repair_history[-1].operation == "runtime_portable_fallback"
 
 
+_ARCHITECTURE_RUNTIME_CASES = {
+    "architecture": {
+        "ir": {
+            "services": [
+                {"id": "api", "label": "API", "evidence_ids": ["ocr"]},
+                {"id": "db", "label": "DB", "evidence_ids": ["ocr"]},
+            ],
+            "edges": [{"source": "api", "target": "db"}],
+        },
+        "ocr": "API DB",
+        "chain": ["architecture", "flowchart"],
+        "stability": "extended",
+    },
+    "c4": {
+        "ir": {
+            "elements": [
+                {
+                    "id": "api",
+                    "kind": "container",
+                    "label": "API",
+                    "boundary": "payments",
+                    "evidence_ids": ["ocr"],
+                },
+                {
+                    "id": "db",
+                    "kind": "container_database",
+                    "label": "DB",
+                    "boundary": "payments",
+                    "evidence_ids": ["ocr"],
+                },
+            ],
+            "boundaries": [{"id": "payments", "type": "system", "label": "Payments"}],
+            "relations": [{"source": "api", "target": "db"}],
+        },
+        "ocr": "Payments API DB",
+        "chain": ["c4", "architecture", "flowchart"],
+        "stability": "experimental",
+    },
+    "deployment": {
+        "ir": {
+            "nodes": [{"id": "app", "label": "App", "evidence_ids": ["ocr"]}],
+            "artifacts": [{"id": "image", "label": "Image", "evidence_ids": ["ocr"]}],
+            "links": [{"source": "app", "target": "image"}],
+        },
+        "ocr": "App Image",
+        "chain": ["deployment", "architecture", "flowchart"],
+        "stability": "extended",
+    },
+    "component": {
+        "ir": {
+            "components": [{"id": "web", "label": "Web", "evidence_ids": ["ocr"]}],
+            "interfaces": [{"id": "auth", "label": "Auth", "evidence_ids": ["ocr"]}],
+            "dependencies": [{"source": "web", "target": "auth"}],
+        },
+        "ocr": "Web Auth",
+        "chain": ["component", "architecture", "flowchart"],
+        "stability": "extended",
+    },
+}
+
+
+class _ArchitectureRejectingRuntime:
+    def __init__(self, *, terminal_type="flowchart-v2", fallback_error=None):
+        self.terminal_type = terminal_type
+        self.fallback_error = fallback_error
+        self.calls = []
+
+    def validate_and_render(self, code, timeout_seconds):
+        self.calls.append(code)
+        if code.startswith("architecture-beta"):
+            return RuntimeResult(
+                True,
+                False,
+                diagram_type="architecture",
+                error="native parser rejected architecture-beta",
+            )
+        if self.fallback_error is not None:
+            raise self.fallback_error
+        return RuntimeResult(
+            True,
+            True,
+            diagram_type=self.terminal_type,
+            svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+        )
+
+    def close(self):
+        pass
+
+
+def _architecture_runtime_observation(diagram_type):
+    case = _ARCHITECTURE_RUNTIME_CASES[diagram_type]
+    return EngineObservation(
+        prediction=DiagramTypePrediction(candidates=[diagram_type], scores=[0.9]),
+        typed_candidates=[TypedIRCandidate(diagram_type=diagram_type, ir=case["ir"])],
+        evidence=[
+            VisualEvidence(
+                id="ocr",
+                kind="ocr_token",
+                text=case["ocr"],
+                bbox=(0, 0, 90, 10),
+            )
+        ],
+    )
+
+
+@pytest.mark.parametrize("diagram_type", list(_ARCHITECTURE_RUNTIME_CASES))
+def test_architecture_family_runtime_rejection_retries_flowchart_in_same_candidate_slot(
+    diagram_type,
+):
+    case = _ARCHITECTURE_RUNTIME_CASES[diagram_type]
+    runtime = _ArchitectureRejectingRuntime()
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(_architecture_runtime_observation(diagram_type))],
+        CandidateValidator(runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        ocr_texts=[case["ocr"]],
+    )
+
+    assert result.selected is not None
+    assert result.alternatives == []
+    assert result.selected.candidate_id == "candidate-1"
+    assert result.selected.generation_method == "typed_ir"
+    assert result.selected.generation_engine == "json_fixture"
+    assert result.selected.diagram_type == diagram_type
+    assert result.selected.typed_ir is not None
+    assert {key: result.selected.typed_ir[key] for key in case["ir"]} == case["ir"]
+    assert set(result.selected.typed_ir) == {
+        *case["ir"],
+        "acc_title",
+        "acc_description",
+    }
+    assert result.selected.typed_ir["acc_title"]
+    assert result.selected.typed_ir["acc_description"]
+    assert result.selected.emitted_diagram_type == "flowchart"
+    assert result.selected.runtime_diagram_type == "flowchart-v2"
+    assert result.selected.fallback_chain == case["chain"]
+    assert result.selected.serialization_stability == case["stability"]
+    assert result.selected.render_valid
+    assert result.selected.scores["type_fitness"] == 0.9
+    assert result.selected.scores["ocr_recall"] == 1
+    assert result.selected.scores["visual_entailment_precision"] == 1
+    assert len(runtime.calls) == 2
+    assert runtime.calls[0].startswith("architecture-beta")
+    assert runtime.calls[1].startswith("flowchart LR")
+    repair = result.selected.repair_history[-1]
+    assert repair.iteration == 0
+    assert repair.operation == "runtime_portable_fallback"
+    assert repair.accepted
+    assert repair.details == {
+        "requested_type": diagram_type,
+        "rejected_emitted_type": "architecture",
+        "emitted_type": "flowchart",
+        "fallback_chain": case["chain"],
+        "stage": "validation",
+    }
+
+
+def test_runtime_fallback_validator_exception_is_isolated_to_the_candidate():
+    runtime = _ArchitectureRejectingRuntime(
+        fallback_error=RuntimeError("fallback validator exploded")
+    )
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(_architecture_runtime_observation("architecture"))],
+        CandidateValidator(runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is None
+    assert result.status == "failed"
+    assert len(result.alternatives) == 1
+    candidate = result.alternatives[0]
+    assert not candidate.render_valid
+    assert len(runtime.calls) == 2
+    assert any(
+        failure.stage == "runtime_fallback_validation"
+        and failure.engine == "json_fixture"
+        and failure.error_type == "RuntimeError"
+        and failure.message == "fallback validator exploded"
+        for failure in result.failures
+    )
+    assert any("fallback validator exploded" in warning for warning in candidate.warnings)
+    assert candidate.emitted_diagram_type == "architecture"
+    assert candidate.fallback_chain == ["architecture"]
+    assert candidate.mermaid_code == runtime.calls[0]
+    repair = candidate.repair_history[-1]
+    assert repair.iteration == 0
+    assert repair.operation == "runtime_portable_fallback"
+    assert not repair.accepted
+    assert repair.details == {
+        "requested_type": "architecture",
+        "rejected_emitted_type": "architecture",
+        "emitted_type": "flowchart",
+        "fallback_chain": ["architecture", "flowchart"],
+        "stage": "validation",
+        "error_type": "RuntimeError",
+        "error": "fallback validator exploded",
+    }
+
+
+@pytest.mark.parametrize("terminal_type", ["sequence", None])
+def test_runtime_fallback_rejects_wrong_or_missing_terminal_runtime_type(terminal_type):
+    runtime = _ArchitectureRejectingRuntime(terminal_type=terminal_type)
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(_architecture_runtime_observation("architecture"))],
+        CandidateValidator(runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is None
+    assert result.status == "failed"
+    assert len(result.alternatives) == 1
+    candidate = result.alternatives[0]
+    assert not candidate.render_valid
+    assert len(runtime.calls) == 2
+    assert candidate.emitted_diagram_type == "architecture"
+    assert candidate.runtime_diagram_type == "architecture"
+    assert candidate.fallback_chain == ["architecture"]
+    assert candidate.serialization_stability == "extended"
+    assert candidate.mermaid_code == runtime.calls[0]
+    assert any(
+        "fallback" in warning.lower() and "type" in warning.lower()
+        for warning in candidate.warnings
+    )
+    repair = candidate.repair_history[-1]
+    assert repair.iteration == 0
+    assert repair.operation == "runtime_portable_fallback"
+    assert not repair.accepted
+    assert repair.details == {
+        "requested_type": "architecture",
+        "rejected_emitted_type": "architecture",
+        "emitted_type": "flowchart",
+        "fallback_chain": ["architecture", "flowchart"],
+        "stage": "validation",
+        "syntax_valid": True,
+        "render_valid": True,
+        "runtime_diagram_type": terminal_type,
+        "error": None,
+    }
+
+
 def test_runtime_fallback_does_not_revalidate_an_identical_portable_candidate():
     class RejectingRuntime:
         def __init__(self):

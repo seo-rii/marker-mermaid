@@ -4,7 +4,7 @@ import pytest
 
 from marker_mermaid.config import SecurityProfile
 from marker_mermaid.security import MermaidSecurityScanner
-from marker_mermaid.serializers import SerializationError
+from marker_mermaid.serializers import SerializationError, serialize_runtime_fallback_result
 from marker_mermaid.serializers_phase2 import (
     BLOCK_ACCESSIBILITY_LIMITATION,
     serialize_c4_native,
@@ -194,6 +194,56 @@ def test_overlapping_semantic_ids_fail_instead_of_rerouting_relations() -> None:
         )
 
 
+def test_c4_architecture_rejection_preserves_boundary_as_flowchart_subgraph() -> None:
+    result = serialize_runtime_fallback_result("c4", CASES["c4"], experimental=True)
+
+    assert result is not None
+    assert result.fallback_chain == ("c4", "architecture", "flowchart")
+    assert 'subgraph system["Payments"]' in result.code
+    assert 'user["User"]' in result.code
+    assert 'api["API"]' in result.code
+    assert 'db["DB"]' in result.code
+    assert "user --> api" in result.code
+    assert "api --> db" in result.code
+
+
+@pytest.mark.parametrize(
+    ("ir", "message"),
+    [
+        (
+            {
+                "services": [{"id": "api", "label": "API"}],
+                "edges": [{"source": "api", "target": "missing"}],
+            },
+            "unknown endpoint",
+        ),
+        (
+            {
+                "groups": [{"id": "cloud", "label": "Cloud"}],
+                "services": [{"id": "api", "label": "API", "group": "missing"}],
+                "edges": [],
+            },
+            "unknown group",
+        ),
+        (
+            {
+                "services": [
+                    {"id": "api", "label": "First"},
+                    {"id": "api", "label": "Second"},
+                ],
+                "edges": [],
+            },
+            "unique|duplicate",
+        ),
+    ],
+)
+def test_architecture_runtime_fallback_rejects_ambiguous_or_unresolved_ir(
+    ir: dict[str, object], message: str
+) -> None:
+    with pytest.raises(SerializationError, match=message):
+        serialize_runtime_fallback_result("architecture", ir)
+
+
 @pytest.mark.integration
 def test_native_c4_source_renders_but_is_not_strict_svg_safe() -> None:
     code, emitted_type, fallback = serialize_c4_native(CASES["c4"], experimental=True)
@@ -225,5 +275,48 @@ def test_phase2_serializers_parse_and_render_with_mermaid_11_16() -> None:
                 outcome.runtime.error,
                 outcome.warnings,
             )
+
+        for requested_type in ("c4", "deployment", "component"):
+            code, emitted_type, _ = serialize_phase2(
+                requested_type,
+                CASES[requested_type],
+                experimental=True,
+                native_runtime_valid=False,
+            )
+            assert emitted_type == "flowchart"
+            outcome = validator.validate(code, 20)
+            assert outcome.runtime.syntax_valid, (requested_type, code, outcome.runtime.error)
+            assert outcome.runtime.render_valid, (
+                requested_type,
+                code,
+                outcome.runtime.error,
+                outcome.warnings,
+            )
+
+        architecture = serialize_runtime_fallback_result(
+            "architecture",
+            {
+                "services": [
+                    {"id": "api", "label": "API"},
+                    {"id": "db", "label": "Database"},
+                ],
+                "edges": [{"source": "api", "target": "db"}],
+            },
+            experimental=True,
+        )
+        assert architecture is not None
+        assert architecture.emitted_type == "flowchart"
+        outcome = validator.validate(architecture.code, 20)
+        assert outcome.runtime.syntax_valid, (
+            "architecture",
+            architecture.code,
+            outcome.runtime.error,
+        )
+        assert outcome.runtime.render_valid, (
+            "architecture",
+            architecture.code,
+            outcome.runtime.error,
+            outcome.warnings,
+        )
     finally:
         runtime.close()

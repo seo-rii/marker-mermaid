@@ -17,6 +17,7 @@ from marker_mermaid.accessibility import resolve_accessibility
 from marker_mermaid.serializers import (
     SerializationError,
     serialize_architecture,
+    serialize_architecture_flowchart_fallback,
     serialize_flowchart,
 )
 
@@ -387,6 +388,7 @@ def _architecture_fallback(
     edges: Any,
     *,
     experimental: bool,
+    native_runtime_valid: bool,
     limitation: str,
 ) -> Phase2Serialization:
     normalized, id_map = plan_phase2_record_ids(
@@ -421,14 +423,29 @@ def _architecture_fallback(
                 "target_side": edge.get("target_side", "L"),
             }
         )
-    code = serialize_architecture(
-        {**ir, "services": services, "edges": architecture_edges},
+    architecture_ir = {**ir, "services": services, "edges": architecture_edges}
+    if native_runtime_valid:
+        code = serialize_architecture(architecture_ir, experimental=experimental)
+        return code, "architecture", limitation
+    code = serialize_architecture_flowchart_fallback(
+        architecture_ir,
         experimental=experimental,
+        accessibility_type=requested_type,
     )
-    return code, "architecture", limitation
+    return (
+        code,
+        "flowchart",
+        f"{limitation}; CandidateValidator rejected architecture-beta, so service/group "
+        "labels and unlabeled endpoint topology were emitted as portable Flowchart",
+    )
 
 
-def serialize_c4(ir: dict[str, Any], *, experimental: bool = False) -> Phase2Serialization:
+def serialize_c4(
+    ir: dict[str, Any],
+    *,
+    experimental: bool = False,
+    native_runtime_valid: bool = True,
+) -> Phase2Serialization:
     level = str(ir.get("level") or "context").lower()
     if level not in _C4_HEADERS:
         raise SerializationError("C4 level must be context, container, or component")
@@ -474,6 +491,7 @@ def serialize_c4(ir: dict[str, Any], *, experimental: bool = False) -> Phase2Ser
         records,
         ir.get("relations", []),
         experimental=experimental,
+        native_runtime_valid=native_runtime_valid,
         limitation=(
             "strict-safe architecture fallback from c4; native Mermaid 11.16 C4 embeds a "
             "data image through an undeclared xlink prefix, while technology, relationship "
@@ -482,7 +500,12 @@ def serialize_c4(ir: dict[str, Any], *, experimental: bool = False) -> Phase2Ser
     )
 
 
-def serialize_deployment(ir: dict[str, Any], *, experimental: bool = False) -> Phase2Serialization:
+def serialize_deployment(
+    ir: dict[str, Any],
+    *,
+    experimental: bool = False,
+    native_runtime_valid: bool = True,
+) -> Phase2Serialization:
     records = ir.get("nodes")
     artifacts = ir.get("artifacts", [])
     if not isinstance(artifacts, list):
@@ -496,6 +519,7 @@ def serialize_deployment(ir: dict[str, Any], *, experimental: bool = False) -> P
         combined,
         ir.get("links", ir.get("edges", [])),
         experimental=experimental,
+        native_runtime_valid=native_runtime_valid,
         limitation=(
             "portable architecture fallback from deployment; artifact containment, "
             "stereotypes, and link labels remain in typed IR"
@@ -503,7 +527,12 @@ def serialize_deployment(ir: dict[str, Any], *, experimental: bool = False) -> P
     )
 
 
-def serialize_component(ir: dict[str, Any], *, experimental: bool = False) -> Phase2Serialization:
+def serialize_component(
+    ir: dict[str, Any],
+    *,
+    experimental: bool = False,
+    native_runtime_valid: bool = True,
+) -> Phase2Serialization:
     components = ir.get("components")
     interfaces = ir.get("interfaces", [])
     if not isinstance(components, list):
@@ -517,6 +546,7 @@ def serialize_component(ir: dict[str, Any], *, experimental: bool = False) -> Ph
         records,
         ir.get("dependencies", ir.get("edges", [])),
         experimental=experimental,
+        native_runtime_valid=native_runtime_valid,
         limitation=(
             "portable architecture fallback from component; provided/required interface "
             "notation and dependency labels remain in typed IR"
@@ -589,11 +619,27 @@ PHASE2_SERIALIZERS: dict[str, Callable[..., Phase2Serialization]] = {
 
 
 def serialize_phase2(
-    diagram_type: str, ir: dict[str, Any], *, experimental: bool = False
+    diagram_type: str,
+    ir: dict[str, Any],
+    *,
+    experimental: bool = False,
+    native_runtime_valid: bool = True,
 ) -> Phase2Serialization:
     """Serialize a Phase 2 IR and disclose the emitted Mermaid grammar."""
 
+    if not isinstance(native_runtime_valid, bool):
+        raise SerializationError("native_runtime_valid must be a boolean")
     serializer = PHASE2_SERIALIZERS.get(diagram_type)
     if serializer is None:
         raise SerializationError(f"no Phase 2 typed serializer for {diagram_type}")
+    if not native_runtime_valid:
+        if diagram_type not in {"c4", "deployment", "component"}:
+            raise SerializationError(
+                f"no architecture runtime fallback for Phase 2 type {diagram_type}"
+            )
+        return serializer(
+            ir,
+            experimental=experimental,
+            native_runtime_valid=False,
+        )
     return serializer(ir, experimental=experimental)

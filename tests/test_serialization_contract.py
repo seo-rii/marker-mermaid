@@ -10,7 +10,10 @@ from marker_mermaid.serialization import (
     UnknownSerializerError,
     registry_from_string_serializers,
 )
-from marker_mermaid.serializers import serialize_typed_ir_result
+from marker_mermaid.serializers import (
+    serialize_runtime_fallback_result,
+    serialize_typed_ir_result,
+)
 
 
 def _flowchart(ir: dict[str, object], *, experimental: bool = False) -> str:
@@ -286,3 +289,88 @@ def test_chart_dispatch_records_numeric_native_and_fallback_grammars() -> None:
     assert sankey.emitted_type == "sankey" and not sankey.used_fallback
     assert treemap.emitted_type == "flowchart" and treemap.used_fallback
     assert "non-leaf" in treemap.warnings[0]
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "fallback_chain", "stability"),
+    [
+        (
+            "architecture",
+            {
+                "services": [
+                    {"id": "api", "label": "Public API"},
+                    {"id": "db", "label": "Ledger DB"},
+                ],
+                "edges": [{"source": "api", "target": "db"}],
+            },
+            ("architecture", "flowchart"),
+            "extended",
+        ),
+        (
+            "c4",
+            {
+                "elements": [
+                    {"id": "api", "kind": "container", "label": "API"},
+                    {"id": "db", "kind": "container_database", "label": "DB"},
+                ],
+                "relations": [{"source": "api", "target": "db"}],
+            },
+            ("c4", "architecture", "flowchart"),
+            "experimental",
+        ),
+        (
+            "deployment",
+            {
+                "nodes": [{"id": "app", "label": "App"}],
+                "artifacts": [{"id": "image", "label": "Image"}],
+                "links": [{"source": "app", "target": "image"}],
+            },
+            ("deployment", "architecture", "flowchart"),
+            "extended",
+        ),
+        (
+            "component",
+            {
+                "components": [{"id": "web", "label": "Web"}],
+                "interfaces": [{"id": "auth", "label": "Auth"}],
+                "dependencies": [{"source": "web", "target": "auth"}],
+            },
+            ("component", "architecture", "flowchart"),
+            "extended",
+        ),
+    ],
+)
+def test_architecture_family_runtime_fallback_records_complete_route(
+    diagram_type: str,
+    ir: dict[str, object],
+    fallback_chain: tuple[str, ...],
+    stability: str,
+) -> None:
+    result = serialize_runtime_fallback_result(diagram_type, ir, experimental=True)
+
+    assert result is not None
+    assert result.requested_type == diagram_type
+    assert result.emitted_type == "flowchart"
+    assert result.fallback_chain == fallback_chain
+    assert result.stability == stability
+    assert result.code.startswith("flowchart LR\n")
+    assert any("CandidateValidator rejected architecture-beta" in item for item in result.warnings)
+
+
+def test_architecture_runtime_fallback_keeps_labels_and_plain_topology() -> None:
+    result = serialize_runtime_fallback_result(
+        "architecture",
+        {
+            "services": [
+                {"id": "api", "label": "Public API"},
+                {"id": "db", "label": "Ledger DB"},
+            ],
+            "edges": [{"source": "api", "target": "db"}],
+        },
+    )
+
+    assert result is not None
+    assert 'api["Public API"]' in result.code
+    assert 'db["Ledger DB"]' in result.code
+    assert "api --> db" in result.code
+    assert "api -->|" not in result.code

@@ -16,15 +16,16 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 
 | 요청 type | 실제 grammar | 비고 |
 | --- | --- | --- |
-| Flowchart, Sequence, Mindmap, Timeline, Gantt, Architecture | 동일 | Phase 1 native |
+| Flowchart, Sequence, Mindmap, Timeline, Gantt | 동일 | Phase 1 native |
+| Architecture | `architecture → flowchart` | `architecture-beta` 우선, runtime 거부 시 nested Flowchart |
 | State, Class, ER | 동일 | node/relation/member/attribute evidence 필수 |
 | Requirement | `requirement` | Mermaid `requirementDiagram` |
 | Block | `block` | Mermaid 11.16은 이 grammar의 accTitle/accDescr를 거부하여 접근성 text를 typed IR에 보존 |
 | Swimlane | `flowchart` | subgraph fallback |
 | BPMN | `bpmn → swimlane → flowchart` | BPMN 전용 notation 손실 |
 | Generic Network | `flowchart` | portable node/edge 표현 |
-| C4 | `architecture` | native C4 SVG가 strict gate의 data/xlink 정책과 불일치 |
-| Deployment, Component | `architecture` | stereotype/interface/link label 일부는 typed IR에 유지 |
+| C4 | `c4 → architecture → flowchart` | native C4 SVG가 strict gate의 data/xlink 정책과 불일치하며 Architecture runtime 거부 시 nested fallback |
+| Deployment, Component | `deployment/component → architecture → flowchart` | Architecture runtime 거부 시 nested fallback; stereotype/interface/link label 일부는 typed IR에 유지 |
 | Use-case | `flowchart` | actor glyph와 system boundary는 typed IR에 유지 |
 | Pie, XY, Quadrant | 동일 | explicit finite values/axis/coordinates 필수 |
 | Sankey | `sankey` 또는 `flowchart` | native-safe positive DAG, 그 외 exact-weight fallback |
@@ -59,3 +60,12 @@ Group이 없을 때의 Mermaid output은 기존과 byte-identical합니다. Swim
 validation 이후 Mermaid runtime이 보고한 diagram type도 `runtime_diagram_type`에 저장합니다. deterministic
 typed serializer의 declared emitted type과 runtime type이 다르면 render-valid 후보로 취급하지 않습니다.
 direct Mermaid는 실제 runtime type으로 재분류하고 type-fitness를 0으로 두어 검토 경고를 유지합니다.
+
+Architecture, C4, Deployment, Component의 typed 후보가 `architecture-beta`에서 runtime 거부되면 같은 typed
+IR로 nested Flowchart를 한 번만 만들고 같은 candidate slot에서 다시 검증합니다. 이 재시도도 source security
+scan, Mermaid parse/render, SVG 검사와 terminal runtime type 일치를 모두 통과해야 하며, 실패하면 해당
+후보만 invalid로 남고 다른 후보 처리는 계속됩니다. 새 candidate를 만들지 않으므로 type/candidate/repair
+budget은 증가하지 않습니다. 성공하면 requested type은 유지하되 `emitted_type`과
+`runtime_diagram_type`은 `flowchart`가 되고, `fallback_chain`은 `architecture → flowchart` 또는
+`c4|deployment|component → architecture → flowchart` 전체 경로를 기록합니다. 전환은 warning과
+`runtime_portable_fallback` repair history에도 남습니다.

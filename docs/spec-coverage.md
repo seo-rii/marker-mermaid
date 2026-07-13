@@ -21,12 +21,12 @@
 | Direct Mermaid | 구현 | extended/maximal, 동일 hard gate |
 | Fusion engine | 구현 | source-explicit precedence, spatial match, label/edge/type/provenance consensus |
 | Flowchart | 구현 | typed serializer, validated flat/disjoint group→subgraph emission과 SceneGroup round-trip + real render fixture |
-| Architecture | 구현 | `architecture-beta` serializer + real render fixture |
+| Architecture | 구현 | `architecture-beta` 우선 serializer, runtime 거부 시 동일 candidate slot의 nested Flowchart fallback, 양쪽 full-gate render fixture |
 | Sequence | 구현 | typed serializer + real render fixture |
 | Mindmap | 구현 | typed serializer; Mermaid 11.16 accessibility 제한 문서화 |
 | Timeline/Gantt | 구현 | typed serializer + real render fixture |
 | BPMN/Swimlane | 구현 | portable flowchart subgraph fallback |
-| Phase 2 software types | 구현 | State/Class/ER/Requirement/Block native; C4/Deployment/Component/Use-case 명시 fallback |
+| Phase 2 software types | 구현 | State/Class/ER/Requirement/Block native; C4/Deployment/Component는 Architecture를 거쳐 runtime 거부 시 nested Flowchart, Use-case는 Flowchart 명시 fallback |
 | Phase 3 charts | 구현 | Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn typed native/fallback, 일부 runtime fallback과 numeric gate |
 | Planning types | 구현 | Journey→Timeline fallback, native Kanban/GitGraph와 evidence-strict reference 검사 |
 | Phase 5 special types | 구현 | Packet/Ishikawa/TreeView native+runtime fallback, Wardley/Cynefin/Railroad native, EventModeling/ZenUML fallback |

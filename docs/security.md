@@ -15,7 +15,11 @@ SVG에 남을 수 있으므로 다음의 중첩 방어를 사용합니다.
 
 native C4는 Mermaid 11.16에서 parse/render되지만 생성 SVG가 undeclared `xlink` prefix를 사용한
 `data:` image를 포함합니다. strict SVG/XML gate를 완화하지 않고 `architecture-beta` fallback을
-사용합니다. 이 손실은 candidate warning과 fallback chain에 기록됩니다.
+우선 사용합니다. 이 Architecture grammar까지 runtime에서 거부되면 같은 candidate slot에서 nested
+Flowchart를 한 번만 만들고 source security scan, parse/render, SVG, terminal runtime type을 모두 다시
+검사합니다. C4뿐 아니라 Architecture/Deployment/Component도 같은 재검증 경계를 사용하며, fallback이
+실패하면 해당 후보만 invalid로 유지합니다. 각 손실과 전환은 candidate warning, fallback chain과 repair
+history에 기록되고 후보 budget이나 보안 allowlist를 늘리지 않습니다.
 
 ## strict에서 금지되는 입력
 

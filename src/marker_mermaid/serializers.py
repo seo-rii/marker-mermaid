@@ -291,6 +291,121 @@ def serialize_architecture(ir: dict[str, Any], *, experimental: bool = False) ->
     return "\n".join(lines) + "\n"
 
 
+def serialize_architecture_flowchart_fallback(
+    ir: dict[str, Any],
+    *,
+    experimental: bool = False,
+    accessibility_type: str = "architecture",
+) -> str:
+    """Project validated Architecture evidence into the portable Flowchart subset.
+
+    This fallback is built from typed IR rather than rejected Mermaid source.  It
+    keeps service/group labels and endpoint topology while failing closed when a
+    group or relation cannot be mapped without guessing.  Architecture icons,
+    connector ports, and relation labels remain in typed IR and review metadata.
+    """
+
+    services = ir.get("services")
+    if not isinstance(services, list) or not services:
+        raise SerializationError("architecture IR requires services")
+    raw_groups = ir.get("groups", [])
+    if not isinstance(raw_groups, list):
+        raise SerializationError("architecture groups must be a list")
+
+    group_records: list[tuple[dict[str, Any], str]] = []
+    group_members: dict[str, list[str]] = {}
+    for index, group in enumerate(raw_groups, start=1):
+        if not isinstance(group, dict):
+            raise SerializationError("architecture groups must be objects")
+        group_id = str(group.get("id") or f"G{index}")
+        if group_id in group_members:
+            raise SerializationError("architecture group ids must be unique")
+        group_records.append((group, group_id))
+        group_members[group_id] = []
+
+    nodes: list[dict[str, Any]] = []
+    service_ids: set[str] = set()
+    for index, service in enumerate(services, start=1):
+        if not isinstance(service, dict):
+            raise SerializationError("architecture services must be objects")
+        service_id = str(service.get("id") or f"S{index}")
+        if service_id in service_ids:
+            raise SerializationError("architecture service ids must be unique")
+        service_ids.add(service_id)
+        nodes.append(
+            {
+                **service,
+                "id": service_id,
+                "label": service.get("label") or service.get("name") or service_id,
+            }
+        )
+        group_id = service.get("group")
+        if group_id is not None and group_id != "":
+            source_group_id = str(group_id)
+            if source_group_id not in group_members:
+                raise SerializationError(
+                    f"architecture service references unknown group {source_group_id!r}"
+                )
+            group_members[source_group_id].append(service_id)
+
+    groups: list[dict[str, Any]] = []
+    for group, group_id in group_records:
+        members = group_members[group_id]
+        if not members:
+            raise SerializationError(
+                f"architecture group {group_id!r} has no services for Flowchart fallback"
+            )
+        groups.append(
+            {
+                "id": group_id,
+                "label": group.get("label") or group_id,
+                "member_ids": members,
+            }
+        )
+
+    raw_edges = ir.get("edges", [])
+    if not isinstance(raw_edges, list):
+        raise SerializationError("architecture edges must be a list")
+    edges: list[dict[str, Any]] = []
+    for edge in raw_edges:
+        if not isinstance(edge, dict):
+            raise SerializationError("architecture edges must be objects")
+        source = str(edge.get("source"))
+        target = str(edge.get("target"))
+        if source not in service_ids or target not in service_ids:
+            raise SerializationError(
+                f"architecture edge references unknown endpoint: {source!r} -> {target!r}"
+            )
+        edges.append(
+            {
+                "source": source,
+                "target": target,
+                "bidirectional": bool(edge.get("bidirectional")),
+            }
+        )
+
+    accessibility = resolve_accessibility(
+        ir,
+        accessibility_type,
+        experimental=experimental,
+    )
+    direction = str(ir.get("direction") or "LR").upper()
+    if direction not in {"TB", "BT", "LR", "RL"}:
+        direction = "LR"
+    return serialize_flowchart(
+        {
+            **ir,
+            "acc_title": accessibility.title,
+            "acc_description": accessibility.description,
+            "direction": direction,
+            "nodes": nodes,
+            "groups": groups,
+            "edges": edges,
+        },
+        experimental=experimental,
+    )
+
+
 SERIALIZERS: dict[str, Callable[..., str]] = {
     "flowchart": serialize_flowchart,
     "generic_network": serialize_flowchart,
@@ -320,6 +435,7 @@ SERIALIZATION_REGISTRY = registry_from_string_serializers(
         "generic_network": "extended",
         "swimlane": "extended",
         "bpmn": "extended",
+        "architecture": "extended",
     },
 )
 _EXTENDED_SERIALIZERS_REGISTERED = False
@@ -552,6 +668,44 @@ def serialize_runtime_fallback_result(
     participate.  Returning ``None`` keeps unsupported native candidates invalid.
     """
 
+    if diagram_type in {"architecture", "c4", "deployment", "component"}:
+        initial = serialize_typed_ir_result(
+            diagram_type,
+            ir,
+            experimental=experimental,
+        )
+        if initial.emitted_type != "architecture":
+            return None
+        if diagram_type == "architecture":
+            code = serialize_architecture_flowchart_fallback(
+                ir,
+                experimental=experimental,
+                accessibility_type=diagram_type,
+            )
+        else:
+            from marker_mermaid.serializers_phase2 import serialize_phase2
+
+            code, emitted_type, _reason = serialize_phase2(
+                diagram_type,
+                ir,
+                experimental=experimental,
+                native_runtime_valid=False,
+            )
+            if emitted_type != "flowchart":
+                return None
+        runtime_warning = (
+            "CandidateValidator rejected architecture-beta; service/group labels and "
+            "unlabeled endpoint topology were re-emitted as portable Flowchart while "
+            "architecture icons, ports, and relation labels remain in typed IR."
+        )
+        return SerializationResult.fallback(
+            diagram_type,
+            "flowchart",
+            code,
+            via=initial.fallback_chain[1:],
+            warnings=tuple(dict.fromkeys((*initial.warnings, runtime_warning))),
+            stability=initial.stability,
+        )
     if diagram_type in {"treemap", "venn"}:
         from marker_mermaid.serializers_charts_sets import serialize_chart_set
 

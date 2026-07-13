@@ -66,6 +66,7 @@
 - Organization TreeView runtime rejection now retries the declared nested Flowchart fallback in the same candidate slot.
 - Closed Review node relabeling from uniquely linked OCR/vector provenance with synchronized overlay selection, transactional revision history, and unchanged evidence snapshots.
 - Bounded Review audit history view with the newest 100 operation/target/source/timestamp/reason entries, expandable text-only deltas, and malformed-entry reporting while preserving canonical `review-history.json`.
+- Architecture, C4, Deployment, and Component candidates now retry one declared nested Flowchart fallback in the same candidate slot when `architecture-beta` runtime validation fails, preserving candidate budgets and requested/emitted/runtime fallback metadata.
 
 ### Changed
 

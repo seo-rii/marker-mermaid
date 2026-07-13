@@ -962,6 +962,7 @@ class ReconstructionPipeline:
                 and draft.typed_ir is not None
                 and not runtime.render_valid
             ):
+                rejected_emitted_type = candidate.emitted_diagram_type
                 try:
                     fallback = serialize_runtime_fallback_result(
                         draft.diagram_type,
@@ -969,37 +970,115 @@ class ReconstructionPipeline:
                         experimental=self.config.mode != Mode.STRICT,
                     )
                     if fallback is not None and fallback.code != candidate_code:
-                        fallback_outcome = self.validator.validate(
-                            fallback.code,
-                            self.config.render_timeout_seconds,
-                        )
-                        if fallback_outcome.runtime.render_valid:
-                            candidate_code = fallback.code
-                            candidate.mermaid_code = fallback.code
-                            candidate.emitted_diagram_type = fallback.emitted_type
-                            candidate.fallback_chain = list(fallback.fallback_chain)
-                            candidate.serialization_stability = fallback.stability
-                            candidate.warnings.extend(fallback.warnings)
+                        fallback_details = {
+                            "requested_type": draft.diagram_type,
+                            "rejected_emitted_type": rejected_emitted_type,
+                            "emitted_type": fallback.emitted_type,
+                            "fallback_chain": list(fallback.fallback_chain),
+                            "stage": "validation",
+                        }
+                        try:
+                            fallback_outcome = self.validator.validate(
+                                fallback.code,
+                                self.config.render_timeout_seconds,
+                            )
+                        except Exception as exc:
+                            failures.append(
+                                CandidateFailure(
+                                    stage="runtime_fallback_validation",
+                                    engine=draft.engine_name,
+                                    error_type=type(exc).__name__,
+                                    message=str(exc),
+                                )
+                            )
+                            candidate.warnings.append(
+                                f"declared portable fallback validator failed: {exc}"
+                            )
                             candidate.repair_history.append(
                                 RepairEvent(
                                     iteration=0,
                                     operation="runtime_portable_fallback",
-                                    accepted=True,
+                                    accepted=False,
                                     details={
-                                        "rejected_type": draft.diagram_type,
-                                        "emitted_type": fallback.emitted_type,
-                                        "stage": "validation",
+                                        **fallback_details,
+                                        "error_type": type(exc).__name__,
+                                        "error": str(exc),
                                     },
                                 )
                             )
-                            runtime = fallback_outcome.runtime
-                            validation_warnings = fallback_outcome.warnings
                         else:
-                            candidate.warnings.append(
-                                "declared portable fallback also failed parse/render validation"
+                            fallback_runtime = fallback_outcome.runtime
+                            fallback_runtime_type = _canonical_runtime_type(
+                                fallback_runtime.diagram_type
                             )
+                            fallback_valid = bool(
+                                fallback_runtime.syntax_valid
+                                and fallback_runtime.render_valid
+                                and fallback_runtime_type == fallback.emitted_type
+                            )
+                            if fallback_valid:
+                                candidate_code = fallback.code
+                                candidate.mermaid_code = fallback.code
+                                candidate.emitted_diagram_type = fallback.emitted_type
+                                candidate.fallback_chain = list(fallback.fallback_chain)
+                                candidate.serialization_stability = fallback.stability
+                                candidate.warnings.extend(fallback.warnings)
+                                candidate.repair_history.append(
+                                    RepairEvent(
+                                        iteration=0,
+                                        operation="runtime_portable_fallback",
+                                        accepted=True,
+                                        details=fallback_details,
+                                    )
+                                )
+                                runtime = fallback_runtime
+                                validation_warnings = fallback_outcome.warnings
+                            else:
+                                if not (
+                                    fallback_runtime.syntax_valid and fallback_runtime.render_valid
+                                ):
+                                    reason = (
+                                        "declared portable fallback also failed "
+                                        "parse/render validation"
+                                    )
+                                elif fallback_runtime_type is None:
+                                    reason = (
+                                        "declared portable fallback did not report a supported "
+                                        "terminal runtime type"
+                                    )
+                                else:
+                                    reason = (
+                                        "declared portable fallback reported terminal type "
+                                        f"{fallback_runtime_type} instead of "
+                                        f"{fallback.emitted_type}"
+                                    )
+                                candidate.warnings.append(reason)
+                                candidate.repair_history.append(
+                                    RepairEvent(
+                                        iteration=0,
+                                        operation="runtime_portable_fallback",
+                                        accepted=False,
+                                        details={
+                                            **fallback_details,
+                                            "syntax_valid": fallback_runtime.syntax_valid,
+                                            "render_valid": fallback_runtime.render_valid,
+                                            "runtime_diagram_type": (fallback_runtime.diagram_type),
+                                            "error": fallback_runtime.error,
+                                        },
+                                    )
+                                )
                 except (SerializationError, SerializationContractError) as exc:
                     candidate.warnings.append(f"runtime fallback unavailable: {exc}")
+                except Exception as exc:
+                    failures.append(
+                        CandidateFailure(
+                            stage="runtime_fallback_serialization",
+                            engine=draft.engine_name,
+                            error_type=type(exc).__name__,
+                            message=str(exc),
+                        )
+                    )
+                    candidate.warnings.append(f"runtime fallback serialization failed: {exc}")
             if draft.method == "direct_mermaid" and runtime.render_valid:
                 detected_type = _canonical_runtime_type(runtime.diagram_type)
                 if detected_type is not None:

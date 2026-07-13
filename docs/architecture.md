@@ -89,7 +89,13 @@ parse/render hard gate 뒤 publish eligibility, aggregate score, OCR recall, gen
 candidate ID 순서로 결정적입니다. `review_required`와 `sidecar_only`는 publish eligibility를 정렬에
 사용하지 않아 기존 aggregate 중심 검토 순서를 유지합니다.
 Treemap/Venn/Packet/Ishikawa/TreeView native validation이 실패하면 serializer가 명시한 portable fallback을
-같은 candidate slot에서 한 번 재검증하며, 요청/출력 type과 repair history에 전환을 기록합니다.
+같은 candidate slot에서 한 번 재검증합니다. Architecture/C4/Deployment/Component도 `architecture-beta`
+runtime validation이 실패할 때 같은 typed IR의 nested Flowchart fallback을 이 경로로 한 번만 시도합니다.
+Fallback은 source security, parse/render, SVG와 terminal runtime type gate를 전부 다시 통과해야 하며,
+실패는 해당 후보에만 격리됩니다. 성공하면 requested type은 유지하고 emitted/runtime type, 전체
+`architecture → flowchart` 또는 `requested → architecture → flowchart` chain, warning과
+`runtime_portable_fallback` repair history를 갱신합니다. 같은 slot을 재사용하므로 candidate budget은
+늘어나지 않습니다.
 
 Marker 기본 구성에서는 PyMuPDF page provider를 연결한 VectorPrimitiveEngine과 GeometryEngine이 먼저 구조 evidence를 만들고
 Structured VLM이 그 evidence와 OCR token을 prompt에서 함께 봅니다. scene node에 읽을 수 있는

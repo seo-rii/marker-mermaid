@@ -49,8 +49,10 @@ participant도 임의 `text`가 아니라 serializer가 실제 표시하는 safe
   ER attribute type/name/key/comment, Timeline period/title/모든 event label을 OCR 비교에 추가합니다.
   이 projection도 생성 label 예산 안에서 소비되므로 큰 typed IR이 제한을 우회하지 못합니다.
 - Requested type이 fallback으로 방출되는 경우 projection은 요청 문법이 아니라 실제 emitted serializer를
-  따릅니다. C4는 architecture fallback에 남는 boundary와 service label만 세고 technology, relation
-  label, description은 제외합니다. Requirement는 serializer와 같은 normalized/collision-safe output ID,
+  따릅니다. C4의 `architecture` 또는 nested Flowchart 결과는 같은 projection을 사용해 boundary와
+  service label만 세고 technology, relation label, description은 제외합니다. Architecture도 native와
+  nested Flowchart에서 service label과 label 없는 topology를 동일하게 평가합니다. Flowchart에 표시되는
+  Architecture group label의 별도 Scene projection은 후속 범위입니다. Requirement는 serializer와 같은 normalized/collision-safe output ID,
   requirement type·ID·text·risk·verification, element type·docref, relation type을 셉니다. 접근성 metadata와
   serializer가 무시한 대체 label은 포함하지 않습니다. Event Modeling은 lane label과 실제 fallback의
   time·frame type·label 조합 및 relation label, Wardley는 native title·component·link label, ZenUML은
