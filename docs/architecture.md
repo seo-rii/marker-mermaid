@@ -84,8 +84,10 @@ engine의 evidence를 다음 engine context와 view에 합칩니다. payload가 
 `fusion_source`로 deterministic fusion을 수행하고 fused/원 observation 후보를 round-robin으로
 뽑습니다. observation list, typed IR depth/item/text와 direct source에는 입력 budget을 적용하고 각 engine은
 candidate budget까지만 직렬화합니다. type top-k와 code hash 중복 제거 후
-기본 우선순위는 typed IR, Scene IR fallback, direct Mermaid입니다. 최종 정렬은 hard gate,
-aggregate score, OCR recall, generation priority, candidate ID 순서로 결정적입니다.
+기본 우선순위는 typed IR, Scene IR fallback, direct Mermaid입니다. 자동 게시 정책의 최종 정렬은
+parse/render hard gate 뒤 publish eligibility, aggregate score, OCR recall, generation priority,
+candidate ID 순서로 결정적입니다. `review_required`와 `sidecar_only`는 publish eligibility를 정렬에
+사용하지 않아 기존 aggregate 중심 검토 순서를 유지합니다.
 Treemap/Venn/Packet/Ishikawa/TreeView native validation이 실패하면 serializer가 명시한 portable fallback을
 같은 candidate slot에서 한 번 재검증하며, 요청/출력 type과 repair history에 전환을 기록합니다.
 

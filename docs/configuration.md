@@ -30,6 +30,8 @@ fixture도 trusted Marker/Vector provenance가 없으면 자동 교정하지 않
 | `review_required` | Markdown에 넣지 않고 sidecar/review만 생성 |
 | `sidecar_only` | Markdown에 넣지 않고 sidecar만 생성 |
 
+`sidecar_only`에서 검증된 후보를 sidecar에 저장한 결과는 게시나 review 요청 없이 성공 상태로 기록합니다.
+
 모든 정책에서 parse 또는 render 실패 결과는 게시할 수 없습니다. `trusted-local` 보안 profile은
 `review_required` 또는 `sidecar_only`와만 조합할 수 있습니다.
 

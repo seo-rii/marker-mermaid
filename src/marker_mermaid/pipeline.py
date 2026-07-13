@@ -17,7 +17,7 @@ from marker_mermaid.accessibility import (
 )
 from marker_mermaid.ast_repair import DeterministicMermaidRepair
 from marker_mermaid.candidate_scene import typed_ir_to_scene
-from marker_mermaid.config import MermaidConfig, Mode
+from marker_mermaid.config import MermaidConfig, Mode, PublishPolicy
 from marker_mermaid.flowchart_structure import (
     ambiguous_portable_ids,
     unique_portable_id_aliases,
@@ -1066,9 +1066,12 @@ class ReconstructionPipeline:
             if selected not in candidates:
                 candidates.append(selected)
         decision = decide_publication(selected, self.config)
-        status = "success" if decision.publish else "review_required"
         if selected is None:
             status = "failed"
+        elif decision.publish or not decision.review_required:
+            status = "success"
+        else:
+            status = "review_required"
         return ReconstructionResult(
             source_id=source_id,
             source_image_name=source_image_name,
@@ -1087,15 +1090,21 @@ class ReconstructionPipeline:
             status=status,
         )
 
-    @staticmethod
-    def _select(candidates: list[MermaidCandidate]) -> MermaidCandidate | None:
+    def _select(self, candidates: list[MermaidCandidate]) -> MermaidCandidate | None:
         eligible = [item for item in candidates if item.syntax_valid and item.render_valid]
         if not eligible:
             return None
         priority = {"typed_ir": 3, "scene_ir_fallback": 2, "direct_mermaid": 1}
+        automatic_publication = self.config.publish_policy in {
+            PublishPolicy.STRICT_VALIDATED,
+            PublishPolicy.BEST_EFFORT_VALIDATED,
+        }
         return max(
             eligible,
             key=lambda item: (
+                int(decide_publication(item, self.config).publish)
+                if automatic_publication
+                else 0,
                 item.aggregate_score if item.aggregate_score is not None else -1,
                 item.scores.get("ocr_recall", -1),
                 priority.get(item.generation_method, 0),

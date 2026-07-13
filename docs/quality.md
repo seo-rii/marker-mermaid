@@ -42,6 +42,12 @@ path enumeration은 기본 10,000개 path에서 중단합니다. budget을 넘�
 score에는 참여하지만 0인 의미 점수를 게시 가능 등급으로 희석할 수 없습니다. `extended`/`maximal`의
 구조 후보는 생성 node provenance가 80% 미만이거나 계산 불가능하면 review 대상으로 둡니다.
 
+`best_effort_validated`와 `strict_validated`에서 여러 parse/render 후보가 있으면 각 후보에 같은
+aggregate·semantic threshold와 provenance/numeric hold를 적용한 뒤, publish 가능한 class를 먼저
+선택합니다. 같은 class 안에서는 aggregate, OCR recall, generation method, candidate ID 순서를 유지합니다.
+따라서 metric availability가 적은 높은 total 후보가 실제 게시 가능한 evidence-rich 대안을 가리고 문서
+전체를 review 상태로 내리지 않습니다. 강제 review/sidecar 정책은 이 class 우선순위를 사용하지 않습니다.
+
 Semantic repair 후보도 초기 후보와 같은 reference text 집합과 평가 함수를 사용합니다. OCR/vector,
 provenance, edge, arrow, layout, path, numeric gate를 새 typed IR에서 다시 계산하며 aggregate 엄격 개선과
 semantic score 비감소를 동시에 요구합니다. Held aggregate를 repair가 임의로 해제하지 않습니다. 방향

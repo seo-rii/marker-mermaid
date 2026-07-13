@@ -5,7 +5,7 @@ import json
 import pytest
 from PIL import Image
 
-from marker_mermaid.config import MermaidConfig
+from marker_mermaid.config import MermaidConfig, PublishPolicy
 from marker_mermaid.engines import JsonFixtureEngine
 from marker_mermaid.geometry import ContourObservation, GeometryEngine, GeometryObservation
 from marker_mermaid.markdown import standalone_document_markdown
@@ -14,6 +14,7 @@ from marker_mermaid.models import (
     DiagramTypePrediction,
     DirectMermaidCandidate,
     EngineObservation,
+    MermaidCandidate,
     ReconstructionResult,
     SceneElement,
     SceneRelation,
@@ -22,6 +23,7 @@ from marker_mermaid.models import (
 )
 from marker_mermaid.pipeline import ReconstructionPipeline
 from marker_mermaid.protocols import RuntimeResult
+from marker_mermaid.scoring import aggregate_scores, decide_publication
 from marker_mermaid.sidecars import SidecarStore
 from marker_mermaid.validation import CandidateValidator
 
@@ -99,6 +101,148 @@ def test_pipeline_selects_valid_candidate_and_respects_budget(fake_runtime):
     assert "layout_similarity" not in result.selected.scores
     assert result.selected.typed_ir["acc_title"] == "Process"
     assert "Start" in result.selected.typed_ir["acc_description"]
+
+
+@pytest.mark.parametrize(
+    ("policy", "sparse_semantic", "rich_semantic"),
+    [
+        (
+            PublishPolicy.BEST_EFFORT_VALIDATED,
+            {"visual_entailment_precision": 0.8, "type_fitness": 0.0},
+            {
+                "ocr_recall": 0.45,
+                "visual_entailment_precision": 0.8,
+                "edge_agreement": 0.45,
+                "arrow_agreement": 0.45,
+                "layout_similarity": 0.45,
+                "type_fitness": 0.45,
+                "path_consistency": 0.45,
+                "numeric_consistency": 0.45,
+            },
+        ),
+        (
+            PublishPolicy.STRICT_VALIDATED,
+            {"type_fitness": 0.69},
+            {
+                "ocr_recall": 0.72,
+                "visual_entailment_precision": 0.8,
+                "edge_agreement": 0.72,
+                "arrow_agreement": 0.72,
+                "layout_similarity": 0.72,
+                "type_fitness": 0.72,
+                "path_consistency": 0.72,
+                "numeric_consistency": 0.72,
+            },
+        ),
+    ],
+)
+def test_automatic_policy_selects_publishable_candidate_before_higher_aggregate(
+    fake_runtime, policy, sparse_semantic, rich_semantic
+):
+    config = MermaidConfig(publish_policy=policy)
+    sparse_scores = {"syntax": 1.0, "render": 1.0, **sparse_semantic}
+    rich_scores = {"syntax": 1.0, "render": 1.0, **rich_semantic}
+    sparse = MermaidCandidate(
+        candidate_id="sparse-higher-total",
+        generation_method="typed_ir",
+        diagram_type="flowchart",
+        syntax_valid=True,
+        render_valid=True,
+        scores=sparse_scores,
+        aggregate_score=aggregate_scores(sparse_scores, config),
+    )
+    rich = MermaidCandidate(
+        candidate_id="rich-publishable",
+        generation_method="direct_mermaid",
+        diagram_type="flowchart",
+        syntax_valid=True,
+        render_valid=True,
+        scores=rich_scores,
+        aggregate_score=aggregate_scores(rich_scores, config),
+    )
+
+    assert sparse.aggregate_score > rich.aggregate_score
+    assert not decide_publication(sparse, config).publish
+    assert decide_publication(rich, config).publish
+    pipeline = ReconstructionPipeline(
+        config,
+        [],
+        CandidateValidator(fake_runtime, config.security_profile),
+    )
+    assert pipeline._select([sparse, rich]) is rich
+
+
+@pytest.mark.parametrize("policy", [PublishPolicy.REVIEW_REQUIRED, PublishPolicy.SIDECAR_ONLY])
+def test_nonautomatic_policy_preserves_aggregate_candidate_order(fake_runtime, policy):
+    config = MermaidConfig(publish_policy=policy)
+    high = MermaidCandidate(
+        candidate_id="higher-total",
+        generation_method="direct_mermaid",
+        diagram_type="flowchart",
+        syntax_valid=True,
+        render_valid=True,
+        scores={"syntax": 1.0, "render": 1.0, "type_fitness": 0.9},
+        aggregate_score=0.9,
+    )
+    low = MermaidCandidate(
+        candidate_id="lower-total",
+        generation_method="typed_ir",
+        diagram_type="flowchart",
+        syntax_valid=True,
+        render_valid=True,
+        scores={"syntax": 1.0, "render": 1.0, "type_fitness": 0.8},
+        aggregate_score=0.8,
+    )
+    pipeline = ReconstructionPipeline(
+        config,
+        [],
+        CandidateValidator(fake_runtime, config.security_profile),
+    )
+
+    assert pipeline._select([low, high]) is high
+
+
+def test_sidecar_only_reconstruction_succeeds_without_requesting_review(fake_runtime):
+    config = MermaidConfig(publish_policy=PublishPolicy.SIDECAR_ONLY)
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation())],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "sidecar-source",
+        "source.png",
+        Image.new("RGB", (100, 60), "white"),
+        ocr_texts=["Start End"],
+    )
+
+    assert result.selected is not None
+    assert not result.publish
+    assert not result.review_required
+    assert result.status == "success"
+
+
+@pytest.mark.parametrize(("scores", "expected_id"), [((0.9, 0.8), "first"), ((0.2, 0.1), "first")])
+def test_same_publication_class_keeps_aggregate_order(fake_runtime, scores, expected_id):
+    config = MermaidConfig()
+    candidates = [
+        MermaidCandidate(
+            candidate_id=candidate_id,
+            generation_method="typed_ir",
+            diagram_type="flowchart",
+            syntax_valid=True,
+            render_valid=True,
+            scores={"syntax": 1.0, "render": 1.0, "type_fitness": score},
+            aggregate_score=score,
+        )
+        for candidate_id, score in zip(("first", "second"), scores, strict=True)
+    ]
+    pipeline = ReconstructionPipeline(
+        config,
+        [],
+        CandidateValidator(fake_runtime, config.security_profile),
+    )
+
+    assert pipeline._select(candidates).candidate_id == expected_id
 
 
 def test_generated_node_provenance_gate_holds_unattributed_typed_nodes(fake_runtime):
