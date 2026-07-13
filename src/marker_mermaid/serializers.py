@@ -580,6 +580,15 @@ def serialize_runtime_fallback_result(
             native_runtime_valid=False,
         )
         return result if result.used_fallback else None
+    if diagram_type == "organization":
+        from marker_mermaid.serializers_experimental import serialize_organization
+
+        result = serialize_organization(
+            ir,
+            experimental=experimental,
+            native_runtime_valid=False,
+        )
+        return result if result.emitted_type == "flowchart" else None
     return None
 
 

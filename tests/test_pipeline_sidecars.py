@@ -1009,6 +1009,121 @@ def test_native_runtime_rejection_retries_declared_portable_fallback():
     assert result.selected.repair_history[-1].operation == "runtime_portable_fallback"
 
 
+def test_nested_organization_runtime_rejection_retries_flowchart_fallback():
+    class TreeViewRejectingRuntime:
+        def __init__(self):
+            self.calls = []
+
+        def validate_and_render(self, code, timeout_seconds):
+            self.calls.append(code)
+            if code.startswith("treeView-beta"):
+                return RuntimeResult(
+                    True,
+                    False,
+                    diagram_type="treeview",
+                    error="native parser rejected TreeView",
+                )
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="flowchart-v2",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    organization_ir = {
+        "root": {
+            "id": "ceo",
+            "label": "CEO",
+            "evidence_ids": ["ocr"],
+            "children": [
+                {
+                    "id": "cto",
+                    "label": "CTO",
+                    "evidence_ids": ["ocr"],
+                }
+            ],
+        }
+    }
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["organization"], scores=[0.9]),
+        typed_candidates=[TypedIRCandidate(diagram_type="organization", ir=organization_ir)],
+        evidence=[
+            VisualEvidence(
+                id="ocr",
+                kind="ocr_token",
+                text="CEO CTO",
+                bbox=(0, 0, 50, 10),
+            )
+        ],
+    )
+    runtime = TreeViewRejectingRuntime()
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is not None
+    assert result.selected.diagram_type == "organization"
+    assert result.selected.emitted_diagram_type == "flowchart"
+    assert result.selected.fallback_chain == ["organization", "treeview", "flowchart"]
+    assert result.selected.render_valid
+    assert result.selected.scores["ocr_recall"] == 1
+    assert result.selected.scores["visual_entailment_precision"] == 1
+    assert len(runtime.calls) == 2
+    assert runtime.calls[0].startswith("treeView-beta")
+    assert runtime.calls[1].startswith("flowchart LR")
+    assert result.selected.repair_history[-1].operation == "runtime_portable_fallback"
+
+
+def test_runtime_fallback_does_not_revalidate_an_identical_portable_candidate():
+    class RejectingRuntime:
+        def __init__(self):
+            self.calls = []
+
+        def validate_and_render(self, code, timeout_seconds):
+            self.calls.append(code)
+            return RuntimeResult(False, False, error="portable renderer rejected candidate")
+
+        def close(self):
+            pass
+
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["treeview"], scores=[0.9]),
+        typed_candidates=[
+            TypedIRCandidate(
+                diagram_type="treeview",
+                ir={
+                    "root": {
+                        "id": "root",
+                        "label": "Root",
+                        "children": [{"id": "child", "label": 'Child "quoted"'}],
+                    }
+                },
+            )
+        ],
+    )
+    runtime = RejectingRuntime()
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is None
+    assert len(result.alternatives) == 1
+    assert result.alternatives[0].emitted_diagram_type == "flowchart"
+    assert result.alternatives[0].fallback_chain == ["treeview", "flowchart"]
+    assert len(runtime.calls) == 1
+
+
 def test_numeric_diagram_without_source_numeric_evidence_requires_review():
     class PieEngine:
         name = "pie"

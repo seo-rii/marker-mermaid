@@ -211,6 +211,26 @@ def test_organization_and_data_lineage_have_explicit_portable_fallbacks():
     assert "etl -->|writes| clean" in lineage.code
 
 
+def test_organization_runtime_rejection_uses_nested_flowchart_fallback():
+    result = serialize_organization(
+        {
+            "root": {
+                "id": "ceo",
+                "label": "CEO",
+                "children": [{"id": "cto", "label": "CTO"}],
+            }
+        },
+        native_runtime_valid=False,
+    )
+
+    assert result.emitted_type == "flowchart"
+    assert result.fallback_chain == ("organization", "treeview", "flowchart")
+    assert result.code.startswith("flowchart LR\n")
+    assert 'ceo["CEO"]' in result.code
+    assert "ceo --> cto" in result.code
+    assert any("CandidateValidator rejected" in warning for warning in result.warnings)
+
+
 def test_data_lineage_rejects_missing_and_unresolved_evidence():
     with pytest.raises(SerializationError, match="requires datasets"):
         serialize_data_lineage({"processes": [], "relations": []})
@@ -252,6 +272,15 @@ def test_experimental_serializers_pass_strict_mermaid_11_16_parse_and_render():
             {
                 "participants": ["User", "API"],
                 "messages": [{"source": "User", "target": "API", "label": "call"}],
+            }
+        ).code,
+        serialize_organization(
+            {
+                "root": {
+                    "id": "ceo",
+                    "label": "CEO",
+                    "children": [{"id": "cto", "label": "CTO"}],
+                }
             }
         ).code,
     ]

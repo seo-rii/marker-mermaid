@@ -327,14 +327,22 @@ def serialize_zenuml(ir: Mapping[str, Any], *, experimental: bool = False) -> Se
 
 
 def serialize_organization(
-    ir: Mapping[str, Any], *, experimental: bool = False
+    ir: Mapping[str, Any],
+    *,
+    experimental: bool = False,
+    native_runtime_valid: bool = True,
 ) -> SerializationResult:
     """Represent an organization hierarchy with the native TreeView grammar."""
 
     from marker_mermaid.serializers_special import serialize_special
 
     enriched = enrich_accessibility_ir(ir, "organization", experimental=experimental)
-    tree = serialize_special("treeview", enriched, experimental=experimental)
+    tree = serialize_special(
+        "treeview",
+        enriched,
+        experimental=experimental,
+        native_runtime_valid=native_runtime_valid,
+    )
     return SerializationResult.fallback(
         "organization",
         tree.emitted_type,

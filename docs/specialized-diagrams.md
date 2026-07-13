@@ -35,6 +35,8 @@ GitGraph는 Mermaid가 자동 commit ID를 만들도록 두지 않으며 merge�
   직렬화하고 모든 nonterminal reference가 rule에 존재하는지 검사합니다.
 - ZenUML은 pinned runtime에 extension이 없어 Sequence fallback을 사용합니다.
 - Organization과 Data Lineage는 각각 TreeView와 Flowchart fallback으로 hierarchy/endpoint를 보존합니다.
+  Organization의 TreeView가 runtime validation에서 거절되면 같은 candidate slot에서 다시
+  `organization → treeview → flowchart` chain으로 검증합니다.
 
 Packet·TreeView·Ishikawa는 하나의 HTML entity encoder를 공유하지 않습니다. pinned native grammar별로
 실제 SVG text를 보존하는 quoting을 적용하고, TreeView의 quote/backslash나 Ishikawa의 ampersand/angle처럼
@@ -49,5 +51,6 @@ Flowchart 자체가 literal quote/backslash를 보존하지 못하는 경우에�
 대표 native/fallback fixture는 pinned Mermaid 11.16에서 실제 strict security scan, parse, render, SVG
 inspection을 통과하는 integration test로 고정합니다. Packet/Ishikawa/TreeView와 Treemap/Venn은 native
 runtime rejection 뒤 같은 candidate slot에서 evidence-preserving portable fallback을 한 번 재검증합니다.
-Organization/Data Lineage의 별도 runtime fixture는 아직 이 범위에 포함되지 않습니다. experimental
-native도 validation hard gate를 우회하지 않습니다.
+Organization은 실제 TreeView runtime fixture와 simulated rejection→Flowchart pipeline fixture를 함께
+고정합니다. Data Lineage의 별도 runtime fixture는 아직 이 범위에 포함되지 않습니다. experimental native도
+validation hard gate를 우회하지 않습니다.

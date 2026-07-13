@@ -961,7 +961,6 @@ class ReconstructionPipeline:
                 draft.method == "typed_ir"
                 and draft.typed_ir is not None
                 and not runtime.render_valid
-                and candidate.emitted_diagram_type == candidate.diagram_type
             ):
                 try:
                     fallback = serialize_runtime_fallback_result(
@@ -969,7 +968,7 @@ class ReconstructionPipeline:
                         draft.typed_ir,
                         experimental=self.config.mode != Mode.STRICT,
                     )
-                    if fallback is not None:
+                    if fallback is not None and fallback.code != candidate_code:
                         fallback_outcome = self.validator.validate(
                             fallback.code,
                             self.config.render_timeout_seconds,
