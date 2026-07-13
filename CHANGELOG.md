@@ -51,6 +51,7 @@
 - Trusted-geometry-backed typed Flowchart direction reversal and unlabeled missing-edge repair with shared source-block attribution and collision revocation.
 - Shared deterministic Flowchart group emission plans with validated flat subgraphs and generated SceneGroup reconstruction.
 - Trusted vector-container Flowchart group style recovery with exact membership, bbox, collision, and audit gates.
+- Trusted vector-origin gates and explicit attribution for Flowchart node and edge styles.
 
 ### Changed
 

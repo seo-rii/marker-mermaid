@@ -42,7 +42,7 @@ flowchart TB
 | `serializers*.py`, `serialization.py` | software/chart typed IR, requested/emitted type와 fallback 계약 |
 | `ast_repair.py` | 의미를 추가하지 않는 bounded lexical/structural repair와 AST adapter seam |
 | `semantic_repair.py` | exact text와 고신뢰 line/arrow 근거가 있는 typed flowchart label·directed-edge 교정 |
-| `style_recovery.py` | trusted evidence/profile-gated flowchart node·group fill/border/bold와 exact-mapped edge color/style allowlist |
+| `style_recovery.py` | trusted PDF vector origin/profile-gated flowchart node·group fill/border/bold와 exact-mapped edge color/style attribution |
 | `security.py` | active/external Mermaid syntax의 fail-closed 검사 |
 | `validation.py` | bounded nonblocking Chromium protocol, parse/render, SVG 재검사, process-group 정리 |
 | `scoring.py` | OCR/numeric score, available-weight aggregation, 게시 결정 |

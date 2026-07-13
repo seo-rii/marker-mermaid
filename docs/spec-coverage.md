@@ -32,7 +32,7 @@
 | Phase 5 special types | 구현 | Packet/Ishikawa/TreeView native+runtime fallback, Wardley/Cynefin/Railroad native, EventModeling/ZenUML fallback |
 | Organization/Data Lineage | 구현 | TreeView/Flowchart portable fallback과 endpoint 검증 |
 | AST repair/mermaid-ast | 기반 | pre-validation bounded repair, event/history, AST adapter seam; mermaid-ast package adapter 후속 |
-| style recovery | 기반 | Flowchart node fill/border, vector-backed bold label, edge color/style, exact-member+bbox trusted vector group style 구현; raster group/lane과 chart series 후속 |
+| style recovery | 기반 | trusted PDF vector origin 기반 Flowchart node/group fill·border, bold label, edge color/style와 attribution 구현; raster group/lane과 chart series 후속 |
 | OCR recall | 구현 | Unicode token coverage |
 | numeric consistency | 구현 | source에 존재하는 숫자만 비교 |
 | edge agreement | 구현 | aligned topology F1, 불가 시 source/render edge IoU fallback |

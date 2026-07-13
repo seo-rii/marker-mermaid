@@ -35,6 +35,7 @@ Group 삭제는 member node/edge를 보존하면서 exact Scene↔subgraph block
 - PDF vector/CV/OCR/VLM observation을 출처별 우선순위로 fusion하고 충돌 warning을 남깁니다.
 - explicit flat/disjoint Flowchart group을 검증된 subgraph로 방출하고 lane/group membership을 SceneGroup sidecar에 보존합니다.
 - exact member set과 bbox containment가 일치하는 trusted vector container만 group fill/stroke style로 복원합니다.
+- node fill/border와 edge stroke도 collision-free built-in PDF vector contour/line 근거가 있을 때만 복원합니다.
 - 등록된 PDF vector span 근거가 있는 Flowchart bold label을 안전한 상수 style로 복원합니다.
 - trusted Marker/Vector text와 exact bbox/block, 또는 충돌 없는 built-in Geometry relation이 지지할 때만 Flowchart label·방향·무라벨 누락 edge를 복구합니다.
 - 평가 가능한 경우 edge·arrow·layout·root-to-terminal path 구조 점수를 기록합니다.

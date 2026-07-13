@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 from marker_mermaid.config import CompatibilityProfile, SecurityProfile
 from marker_mermaid.flowchart_structure import ambiguous_portable_ids
-from marker_mermaid.models import DiagramSceneIR, SceneElement, VisualEvidence
+from marker_mermaid.models import DiagramSceneIR, SceneElement, SceneRelation, VisualEvidence
 
 _HEX_COLOR = re.compile(r"#[0-9a-fA-F]{3,8}\Z")
 _NAMED_COLORS = {
@@ -29,7 +30,8 @@ _NAMED_COLORS = {
 }
 _NODE_DECLARATION = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*[\[({]", re.MULTILINE)
 _EDGE = re.compile(
-    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s+(?:<-->|-->|-.->|==>|---|--?>\|[^|\n]*\|)\s+"
+    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s+"
+    r"(<-->|-->|-.->|==>|---|--?>\|[^|\n]*\|)\s+"
     r"([A-Za-z_][A-Za-z0-9_]*)\s*$",
     re.MULTILINE,
 )
@@ -54,12 +56,30 @@ class GroupStyleAttribution:
 
 
 @dataclass(frozen=True, slots=True)
+class EdgeStyleAttribution:
+    source_relation_id: str
+    link_index: int
+    evidence_ids: tuple[str, ...]
+    match_method: str
+
+
+@dataclass(frozen=True, slots=True)
+class TrustedEdgeStyleEvidence:
+    """Collision-free vector line style and the geometry of its exact endpoints."""
+
+    relation: SceneRelation
+    source_bbox: tuple[float, float, float, float]
+    target_bbox: tuple[float, float, float, float]
+
+
+@dataclass(frozen=True, slots=True)
 class StyleRecoveryResult:
     code: str
     applied_element_ids: tuple[str, ...] = ()
     applied_link_indexes: tuple[int, ...] = ()
     applied_group_ids: tuple[str, ...] = ()
     attributions: tuple[StyleAttribution, ...] = ()
+    edge_attributions: tuple[EdgeStyleAttribution, ...] = ()
     group_attributions: tuple[GroupStyleAttribution, ...] = ()
     warnings: tuple[str, ...] = ()
 
@@ -109,6 +129,23 @@ def _element_has_style(element: SceneElement) -> bool:
     )
 
 
+def _element_has_box_style(element: SceneElement) -> bool:
+    return bool(element.fill_color or element.border_color or element.border_style)
+
+
+def _bbox_iou(
+    left: tuple[float, float, float, float],
+    right: tuple[float, float, float, float],
+) -> float:
+    intersection = max(0.0, min(left[2], right[2]) - max(left[0], right[0])) * max(
+        0.0, min(left[3], right[3]) - max(left[1], right[1])
+    )
+    left_area = max(0.0, left[2] - left[0]) * max(0.0, left[3] - left[1])
+    right_area = max(0.0, right[2] - right[0]) * max(0.0, right[3] - right[1])
+    union = left_area + right_area - intersection
+    return intersection / union if union > 0 else 0.0
+
+
 def _normalized_label(value: str | None) -> str:
     if value is None:
         return ""
@@ -129,13 +166,16 @@ def _map_elements(
     )
     generated_by_id = {element.id: element for element in generated_scene.elements}
     generated_by_label: dict[str, list[SceneElement]] = {}
-    generated_by_evidence: dict[str, list[SceneElement]] = {}
+    generated_by_evidence: dict[str, SceneElement | None] = {}
     for element in generated_scene.elements:
         label = _normalized_label(element.text)
         if label:
             generated_by_label.setdefault(label, []).append(element)
         for evidence_id in set(element.evidence_ids) & known_evidence_ids:
-            generated_by_evidence.setdefault(evidence_id, []).append(element)
+            if evidence_id not in generated_by_evidence:
+                generated_by_evidence[evidence_id] = element
+            else:
+                generated_by_evidence[evidence_id] = None
 
     proposals: list[tuple[SceneElement, SceneElement, str, tuple[str, ...]]] = []
     warnings: list[str] = []
@@ -158,15 +198,21 @@ def _map_elements(
                 f"style mapping exact ID has ambiguous normalized identity for {source.id}"
             )
         evidence_match_by_id: dict[str, SceneElement] = {}
+        ambiguous_evidence = False
         for evidence_id in source_evidence:
-            for candidate in generated_by_evidence.get(evidence_id, ()):  # bounded index lookup
-                evidence_match_by_id[candidate.id] = candidate
+            if evidence_id not in generated_by_evidence:
+                continue
+            candidate = generated_by_evidence[evidence_id]
+            if candidate is None:
+                ambiguous_evidence = True
+                continue
+            evidence_match_by_id[candidate.id] = candidate
         evidence_matches = list(evidence_match_by_id.values())
-        if len(evidence_matches) == 1:
+        if len(evidence_matches) == 1 and not ambiguous_evidence:
             overlap = tuple(sorted(set(evidence_matches[0].evidence_ids) & set(source_evidence)))
             proposals.append((source, evidence_matches[0], "evidence_overlap", overlap))
             continue
-        if len(evidence_matches) > 1:
+        if len(evidence_matches) > 1 or ambiguous_evidence:
             warnings.append(f"style mapping was ambiguous by evidence for {source.id}")
             continue
         label = _normalized_label(source.text)
@@ -191,15 +237,15 @@ def _map_elements(
     return safe, list(dict.fromkeys(warnings))
 
 
-def _bold_evidence_supports(
+def _bold_evidence_support(
     source: SceneElement,
     emitted: SceneElement,
     evidence_ids: tuple[str, ...],
     registry: Mapping[str, VisualEvidence],
-) -> bool:
+) -> tuple[str, ...]:
     source_label = _normalized_label(source.text)
     if not source_label or source_label != _normalized_label(emitted.text):
-        return False
+        return ()
     spans: list[tuple[tuple[float, float, float, float], VisualEvidence]] = []
     for evidence_id in evidence_ids:
         evidence = registry.get(evidence_id)
@@ -219,11 +265,72 @@ def _bold_evidence_supports(
             source.bbox[0] <= center[0] <= source.bbox[2]
             and source.bbox[1] <= center[1] <= source.bbox[3]
         ):
-            return False
+            return ()
         spans.append((evidence.bbox, evidence))
     spans.sort(key=lambda item: (item[0][1], item[0][0], item[1].id))
     reconstructed = _normalized_label(" ".join(item.text or "" for _bbox, item in spans))
-    return bool(spans) and reconstructed == source_label
+    if not spans or reconstructed != source_label:
+        return ()
+    return tuple(item.id for _bbox, item in spans)
+
+
+def _trusted_node_box_style(
+    source: SceneElement,
+    registry: Mapping[str, SceneElement],
+    evidence_counts: Mapping[str, int],
+) -> tuple[str, SceneElement] | None:
+    matches: dict[str, SceneElement] = {}
+    for evidence_id in source.evidence_ids:
+        vector_element = registry.get(evidence_id)
+        if (
+            vector_element is not None
+            and evidence_counts.get(evidence_id) == 1
+            and evidence_id in vector_element.evidence_ids
+            and _bbox_iou(source.bbox, vector_element.bbox) >= 0.8
+        ):
+            matches[evidence_id] = vector_element
+    if len(matches) != 1:
+        return None
+    return next(iter(matches.items()))
+
+
+def _trusted_edge_style(
+    relation: SceneRelation,
+    source_elements: Mapping[str, SceneElement],
+    registry: Mapping[str, TrustedEdgeStyleEvidence],
+    evidence_counts: Mapping[str, int],
+) -> tuple[str, TrustedEdgeStyleEvidence] | None:
+    if relation.source_id is None or relation.target_id is None:
+        return None
+    source = source_elements.get(relation.source_id)
+    target = source_elements.get(relation.target_id)
+    if source is None or target is None:
+        return None
+    matches: dict[str, TrustedEdgeStyleEvidence] = {}
+    for evidence_id in relation.evidence_ids:
+        trusted = registry.get(evidence_id)
+        if (
+            trusted is None
+            or evidence_counts.get(evidence_id) != 1
+            or evidence_id not in trusted.relation.evidence_ids
+            or relation.arrow_at_start != trusted.relation.arrow_at_start
+            or relation.arrow_at_end != trusted.relation.arrow_at_end
+            or _bbox_iou(source.bbox, trusted.source_bbox) < 0.8
+            or _bbox_iou(target.bbox, trusted.target_bbox) < 0.8
+        ):
+            continue
+        matches[evidence_id] = trusted
+    if len(matches) != 1:
+        return None
+    return next(iter(matches.items()))
+
+
+def _edge_arrow_signature(operator: str) -> tuple[bool, bool]:
+    if operator == "<-->":
+        return True, True
+    if operator == "---":
+        return False, False
+    return False, True
 
 
 def recover_flowchart_styles(
@@ -234,7 +341,10 @@ def recover_flowchart_styles(
     compatibility_profile: CompatibilityProfile,
     security_profile: SecurityProfile,
     known_evidence_ids: set[str] | frozenset[str] = frozenset(),
+    trusted_mapping_evidence_ids: set[str] | frozenset[str] = frozenset(),
     known_bold_evidence: Mapping[str, VisualEvidence] | None = None,
+    known_node_style_evidence: Mapping[str, SceneElement] | None = None,
+    known_edge_style_evidence: Mapping[str, TrustedEdgeStyleEvidence] | None = None,
     known_group_style_evidence: Mapping[str, SceneElement] | None = None,
 ) -> StyleRecoveryResult:
     """Append an allowlisted style subset when both product profiles permit it.
@@ -244,7 +354,10 @@ def recover_flowchart_styles(
     """
 
     if scene is None or not (
-        _has_style_evidence(scene) or (scene.groups and known_group_style_evidence)
+        _has_style_evidence(scene)
+        or known_node_style_evidence
+        or known_edge_style_evidence
+        or (scene.groups and known_group_style_evidence)
     ):
         return StyleRecoveryResult(code=code)
     if generated_scene is None:
@@ -272,11 +385,15 @@ def recover_flowchart_styles(
             ),
         )
 
-    mappings, mapping_warnings = _map_elements(
-        scene,
-        generated_scene,
-        set(known_evidence_ids),
-    )
+    trusted_mapping_ids = {
+        *set(trusted_mapping_evidence_ids),
+        *set(known_bold_evidence or {}),
+        *set(known_node_style_evidence or {}),
+    }
+    # Retained for source compatibility only. General evidence presence is not
+    # style authority; only exact trusted registries participate in mapping.
+    _ = known_evidence_ids
+    mappings, mapping_warnings = _map_elements(scene, generated_scene, trusted_mapping_ids)
     ambiguous_scene_source_ids, _ambiguous_scene_emitted_ids = ambiguous_portable_ids(
         [element.id for element in scene.elements]
     )
@@ -288,8 +405,20 @@ def recover_flowchart_styles(
     applied_elements: list[str] = []
     applied_groups: list[str] = []
     attributions: list[StyleAttribution] = []
+    edge_attributions: list[EdgeStyleAttribution] = []
     group_attributions: list[GroupStyleAttribution] = []
     warnings: list[str] = list(mapping_warnings)
+    trusted_node_styles = dict(known_node_style_evidence or {})
+    if trusted_node_styles and scene.coordinate_space != "pixels":
+        warnings.append("node styles require source elements in pixel coordinates")
+        trusted_node_styles = {}
+    node_style_evidence_counts = Counter(
+        evidence_id
+        for element in scene.elements
+        for evidence_id in element.evidence_ids
+        if evidence_id in trusted_node_styles
+    )
+    used_vector_style_evidence: set[str] = set()
     for element, emitted, method, evidence_ids in mappings:
         node_id = _identifier(emitted.id)
         if node_id not in declarations:
@@ -298,34 +427,56 @@ def recover_flowchart_styles(
             warnings.append(f"style skipped for ambiguous normalized node id {node_id}")
             continue
         attributes: list[str] = []
-        fill = _color(element.fill_color)
-        border = _color(element.border_color)
-        if element.fill_color and fill is None:
-            warnings.append(
-                f"unsupported fill color for {element.id}: {_warning_value(element.fill_color)}"
-            )
-        if element.border_color and border is None:
-            warnings.append(
-                f"unsupported border color for {element.id}: {_warning_value(element.border_color)}"
-            )
-        if fill is not None:
-            attributes.append(f"fill:{fill}")
-        if border is not None:
-            attributes.append(f"stroke:{border}")
-        if element.border_style == "dashed":
-            attributes.append("stroke-dasharray:5 5")
-        elif element.border_style == "thick":
-            attributes.append("stroke-width:3px")
-        elif element.border_style not in {None, "solid"}:
-            warnings.append(f"unsupported border style for {element.id}: {element.border_style}")
-        bold_supported = _bold_evidence_supports(
+        attribution_evidence: set[str] = set()
+        trusted_box_style = _trusted_node_box_style(
+            element,
+            trusted_node_styles,
+            node_style_evidence_counts,
+        )
+        if trusted_box_style is not None:
+            box_evidence_id, vector_element = trusted_box_style
+            if box_evidence_id in used_vector_style_evidence:
+                warnings.append(f"box style evidence was reused for {element.id}")
+                trusted_box_style = None
+        if trusted_box_style is not None:
+            box_evidence_id, vector_element = trusted_box_style
+            attribution_evidence.add(box_evidence_id)
+            used_vector_style_evidence.add(box_evidence_id)
+            fill = _color(vector_element.fill_color)
+            border = _color(vector_element.border_color)
+            if vector_element.fill_color and fill is None:
+                warnings.append(
+                    f"unsupported fill color for {element.id}: "
+                    f"{_warning_value(vector_element.fill_color)}"
+                )
+            if vector_element.border_color and border is None:
+                warnings.append(
+                    f"unsupported border color for {element.id}: "
+                    f"{_warning_value(vector_element.border_color)}"
+                )
+            if fill is not None:
+                attributes.append(f"fill:{fill}")
+            if border is not None:
+                attributes.append(f"stroke:{border}")
+            if vector_element.border_style == "dashed":
+                attributes.append("stroke-dasharray:5 5")
+            elif vector_element.border_style == "thick":
+                attributes.append("stroke-width:3px")
+            elif vector_element.border_style not in {None, "solid"}:
+                warnings.append(
+                    f"unsupported border style for {element.id}: {vector_element.border_style}"
+                )
+        elif _element_has_box_style(element):
+            warnings.append(f"box style omitted without registered vector contour for {element.id}")
+        bold_evidence_ids = _bold_evidence_support(
             element,
             emitted,
             evidence_ids,
             known_bold_evidence or {},
         )
-        if element.font_weight == "bold" and bold_supported:
+        if element.font_weight == "bold" and bold_evidence_ids:
             attributes.append("font-weight:bold")
+            attribution_evidence.update(bold_evidence_ids)
         elif element.font_weight == "bold":
             warnings.append(
                 f"bold emphasis omitted without registered vector evidence for {element.id}"
@@ -337,13 +488,12 @@ def recover_flowchart_styles(
                 StyleAttribution(
                     source_element_id=element.id,
                     emitted_element_id=emitted.id,
-                    evidence_ids=evidence_ids,
+                    evidence_ids=tuple(sorted(attribution_evidence)),
                     match_method=method,
                 )
             )
 
     mapped_ids = {source.id: emitted.id for source, emitted, _method, _ids in mappings}
-    used_group_evidence: set[str] = set()
     trusted_group_styles = dict(known_group_style_evidence or {})
     total_group_members = sum(len(group.member_ids) for group in scene.groups)
     group_style_work = len(trusted_group_styles) * (
@@ -420,7 +570,7 @@ def recover_flowchart_styles(
                 for evidence_id in source_elements_by_id[member_id].evidence_ids
             }
             for evidence_id, vector_element in trusted_group_styles.items():
-                if evidence_id in used_group_evidence:
+                if evidence_id in used_vector_style_evidence:
                     continue
                 if evidence_id not in vector_element.evidence_ids:
                     continue
@@ -546,7 +696,7 @@ def recover_flowchart_styles(
                 continue
             lines.append(f"    style {emitted_group.id} {','.join(attributes)}")
             applied_groups.append(source_group.id)
-            used_group_evidence.add(evidence_id)
+            used_vector_style_evidence.add(evidence_id)
             group_attributions.append(
                 GroupStyleAttribution(
                     source_group_id=source_group.id,
@@ -559,24 +709,69 @@ def recover_flowchart_styles(
     edge_lines = [line for line in code.splitlines() if _EDGE_OPERATOR.search(line)]
     edge_matches = [_EDGE.fullmatch(line) for line in edge_lines]
     edge_mapping_safe = bool(edge_lines) and all(match is not None for match in edge_matches)
-    edge_pairs = [match.groups() for match in edge_matches if match is not None]
+    edge_records = [match.groups() for match in edge_matches if match is not None]
+    edge_pairs = [(source, target) for source, _operator, target in edge_records]
+    edge_pair_counts = Counter(edge_pairs)
+    edge_index_by_pair = {
+        pair: index for index, pair in enumerate(edge_pairs) if edge_pair_counts[pair] == 1
+    }
+    mapped_relation_pair_counts: Counter[tuple[str, str]] = Counter()
+    for relation in scene.relations:
+        if relation.source_id in mapped_ids and relation.target_id in mapped_ids:
+            mapped_relation_pair_counts[
+                (
+                    _identifier(mapped_ids[relation.source_id]),
+                    _identifier(mapped_ids[relation.target_id]),
+                )
+            ] += 1
+    generated_relations_by_pair: dict[tuple[str | None, str | None], list[SceneRelation]] = {}
+    for generated_relation in generated_scene.relations:
+        generated_relations_by_pair.setdefault(
+            (generated_relation.source_id, generated_relation.target_id), []
+        ).append(generated_relation)
+    trusted_edge_styles = dict(known_edge_style_evidence or {})
+    edge_style_evidence_counts = Counter(
+        evidence_id
+        for relation in scene.relations
+        for evidence_id in relation.evidence_ids
+        if evidence_id in trusted_edge_styles
+    )
+    source_elements_by_id = {element.id: element for element in scene.elements}
+    used_edge_style_evidence: set[str] = set()
     used_edge_indexes: set[int] = set()
     applied_links: list[int] = []
-    if not edge_mapping_safe and any(
-        relation.line_color or relation.line_style in {"dashed", "thick"}
-        for relation in scene.relations
-    ):
+    if trusted_edge_styles and scene.coordinate_space != "pixels":
+        warnings.append("edge styles require source relations in pixel coordinates")
+        trusted_edge_styles = {}
+    if not edge_mapping_safe and trusted_edge_styles:
         warnings.append(
             "edge styles were skipped because Mermaid edge ordering could not be mapped safely"
         )
     for relation in scene.relations:
         if relation.source_id is None or relation.target_id is None:
             continue
-        color = _color(relation.line_color)
-        style = relation.line_style
-        if relation.line_color and color is None:
+        trusted_edge_style = _trusted_edge_style(
+            relation,
+            source_elements_by_id,
+            trusted_edge_styles,
+            edge_style_evidence_counts,
+        )
+        if trusted_edge_style is None:
+            if relation.line_color or relation.line_style:
+                warnings.append(
+                    f"edge style omitted without registered vector line for {relation.id}"
+                )
+            continue
+        edge_evidence_id, vector_style = trusted_edge_style
+        if edge_evidence_id in used_edge_style_evidence:
+            warnings.append(f"edge style evidence was reused for {relation.id}")
+            continue
+        color = _color(vector_style.relation.line_color)
+        style = vector_style.relation.line_style
+        if vector_style.relation.line_color and color is None:
             warnings.append(
-                f"unsupported line color for {relation.id}: {_warning_value(relation.line_color)}"
+                f"unsupported line color for {relation.id}: "
+                f"{_warning_value(vector_style.relation.line_color)}"
             )
         if color is None and style not in {"dashed", "thick"}:
             continue
@@ -606,16 +801,26 @@ def recover_flowchart_styles(
             )
             continue
         pair = (normalized_source, normalized_target)
-        edge_index = next(
-            (
-                index
-                for index, candidate in enumerate(edge_pairs)
-                if index not in used_edge_indexes and candidate == pair
-            ),
-            None,
-        )
-        if edge_index is None:
+        if edge_pair_counts[pair] != 1 or mapped_relation_pair_counts[pair] != 1:
+            warnings.append(f"edge style skipped for parallel endpoint pair in {relation.id}")
+            continue
+        generated_matches = generated_relations_by_pair.get((mapped_source, mapped_target), [])
+        if len(generated_matches) != 1:
+            warnings.append(f"edge style could not map one generated relation for {relation.id}")
+            continue
+        edge_index = edge_index_by_pair.get(pair)
+        if edge_index is None or edge_index in used_edge_indexes:
             warnings.append(f"edge style could not be mapped for {relation.id}")
+            continue
+        code_arrows = _edge_arrow_signature(edge_records[edge_index][1])
+        generated_relation = generated_matches[0]
+        source_arrows = (relation.arrow_at_start, relation.arrow_at_end)
+        generated_arrows = (
+            generated_relation.arrow_at_start,
+            generated_relation.arrow_at_end,
+        )
+        if code_arrows != source_arrows or generated_arrows != source_arrows:
+            warnings.append(f"edge style arrow semantics disagreed for {relation.id}")
             continue
         used_edge_indexes.add(edge_index)
         attributes: list[str] = []
@@ -627,6 +832,15 @@ def recover_flowchart_styles(
             attributes.append("stroke-width:3px")
         lines.append(f"    linkStyle {edge_index} {','.join(attributes)}")
         applied_links.append(edge_index)
+        used_edge_style_evidence.add(edge_evidence_id)
+        edge_attributions.append(
+            EdgeStyleAttribution(
+                source_relation_id=relation.id,
+                link_index=edge_index,
+                evidence_ids=(edge_evidence_id,),
+                match_method="vector_evidence_and_endpoint_bbox",
+            )
+        )
 
     if not lines:
         return StyleRecoveryResult(code=code, warnings=tuple(dict.fromkeys(warnings)))
@@ -640,6 +854,7 @@ def recover_flowchart_styles(
         applied_link_indexes=tuple(applied_links),
         applied_group_ids=tuple(applied_groups),
         attributions=tuple(attributions),
+        edge_attributions=tuple(edge_attributions),
         group_attributions=tuple(group_attributions),
         warnings=tuple(dict.fromkeys(warnings)),
     )

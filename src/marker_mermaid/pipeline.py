@@ -63,7 +63,10 @@ from marker_mermaid.serializers import (
     serialize_runtime_fallback_result,
     serialize_typed_ir_result,
 )
-from marker_mermaid.style_recovery import recover_flowchart_styles
+from marker_mermaid.style_recovery import (
+    TrustedEdgeStyleEvidence,
+    recover_flowchart_styles,
+)
 from marker_mermaid.validation import CandidateValidator
 from marker_mermaid.vector import VectorPrimitiveEngine
 from marker_mermaid.views import build_visual_priors
@@ -353,7 +356,8 @@ class ReconstructionPipeline:
         }
         known_evidence_ids = {item.id for item in all_evidence}
         trusted_bold_evidence: dict[str, VisualEvidence] = {}
-        trusted_group_style_evidence: dict[str, SceneElement] = {}
+        trusted_vector_style_evidence: dict[str, SceneElement] = {}
+        trusted_edge_style_evidence: dict[str, TrustedEdgeStyleEvidence] = {}
         try:
             views, view_warnings = build_visual_priors(image, all_evidence, self.config)
         except Exception as exc:
@@ -403,6 +407,7 @@ class ReconstructionPipeline:
             trusted_vector_engine = type(engine) is VectorPrimitiveEngine
             trusted_geometry_engine = type(engine) is GeometryEngine
             new_trusted_vector_contours: set[str] = set()
+            new_trusted_vector_lines: set[str] = set()
             relation_counts: dict[frozenset[str], int] = {}
             if observation.scene_ir is not None:
                 for relation in observation.scene_ir.relations:
@@ -461,20 +466,36 @@ class ReconstructionPipeline:
                         and source_block_id_set.intersection(item.source_block_ids)
                     ):
                         context.trusted_label_evidence_ids.add(item.id)
-                    if trusted_vector_engine and item.kind == "contour":
+                    if (
+                        trusted_vector_engine
+                        and item.kind == "contour"
+                        and item.bbox is not None
+                        and source_block_id_set.intersection(item.source_block_ids)
+                    ):
                         new_trusted_vector_contours.add(item.id)
+                    if (
+                        trusted_vector_engine
+                        and item.kind == "line_segment"
+                        and item.bbox is not None
+                        and source_block_id_set.intersection(item.source_block_ids)
+                    ):
+                        new_trusted_vector_lines.add(item.id)
                     if (
                         trusted_vector_engine
                         and item.kind == "vector_text"
                         and item.font_weight == "bold"
+                        and item.bbox is not None
+                        and source_block_id_set.intersection(item.source_block_ids)
                     ):
                         trusted_bold_evidence[item.id] = item
                 else:
                     # A provenance ID collision cannot authorize style even
                     # when the duplicate payload happens to be identical.
                     trusted_bold_evidence.pop(item.id, None)
-                    trusted_group_style_evidence.pop(item.id, None)
+                    trusted_vector_style_evidence.pop(item.id, None)
+                    trusted_edge_style_evidence.pop(item.id, None)
                     new_trusted_vector_contours.discard(item.id)
+                    new_trusted_vector_lines.discard(item.id)
                     context.trusted_label_evidence_ids.discard(item.id)
                     context.trusted_connector_evidence_ids.discard(item.id)
                     context.trusted_connector_relations = {
@@ -483,6 +504,14 @@ class ReconstructionPipeline:
                         if item.id not in relation[2]
                     }
             if trusted_vector_engine and observation.scene_ir is not None:
+                contour_reference_counts: dict[str, int] = {}
+                for element in observation.scene_ir.elements:
+                    for evidence_id in set(element.evidence_ids).intersection(
+                        new_trusted_vector_contours
+                    ):
+                        contour_reference_counts[evidence_id] = (
+                            contour_reference_counts.get(evidence_id, 0) + 1
+                        )
                 for element in observation.scene_ir.elements:
                     if not (
                         element.fill_color
@@ -491,9 +520,49 @@ class ReconstructionPipeline:
                     ):
                         continue
                     for evidence_id in element.evidence_ids:
-                        if evidence_id in new_trusted_vector_contours:
-                            trusted_group_style_evidence[evidence_id] = element.model_copy(
+                        if (
+                            evidence_id in new_trusted_vector_contours
+                            and contour_reference_counts.get(evidence_id) == 1
+                        ):
+                            trusted_vector_style_evidence[evidence_id] = element.model_copy(
                                 deep=True
+                            )
+                vector_elements_by_id = {
+                    element.id: element for element in observation.scene_ir.elements
+                }
+                line_reference_counts: dict[str, int] = {}
+                for relation in observation.scene_ir.relations:
+                    for evidence_id in set(relation.evidence_ids).intersection(
+                        new_trusted_vector_lines
+                    ):
+                        line_reference_counts[evidence_id] = (
+                            line_reference_counts.get(evidence_id, 0) + 1
+                        )
+                for relation in observation.scene_ir.relations:
+                    if not (
+                        relation.source_id in vector_elements_by_id
+                        and relation.target_id in vector_elements_by_id
+                        and (
+                            relation.line_color
+                            or relation.line_style in {"dashed", "thick"}
+                        )
+                    ):
+                        continue
+                    for evidence_id in relation.evidence_ids:
+                        if (
+                            evidence_id in new_trusted_vector_lines
+                            and line_reference_counts.get(evidence_id) == 1
+                        ):
+                            trusted_edge_style_evidence[evidence_id] = (
+                                TrustedEdgeStyleEvidence(
+                                    relation=relation.model_copy(deep=True),
+                                    source_bbox=vector_elements_by_id[
+                                        relation.source_id
+                                    ].bbox,
+                                    target_bbox=vector_elements_by_id[
+                                        relation.target_id
+                                    ].bbox,
+                                )
                             )
             if trusted_geometry_engine and observation.scene_ir is not None:
                 for relation in observation.scene_ir.relations:
@@ -704,8 +773,14 @@ class ReconstructionPipeline:
                     compatibility_profile=self.config.compatibility_profile,
                     security_profile=self.config.security_profile,
                     known_evidence_ids={item.id for item in all_evidence},
+                    trusted_mapping_evidence_ids={
+                        *context.trusted_label_evidence_ids,
+                        *set(trusted_vector_style_evidence),
+                    },
                     known_bold_evidence=trusted_bold_evidence,
-                    known_group_style_evidence=trusted_group_style_evidence,
+                    known_node_style_evidence=trusted_vector_style_evidence,
+                    known_edge_style_evidence=trusted_edge_style_evidence,
+                    known_group_style_evidence=trusted_vector_style_evidence,
                 )
                 styled_code = style_recovery.code
                 style_repair_history = (
@@ -726,6 +801,15 @@ class ReconstructionPipeline:
                                         "match_method": item.match_method,
                                     }
                                     for item in style_recovery.attributions
+                                ],
+                                "edge_attributions": [
+                                    {
+                                        "source_relation_id": item.source_relation_id,
+                                        "link_index": item.link_index,
+                                        "evidence_ids": list(item.evidence_ids),
+                                        "match_method": item.match_method,
+                                    }
+                                    for item in style_recovery.edge_attributions
                                 ],
                                 "group_attributions": [
                                     {

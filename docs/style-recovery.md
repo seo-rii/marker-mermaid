@@ -1,6 +1,6 @@
 # Style recovery
 
-Scene IR의 vector/CV style evidence를 Mermaid에 반영하는 현재 범위는 Flowchart 계열의 node fill,
+Scene IR의 trusted PDF vector style evidence를 Mermaid에 반영하는 현재 범위는 Flowchart 계열의 node fill,
 border color, dashed/thick border, vector-backed bold label, link stroke color/dashed/thick style과 trusted
 vector container 기반 flat group fill/stroke/dashed/thick style입니다.
 PDF vector open path의 stroke color는 `SceneRelation.line_color`에 보존되고, relation endpoint가 Mermaid
@@ -22,11 +22,22 @@ Style statement를 code에 넣으려면 다음 조건을 모두 충족해야 합
 - emitted grammar가 Flowchart이고 source element가 generated candidate node에 모호하지 않게 대응
 - style 대상 edge를 포함한 모든 Mermaid edge line의 순서를 독립 line으로 정확히 mapping 가능
 
-source→candidate node mapping은 content-consistent exact ID, registry에 존재하는 evidence overlap,
+source→candidate node mapping은 content-consistent exact ID, trusted registry에 존재하는 evidence overlap,
 punctuation을 보존하는 unique normalized label 순서로 시도하며 다중 match, normalized ID collision과
 target collision은 fail closed 처리합니다. evidence index는 source×candidate 전수 비교 없이 bounded
-lookup으로 사용합니다. Direct Mermaid처럼 generated candidate Scene을 만들 수 없는 후보에는 source
+lookup으로 사용하며 둘 이상의 generated node가 같은 evidence를 참조한 bucket은 candidate를 순회하지 않고
+즉시 ambiguous 처리합니다. Direct Mermaid처럼 generated candidate Scene을 만들 수 없는 후보에는 source
 style을 추측해 붙이지 않습니다.
+
+Node fill/border/dashed/thick style은 실제 `VectorPrimitiveEngine`이 현재 source block에서 새로 등록한
+collision-free contour와 source element bbox가 IoU 0.8 이상일 때만 그 vector element의 값을 사용합니다.
+Scene/VLM이 선언한 색을 authority로 사용하지 않습니다. 같은 contour ID를 여러 source element가 참조하거나
+다른 engine이 ID를 재사용하면 모두 생략합니다. Edge color/dashed/thick style도 같은 방식으로 새로 등록한
+vector line만 허용합니다. Source relation의 양 endpoint bbox와 vector relation의 endpoint bbox가 각각 IoU
+0.8 이상이고 source/trusted vector/generated Scene/Mermaid operator의 arrow flag, relation evidence ownership,
+source→Mermaid endpoint mapping이 모두 일치해야 합니다.
+Parallel endpoint pair, reused line evidence, non-pixel Scene과 불완전한 Mermaid edge ordering은 fail closed됩니다.
+적용된 node/source relation, Mermaid link index, evidence ID와 match method는 `recover_style` history에 기록됩니다.
 
 bold 출력에는 실제 `VectorPrimitiveEngine`이 새로 등록한 bold `vector_text` evidence가 필요합니다.
 VLM/fixture가 같은 kind를 자칭하거나 기존 evidence ID와 충돌하면 신뢰하지 않습니다. cited bold span의
@@ -42,7 +53,7 @@ non-pixel source group은 fail closed됩니다. Portable ID 정규화 충돌은 
 member 자체의 evidence ID이거나 member bbox와 IoU 0.8 이상인 contour도 outer container로 승격하지 않습니다.
 비교량은 group/member/node/vector 수로 계산한 결정적 budget을 넘으면 style matching을 생략합니다. 적용된
 source/emitted group ID, contour evidence ID와 match method는 `recover_style` history에 기록됩니다.
-VLM/fixture가 self-declare한 contour나 색은 style 권한이 없습니다.
+VLM/fixture가 self-declare한 contour, line 또는 색은 어떤 node/group/edge style에도 권한이 없습니다.
 
 기본 설정은 `portable-rich + strict`이므로 style evidence는 Scene IR에 보존되지만 자동 Markdown code는
 바뀌지 않습니다. `style-rich + style-only`처럼 명시적으로 허용하면 `style`/`linkStyle`을 append하고

@@ -18,7 +18,7 @@ from marker_mermaid.models import (
 )
 from marker_mermaid.pipeline import ReconstructionPipeline
 from marker_mermaid.security import MermaidSecurityScanner
-from marker_mermaid.style_recovery import recover_flowchart_styles
+from marker_mermaid.style_recovery import TrustedEdgeStyleEvidence, recover_flowchart_styles
 from marker_mermaid.validation import CandidateValidator, NodeMermaidRuntime
 from marker_mermaid.vector import (
     VectorObservation,
@@ -39,6 +39,7 @@ def scene():
                 fill_color="#ffeeaa",
                 border_color="#112233",
                 border_style="thick",
+                evidence_ids=["vector-shape-001"],
             ),
             SceneElement(
                 id="DB",
@@ -47,6 +48,7 @@ def scene():
                 bbox=(20, 0, 30, 10),
                 fill_color="blue",
                 border_style="dashed",
+                evidence_ids=["vector-shape-002"],
             ),
         ],
         relations=[
@@ -57,6 +59,7 @@ def scene():
                 relation_type="flow",
                 line_color="#445566",
                 line_style="thick",
+                evidence_ids=["vector-line-001"],
             )
         ],
         reading_direction="LR",
@@ -115,6 +118,94 @@ def _group_vector_engine() -> VectorPrimitiveEngine:
     )
 
 
+def _styled_vector_engine() -> VectorPrimitiveEngine:
+    return VectorPrimitiveEngine(
+        extractor=lambda _source, size: VectorObservation(
+            canvas_size=size,
+            texts=(
+                VectorText("API", (1, 1, 9, 5)),
+                VectorText("DB", (21, 1, 29, 5)),
+            ),
+            primitives=(
+                VectorPrimitive(
+                    kind="rectangle",
+                    bbox=(0, 0, 10, 10),
+                    fill_color="#ffeeaa",
+                    stroke_color="#112233",
+                    line_style="thick",
+                    closed=True,
+                ),
+                VectorPrimitive(
+                    kind="rectangle",
+                    bbox=(20, 0, 30, 10),
+                    fill_color="blue",
+                    line_style="dashed",
+                    closed=True,
+                ),
+                VectorPrimitive(
+                    kind="line",
+                    bbox=(10, 5, 20, 5),
+                    points=((10, 5), (20, 5)),
+                    stroke_color="#445566",
+                    line_style="thick",
+                    arrow_at_end=True,
+                ),
+            ),
+        )
+    )
+
+
+def _edge_only_style_vector_engine() -> VectorPrimitiveEngine:
+    return VectorPrimitiveEngine(
+        extractor=lambda _source, size: VectorObservation(
+            canvas_size=size,
+            texts=(
+                VectorText("API", (1, 1, 9, 5)),
+                VectorText("DB", (21, 1, 29, 5)),
+            ),
+            primitives=(
+                VectorPrimitive(kind="rectangle", bbox=(0, 0, 10, 10), closed=True),
+                VectorPrimitive(kind="rectangle", bbox=(20, 0, 30, 10), closed=True),
+                VectorPrimitive(
+                    kind="line",
+                    bbox=(10, 5, 20, 5),
+                    points=((10, 5), (20, 5)),
+                    stroke_color="#445566",
+                    line_style="thick",
+                    arrow_at_end=True,
+                ),
+            ),
+        )
+    )
+
+
+def _styled_semantic_observation() -> EngineObservation:
+    semantic_scene = scene()
+    semantic_scene.canvas_size = (40, 20)
+    for element in semantic_scene.elements:
+        element.fill_color = None
+        element.border_color = None
+        element.border_style = None
+        element.evidence_ids = []
+    for relation in semantic_scene.relations:
+        relation.line_color = None
+        relation.line_style = None
+        relation.evidence_ids = []
+    return EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[0.9]),
+        scene_ir=semantic_scene,
+        typed_candidates=[
+            TypedIRCandidate(
+                diagram_type="flowchart",
+                ir={
+                    "nodes": [{"id": "API", "label": "API"}, {"id": "DB", "label": "DB"}],
+                    "edges": [{"source": "API", "target": "DB"}],
+                },
+            )
+        ],
+    )
+
+
 def _group_semantic_observation() -> EngineObservation:
     return EngineObservation(
         prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[0.9]),
@@ -148,6 +239,35 @@ def _bold_evidence_registry() -> dict[str, VisualEvidence]:
             font_weight="bold",
         )
     }
+
+
+def _node_style_registry(source: DiagramSceneIR | None = None) -> dict[str, SceneElement]:
+    styled = source or scene()
+    result: dict[str, SceneElement] = {}
+    for element in styled.elements:
+        for evidence_id in element.evidence_ids:
+            if evidence_id.startswith("vector-shape-"):
+                result[evidence_id] = element.model_copy(deep=True)
+    return result
+
+
+def _edge_style_registry(
+    source: DiagramSceneIR | None = None,
+) -> dict[str, TrustedEdgeStyleEvidence]:
+    styled = source or scene()
+    elements = {element.id: element for element in styled.elements}
+    result: dict[str, TrustedEdgeStyleEvidence] = {}
+    for relation in styled.relations:
+        if relation.source_id not in elements or relation.target_id not in elements:
+            continue
+        for evidence_id in relation.evidence_ids:
+            if evidence_id.startswith("vector-line-"):
+                result[evidence_id] = TrustedEdgeStyleEvidence(
+                    relation=relation.model_copy(deep=True),
+                    source_bbox=elements[relation.source_id].bbox,
+                    target_bbox=elements[relation.target_id].bbox,
+                )
+    return result
 
 
 def _group_scenes():
@@ -198,6 +318,8 @@ def test_style_only_profile_emits_allowlisted_node_and_link_styles():
         scene(),
         compatibility_profile=CompatibilityProfile.STYLE_RICH,
         security_profile=SecurityProfile.STYLE_ONLY,
+        known_node_style_evidence=_node_style_registry(),
+        known_edge_style_evidence=_edge_style_registry(),
     )
 
     assert result.applied_element_ids == ("API", "DB")
@@ -525,6 +647,7 @@ def test_unsupported_colors_and_identifier_collisions_are_not_emitted():
         evidence,
         compatibility_profile=CompatibilityProfile.PORTABLE_RICH,
         security_profile=SecurityProfile.STYLE_ONLY,
+        known_node_style_evidence=_node_style_registry(evidence),
     )
 
     assert "url(" not in result.code
@@ -556,10 +679,108 @@ def test_color_only_edge_uses_the_existing_allowlist_and_exact_mapping():
         evidence,
         compatibility_profile=CompatibilityProfile.STYLE_RICH,
         security_profile=SecurityProfile.STYLE_ONLY,
+        known_edge_style_evidence=_edge_style_registry(evidence),
     )
 
     assert "linkStyle 0 stroke:#445566" in result.code
     assert result.applied_link_indexes == (0,)
+
+
+def test_node_and_edge_styles_reject_wrong_bbox_or_reused_line_evidence():
+    evidence = scene()
+    wrong_node_registry = _node_style_registry(evidence)
+    wrong_node_registry["vector-shape-001"].bbox = (100, 100, 110, 110)
+    duplicate = evidence.relations[0].model_copy(deep=True)
+    duplicate.id = "E2"
+    evidence.relations.append(duplicate)
+
+    result = recover_flowchart_styles(
+        'flowchart LR\n    API["API"]\n    DB[("DB")]\n    API --> DB\n    API --> DB\n',
+        evidence,
+        evidence,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+        known_node_style_evidence=wrong_node_registry,
+        known_edge_style_evidence=_edge_style_registry(evidence),
+    )
+
+    assert "style API" not in result.code
+    assert "linkStyle" not in result.code
+    assert any("registered vector contour" in warning for warning in result.warnings)
+
+
+@pytest.mark.parametrize(
+    ("source_arrows", "generated_arrows", "edge_line", "expected"),
+    [
+        ((False, False), (False, False), "API --- DB", True),
+        ((False, False), (False, False), "API --> DB", False),
+        ((True, True), (True, True), "API <--> DB", True),
+        ((False, True), (False, True), "DB --> API", False),
+        ((False, True), (False, False), "API --> DB", False),
+    ],
+)
+def test_edge_style_requires_source_generated_and_code_arrow_agreement(
+    source_arrows, generated_arrows, edge_line, expected
+):
+    source = scene()
+    source.relations[0].arrow_at_start, source.relations[0].arrow_at_end = source_arrows
+    generated = source.model_copy(deep=True)
+    (
+        generated.relations[0].arrow_at_start,
+        generated.relations[0].arrow_at_end,
+    ) = generated_arrows
+
+    result = recover_flowchart_styles(
+        f'flowchart LR\n    API["API"]\n    DB[("DB")]\n    {edge_line}\n',
+        source,
+        generated,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+        known_edge_style_evidence=_edge_style_registry(source),
+    )
+
+    assert ("linkStyle 0" in result.code) is expected
+
+
+def test_many_unique_edge_styles_use_deterministic_pair_index():
+    elements = [
+        SceneElement(id=f"N{index}", role="node", bbox=(index * 2, 0, index * 2 + 1, 1))
+        for index in range(251)
+    ]
+    relations = [
+        SceneRelation(
+            id=f"E{index}",
+            source_id=f"N{index}",
+            target_id=f"N{index + 1}",
+            relation_type="connector",
+            line_color="blue",
+            evidence_ids=[f"vector-line-{index}"],
+        )
+        for index in range(250)
+    ]
+    source = DiagramSceneIR(elements=elements, relations=relations)
+    registry = {
+        f"vector-line-{index}": TrustedEdgeStyleEvidence(
+            relation=relation.model_copy(deep=True),
+            source_bbox=elements[index].bbox,
+            target_bbox=elements[index + 1].bbox,
+        )
+        for index, relation in enumerate(relations)
+    }
+    declarations = "\n".join(f'    N{index}["N{index}"]' for index in range(251))
+    edges = "\n".join(f"    N{index} --> N{index + 1}" for index in range(250))
+
+    result = recover_flowchart_styles(
+        f"flowchart LR\n{declarations}\n{edges}\n",
+        source,
+        source,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+        known_edge_style_evidence=registry,
+    )
+
+    assert result.applied_link_indexes == tuple(range(250))
+    assert result.code.count("linkStyle ") == 250
 
 
 def test_unsupported_edge_color_is_disclosed_but_never_emitted():
@@ -573,6 +794,7 @@ def test_unsupported_edge_color_is_disclosed_but_never_emitted():
         evidence,
         compatibility_profile=CompatibilityProfile.STYLE_RICH,
         security_profile=SecurityProfile.STYLE_ONLY,
+        known_edge_style_evidence=_edge_style_registry(evidence),
     )
 
     assert "url(" not in result.code
@@ -591,6 +813,7 @@ def test_hostile_color_warning_is_single_line_and_bounded():
         evidence,
         compatibility_profile=CompatibilityProfile.STYLE_RICH,
         security_profile=SecurityProfile.STYLE_ONLY,
+        known_edge_style_evidence=_edge_style_registry(evidence),
     )
 
     warning = next(item for item in result.warnings if "unsupported line color" in item)
@@ -605,13 +828,14 @@ def test_link_style_is_skipped_when_preceding_edge_order_is_not_fully_mappable()
         scene(),
         compatibility_profile=CompatibilityProfile.STYLE_RICH,
         security_profile=SecurityProfile.STYLE_ONLY,
+        known_edge_style_evidence=_edge_style_registry(),
     )
 
     assert "linkStyle" not in result.code
     assert any("edge ordering" in warning for warning in result.warnings)
 
 
-def test_pipeline_applies_style_recovery_before_the_hard_render_gate(fake_runtime):
+def test_pipeline_rejects_self_declared_node_and_edge_styles(fake_runtime):
     observation = EngineObservation(
         prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[0.9]),
         scene_ir=scene(),
@@ -638,10 +862,105 @@ def test_pipeline_applies_style_recovery_before_the_hard_render_gate(fake_runtim
     ).reconstruct("source", "source.png", Image.new("RGB", (40, 20), "white"))
 
     assert result.selected is not None
-    assert "style API fill:#ffeeaa" in result.selected.mermaid_code
+    assert "style API" not in result.selected.mermaid_code
+    assert "linkStyle" not in result.selected.mermaid_code
     assert fake_runtime.calls == [result.selected.mermaid_code]
-    assert result.selected.repair_history[0].operation == "recover_style"
-    assert result.selected.repair_history[0].accepted
+    assert all(item.operation != "recover_style" for item in result.selected.repair_history)
+
+
+def test_pipeline_maps_trusted_vector_node_and_edge_styles_to_typed_ids(fake_runtime):
+    config = MermaidConfig(
+        candidate_count=1,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+    )
+
+    result = ReconstructionPipeline(
+        config,
+        [_styled_vector_engine(), JsonFixtureEngine(_styled_semantic_observation())],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (40, 20), "white"))
+
+    assert result.selected is not None
+    assert "style API fill:#ffeeaa,stroke:#112233,stroke-width:3px" in (
+        result.selected.mermaid_code
+    )
+    assert "style DB fill:blue,stroke-dasharray:5 5" in result.selected.mermaid_code
+    assert "linkStyle 0 stroke:#445566,stroke-width:3px" in result.selected.mermaid_code
+    history = next(
+        item for item in result.selected.repair_history if item.operation == "recover_style"
+    )
+    assert {item["evidence_ids"][0] for item in history.details["attributions"]} == {
+        "vector-shape-001",
+        "vector-shape-002",
+    }
+    assert history.details["edge_attributions"] == [
+        {
+            "source_relation_id": "vector-relation-001",
+            "link_index": 0,
+            "evidence_ids": ["vector-line-001"],
+            "match_method": "vector_evidence_and_endpoint_bbox",
+        }
+    ]
+
+
+def test_pipeline_maps_vector_edge_style_through_trusted_normal_text_labels(fake_runtime):
+    config = MermaidConfig(
+        candidate_count=1,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+    )
+
+    result = ReconstructionPipeline(
+        config,
+        [_edge_only_style_vector_engine(), JsonFixtureEngine(_styled_semantic_observation())],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (40, 20), "white"))
+
+    assert result.selected is not None
+    assert "style API" not in result.selected.mermaid_code
+    assert "style DB" not in result.selected.mermaid_code
+    assert "linkStyle 0 stroke:#445566,stroke-width:3px" in result.selected.mermaid_code
+
+
+def test_pipeline_revokes_node_and_edge_style_trust_on_evidence_collision(fake_runtime):
+    spoof = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["unknown"], scores=[1.0]),
+        evidence=[
+            VisualEvidence(
+                id="vector-shape-001",
+                kind="contour",
+                bbox=(0, 0, 10, 10),
+                source_block_ids=["source"],
+            ),
+            VisualEvidence(
+                id="vector-line-001",
+                kind="line_segment",
+                bbox=(10, 5, 20, 5),
+                source_block_ids=["source"],
+            ),
+        ],
+    )
+    config = MermaidConfig(
+        candidate_count=1,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+    )
+
+    result = ReconstructionPipeline(
+        config,
+        [
+            JsonFixtureEngine(spoof),
+            _styled_vector_engine(),
+            JsonFixtureEngine(_styled_semantic_observation()),
+        ],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (40, 20), "white"))
+
+    assert result.selected is not None
+    assert "style API" not in result.selected.mermaid_code
+    assert "style DB fill:blue" in result.selected.mermaid_code
+    assert "linkStyle" not in result.selected.mermaid_code
 
 
 def test_bold_style_is_constant_and_attributed_across_vector_to_typed_ids():
@@ -752,6 +1071,54 @@ def test_style_mapping_rejects_exact_id_with_inconsistent_content():
     assert any("content mismatch" in warning for warning in result.warnings)
 
 
+def test_shared_trusted_evidence_bucket_is_fail_closed_without_candidate_expansion():
+    source = DiagramSceneIR(
+        elements=[
+            SceneElement(
+                id=f"S{index}",
+                role="node",
+                text=f"Node {index}",
+                bbox=(index, 0, index + 1, 1),
+                evidence_ids=["shared-contour"],
+            )
+            for index in range(500)
+        ]
+    )
+    generated = DiagramSceneIR(
+        elements=[
+            SceneElement(
+                id=f"G{index}",
+                role="node",
+                text=f"Node {index}",
+                bbox=(0, 0, 0, 0),
+                evidence_ids=["shared-contour"],
+            )
+            for index in range(500)
+        ]
+    )
+    registry = {
+        "shared-contour": SceneElement(
+            id="vector-node",
+            role="unknown",
+            bbox=(0, 0, 1, 1),
+            fill_color="red",
+            evidence_ids=["shared-contour"],
+        )
+    }
+
+    result = recover_flowchart_styles(
+        'flowchart LR\n    G0["Node 0"]\n',
+        source,
+        generated,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+        known_node_style_evidence=registry,
+    )
+
+    assert not result.changed
+    assert any("ambiguous by evidence" in warning for warning in result.warnings)
+
+
 def test_style_label_mapping_preserves_semantic_punctuation():
     source = DiagramSceneIR(
         elements=[
@@ -796,6 +1163,7 @@ def test_edge_style_rejects_ambiguous_normalized_endpoint_ids():
                 target_id="X",
                 relation_type="flow",
                 line_color="red",
+                evidence_ids=["vector-line-ambiguous"],
             )
         ],
     )
@@ -810,6 +1178,13 @@ def test_edge_style_rejects_ambiguous_normalized_endpoint_ids():
         source,
         compatibility_profile=CompatibilityProfile.STYLE_RICH,
         security_profile=SecurityProfile.STYLE_ONLY,
+        known_edge_style_evidence={
+            "vector-line-ambiguous": TrustedEdgeStyleEvidence(
+                relation=source.relations[0].model_copy(deep=True),
+                source_bbox=(0, 20, 10, 30),
+                target_bbox=(20, 0, 30, 10),
+            )
+        },
     )
 
     assert "linkStyle" not in result.code
@@ -1034,7 +1409,7 @@ def test_pipeline_rejects_bold_when_typed_label_disagrees_with_vector_span(fake_
 def test_recovered_styles_parse_and_render_in_pinned_mermaid():
     styled_scene = scene()
     styled_scene.elements[0].font_weight = "bold"
-    styled_scene.elements[0].evidence_ids = ["vector-text-001"]
+    styled_scene.elements[0].evidence_ids = ["vector-shape-001", "vector-text-001"]
     result = recover_flowchart_styles(
         'flowchart LR\n    API["API"]\n    DB[("DB")]\n    API --> DB\n',
         styled_scene,
@@ -1043,6 +1418,8 @@ def test_recovered_styles_parse_and_render_in_pinned_mermaid():
         security_profile=SecurityProfile.STYLE_ONLY,
         known_evidence_ids={"vector-text-001"},
         known_bold_evidence=_bold_evidence_registry(),
+        known_node_style_evidence=_node_style_registry(styled_scene),
+        known_edge_style_evidence=_edge_style_registry(styled_scene),
     )
     runtime = NodeMermaidRuntime()
     try:
