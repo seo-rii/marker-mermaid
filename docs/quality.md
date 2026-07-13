@@ -32,6 +32,20 @@ participant도 임의 `text`가 아니라 serializer가 실제 표시하는 safe
 ## 기존 metric과 결합
 
 - syntax/render는 게시 hard gate이면서 score input입니다.
+- pipeline은 최종 source, 사후 보안 검사를 통과한 비어 있지 않은 SVG, 선택적 runtime PNG의 SHA-256,
+  security profile, emitted/runtime type을 validation receipt로 함께 봉인합니다. Receipt 설치에는
+  `CandidateValidator`가 exact source/SVG/PNG 검사를 끝낸 뒤 발급한 process-local certificate가 필요하며,
+  단순히 candidate의 valid flag를 설정해서는 발급되지 않습니다. 별도의 publication receipt는 freshly
+  recomputed publish policy, status, 자동 `review_required` routing과 선택 후보 receipt digest를
+  고정합니다. 사용자 승인·거절은 generation receipt를 바꾸지 않고 review state/revision/history에
+  기록합니다. Markdown renderer는 boolean flag만 신뢰하지 않고 두 receipt와 process-private seal이 현재 상태에 모두
+  일치할 때만 fence를 삽입합니다. 객체를 JSON으로 왕복하면 공개 digest는 audit용으로 남지만 private
+  trust는 복원되지 않으므로 다시 검증하지 않은 역직렬화 결과는 자동 게시할 수 없습니다.
+  Publication receipt의 quality digest는 표시되는 aggregate score와 grade, metric map, generation
+  warning을 함께 고정합니다. Pipeline은 선택 후보 warning을 중복 제거하고 최대 256개·항목당 4,096자로
+  제한한 뒤 결정하므로, 점수나 `scores.json`만 바꿔 신뢰도가 높은 것처럼 표시할 수 없습니다. Digest의
+  확률 값은 exponent 없는 decimal string으로 encode하고 negative zero를 `"0"`으로 정규화하므로 Python과
+  JavaScript verifier가 같은 bytes를 재현할 수 있습니다.
 - OCR recall은 NFKC/casefold한 원 OCR token multiset의 occurrence recall입니다. 같은 text라도 다른 bbox에서
   관찰되면 별도 occurrence로 유지하고, context OCR과 OCR/vector evidence가 겹치면 token별 최대 count를
   사용합니다. bbox가 없는 동일 text evidence는 공간적으로 다른 occurrence임을 입증하지 못하므로 하나로

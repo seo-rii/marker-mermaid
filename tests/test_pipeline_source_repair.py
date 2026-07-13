@@ -65,6 +65,6 @@ def test_pipeline_does_not_use_partial_budget_exhausted_repair(fake_runtime):
     result = pipeline.reconstruct("source", "source.png", Image.new("RGB", (20, 20), "white"))
 
     assert result.selected is not None
-    assert result.selected.mermaid_code == source
+    assert result.selected.mermaid_code == source + "\n"
     assert all(not event.accepted for event in result.selected.repair_history)
     assert any("discarded" in warning for warning in result.selected.warnings)

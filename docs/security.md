@@ -34,6 +34,18 @@ history에 기록되고 후보 budget이나 보안 allowlist를 늘리지 않습
 `style-only`은 마지막 세 Mermaid style statement만 허용하고 외부 URL/CSS는 계속 거부합니다.
 `trusted-local`은 자동 Markdown에 게시할 수 없습니다.
 
+검증 runtime의 SVG와 PNG는 각각 UTF-8/byte 기준 16,000,000 bytes 이하만 허용합니다. SVG는 XML·외부
+resource 검사를 통과해야 하고, PNG는 실제 PNG signature/format과 최대 한 변 8,192 pixels, 전체
+50,000,000 pixels 이하인지 검사합니다. 잘못되거나 과대한 SVG는 render hard gate를 실패시키고, 선택적
+PNG만 잘못된 경우에는 Mermaid/SVG 게시를 유지하면서 preview bytes를 버립니다. Review validator가 새로
+반환하는 PNG에도 같은 검사를 적용하되 기존 bundle read 호환성은 별도로 유지합니다.
+
+Validation/publication HMAC seal은 공개 model 생성자, JSON round-trip, 일반적인 사후 mutation이 검증을
+가장하는 것을 막는 process-local capability입니다. 같은 Python process에서 실행되는 engine과 plugin은
+trusted code로 간주하며, underscore/private API나 module memory를 읽을 수 있는 적대적 Python 코드를
+sandbox하지는 않습니다. 신뢰하지 않는 extractor/plugin은 별도 OS process/container에 격리하고 검증된
+IR 또는 image만 이 process로 전달해야 합니다.
+
 Source scanner는 줄 시작뿐 아니라 세미콜론 뒤도 Mermaid statement 시작으로 해석합니다. `flowchart`와
 `graph`에서는 실제 node 또는 bracketed subgraph label opener 바로 뒤의 큰따옴표만 LF/CRLF를 가로지르는
 quoted-label 상태를 시작합니다. `class`, `direction`, Gantt title과 접근성 text에 나타난 임의 큰따옴표는

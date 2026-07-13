@@ -69,14 +69,18 @@ endpoint·방향 변경, 새 branch와 Yes/No 의미 추론, parallel relation, 
 artifact 생성을 제어합니다. 선택된 `final.mmd`, `scores.json`, `review-history.json`, manifest는
 bundle의 최소 감사 기록으로 항상 남습니다. 단, 선택 후보에 provenance-backed `node-id-map.json`이
 있으면 dangling reference를 만들지 않도록 `write_provenance=false`여도 `provenance.json`을 함께
-기록합니다.
+기록합니다. 자동 게시 bundle은 validation receipt를 독립적으로 검증할 수 있어야 하므로
+`write_svg=false`보다 `final.svg` 보존이 우선합니다. `write_png=false`는 그대로 적용되며 이때 공개
+generation receipt의 선택적 PNG digest는 validation-time audit 값으로 유지하고
+`generation_artifact_presence.final.png=false`로 파일 부재를 명시합니다.
 
 `include_original_image`와 `extract_images`는 타입 수준에서 `true`만 허용합니다. Marker 공통
 `--disable_image_extraction`과 함께 사용할 수 없습니다.
 
 Renderer의 `MermaidMarkdownRenderer_include_rendered_preview=true`는 validation runtime이 만든 PNG를
 별도 `images/*--mermaid-preview.png`로 저장하고 원본 뒤에 삽입합니다. 기본값은 `false`이며 PNG가 없는
-후보에 preview를 추정하거나 SVG를 임의 rasterize하지 않습니다.
+후보에 preview를 추정하거나 SVG를 임의 rasterize하지 않습니다. 현재 PNG bytes가 validation receipt의
+digest와 다르면 Mermaid code는 게시하되 preview만 생략합니다.
 
 ## 구현 상태가 있는 옵션
 

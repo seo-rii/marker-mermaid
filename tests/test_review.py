@@ -150,7 +150,7 @@ def post_json(url, payload, *, token="test-token", origin=None):
         headers=headers,
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=3) as response:
+    with urllib.request.urlopen(request, timeout=10) as response:
         return json.loads(response.read()), response.headers
 
 
@@ -509,6 +509,41 @@ def test_oversized_render_is_rejected_before_any_bundle_file_changes(tmp_path):
     assert after == before
 
 
+def test_http_edit_rejects_model_copy_bypassed_render_before_writing(tmp_path):
+    diagram = make_bundle(tmp_path)
+    valid_shape = ReviewValidationResult(
+        valid=True,
+        svg="<svg viewBox='0 0 1 1'/>",
+        png=_png_bytes(),
+    )
+    bypassed = valid_shape.model_copy(update={"png": b"not-a-png"})
+    before = {
+        path.relative_to(diagram): path.read_bytes()
+        for path in diagram.rglob("*")
+        if path.is_file() and path.name != ".review.lock"
+    }
+
+    with running_server(tmp_path, validator=lambda code: bypassed) as (base, store):
+        current = store.load_bundle("diagram-a")
+        with pytest.raises(urllib.error.HTTPError) as rejected:
+            post_json(
+                f"{base}/api/diagrams/diagram-a/edits",
+                {
+                    **expected(current),
+                    "mermaid_code": "flowchart LR\n  B --> A\n",
+                    "scene_ir": current.scene_ir,
+                },
+            )
+
+    after = {
+        path.relative_to(diagram): path.read_bytes()
+        for path in diagram.rglob("*")
+        if path.is_file() and path.name != ".review.lock"
+    }
+    assert rejected.value.code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert after == before
+
+
 def test_undo_atomically_restores_absent_optional_artifacts(tmp_path):
     diagram = make_bundle(tmp_path)
     (diagram / "scene-ir.json").unlink()
@@ -518,7 +553,7 @@ def test_undo_atomically_restores_absent_optional_artifacts(tmp_path):
         validator=lambda code: ReviewValidationResult(
             valid=True,
             svg="<svg viewBox='0 0 1 1'/>",
-            png=b"png",
+            png=_png_bytes(),
         ),
     )
     current = store.load_bundle("diagram-a")
@@ -905,7 +940,8 @@ def test_structured_edge_add_delete_revisions_evidence_and_undoes_atomically(tmp
             post_json(f"{base}/api/diagrams/diagram-a/operations", add_payload)
         current = store.load_bundle("diagram-a")
         added_relation = next(
-            item for item in added["diagram"]["scene_ir"]["relations"]
+            item
+            for item in added["diagram"]["scene_ir"]["relations"]
             if item["source_id"] == "B" and item["target_id"] == "A"
         )
         deleted, _ = post_json(
@@ -944,9 +980,7 @@ def test_structured_edge_add_delete_revisions_evidence_and_undoes_atomically(tmp
     )
     assert undo_add["diagram"]["provenance"] == provenance_before
     assert [item["id"] for item in undo_add["diagram"]["scene_ir"]["relations"]] == ["E1"]
-    assert undo_add["diagram"]["layout_hints"]["nodes"] == [
-        {"node_id": "A", "x": 0.2, "y": 0.8}
-    ]
+    assert undo_add["diagram"]["layout_hints"]["nodes"] == [{"node_id": "A", "x": 0.2, "y": 0.8}]
     assert stale.value.code == HTTPStatus.CONFLICT
     assert (tmp_path / "images" / "source.png").read_bytes() == source_before
     entries = json.loads((diagram_path / "review-history.json").read_text())

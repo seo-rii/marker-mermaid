@@ -502,6 +502,7 @@ def test_default_semantic_repair_improves_ocr_and_preserves_structural_scores():
     assert result.selected.scores["path_consistency"] == 1
     assert result.selected.scores["visual_entailment_precision"] == 1
     assert result.selected.repair_history[-1].accepted
+    assert result.selected.has_validated_publication_artifacts()
     [baseline] = result.alternatives
     assert baseline.typed_ir["nodes"][0]["label"] == "Paymant"
     assert baseline.repair_history == []

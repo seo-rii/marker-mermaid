@@ -335,14 +335,14 @@ def test_structured_evidence_relabel_rejects_untrusted_or_ambiguous_input_atomic
 
 def test_structured_evidence_relabel_rejects_unsafe_text_noop_and_ambiguous_code() -> None:
     evidence_id = "ocr:api/18"
-    for text in (
-        None,
-        "   ",
-        "x" * 201,
-        "line\nbreak",
-        "line\u2028break",
-        "zero\u200bwidth",
-        "lone\ud800surrogate",
+    for text, expected_error in (
+        (None, "invalid_label"),
+        ("   ", "invalid_label"),
+        ("x" * 201, "invalid_label"),
+        ("line\nbreak", "invalid_label"),
+        ("line\u2028break", "invalid_label"),
+        ("zero\u200bwidth", "invalid_label"),
+        ("lone\ud800surrogate", "invalid_evidence"),
     ):
         original_ir = evidence_scene_ir(evidence_id)
         result = apply_review_operation(
@@ -363,7 +363,7 @@ def test_structured_evidence_relabel_rejects_unsafe_text_noop_and_ambiguous_code
             ],
         )
         assert not result.applied
-        assert result.error_code == "invalid_label"
+        assert result.error_code == expected_error
         assert result.ir == original_ir
         assert result.mermaid_code == flowchart()
 
@@ -576,9 +576,7 @@ def test_structured_edge_add_delete_reject_ambiguous_or_unanchored_mapping() -> 
         mermaid_code=flowchart(),
     )
     parallel_ir = scene_ir()
-    parallel_ir["relations"].append(
-        {"id": "E9", "source_id": "DB", "target_id": "API"}
-    )
+    parallel_ir["relations"].append({"id": "E9", "source_id": "DB", "target_id": "API"})
     parallel_delete = apply_review_operation(
         {"operation": "delete_edge", "edge_id": "E7"},
         ir=parallel_ir,
@@ -860,11 +858,7 @@ def test_structured_group_hashes_long_canonical_member_ids_deterministically() -
         "groups": [],
         "canvas_size": [100, 100],
     }
-    code = (
-        "flowchart LR\n"
-        f'    {first_id}["First"]\n'
-        f'    {second_id}["Second"]\n'
-    )
+    code = f'flowchart LR\n    {first_id}["First"]\n    {second_id}["Second"]\n'
     forward = apply_review_operation(
         {
             "operation": "group_nodes",

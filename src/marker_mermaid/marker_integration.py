@@ -21,13 +21,14 @@ from marker_mermaid.config import MermaidConfig
 from marker_mermaid.discovery import DiscoveredSource
 from marker_mermaid.engines import MarkerStructuredVLMEngine
 from marker_mermaid.geometry import GeometryEngine
-from marker_mermaid.markdown import reconstruction_markdown
+from marker_mermaid.markdown import reconstruction_markdown_from_snapshot
 from marker_mermaid.marker_discovery import (
     discover_marker_sources,
     iter_marker_candidate_blocks,
 )
 from marker_mermaid.models import ReconstructionResult, VisualEvidence
 from marker_mermaid.pipeline import ReconstructionPipeline
+from marker_mermaid.render_artifacts import MAX_PREVIEW_DIMENSION, MAX_PREVIEW_PIXELS
 from marker_mermaid.semantic_repair import EvidenceBackedFlowchartRepair
 from marker_mermaid.sidecars import safe_artifact_component
 from marker_mermaid.source_assembly import SourceAssemblyMetadata, assemble_discovered_source
@@ -35,8 +36,6 @@ from marker_mermaid.validation import CandidateValidator, NodeMermaidRuntime
 from marker_mermaid.vector import VectorPrimitiveEngine
 
 DEFAULT_BLOCK_TYPES = (BlockTypes.Figure, BlockTypes.Picture, BlockTypes.ComplexRegion)
-MAX_PREVIEW_DIMENSION = 8_192
-MAX_PREVIEW_PIXELS = 50_000_000
 
 
 class _PyMuPDFPageProvider:
@@ -497,7 +496,7 @@ class MermaidMarkdownRenderer(MarkdownRenderer):
     extract_images: Literal[True] = True
     include_original_image: Literal[True] = True
     include_mermaid_code: Annotated[bool, "Include validated Mermaid code."] = True
-    include_rendered_preview: Annotated[bool, "Include final SVG preview."] = False
+    include_rendered_preview: Annotated[bool, "Include validated PNG preview."] = False
     show_quality_warning: Annotated[bool, "Show B/C grade warnings."] = True
     show_quality_score: Annotated[bool, "Show aggregate score in Markdown."] = False
 
@@ -575,19 +574,21 @@ class MermaidMarkdownRenderer(MarkdownRenderer):
                         f"(images/{result.source_image_name})"
                     )
                 if self.include_mermaid_code:
-                    reconstructed = reconstruction_markdown(
-                        result,
+                    publication_snapshot = result.authorized_publication_snapshot()
+                    reconstructed = reconstruction_markdown_from_snapshot(
+                        publication_snapshot,
                         show_score=self.show_quality_score,
                         show_warning=self.show_quality_warning,
                     )
                     if reconstructed:
                         if (
                             self.include_rendered_preview
-                            and result.selected is not None
-                            and result.selected.png is not None
+                            and publication_snapshot is not None
+                            and publication_snapshot.png is not None
                         ):
                             preview_name = (
-                                f"{safe_artifact_component(result.source_id)}--mermaid-preview.png"
+                                f"{safe_artifact_component(publication_snapshot.source_id)}"
+                                "--mermaid-preview.png"
                             )
                             if preview_name in images:
                                 raise ValueError(
@@ -595,7 +596,7 @@ class MermaidMarkdownRenderer(MarkdownRenderer):
                                 )
                             preview_image = None
                             try:
-                                with Image.open(BytesIO(result.selected.png)) as preview:
+                                with Image.open(BytesIO(publication_snapshot.png)) as preview:
                                     if (
                                         max(preview.size) > MAX_PREVIEW_DIMENSION
                                         or preview.width * preview.height > MAX_PREVIEW_PIXELS
@@ -604,10 +605,12 @@ class MermaidMarkdownRenderer(MarkdownRenderer):
                                             "preview dimensions exceed the pixel budget"
                                         )
                                     preview_image = preview.convert("RGB")
-                            except (OSError, ValueError, Image.DecompressionBombError) as exc:
-                                result.selected.warnings.append(
-                                    f"rendered preview was omitted: {type(exc).__name__}: {exc}"
-                                )
+                            except (
+                                OSError,
+                                ValueError,
+                                Image.DecompressionBombError,
+                            ):
+                                pass
                             if preview_image is not None:
                                 images[preview_name] = preview_image
                                 fragments.append(

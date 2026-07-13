@@ -1,15 +1,23 @@
 """Marker Mermaid reconstruction extension."""
 
 from marker_mermaid.config import MermaidConfig, Mode, PublishPolicy
-from marker_mermaid.models import DiagramSceneIR, MermaidCandidate, ReconstructionResult
+from marker_mermaid.models import (
+    CandidateValidationReceipt,
+    DiagramSceneIR,
+    MermaidCandidate,
+    PublicationAuthorizationReceipt,
+    ReconstructionResult,
+)
 from marker_mermaid.pipeline import ReconstructionPipeline
 
 __all__ = [
+    "CandidateValidationReceipt",
     "DiagramSceneIR",
     "MermaidCandidate",
     "MermaidConfig",
     "Mode",
     "PublishPolicy",
+    "PublicationAuthorizationReceipt",
     "ReconstructionPipeline",
     "ReconstructionResult",
 ]

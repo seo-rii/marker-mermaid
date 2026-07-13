@@ -197,6 +197,8 @@ def decide_publication(
         return PublishDecision(False, True, grade, "review-required policy")
     if candidate.aggregate_score is None:
         return PublishDecision(False, True, "U", "quality could not be evaluated")
+    if grade not in {"A", "B", "C"}:
+        return PublishDecision(False, True, grade, "grade is below the automatic publication floor")
     semantic = semantic_score(candidate.scores, config)
     if semantic is None:
         return PublishDecision(False, True, grade, "semantic evidence is unavailable")

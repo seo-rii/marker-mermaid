@@ -12,29 +12,36 @@ import heapq
 import json
 import os
 import re
-import tempfile
+import secrets
+import stat
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from marker_mermaid.config import SecurityProfile
 from marker_mermaid.models import (
     MAX_OBSERVATION_EVIDENCE,
+    CandidateValidationReceipt,
     DiagramSceneIR,
+    PublicationAuthorizationReceipt,
     ReviewHistoryEntry,
     VisualEvidence,
+    _candidate_quality_sha256,
+    _canonical_model_sha256,
 )
+from marker_mermaid.render_artifacts import MAX_RENDER_BYTES, png_inspection_error
 from marker_mermaid.review_layout import ReviewLayoutHints
+from marker_mermaid.validation import inspect_svg
 
 REVIEW_SCHEMA_VERSION = "mmx-review-0.4.1"
 PROVENANCE_REVIEW_SCHEMA_VERSION = "mmx-review-0.4"
 LEGACY_REVIEW_SCHEMA_VERSION = "mmx-review-0.3"
 MAX_MERMAID_BYTES = 1_000_000
 MAX_JSON_BYTES = 4_000_000
-MAX_RENDER_BYTES = 16_000_000
 MAX_HISTORY_ENTRIES = 10_000
 MAX_REASON_LENGTH = 4_096
 MAX_LIST_BUNDLES = 1_000
@@ -58,6 +65,8 @@ class ReviewValidationResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     error: str | None = None
 
+    model_config = ConfigDict(frozen=True)
+
     @field_validator("svg")
     @classmethod
     def svg_is_bounded(cls, value: str | None) -> str | None:
@@ -68,8 +77,10 @@ class ReviewValidationResult(BaseModel):
     @field_validator("png")
     @classmethod
     def png_is_bounded(cls, value: bytes | None) -> bytes | None:
-        if value is not None and len(value) > MAX_RENDER_BYTES:
-            raise ValueError("rendered PNG exceeds the artifact size limit")
+        if value is not None:
+            error = png_inspection_error(value)
+            if error is not None:
+                raise ValueError(error)
         return value
 
 
@@ -283,6 +294,13 @@ class ReviewStore:
         bundle = self._bundle_path(bundle_id)
         manifest = self._read_json(bundle, "manifest.json", expected=dict)
         self._validate_manifest(manifest)
+        state_path = self._artifact_path(bundle, "review-state.json", must_exist=False)
+        self._verify_manifest_artifacts(
+            bundle,
+            manifest,
+            baseline=not state_path.exists(),
+            include_heavy_artifacts=False,
+        )
         final_path = self._artifact_path(bundle, "final.mmd", must_exist=False)
         bootstrap_candidate_id: str | None = None
         if final_path.exists():
@@ -290,7 +308,6 @@ class ReviewStore:
         else:
             code, _, bootstrap_candidate_id = self._bootstrap_alternative(bundle)
 
-        state_path = self._artifact_path(bundle, "review-state.json", must_exist=False)
         if state_path.exists():
             payload = self._read_json(bundle, "review-state.json", expected=dict)
             try:
@@ -324,6 +341,13 @@ class ReviewStore:
         bundle = self._bundle_path(bundle_id)
         manifest = self._read_json(bundle, "manifest.json", expected=dict)
         self._validate_manifest(manifest)
+        state_path = self._artifact_path(bundle, "review-state.json", must_exist=False)
+        self._verify_manifest_artifacts(
+            bundle,
+            manifest,
+            baseline=not state_path.exists(),
+            include_heavy_artifacts=True,
+        )
         final_path = self._artifact_path(bundle, "final.mmd", must_exist=False)
         bootstrap_candidate_id: str | None = None
         if final_path.exists():
@@ -347,7 +371,6 @@ class ReviewStore:
         except ValidationError as exc:
             raise ReviewValidationError("review-history.json has an invalid entry") from exc
 
-        state_path = bundle / "review-state.json"
         if state_path.exists():
             payload = self._read_json(bundle, "review-state.json", expected=dict)
             try:
@@ -367,15 +390,12 @@ class ReviewStore:
                 _bytes_digest(_provenance_bytes(provenance)) if provenance is not None else None
             )
             if (
-                state.schema_version
-                in {REVIEW_SCHEMA_VERSION, PROVENANCE_REVIEW_SCHEMA_VERSION}
+                state.schema_version in {REVIEW_SCHEMA_VERSION, PROVENANCE_REVIEW_SCHEMA_VERSION}
                 and state.provenance_digest != actual_provenance_digest
             ):
                 raise ReviewConflictError("provenance.json changed outside the review store")
             actual_layout_digest = (
-                _bytes_digest(_layout_bytes(layout_hints))
-                if layout_hints is not None
-                else None
+                _bytes_digest(_layout_bytes(layout_hints)) if layout_hints is not None else None
             )
             if state.layout_digest != actual_layout_digest:
                 raise ReviewConflictError("layout-hints.json changed outside the review store")
@@ -529,6 +549,14 @@ class ReviewStore:
         with self._locked_bundle(bundle_id):
             bundle = self.load_bundle(bundle_id)
             self._check_expected(bundle, expected_version, expected_digest)
+            if validation_result is not None:
+                validated_svg, validated_png = self._snapshot_validation_artifacts(
+                    validation_result
+                )
+            elif code != bundle.mermaid_code:
+                validated_svg, validated_png = None, None
+            else:
+                validated_svg, validated_png = bundle.svg, bundle.png
             selected_provenance = (
                 replacement_provenance if replace_provenance else bundle.provenance
             )
@@ -566,8 +594,8 @@ class ReviewStore:
                 scene_ir=scene_ir,
                 provenance=selected_provenance,
                 layout_hints=selected_layout,
-                svg=validation_result.svg if validation_result else bundle.svg,
-                png=validation_result.png if validation_result else bundle.png,
+                svg=validated_svg,
+                png=validated_png,
                 decision="pending",
                 decision_reason=None,
                 selected_candidate_id=(
@@ -620,11 +648,7 @@ class ReviewStore:
             if updated_layout == bundle.layout_hints:
                 raise ReviewValidationError("layout hint did not change")
             previous_hint = next(
-                (
-                    item
-                    for item in current_layout.nodes
-                    if item.node_id == requested.node_id
-                ),
+                (item for item in current_layout.nodes if item.node_id == requested.node_id),
                 None,
             )
             audit_entry = ReviewHistoryEntry(
@@ -632,9 +656,7 @@ class ReviewStore:
                 target=requested.node_id,
                 before={
                     "layout_position": (
-                        [previous_hint.x, previous_hint.y]
-                        if previous_hint is not None
-                        else None
+                        [previous_hint.x, previous_hint.y] if previous_hint is not None else None
                     )
                 },
                 after={"layout_position": [requested.x, requested.y]},
@@ -776,8 +798,18 @@ class ReviewStore:
                         raise ReviewValidationError(
                             f"Mermaid validation rejected approval: {detail}"
                         )
-                elif valid is not True:
+                elif valid is False:
                     raise ReviewValidationError("Mermaid validation rejected approval")
+                else:
+                    raise ReviewValidationError(
+                        "approval validation must return fresh render artifacts"
+                    )
+            if validation_result is not None:
+                validated_svg, validated_png = self._snapshot_validation_artifacts(
+                    validation_result
+                )
+            else:
+                validated_svg, validated_png = bundle.svg, bundle.png
             before = self._state_value(
                 bundle.state,
                 bundle.mermaid_code,
@@ -791,8 +823,8 @@ class ReviewStore:
                 scene_ir=bundle.scene_ir,
                 provenance=bundle.provenance,
                 layout_hints=bundle.layout_hints,
-                svg=validation_result.svg if validation_result else bundle.svg,
-                png=validation_result.png if validation_result else bundle.png,
+                svg=validated_svg,
+                png=validated_png,
                 decision=decision,
                 decision_reason=reason,
                 selected_candidate_id=bundle.state.selected_candidate_id,
@@ -1147,9 +1179,7 @@ class ReviewStore:
                 _bytes_digest(_provenance_bytes(provenance)) if provenance is not None else None
             ),
             "layout_digest": (
-                _bytes_digest(_layout_bytes(layout_hints))
-                if layout_hints is not None
-                else None
+                _bytes_digest(_layout_bytes(layout_hints)) if layout_hints is not None else None
             ),
             "decision": state.decision,
             "decision_reason": state.decision_reason,
@@ -1204,9 +1234,7 @@ class ReviewStore:
                 _bytes_digest(_provenance_bytes(provenance)) if provenance is not None else None
             ),
             layout_digest=(
-                _bytes_digest(_layout_bytes(layout_hints))
-                if layout_hints is not None
-                else None
+                _bytes_digest(_layout_bytes(layout_hints)) if layout_hints is not None else None
             ),
             selected_candidate_id=selected_candidate_id,
         )
@@ -1302,6 +1330,220 @@ class ReviewStore:
         for key in ("source_id", "status", "grade"):
             if key in manifest and not isinstance(manifest[key], str | int | float | bool | None):
                 raise ReviewValidationError(f"manifest field {key!r} must be scalar")
+
+    @staticmethod
+    def _snapshot_validation_artifacts(
+        result: ReviewValidationResult,
+    ) -> tuple[str, bytes | None]:
+        """Copy and revalidate fresh callback artifacts immediately before commit."""
+
+        if type(result) is not ReviewValidationResult or result.valid is not True:
+            raise ReviewValidationError("validator returned an untrusted render result")
+        svg = result.svg
+        if type(svg) is not str or not svg:
+            raise ReviewValidationError("validator did not return a plain non-empty SVG")
+        if len(svg.encode("utf-8")) > MAX_RENDER_BYTES:
+            raise ReviewValidationError("rendered SVG exceeds the artifact size limit")
+        findings = inspect_svg(svg, SecurityProfile.STRICT)
+        if findings:
+            raise ReviewValidationError(
+                "rendered SVG failed strict inspection: " + "; ".join(findings)
+            )
+        png = result.png
+        if png is not None:
+            if type(png) is not bytes:
+                raise ReviewValidationError("PNG artifact is not plain bytes")
+            png_error = png_inspection_error(png)
+            if png_error is not None:
+                raise ReviewValidationError(png_error)
+        return svg, png
+
+    def _verify_manifest_artifacts(
+        self,
+        bundle: Path,
+        manifest: dict[str, Any],
+        *,
+        baseline: bool,
+        include_heavy_artifacts: bool,
+    ) -> None:
+        """Verify managed current artifacts and v0.5 generation references on load."""
+
+        files = manifest.get("files", {})
+        if not isinstance(files, dict):
+            raise ReviewValidationError("manifest files must be a JSON object")
+
+        limits = {
+            "final.mmd": MAX_MERMAID_BYTES,
+            "scene-ir.json": MAX_JSON_BYTES,
+            "final.svg": MAX_RENDER_BYTES,
+            "final.png": MAX_RENDER_BYTES,
+            "scores.json": MAX_JSON_BYTES,
+        }
+        checked_names = tuple(limits) if include_heavy_artifacts else ("final.mmd",)
+        for name in checked_names:
+            expected_digest = files.get(name)
+            if expected_digest is None:
+                continue
+            try:
+                _validated_digest(expected_digest)
+            except (TypeError, ValueError) as exc:
+                raise ReviewValidationError(f"manifest digest for {name} is invalid") from exc
+            payload = self._read_optional_bytes(bundle, name, limits[name])
+            if payload is None or _bytes_digest(payload) != expected_digest:
+                if name == "final.mmd":
+                    detail = "final.mmd changed outside the review store"
+                elif name in {"final.svg", "final.png"}:
+                    detail = "render artifact changed outside the review store"
+                else:
+                    detail = f"{name} changed outside the review store"
+                raise ReviewConflictError(f"{detail} (manifest digest mismatch)")
+
+        if manifest.get("schema_version") != "mmx-sidecar-0.5":
+            return
+
+        presence = manifest.get("generation_artifact_presence")
+        if not isinstance(presence, dict):
+            raise ReviewValidationError(
+                "v0.5 manifest generation_artifact_presence must be a JSON object"
+            )
+        generation_names = ("final.mmd", "final.svg", "final.png")
+        generation_paths = {
+            "final.mmd": "final.mmd" if baseline else "versions/r000000.mmd",
+            "final.svg": "final.svg" if baseline else "versions/r000000.svg",
+            "final.png": "final.png" if baseline else "versions/r000000.png",
+        }
+        for name in generation_names:
+            expected_presence = presence.get(name)
+            if type(expected_presence) is not bool:
+                raise ReviewValidationError(f"v0.5 manifest presence for {name} must be a boolean")
+            if not include_heavy_artifacts and name != "final.mmd":
+                continue
+            path = self._artifact_path(bundle, generation_paths[name], must_exist=False)
+            if path.exists() is not expected_presence:
+                raise ReviewConflictError(f"{name} disagrees with generation artifact presence")
+            if baseline and expected_presence:
+                digest = files.get(name)
+                if type(digest) is not str:
+                    raise ReviewValidationError(
+                        f"present generation artifact {name} lacks a valid manifest digest"
+                    )
+                try:
+                    _validated_digest(digest)
+                except (TypeError, ValueError) as exc:
+                    raise ReviewValidationError(
+                        f"present generation artifact {name} lacks a valid manifest digest"
+                    ) from exc
+
+        receipt_payload = manifest.get("generation_validation_receipt")
+        publication_payload = manifest.get("generation_publication_receipt")
+        if receipt_payload is None:
+            if publication_payload is not None:
+                raise ReviewConflictError(
+                    "generation publication receipt has no validation receipt"
+                )
+            if manifest.get("publish") is True:
+                raise ReviewConflictError(
+                    "published generation is missing its validation and publication receipts"
+                )
+            return
+        if not isinstance(receipt_payload, dict):
+            raise ReviewValidationError(
+                "generation_validation_receipt must be a JSON object or null"
+            )
+        try:
+            receipt = CandidateValidationReceipt.model_validate(receipt_payload)
+        except ValidationError as exc:
+            raise ReviewValidationError("generation validation receipt is invalid") from exc
+        if receipt.emitted_diagram_type != manifest.get(
+            "emitted_diagram_type"
+        ) or receipt.runtime_diagram_type != manifest.get("runtime_diagram_type"):
+            raise ReviewConflictError(
+                "generation validation receipt disagrees with the baseline manifest"
+            )
+        for name, receipt_key in (
+            ("final.mmd", "code_sha256"),
+            ("final.svg", "svg_sha256"),
+        ):
+            if not include_heavy_artifacts and name != "final.mmd":
+                continue
+            receipt_digest = getattr(receipt, receipt_key)
+            if baseline:
+                actual_digest = files.get(name)
+            else:
+                payload = self._read_optional_bytes(
+                    bundle,
+                    generation_paths[name],
+                    limits[name],
+                )
+                actual_digest = _bytes_digest(payload) if payload is not None else None
+            if presence[name] is not True or actual_digest != receipt_digest:
+                raise ReviewConflictError(
+                    f"{name} disagrees with the generation validation receipt"
+                )
+        if include_heavy_artifacts and presence["final.png"]:
+            png_digest = receipt.png_sha256
+            if type(png_digest) is not str:
+                raise ReviewValidationError("generation receipt PNG digest is invalid")
+            if baseline:
+                actual_png_digest = files.get("final.png")
+            else:
+                png_payload = self._read_optional_bytes(
+                    bundle,
+                    generation_paths["final.png"],
+                    limits["final.png"],
+                )
+                actual_png_digest = _bytes_digest(png_payload) if png_payload is not None else None
+            if actual_png_digest != png_digest:
+                raise ReviewConflictError(
+                    "final.png disagrees with the generation validation receipt"
+                )
+        if publication_payload is None:
+            if manifest.get("publish") is True:
+                raise ReviewConflictError("published generation is missing its publication receipt")
+            return
+        if not isinstance(publication_payload, dict):
+            raise ReviewValidationError(
+                "generation_publication_receipt must be a JSON object or null"
+            )
+        try:
+            publication = PublicationAuthorizationReceipt.model_validate(publication_payload)
+        except ValidationError as exc:
+            raise ReviewValidationError("generation publication receipt is invalid") from exc
+        if (
+            publication.candidate_validation_sha256 != _canonical_model_sha256(receipt)
+            or publication.security_profile != receipt.security_profile
+            or publication.source_id != manifest.get("source_id")
+            or publication.selected_candidate_id != manifest.get("selected_candidate_id")
+            or publication.publish != manifest.get("publish")
+            or publication.review_required != manifest.get("review_required")
+            or publication.status != manifest.get("status")
+            or publication.grade != manifest.get("grade")
+        ):
+            raise ReviewConflictError(
+                "generation publication receipt disagrees with the baseline manifest"
+            )
+        if not include_heavy_artifacts:
+            return
+        scores = self._read_json(bundle, "scores.json", expected=dict)
+        if scores.get("grade") != publication.grade:
+            raise ReviewConflictError(
+                "scores.json grade disagrees with the generation publication receipt"
+            )
+        try:
+            quality_digest = _candidate_quality_sha256(
+                scores.get("aggregate_score"),
+                scores.get("grade"),
+                scores.get("metrics"),
+                scores.get("warnings"),
+            )
+        except (TypeError, ValueError) as exc:
+            raise ReviewValidationError(
+                "scores.json is invalid for its publication receipt"
+            ) from exc
+        if quality_digest != publication.candidate_quality_sha256:
+            raise ReviewConflictError(
+                "scores.json disagrees with the generation publication receipt"
+            )
 
     def _bundle_path(self, bundle_id: str) -> Path:
         if not isinstance(bundle_id, str) or not _BUNDLE_ID.fullmatch(bundle_id):
@@ -1520,13 +1762,12 @@ class ReviewStore:
     @contextmanager
     def _locked_bundle(self, bundle_id: str) -> Iterator[Path]:
         bundle = self._bundle_path(bundle_id)
-        lock_path = bundle / ".review.lock"
-        flags = os.O_CREAT | os.O_RDWR
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
+        bundle_fd = self._open_bundle_directory(bundle)
+        flags = os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW
         try:
-            fd = os.open(lock_path, flags, 0o600)
+            fd = os.open(".review.lock", flags, 0o600, dir_fd=bundle_fd)
         except OSError as exc:
+            os.close(bundle_fd)
             raise UnsafeReviewPathError("could not safely open the review lock") from exc
         try:
             import fcntl
@@ -1540,50 +1781,238 @@ class ReviewStore:
                 fcntl.flock(fd, fcntl.LOCK_UN)
             finally:
                 os.close(fd)
+                os.close(bundle_fd)
+
+    def _open_bundle_directory(self, bundle: Path) -> int:
+        """Open one verified bundle directory without following a swapped path."""
+
+        if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+            raise UnsafeReviewPathError("safe review writes require directory no-follow support")
+        diagrams = self._safe_diagrams_root()
+        if bundle.parent != diagrams or not _BUNDLE_ID.fullmatch(bundle.name):
+            raise UnsafeReviewPathError("review bundle must remain below diagrams")
+        try:
+            diagrams_stat = os.stat(diagrams, follow_symlinks=False)
+            bundle_stat = os.stat(bundle, follow_symlinks=False)
+        except OSError as exc:
+            raise UnsafeReviewPathError("review bundle identity could not be captured") from exc
+        if not stat.S_ISDIR(diagrams_stat.st_mode) or not stat.S_ISDIR(bundle_stat.st_mode):
+            raise UnsafeReviewPathError("review write directories must not be symlinks")
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        try:
+            diagrams_fd = os.open(diagrams, flags)
+        except OSError as exc:
+            raise UnsafeReviewPathError("could not safely open diagrams") from exc
+        try:
+            opened_diagrams = os.fstat(diagrams_fd)
+            if (opened_diagrams.st_dev, opened_diagrams.st_ino) != (
+                diagrams_stat.st_dev,
+                diagrams_stat.st_ino,
+            ):
+                raise UnsafeReviewPathError("diagrams identity changed while opening it")
+            bundle_fd: int | None = None
+            try:
+                bundle_fd = os.open(bundle.name, flags, dir_fd=diagrams_fd)
+                opened_bundle = os.fstat(bundle_fd)
+                if (opened_bundle.st_dev, opened_bundle.st_ino) != (
+                    bundle_stat.st_dev,
+                    bundle_stat.st_ino,
+                ):
+                    raise UnsafeReviewPathError("review bundle identity changed while opening it")
+                return bundle_fd
+            except OSError as exc:
+                if bundle_fd is not None:
+                    os.close(bundle_fd)
+                raise UnsafeReviewPathError("could not safely open review bundle") from exc
+            except BaseException:
+                if bundle_fd is not None:
+                    os.close(bundle_fd)
+                raise
+        finally:
+            os.close(diagrams_fd)
 
     def _atomic_replace_many(self, bundle: Path, files: dict[str, bytes | None]) -> None:
-        """Stage every payload, then replace targets; restore originals on an I/O error."""
+        """Commit files through one no-follow bundle descriptor with safe rollback."""
 
-        staged: dict[Path, Path | None] = {}
-        originals: dict[Path, bytes | None] = {}
+        bundle_fd = self._open_bundle_directory(bundle)
+        staged: list[tuple[int, str, str | None, bytes | None]] = []
+        committed: list[tuple[int, str, str | None, bytes | None]] = []
         try:
             for relative, payload in files.items():
-                target = self._artifact_path(bundle, relative, must_exist=False)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                # Re-check after mkdir so a concurrently inserted symlink cannot redirect writes.
-                target = self._artifact_path(bundle, relative, must_exist=False)
-                originals[target] = target.read_bytes() if target.exists() else None
-                if payload is None:
-                    staged[target] = None
-                    continue
-                fd, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
-                temporary = Path(temporary_name)
-                with os.fdopen(fd, "wb") as handle:
-                    handle.write(payload)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                staged[target] = temporary
-            for target, temporary in staged.items():
-                if temporary is None:
-                    target.unlink(missing_ok=True)
+                parts = Path(relative).parts
+                if (
+                    not parts
+                    or Path(relative).is_absolute()
+                    or any(part in {"", ".", ".."} for part in parts)
+                ):
+                    raise UnsafeReviewPathError("invalid review commit artifact path")
+                parent_fd = os.dup(bundle_fd)
+                try:
+                    for component in parts[:-1]:
+                        with suppress(FileExistsError):
+                            os.mkdir(component, 0o700, dir_fd=parent_fd)
+                        try:
+                            child_fd = os.open(
+                                component,
+                                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=parent_fd,
+                            )
+                        except OSError as exc:
+                            raise UnsafeReviewPathError(
+                                "review commit directory is unsafe"
+                            ) from exc
+                        os.close(parent_fd)
+                        parent_fd = child_fd
+
+                    target_name = parts[-1]
+                    if target_name.endswith(".mmd"):
+                        artifact_limit = MAX_MERMAID_BYTES
+                    elif target_name.endswith((".svg", ".png")):
+                        artifact_limit = MAX_RENDER_BYTES
+                    else:
+                        artifact_limit = MAX_JSON_BYTES
+                    try:
+                        original_fd = os.open(
+                            target_name,
+                            os.O_RDONLY | os.O_NOFOLLOW,
+                            dir_fd=parent_fd,
+                        )
+                    except FileNotFoundError:
+                        original = None
+                    except OSError as exc:
+                        raise UnsafeReviewPathError(
+                            "review commit target could not be opened safely"
+                        ) from exc
+                    else:
+                        try:
+                            original_stat = os.fstat(original_fd)
+                            if not stat.S_ISREG(original_stat.st_mode):
+                                raise UnsafeReviewPathError(
+                                    "review commit targets must be regular files"
+                                )
+                            if original_stat.st_size > artifact_limit:
+                                raise ReviewValidationError(
+                                    "existing review artifact exceeds its transaction limit"
+                                )
+                            handle = os.fdopen(original_fd, "rb")
+                            original_fd = -1
+                            with handle:
+                                original = handle.read(artifact_limit + 1)
+                            if len(original) > artifact_limit:
+                                raise ReviewValidationError(
+                                    "existing review artifact grew beyond its transaction limit"
+                                )
+                        finally:
+                            if original_fd >= 0:
+                                os.close(original_fd)
+
+                    temporary_name: str | None = None
+                    if payload is not None:
+                        if type(payload) is not bytes:
+                            raise ReviewValidationError(
+                                "review commit payloads must be plain bytes"
+                            )
+                        if len(payload) > artifact_limit:
+                            raise ReviewValidationError(
+                                "review commit payload exceeds its transaction limit"
+                            )
+                        for _ in range(64):
+                            candidate = f".{target_name}.{secrets.token_hex(12)}.tmp"
+                            try:
+                                temporary_fd = os.open(
+                                    candidate,
+                                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                    0o600,
+                                    dir_fd=parent_fd,
+                                )
+                            except FileExistsError:
+                                continue
+                            temporary_name = candidate
+                            break
+                        else:
+                            raise ReviewStoreError(
+                                "could not allocate a review transaction artifact"
+                            )
+                        try:
+                            with os.fdopen(temporary_fd, "wb") as handle:
+                                handle.write(payload)
+                                handle.flush()
+                                os.fsync(handle.fileno())
+                        except BaseException:
+                            with suppress(FileNotFoundError):
+                                os.unlink(temporary_name, dir_fd=parent_fd)
+                            raise
+                    staged.append((parent_fd, target_name, temporary_name, original))
+                except BaseException:
+                    os.close(parent_fd)
+                    raise
+
+            for entry in staged:
+                parent_fd, target_name, temporary_name, _ = entry
+                if temporary_name is None:
+                    with suppress(FileNotFoundError):
+                        os.unlink(target_name, dir_fd=parent_fd)
                 else:
-                    os.replace(temporary, target)
-            directory_fd = os.open(bundle, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        except Exception:
-            for target, original in originals.items():
+                    os.replace(
+                        temporary_name,
+                        target_name,
+                        src_dir_fd=parent_fd,
+                        dst_dir_fd=parent_fd,
+                    )
+                committed.append(entry)
+            for parent_fd, _, _, _ in staged:
+                os.fsync(parent_fd)
+            os.fsync(bundle_fd)
+        except BaseException as exc:
+            rollback_error: OSError | None = None
+            for parent_fd, target_name, _, original in reversed(committed):
                 try:
                     if original is None:
-                        target.unlink(missing_ok=True)
+                        with suppress(FileNotFoundError):
+                            os.unlink(target_name, dir_fd=parent_fd)
                     else:
-                        target.write_bytes(original)
-                except OSError:
-                    pass
+                        rollback_name: str | None = None
+                        for _ in range(64):
+                            candidate = f".{target_name}.{secrets.token_hex(12)}.rollback"
+                            try:
+                                rollback_fd = os.open(
+                                    candidate,
+                                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                    0o600,
+                                    dir_fd=parent_fd,
+                                )
+                            except FileExistsError:
+                                continue
+                            rollback_name = candidate
+                            break
+                        if rollback_name is None:
+                            raise OSError("could not allocate rollback artifact")
+                        try:
+                            with os.fdopen(rollback_fd, "wb") as handle:
+                                handle.write(original)
+                                handle.flush()
+                                os.fsync(handle.fileno())
+                            os.replace(
+                                rollback_name,
+                                target_name,
+                                src_dir_fd=parent_fd,
+                                dst_dir_fd=parent_fd,
+                            )
+                        finally:
+                            with suppress(FileNotFoundError):
+                                os.unlink(rollback_name, dir_fd=parent_fd)
+                    os.fsync(parent_fd)
+                except OSError as restore_exc:
+                    rollback_error = rollback_error or restore_exc
+            if rollback_error is not None:
+                raise ReviewStoreError(
+                    "review transaction failed and rollback was incomplete"
+                ) from exc
             raise
         finally:
-            for temporary in staged.values():
-                if temporary is not None:
-                    temporary.unlink(missing_ok=True)
+            for parent_fd, _, temporary_name, _ in staged:
+                if temporary_name is not None:
+                    with suppress(FileNotFoundError):
+                        os.unlink(temporary_name, dir_fd=parent_fd)
+                os.close(parent_fd)
+            os.close(bundle_fd)

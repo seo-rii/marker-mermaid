@@ -6,14 +6,17 @@ import hashlib
 import hmac
 import json
 import math
+import re
 import secrets
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
-from marker_mermaid.config import QualityGrade
+from marker_mermaid.config import PublishPolicy, QualityGrade, SecurityProfile
 from marker_mermaid.mapping_validation import bbox_iou
+from marker_mermaid.render_artifacts import MAX_RENDER_BYTES, png_inspection_error
 from marker_mermaid.typed_contracts import validate_typed_ir_contract
 
 BBox = tuple[float, float, float, float]
@@ -30,6 +33,10 @@ MAX_WARNING_CHARS = 4_096
 MAX_EVIDENCE_REFS = 256
 NODE_ID_MAPPING_MIN_IOU = 0.45
 _NODE_ID_MAPPING_SEAL_KEY = secrets.token_bytes(32)
+_VALIDATION_RECEIPT_SEAL_KEY = secrets.token_bytes(32)
+_VALIDATED_ARTIFACT_CERTIFICATE_SEAL_KEY = secrets.token_bytes(32)
+_PUBLICATION_AUTHORIZATION_SEAL_KEY = secrets.token_bytes(32)
+_PUBLICATION_SNAPSHOT_SEAL_KEY = secrets.token_bytes(32)
 MAX_SCENE_ELEMENTS = 5_000
 MAX_SCENE_RELATIONS = 10_000
 MAX_SCENE_GROUPS = 1_000
@@ -37,7 +44,55 @@ MAX_POLYGON_POINTS = 4_096
 MAX_POLYLINE_POINTS = 10_000
 
 
+def _sink_safe_diagnostic_text(value: str) -> str:
+    """Return plain UTF-8 diagnostic text without losing malformed code points silently."""
+
+    if type(value) is not str:
+        raise ValueError("diagnostic text must be a plain string")
+    return value.encode("utf-8", errors="backslashreplace").decode("utf-8")
+
+
+def _require_utf8_text(value: str | None, field: str) -> str | None:
+    if value is None:
+        return None
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"{field} must contain valid Unicode scalar values") from exc
+    return value
+
+
+def _canonical_runtime_diagram_type(value: str | None) -> str | None:
+    if value is None or type(value) is not str:
+        return None
+    normalized = value.casefold()
+    aliases = {
+        "flowchart-v2": "flowchart",
+        "flowchart": "flowchart",
+        "statediagram": "state",
+        "class": "class",
+        "er": "er",
+        "architecture": "architecture",
+        "requirement": "requirement",
+        "block": "block",
+        "sequence": "sequence",
+        "mindmap": "mindmap",
+        "timeline": "timeline",
+        "gantt": "gantt",
+        "c4": "c4",
+        "pie": "pie",
+        "xychart": "xychart",
+        "quadrantchart": "quadrant",
+        "sankey": "sankey",
+        "radar": "radar",
+        "treemap": "treemap",
+        "venn": "venn",
+    }
+    return aliases.get(normalized, normalized)
+
+
 def _bounded_text(value: str | None, field: str, limit: int = MAX_TEXT_CHARS) -> str | None:
+    _require_utf8_text(value, field)
     if value is not None and len(value) > limit:
         raise ValueError(f"{field} exceeds the text size limit")
     return value
@@ -48,6 +103,8 @@ def _bounded_references(
 ) -> list[str]:
     if len(values) > limit:
         raise ValueError(f"{field} exceeds the reference count limit")
+    for value in values:
+        _require_utf8_text(value, field)
     if any(not value or len(value) > MAX_ID_CHARS for value in values):
         raise ValueError(f"{field} contains an invalid bounded identifier")
     return values
@@ -97,6 +154,7 @@ class VisualEvidence(BaseModel):
     @field_validator("id")
     @classmethod
     def id_is_bounded(cls, value: str) -> str:
+        _require_utf8_text(value, "evidence id")
         if not value or len(value) > MAX_ID_CHARS:
             raise ValueError("evidence id must be non-empty and bounded")
         return value
@@ -144,6 +202,7 @@ class SceneElement(BaseModel):
     @field_validator("id", "role")
     @classmethod
     def identifiers_are_bounded(cls, value: str) -> str:
+        _require_utf8_text(value, "scene element id/role")
         if not value or len(value) > MAX_ID_CHARS:
             raise ValueError("scene element id/role must be non-empty and bounded")
         return value
@@ -204,6 +263,7 @@ class SceneRelation(BaseModel):
     @field_validator("id", "relation_type")
     @classmethod
     def identifiers_are_bounded(cls, value: str) -> str:
+        _require_utf8_text(value, "scene relation id/type")
         if not value or len(value) > MAX_ID_CHARS:
             raise ValueError("scene relation id/type must be non-empty and bounded")
         return value
@@ -211,6 +271,7 @@ class SceneRelation(BaseModel):
     @field_validator("source_id", "target_id")
     @classmethod
     def endpoint_ids_are_bounded(cls, value: str | None) -> str | None:
+        _require_utf8_text(value, "scene relation endpoint")
         if value is not None and (not value or len(value) > MAX_ID_CHARS):
             raise ValueError("scene relation endpoint must be a non-empty bounded identifier")
         return value
@@ -241,6 +302,7 @@ class SceneGroup(BaseModel):
     @field_validator("id", "role")
     @classmethod
     def identifiers_are_bounded(cls, value: str) -> str:
+        _require_utf8_text(value, "scene group id/role")
         if not value or len(value) > MAX_ID_CHARS:
             raise ValueError("scene group id/role must be non-empty and bounded")
         return value
@@ -348,6 +410,8 @@ class DiagramTypePrediction(BaseModel):
     @field_validator("visual_signals", "negative_signals")
     @classmethod
     def signals_are_bounded(cls, value: list[str]) -> list[str]:
+        for item in value:
+            _require_utf8_text(item, "diagram type signal")
         if any(len(item) > MAX_WARNING_CHARS for item in value):
             raise ValueError("diagram type signal exceeds the text size limit")
         return value
@@ -376,6 +440,11 @@ class NodeIdMapping(BaseModel):
         max_length=64,
         pattern=r"^[0-9a-f]{64}$",
     )
+
+    @field_validator("source_owner", "source_id", "fused_id", "authority_owner")
+    @classmethod
+    def identifiers_are_utf8(cls, value: str) -> str:
+        return _require_utf8_text(value, "node id mapping identifier")  # type: ignore[return-value]
 
     @field_validator("source_text")
     @classmethod
@@ -458,6 +527,11 @@ class TypedIRCandidate(BaseModel):
     ir: dict[str, Any]
     confidence: float = Field(default=0.5, ge=0, le=1)
 
+    @field_validator("diagram_type")
+    @classmethod
+    def diagram_type_is_utf8(cls, value: str) -> str:
+        return _require_utf8_text(value, "typed IR diagram type")  # type: ignore[return-value]
+
     @field_validator("ir")
     @classmethod
     def ir_is_bounded(cls, value: dict[str, Any]) -> dict[str, Any]:
@@ -470,8 +544,10 @@ class TypedIRCandidate(BaseModel):
                 raise ValueError("typed IR exceeds the item budget")
             if depth > MAX_IR_DEPTH:
                 raise ValueError("typed IR exceeds the nesting depth budget")
-            if isinstance(item, str) and len(item) > MAX_IR_TEXT_CHARS:
-                raise ValueError("typed IR text exceeds the field size budget")
+            if isinstance(item, str):
+                _require_utf8_text(item, "typed IR text")
+                if len(item) > MAX_IR_TEXT_CHARS:
+                    raise ValueError("typed IR text exceeds the field size budget")
             if isinstance(item, dict):
                 if any(not isinstance(key, str) for key in item):
                     raise ValueError("typed IR object keys must be strings")
@@ -510,6 +586,11 @@ class DirectMermaidCandidate(BaseModel):
     code: str = Field(max_length=50_000)
     confidence: float = Field(default=0.5, ge=0, le=1)
 
+    @field_validator("diagram_type", "code")
+    @classmethod
+    def text_is_utf8(cls, value: str) -> str:
+        return _require_utf8_text(value, "direct Mermaid candidate")  # type: ignore[return-value]
+
 
 class EngineObservation(BaseModel):
     prediction: DiagramTypePrediction
@@ -530,9 +611,10 @@ class EngineObservation(BaseModel):
     @field_validator("warnings")
     @classmethod
     def warning_text_is_bounded(cls, value: list[str]) -> list[str]:
-        if any(len(item) > MAX_WARNING_CHARS for item in value):
+        normalized = [_sink_safe_diagnostic_text(item) for item in value]
+        if any(len(item) > MAX_WARNING_CHARS for item in normalized):
             raise ValueError("engine warning exceeds the text size limit")
-        return value
+        return normalized
 
     def _set_fusion_metadata(
         self,
@@ -584,6 +666,321 @@ class MetricResult(BaseModel):
         return self
 
 
+class CandidateValidationReceipt(BaseModel):
+    """Public digests for the exact artifacts accepted by the trusted validator.
+
+    The receipt remains useful in sidecar metadata, but publication additionally
+    requires a process-private seal. Deserializing or hand-constructing matching
+    digest fields therefore cannot turn an untrusted candidate into Markdown.
+    """
+
+    schema_version: Literal["1"] = "1"
+    code_sha256: str
+    svg_sha256: str
+    png_sha256: str | None = None
+    security_profile: SecurityProfile
+    emitted_diagram_type: str
+    runtime_diagram_type: str | None = None
+
+    model_config = ConfigDict(frozen=True)
+
+    @field_validator("code_sha256", "svg_sha256", "png_sha256")
+    @classmethod
+    def digest_is_sha256(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+            raise ValueError("validation receipt digests must be lowercase SHA-256 hex")
+        return value
+
+    @field_validator("emitted_diagram_type", "runtime_diagram_type")
+    @classmethod
+    def diagram_type_is_bounded(cls, value: str | None) -> str | None:
+        if value is not None and (not value or len(value) > MAX_ID_CHARS):
+            raise ValueError("validation receipt diagram types must be non-empty and bounded")
+        return value
+
+
+class ValidatedArtifactCertificate(BaseModel):
+    """Process-local proof that CandidateValidator accepted exact artifacts."""
+
+    code_sha256: str
+    svg_sha256: str
+    png_sha256: str | None = None
+    security_profile: SecurityProfile
+    runtime_diagram_type: str | None = None
+    _certificate_seal: str | None = PrivateAttr(default=None)
+
+    model_config = ConfigDict(frozen=True)
+
+    @field_validator("code_sha256", "svg_sha256", "png_sha256")
+    @classmethod
+    def digest_is_sha256(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+            raise ValueError("artifact certificate digests must be lowercase SHA-256 hex")
+        return value
+
+    @field_validator("runtime_diagram_type")
+    @classmethod
+    def runtime_type_is_bounded(cls, value: str | None) -> str | None:
+        if value is not None and (not value or len(value) > MAX_ID_CHARS):
+            raise ValueError("artifact certificate runtime type must be non-empty and bounded")
+        return value
+
+    def has_trusted_values(self) -> bool:
+        try:
+            seal = self._certificate_seal
+            return bool(
+                type(self) is ValidatedArtifactCertificate
+                and type(seal) is str
+                and hmac.compare_digest(seal, _validated_artifact_certificate_seal(self))
+            )
+        except (AttributeError, TypeError, UnicodeEncodeError, ValueError):
+            return False
+
+
+class PublicationAuthorizationReceipt(BaseModel):
+    """Auditable fields from the publication decision bound by a private seal."""
+
+    schema_version: Literal["1"] = "1"
+    source_id: str
+    selected_candidate_id: str
+    candidate_validation_sha256: str
+    candidate_quality_sha256: str
+    publish_policy: PublishPolicy
+    security_profile: SecurityProfile
+    publish: bool
+    review_required: bool
+    status: Literal["success", "failed", "skipped", "review_required"]
+    grade: QualityGrade
+
+    model_config = ConfigDict(frozen=True)
+
+    @field_validator("source_id", "selected_candidate_id")
+    @classmethod
+    def identifier_is_bounded(cls, value: str) -> str:
+        if not value or len(value) > MAX_ID_CHARS:
+            raise ValueError("publication receipt identifiers must be non-empty and bounded")
+        return value
+
+    @field_validator("candidate_validation_sha256", "candidate_quality_sha256")
+    @classmethod
+    def candidate_digest_is_sha256(cls, value: str) -> str:
+        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+            raise ValueError("publication receipt digest must be lowercase SHA-256 hex")
+        return value
+
+
+class AuthorizedPublicationSnapshot(BaseModel):
+    """Immutable, already-authorized values consumed by publication sinks.
+
+    Returning the exact values that were checked avoids a check-then-reread race
+    when a live reconstruction result is shared with another thread.
+    """
+
+    source_id: str
+    selected_candidate_id: str
+    mermaid_code: str
+    grade: QualityGrade
+    aggregate_score: float | None = None
+    png: bytes | None = None
+    preview_omitted: bool = False
+    validation_receipt: CandidateValidationReceipt
+    publication_receipt: PublicationAuthorizationReceipt
+    _authorization_seal: str | None = PrivateAttr(default=None)
+
+    model_config = ConfigDict(frozen=True)
+
+    def has_trusted_values(self) -> bool:
+        """Return whether every sink-visible value retains its private seal."""
+
+        try:
+            seal = self._authorization_seal
+            if not (
+                type(self) is AuthorizedPublicationSnapshot
+                and type(self.source_id) is str
+                and type(self.selected_candidate_id) is str
+                and type(self.mermaid_code) is str
+                and type(self.grade) is str
+                and (self.aggregate_score is None or type(self.aggregate_score) is float)
+                and (self.png is None or type(self.png) is bytes)
+                and type(self.preview_omitted) is bool
+                and type(self.validation_receipt) is CandidateValidationReceipt
+                and type(self.publication_receipt) is PublicationAuthorizationReceipt
+                and type(seal) is str
+            ):
+                return False
+            validation_receipt = self.validation_receipt
+            publication_receipt = self.publication_receipt
+            png_digest = _binary_artifact_sha256(self.png) if self.png is not None else None
+            if (
+                validation_receipt.code_sha256 != _artifact_sha256(self.mermaid_code)
+                or publication_receipt.source_id != self.source_id
+                or publication_receipt.selected_candidate_id != self.selected_candidate_id
+                or publication_receipt.grade != self.grade
+                or publication_receipt.candidate_validation_sha256
+                != _canonical_model_sha256(validation_receipt)
+                or publication_receipt.security_profile != validation_receipt.security_profile
+                or (self.png is not None and validation_receipt.png_sha256 != png_digest)
+                or (
+                    self.png is None
+                    and validation_receipt.png_sha256 is not None
+                    and not self.preview_omitted
+                )
+            ):
+                return False
+            return hmac.compare_digest(seal, _publication_snapshot_seal(self))
+        except (AttributeError, TypeError, UnicodeEncodeError, ValueError):
+            return False
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def _canonical_model_bytes(value: BaseModel) -> bytes:
+    return _canonical_json_bytes(value.model_dump(mode="json"))
+
+
+def _canonical_model_sha256(value: BaseModel) -> str:
+    return hashlib.sha256(_canonical_model_bytes(value)).hexdigest()
+
+
+def _candidate_quality_sha256(
+    aggregate_score: float | None,
+    grade: QualityGrade,
+    scores: dict[str, float],
+    warnings: list[str],
+) -> str:
+    if aggregate_score is not None and not (
+        type(aggregate_score) is float
+        and math.isfinite(aggregate_score)
+        and 0 <= aggregate_score <= 1
+    ):
+        raise ValueError("aggregate score must be a finite probability")
+    if type(scores) is not dict or len(scores) > MAX_OBSERVATION_WARNINGS:
+        raise ValueError("quality metrics must be a bounded plain mapping")
+    if any(
+        type(key) is not str
+        or not key
+        or len(key) > MAX_ID_CHARS
+        or re.fullmatch(r"[a-z][a-z0-9_]*", key) is None
+        or type(score) is not float
+        or not math.isfinite(score)
+        or not 0 <= score <= 1
+        for key, score in scores.items()
+    ):
+        raise ValueError("quality metrics must contain bounded probability values")
+    if type(warnings) is not list or len(warnings) > MAX_OBSERVATION_WARNINGS:
+        raise ValueError("quality warnings must be a bounded plain list")
+    if any(type(warning) is not str or len(warning) > MAX_WARNING_CHARS for warning in warnings):
+        raise ValueError("quality warnings must contain bounded plain strings")
+
+    def canonical_probability(value: float) -> str:
+        text = format(Decimal(str(value)), "f")
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        return "0" if text in {"-0", ""} else text
+
+    payload = {
+        "aggregate_score": (
+            canonical_probability(aggregate_score) if aggregate_score is not None else None
+        ),
+        "grade": grade,
+        "metrics": {key: canonical_probability(score) for key, score in scores.items()},
+        "warnings": list(warnings),
+    }
+    return hashlib.sha256(_canonical_json_bytes(payload)).hexdigest()
+
+
+def _artifact_sha256(value: str) -> str:
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+
+
+def _binary_artifact_sha256(value: bytes) -> str:
+    return hashlib.sha256(bytes(value)).hexdigest()
+
+
+def _validation_receipt_seal(receipt: CandidateValidationReceipt) -> str:
+    return hmac.new(
+        _VALIDATION_RECEIPT_SEAL_KEY,
+        _canonical_model_bytes(receipt),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _validated_artifact_certificate_seal(
+    certificate: ValidatedArtifactCertificate,
+) -> str:
+    return hmac.new(
+        _VALIDATED_ARTIFACT_CERTIFICATE_SEAL_KEY,
+        _canonical_model_bytes(certificate),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _issue_validated_artifact_certificate(
+    *,
+    code: str,
+    svg: str,
+    png: bytes | None,
+    profile: SecurityProfile,
+    runtime_diagram_type: str | None,
+) -> ValidatedArtifactCertificate:
+    """Issue validator evidence for exact already-inspected runtime artifacts."""
+
+    if (
+        type(code) is not str
+        or type(svg) is not str
+        or (png is not None and type(png) is not bytes)
+    ):
+        raise ValueError("validated artifacts must use exact plain value types")
+    certificate = ValidatedArtifactCertificate(
+        code_sha256=_artifact_sha256(code),
+        svg_sha256=_artifact_sha256(svg),
+        png_sha256=_binary_artifact_sha256(png) if png is not None else None,
+        security_profile=profile,
+        runtime_diagram_type=runtime_diagram_type,
+    )
+    certificate._certificate_seal = _validated_artifact_certificate_seal(certificate)
+    return certificate
+
+
+def _publication_authorization_seal(receipt: PublicationAuthorizationReceipt) -> str:
+    return hmac.new(
+        _PUBLICATION_AUTHORIZATION_SEAL_KEY,
+        _canonical_model_bytes(receipt),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _publication_snapshot_seal(snapshot: AuthorizedPublicationSnapshot) -> str:
+    payload = {
+        "source_id": snapshot.source_id,
+        "selected_candidate_id": snapshot.selected_candidate_id,
+        "mermaid_code_sha256": _artifact_sha256(snapshot.mermaid_code),
+        "grade": snapshot.grade,
+        "aggregate_score": snapshot.aggregate_score,
+        "png_sha256": (_binary_artifact_sha256(snapshot.png) if snapshot.png is not None else None),
+        "preview_omitted": snapshot.preview_omitted,
+        "validation_receipt_sha256": _canonical_model_sha256(snapshot.validation_receipt),
+        "publication_receipt_sha256": _canonical_model_sha256(snapshot.publication_receipt),
+    }
+    return hmac.new(
+        _PUBLICATION_SNAPSHOT_SEAL_KEY,
+        _canonical_json_bytes(payload),
+        hashlib.sha256,
+    ).hexdigest()
+
+
 class MermaidCandidate(BaseModel):
     candidate_id: str
     generation_method: str
@@ -608,6 +1005,7 @@ class MermaidCandidate(BaseModel):
     ast: dict[str, Any] | None = None
     svg: str | None = None
     png: bytes | None = None
+    validation_receipt: CandidateValidationReceipt | None = None
     syntax_valid: bool = False
     render_valid: bool = False
     scores: dict[str, float] = Field(default_factory=dict)
@@ -615,6 +1013,7 @@ class MermaidCandidate(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     repair_history: list[RepairEvent] = Field(default_factory=list)
     _node_id_mapping_seal: str | None = PrivateAttr(default=None)
+    _validation_receipt_seal: str | None = PrivateAttr(default=None)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -632,6 +1031,115 @@ class MermaidCandidate(BaseModel):
             self._node_id_mapping_seal,
             _node_id_mapping_seal(self.node_id_mappings),
         )
+
+    def _seal_validation_receipt(
+        self,
+        certificate: ValidatedArtifactCertificate | None,
+    ) -> None:
+        """Bind the current code and inspected SVG after trusted validation."""
+
+        self.validation_receipt = None
+        self._validation_receipt_seal = None
+        if not (
+            self.syntax_valid
+            and self.render_valid
+            and type(certificate) is ValidatedArtifactCertificate
+            and certificate.has_trusted_values()
+            and type(self.mermaid_code) is str
+            and bool(self.mermaid_code.strip())
+            and type(self.svg) is str
+            and bool(self.svg.strip())
+            and len(self.svg.encode("utf-8")) <= MAX_RENDER_BYTES
+            and type(self.emitted_diagram_type) is str
+            and bool(self.emitted_diagram_type)
+            and len(self.emitted_diagram_type) <= MAX_ID_CHARS
+            and _canonical_runtime_diagram_type(certificate.runtime_diagram_type)
+            == self.emitted_diagram_type
+            and (
+                self.runtime_diagram_type is None
+                or (
+                    type(self.runtime_diagram_type) is str
+                    and bool(self.runtime_diagram_type)
+                    and len(self.runtime_diagram_type) <= MAX_ID_CHARS
+                )
+            )
+        ):
+            return
+        validated_png = (
+            self.png if type(self.png) is bytes and png_inspection_error(self.png) is None else None
+        )
+        if (
+            certificate.code_sha256 != _artifact_sha256(self.mermaid_code)
+            or certificate.svg_sha256 != _artifact_sha256(self.svg)
+            or certificate.png_sha256
+            != (_binary_artifact_sha256(validated_png) if validated_png is not None else None)
+            or certificate.runtime_diagram_type != self.runtime_diagram_type
+        ):
+            return
+        try:
+            receipt = CandidateValidationReceipt(
+                code_sha256=certificate.code_sha256,
+                svg_sha256=certificate.svg_sha256,
+                png_sha256=certificate.png_sha256,
+                security_profile=certificate.security_profile,
+                emitted_diagram_type=self.emitted_diagram_type,
+                runtime_diagram_type=self.runtime_diagram_type,
+            )
+        except (UnicodeEncodeError, ValueError):
+            return
+        self.validation_receipt = receipt
+        self._validation_receipt_seal = _validation_receipt_seal(receipt)
+
+    def has_validated_publication_artifacts(self) -> bool:
+        """Return whether current publishable bytes still match trusted validation."""
+
+        try:
+            receipt = self.validation_receipt
+            seal = self._validation_receipt_seal
+            if not (
+                self.syntax_valid
+                and self.render_valid
+                and type(self.mermaid_code) is str
+                and bool(self.mermaid_code.strip())
+                and type(self.svg) is str
+                and bool(self.svg.strip())
+                and len(self.svg.encode("utf-8")) <= MAX_RENDER_BYTES
+                and type(receipt) is CandidateValidationReceipt
+                and type(seal) is str
+            ):
+                return False
+            if (
+                receipt.code_sha256 != _artifact_sha256(self.mermaid_code)
+                or receipt.svg_sha256 != _artifact_sha256(self.svg)
+                or receipt.emitted_diagram_type != self.emitted_diagram_type
+                or receipt.runtime_diagram_type != self.runtime_diagram_type
+                or _canonical_runtime_diagram_type(receipt.runtime_diagram_type)
+                != receipt.emitted_diagram_type
+            ):
+                return False
+            return hmac.compare_digest(seal, _validation_receipt_seal(receipt))
+        except (AttributeError, TypeError, UnicodeEncodeError, ValueError):
+            return False
+
+    def has_validated_rendered_preview(self) -> bool:
+        """Return whether the optional PNG still matches the trusted render."""
+
+        if not self.has_validated_publication_artifacts():
+            return False
+        receipt = self.validation_receipt
+        try:
+            return bool(
+                type(receipt) is CandidateValidationReceipt
+                and receipt.png_sha256 is not None
+                and type(self.png) is bytes
+                and png_inspection_error(self.png) is None
+                and hmac.compare_digest(
+                    receipt.png_sha256,
+                    _binary_artifact_sha256(self.png),
+                )
+            )
+        except (TypeError, ValueError):
+            return False
 
     @field_validator("scores")
     @classmethod
@@ -700,6 +1208,16 @@ class CandidateFailure(BaseModel):
     error_type: str
     message: str
 
+    @field_validator("stage", "engine", "error_type", mode="before")
+    @classmethod
+    def identifier_is_sink_safe(cls, value: str) -> str:
+        return _sink_safe_diagnostic_text(value)[:MAX_ID_CHARS]
+
+    @field_validator("message", mode="before")
+    @classmethod
+    def message_is_sink_safe(cls, value: str) -> str:
+        return _sink_safe_diagnostic_text(value)[:MAX_WARNING_CHARS]
+
 
 class ReconstructionResult(BaseModel):
     source_id: str
@@ -719,8 +1237,225 @@ class ReconstructionResult(BaseModel):
     status: Literal["success", "failed", "skipped", "review_required"] = "review_required"
     sidecar_dir: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    publication_receipt: PublicationAuthorizationReceipt | None = None
+    _publication_authorization_seal: str | None = PrivateAttr(default=None)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    def _build_publication_receipt(
+        self,
+        policy: PublishPolicy,
+        profile: SecurityProfile,
+    ) -> PublicationAuthorizationReceipt | None:
+        selected = self.selected
+        if not (
+            type(self.source_id) is str
+            and bool(self.source_id)
+            and len(self.source_id) <= MAX_ID_CHARS
+            and type(selected) is MermaidCandidate
+            and type(selected.candidate_id) is str
+            and bool(selected.candidate_id)
+            and len(selected.candidate_id) <= MAX_ID_CHARS
+            and selected.has_validated_publication_artifacts()
+            and type(selected.validation_receipt) is CandidateValidationReceipt
+            and selected.validation_receipt.security_profile == profile
+            and type(self.publish) is bool
+            and type(self.review_required) is bool
+            and type(self.status) is str
+            and type(self.grade) is str
+        ):
+            return None
+        try:
+            return PublicationAuthorizationReceipt(
+                source_id=self.source_id,
+                selected_candidate_id=selected.candidate_id,
+                candidate_validation_sha256=_canonical_model_sha256(selected.validation_receipt),
+                candidate_quality_sha256=_candidate_quality_sha256(
+                    selected.aggregate_score,
+                    self.grade,
+                    selected.scores,
+                    selected.warnings,
+                ),
+                publish_policy=policy,
+                security_profile=profile,
+                publish=self.publish,
+                review_required=self.review_required,
+                status=self.status,
+                grade=self.grade,
+            )
+        except (TypeError, UnicodeEncodeError, ValueError):
+            return None
+
+    def has_trusted_publication_decision(self) -> bool:
+        """Return whether the current result still matches its pipeline decision."""
+
+        try:
+            receipt = self.publication_receipt
+            seal = self._publication_authorization_seal
+            if type(receipt) is not PublicationAuthorizationReceipt or type(seal) is not str:
+                return False
+            expected = self._build_publication_receipt(
+                receipt.publish_policy,
+                receipt.security_profile,
+            )
+            if expected is None or expected != receipt:
+                return False
+            return hmac.compare_digest(seal, _publication_authorization_seal(receipt))
+        except (AttributeError, TypeError, UnicodeEncodeError, ValueError):
+            return False
+
+    def has_authorized_publication(self) -> bool:
+        """Return whether automatic Markdown publication remains authorized."""
+
+        receipt = self.publication_receipt
+        return bool(
+            self.has_trusted_publication_decision()
+            and type(receipt) is PublicationAuthorizationReceipt
+            and receipt.publish
+            and not receipt.review_required
+            and receipt.status == "success"
+            and receipt.publish_policy
+            in {PublishPolicy.STRICT_VALIDATED, PublishPolicy.BEST_EFFORT_VALIDATED}
+            and receipt.security_profile != SecurityProfile.TRUSTED_LOCAL
+        )
+
+    def authorized_publication_snapshot(self) -> AuthorizedPublicationSnapshot | None:
+        """Capture and authorize the exact values a Markdown sink may emit.
+
+        Every mutable field is read into a local exactly once.  The receipt
+        digests and process-private HMAC seals are then checked only against
+        those locals, so a concurrent mutation either produces a coherent
+        previously authorized snapshot or fails closed.
+        """
+
+        try:
+            selected = self.selected
+            source_id = self.source_id
+            grade = self.grade
+            publish = self.publish
+            review_required = self.review_required
+            status = self.status
+            publication_receipt = self.publication_receipt
+            publication_seal = self._publication_authorization_seal
+            if type(selected) is not MermaidCandidate:
+                return None
+
+            candidate_id = selected.candidate_id
+            syntax_valid = selected.syntax_valid
+            render_valid = selected.render_valid
+            mermaid_code = selected.mermaid_code
+            svg = selected.svg
+            png = selected.png
+            emitted_diagram_type = selected.emitted_diagram_type
+            runtime_diagram_type = selected.runtime_diagram_type
+            aggregate_score = selected.aggregate_score
+            scores = selected.scores
+            warnings = selected.warnings
+            validation_receipt = selected.validation_receipt
+            validation_seal = selected._validation_receipt_seal
+
+            if not (
+                type(source_id) is str
+                and bool(source_id)
+                and len(source_id) <= MAX_ID_CHARS
+                and type(candidate_id) is str
+                and bool(candidate_id)
+                and len(candidate_id) <= MAX_ID_CHARS
+                and type(grade) is str
+                and type(publish) is bool
+                and type(review_required) is bool
+                and type(status) is str
+                and syntax_valid is True
+                and render_valid is True
+                and type(mermaid_code) is str
+                and bool(mermaid_code.strip())
+                and type(svg) is str
+                and bool(svg.strip())
+                and len(svg.encode("utf-8")) <= MAX_RENDER_BYTES
+                and type(validation_receipt) is CandidateValidationReceipt
+                and type(validation_seal) is str
+                and type(publication_receipt) is PublicationAuthorizationReceipt
+                and type(publication_seal) is str
+            ):
+                return None
+            if (
+                validation_receipt.code_sha256 != _artifact_sha256(mermaid_code)
+                or validation_receipt.svg_sha256 != _artifact_sha256(svg)
+                or validation_receipt.emitted_diagram_type != emitted_diagram_type
+                or validation_receipt.runtime_diagram_type != runtime_diagram_type
+                or not hmac.compare_digest(
+                    validation_seal,
+                    _validation_receipt_seal(validation_receipt),
+                )
+            ):
+                return None
+            if (
+                publication_receipt.source_id != source_id
+                or publication_receipt.selected_candidate_id != candidate_id
+                or publication_receipt.candidate_validation_sha256
+                != _canonical_model_sha256(validation_receipt)
+                or publication_receipt.candidate_quality_sha256
+                != _candidate_quality_sha256(
+                    aggregate_score,
+                    grade,
+                    scores,
+                    warnings,
+                )
+                or publication_receipt.security_profile != validation_receipt.security_profile
+                or publication_receipt.publish != publish
+                or publication_receipt.review_required != review_required
+                or publication_receipt.status != status
+                or publication_receipt.grade != grade
+                or not hmac.compare_digest(
+                    publication_seal,
+                    _publication_authorization_seal(publication_receipt),
+                )
+                or not publication_receipt.publish
+                or publication_receipt.review_required
+                or publication_receipt.status != "success"
+                or publication_receipt.publish_policy
+                not in {
+                    PublishPolicy.STRICT_VALIDATED,
+                    PublishPolicy.BEST_EFFORT_VALIDATED,
+                }
+                or publication_receipt.security_profile == SecurityProfile.TRUSTED_LOCAL
+            ):
+                return None
+
+            validated_png = None
+            if (
+                validation_receipt.png_sha256 is not None
+                and type(png) is bytes
+                and png_inspection_error(png) is None
+                and hmac.compare_digest(
+                    validation_receipt.png_sha256,
+                    _binary_artifact_sha256(png),
+                )
+            ):
+                validated_png = bytes(png)
+            preview_omitted = validated_png is None and (
+                png is not None or validation_receipt.png_sha256 is not None
+            )
+            safe_score = (
+                aggregate_score
+                if type(aggregate_score) is float and math.isfinite(aggregate_score)
+                else None
+            )
+            snapshot = AuthorizedPublicationSnapshot(
+                source_id=str(source_id),
+                selected_candidate_id=str(candidate_id),
+                mermaid_code=str(mermaid_code),
+                grade=grade,
+                aggregate_score=safe_score,
+                png=validated_png,
+                preview_omitted=preview_omitted,
+                validation_receipt=validation_receipt,
+                publication_receipt=publication_receipt,
+            )
+            snapshot._authorization_seal = _publication_snapshot_seal(snapshot)
+            return snapshot
+        except (AttributeError, TypeError, UnicodeEncodeError, ValueError):
+            return None
 
     @model_validator(mode="after")
     def state_is_consistent(self) -> ReconstructionResult:

@@ -19,7 +19,7 @@ from marker_mermaid.accessibility import (
 )
 from marker_mermaid.ast_repair import DeterministicMermaidRepair
 from marker_mermaid.candidate_scene import typed_ir_semantic_texts, typed_ir_to_scene
-from marker_mermaid.config import MermaidConfig, Mode, PublishPolicy
+from marker_mermaid.config import MermaidConfig, Mode, PublishPolicy, ScoreWeights, SecurityProfile
 from marker_mermaid.flowchart_structure import (
     ambiguous_portable_ids,
     unique_portable_id_aliases,
@@ -27,6 +27,8 @@ from marker_mermaid.flowchart_structure import (
 from marker_mermaid.fusion import FusionEngine, FusionInput
 from marker_mermaid.geometry import GeometryEngine
 from marker_mermaid.models import (
+    MAX_OBSERVATION_WARNINGS,
+    MAX_WARNING_CHARS,
     CandidateFailure,
     DiagramSceneIR,
     DiagramTypePrediction,
@@ -39,6 +41,11 @@ from marker_mermaid.models import (
     SceneElement,
     TypedIRCandidate,
     VisualEvidence,
+    _publication_authorization_seal,
+    _sink_safe_diagnostic_text,
+)
+from marker_mermaid.models import (
+    _canonical_runtime_diagram_type as _canonical_runtime_type,
 )
 from marker_mermaid.protocols import (
     CandidateEngine,
@@ -306,33 +313,118 @@ def _generated_node_provenance_score(
     return supported / len(generated_scene.elements)
 
 
-def _canonical_runtime_type(value: str | None) -> str | None:
-    if value is None:
-        return None
-    normalized = value.casefold()
-    aliases = {
-        "flowchart-v2": "flowchart",
-        "flowchart": "flowchart",
-        "statediagram": "state",
-        "class": "class",
-        "er": "er",
-        "architecture": "architecture",
-        "requirement": "requirement",
-        "block": "block",
-        "sequence": "sequence",
-        "mindmap": "mindmap",
-        "timeline": "timeline",
-        "gantt": "gantt",
-        "c4": "c4",
-        "pie": "pie",
-        "xychart": "xychart",
-        "quadrantchart": "quadrant",
-        "sankey": "sankey",
-        "radar": "radar",
-        "treemap": "treemap",
-        "venn": "venn",
+def _canonical_publication_source(code: str) -> str:
+    """Keep validated Mermaid fence payloads byte-identical at publication."""
+
+    return code if code.endswith("\n") else code + "\n"
+
+
+def certify_publication_result(
+    result: ReconstructionResult,
+    config: MermaidConfig,
+) -> bool:
+    """Seal only a result that exactly matches a freshly computed policy decision."""
+
+    result.publication_receipt = None
+    result._publication_authorization_seal = None
+    if type(result) is not ReconstructionResult or type(config) is not MermaidConfig:
+        return False
+    selected = result.selected
+    weights = config.score_weights
+    if not (
+        type(selected) is MermaidCandidate
+        and type(config.publish_policy) is PublishPolicy
+        and type(config.security_profile) is SecurityProfile
+        and type(config.publish_min_score) is float
+        and type(config.review_below_score) is float
+        and type(weights) is ScoreWeights
+    ):
+        return False
+    try:
+        weight_values = weights.model_dump(mode="python")
+        if any(type(value) is not float for value in weight_values.values()):
+            return False
+        trusted_config = MermaidConfig(
+            publish_policy=config.publish_policy,
+            security_profile=config.security_profile,
+            publish_min_score=config.publish_min_score,
+            review_below_score=config.review_below_score,
+            score_weights=ScoreWeights.model_validate(weight_values),
+        )
+    except (TypeError, ValueError):
+        return False
+    included_fields = {
+        "source_id",
+        "selected",
+        "grade",
+        "publish",
+        "review_required",
+        "status",
     }
-    return aliases.get(normalized, normalized)
+    try:
+        before_projection = result.model_dump(
+            mode="python",
+            include=included_fields,
+        )
+        before_validation_seal = selected._validation_receipt_seal
+        snapshot = result.model_copy(deep=True)
+        after_projection = result.model_dump(
+            mode="python",
+            include=included_fields,
+        )
+        snapshot_projection = snapshot.model_dump(
+            mode="python",
+            include=included_fields,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+    snapshot_selected = snapshot.selected
+    if not (
+        before_projection == after_projection == snapshot_projection
+        and type(before_validation_seal) is str
+        and type(snapshot_selected) is MermaidCandidate
+        and snapshot_selected._validation_receipt_seal == before_validation_seal
+        and snapshot_selected.has_validated_publication_artifacts()
+    ):
+        return False
+    decision = decide_publication(snapshot_selected, trusted_config)
+    if decision.publish or not decision.review_required:
+        expected_status = "success"
+    else:
+        expected_status = "review_required"
+    if (
+        snapshot.grade != decision.grade
+        or snapshot.publish is not decision.publish
+        or snapshot.review_required is not decision.review_required
+        or snapshot.status != expected_status
+    ):
+        return False
+    receipt = snapshot._build_publication_receipt(
+        trusted_config.publish_policy,
+        trusted_config.security_profile,
+    )
+    if receipt is None:
+        return False
+    try:
+        final_projection = result.model_dump(
+            mode="python",
+            include=included_fields,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if (
+        final_projection != before_projection
+        or result.selected is not selected
+        or selected._validation_receipt_seal != before_validation_seal
+    ):
+        return False
+    result.publication_receipt = receipt
+    result._publication_authorization_seal = _publication_authorization_seal(receipt)
+    if result.has_trusted_publication_decision():
+        return True
+    result.publication_receipt = None
+    result._publication_authorization_seal = None
+    return False
 
 
 def _scene_accessibility_ir(
@@ -958,7 +1050,20 @@ class ReconstructionPipeline:
                 if len(drafts) >= candidate_budget:
                     break
                 draft = group.pop(0)
-                digest = hashlib.sha256(draft.code.encode()).hexdigest()
+                try:
+                    digest = hashlib.sha256(draft.code.encode("utf-8")).hexdigest()
+                except (AttributeError, UnicodeEncodeError) as exc:
+                    failures.append(
+                        CandidateFailure(
+                            stage="candidate_deduplication",
+                            engine=draft.engine_name,
+                            error_type=type(exc).__name__,
+                            message=f"candidate source was isolated before validation: {exc}",
+                        )
+                    )
+                    if group:
+                        remaining_groups.append(group)
+                    continue
                 if digest not in code_hashes:
                     code_hashes.add(digest)
                     drafts.append(draft)
@@ -1063,7 +1168,9 @@ class ReconstructionPipeline:
                 and source_repair.idempotent
                 and not source_repair.budget_exhausted
             )
-            candidate_code = source_repair.source if repair_accepted else styled_code
+            candidate_code = _canonical_publication_source(
+                source_repair.source if repair_accepted else styled_code
+            )
             source_repair_history = [
                 RepairEvent(
                     iteration=0,
@@ -1112,12 +1219,14 @@ class ReconstructionPipeline:
             )
             if candidate.node_id_mappings:
                 candidate._seal_node_id_mappings()
+            certification_outcome = None
             try:
                 outcome = self.validator.validate(
                     candidate_code, self.config.render_timeout_seconds
                 )
                 runtime = outcome.runtime
                 validation_warnings = outcome.warnings
+                certification_outcome = outcome
             except Exception as exc:
                 runtime = RuntimeResult(False, False, error=f"validator failed: {exc}")
                 validation_warnings = []
@@ -1141,7 +1250,12 @@ class ReconstructionPipeline:
                         draft.typed_ir,
                         experimental=self.config.mode != Mode.STRICT,
                     )
-                    if fallback is not None and fallback.code != candidate_code:
+                    fallback_code = (
+                        _canonical_publication_source(fallback.code)
+                        if fallback is not None
+                        else None
+                    )
+                    if fallback is not None and fallback_code != candidate_code:
                         fallback_details = {
                             "requested_type": draft.diagram_type,
                             "rejected_emitted_type": rejected_emitted_type,
@@ -1151,7 +1265,7 @@ class ReconstructionPipeline:
                         }
                         try:
                             fallback_outcome = self.validator.validate(
-                                fallback.code,
+                                fallback_code,
                                 self.config.render_timeout_seconds,
                             )
                         except Exception as exc:
@@ -1189,8 +1303,8 @@ class ReconstructionPipeline:
                                 and fallback_runtime_type == fallback.emitted_type
                             )
                             if fallback_valid:
-                                candidate_code = fallback.code
-                                candidate.mermaid_code = fallback.code
+                                candidate_code = fallback_code
+                                candidate.mermaid_code = candidate_code
                                 candidate.emitted_diagram_type = fallback.emitted_type
                                 candidate.fallback_chain = list(fallback.fallback_chain)
                                 candidate.serialization_stability = fallback.stability
@@ -1205,6 +1319,7 @@ class ReconstructionPipeline:
                                 )
                                 runtime = fallback_runtime
                                 validation_warnings = fallback_outcome.warnings
+                                certification_outcome = fallback_outcome
                             else:
                                 if not (
                                     fallback_runtime.syntax_valid and fallback_runtime.render_valid
@@ -1268,6 +1383,7 @@ class ReconstructionPipeline:
                     )
                     if augmented_code is not None:
                         try:
+                            augmented_code = _canonical_publication_source(augmented_code)
                             augmented_outcome = self.validator.validate(
                                 augmented_code,
                                 self.config.render_timeout_seconds,
@@ -1287,6 +1403,7 @@ class ReconstructionPipeline:
                                 candidate_code = augmented_code
                                 candidate.mermaid_code = augmented_code
                                 runtime = augmented_outcome.runtime
+                                certification_outcome = augmented_outcome
                                 validation_warnings = list(
                                     dict.fromkeys(
                                         [
@@ -1365,6 +1482,7 @@ class ReconstructionPipeline:
             candidate.aggregate_score = evaluation.aggregate_score
             candidate.generated_scene_ir = evaluation.generated_scene_ir
             candidate.warnings.extend(evaluation.warnings)
+            self.validator.seal_candidate(candidate, certification_outcome)
             candidates.append(candidate)
 
         selected = self._select(candidates)
@@ -1372,6 +1490,25 @@ class ReconstructionPipeline:
             selected = self._repair(context, selected)
             if selected not in candidates:
                 candidates.append(selected)
+        if selected is not None:
+            bounded_warnings: list[str] = []
+            warnings_truncated = False
+            for warning in selected.warnings:
+                normalized = _sink_safe_diagnostic_text(warning)
+                if len(normalized) > MAX_WARNING_CHARS:
+                    normalized = normalized[: MAX_WARNING_CHARS - 1] + "…"
+                    warnings_truncated = True
+                if normalized in bounded_warnings:
+                    continue
+                if len(bounded_warnings) >= MAX_OBSERVATION_WARNINGS - 1:
+                    warnings_truncated = True
+                    break
+                bounded_warnings.append(normalized)
+            if warnings_truncated:
+                bounded_warnings.append(
+                    "candidate warnings were truncated to the publication metadata budget"
+                )
+            selected.warnings = bounded_warnings
         decision = decide_publication(selected, self.config)
         if selected is None:
             status = "failed"
@@ -1379,7 +1516,7 @@ class ReconstructionPipeline:
             status = "success"
         else:
             status = "review_required"
-        return ReconstructionResult(
+        result = ReconstructionResult(
             source_id=source_id,
             source_image_name=source_image_name,
             source_kind=source_kind,
@@ -1396,6 +1533,18 @@ class ReconstructionPipeline:
             review_required=decision.review_required,
             status=status,
         )
+        certified = certify_publication_result(result, self.config)
+        if result.publish and not certified:
+            result.publish = False
+            result.review_required = True
+            result.status = "review_required"
+            warning = "automatic publication authorization failed; review is required"
+            if selected is not None and warning not in selected.warnings:
+                if len(selected.warnings) >= MAX_OBSERVATION_WARNINGS:
+                    selected.warnings[-1] = warning
+                else:
+                    selected.warnings.append(warning)
+        return result
 
     def _select(self, candidates: list[MermaidCandidate]) -> MermaidCandidate | None:
         eligible = [item for item in candidates if item.syntax_valid and item.render_valid]
@@ -1410,6 +1559,7 @@ class ReconstructionPipeline:
             eligible,
             key=lambda item: (
                 int(decide_publication(item, self.config).publish) if automatic_publication else 0,
+                int(item.has_validated_publication_artifacts()) if automatic_publication else 0,
                 item.aggregate_score if item.aggregate_score is not None else -1,
                 item.scores.get("ocr_recall", -1),
                 priority.get(item.generation_method, 0),
@@ -1585,11 +1735,10 @@ class ReconstructionPipeline:
                 failed = current.model_copy(deep=True)
                 failed.warnings.append("repair engine returned an invalid structured proposal")
                 return failed
-            if (
-                not proposal.code
-                or proposal.code == current.mermaid_code
-                or proposal.typed_ir is None
-            ):
+            if type(proposal.code) is not str or not proposal.code or proposal.typed_ir is None:
+                break
+            proposal_code = _canonical_publication_source(proposal.code)
+            if proposal_code == current.mermaid_code:
                 break
             attempted = current.model_copy(deep=True)
             attempted.candidate_id = f"{selected.candidate_id}-repair-{iteration}"
@@ -1635,7 +1784,7 @@ class ReconstructionPipeline:
                 )
                 return attempted
             if (
-                canonical.code != proposal.code
+                _canonical_publication_source(canonical.code) != proposal_code
                 or canonical.emitted_type != current.emitted_diagram_type
             ):
                 attempted.warnings.append(
@@ -1653,7 +1802,7 @@ class ReconstructionPipeline:
                 return attempted
             try:
                 outcome = self.validator.validate(
-                    proposal.code,
+                    proposal_code,
                     self.config.render_timeout_seconds,
                 )
             except Exception as exc:
@@ -1696,7 +1845,7 @@ class ReconstructionPipeline:
                 )
                 return attempted
             evaluation = self._evaluate_candidate(
-                code=proposal.code,
+                code=proposal_code,
                 runtime=outcome.runtime,
                 syntax_valid=outcome.runtime.syntax_valid,
                 render_valid=outcome.runtime.render_valid,
@@ -1730,7 +1879,7 @@ class ReconstructionPipeline:
             attempted.repair_history.append(event)
             if not improved:
                 return attempted
-            attempted.mermaid_code = proposal.code
+            attempted.mermaid_code = proposal_code
             attempted.typed_ir = validated_ir
             attempted.syntax_valid = outcome.runtime.syntax_valid
             attempted.render_valid = outcome.runtime.render_valid
@@ -1749,5 +1898,6 @@ class ReconstructionPipeline:
                     ]
                 )
             )
+            self.validator.seal_candidate(attempted, outcome)
             current = attempted
         return current

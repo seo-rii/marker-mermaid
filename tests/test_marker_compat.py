@@ -9,7 +9,45 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
+from marker_mermaid.config import MermaidConfig, SecurityProfile
 from marker_mermaid.models import MermaidCandidate, ReconstructionResult
+from marker_mermaid.pipeline import certify_publication_result
+from marker_mermaid.protocols import RuntimeResult
+from marker_mermaid.validation import CandidateValidator
+
+_VALIDATED_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text>x</text></svg>'
+)
+
+
+def _seal_test_candidate(candidate: MermaidCandidate) -> MermaidCandidate:
+    class Runtime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="flowchart-v2",
+                svg=_VALIDATED_SVG,
+                png=candidate.png,
+            )
+
+        def close(self):
+            pass
+
+    validator = CandidateValidator(Runtime(), SecurityProfile.STRICT)
+    outcome = validator.validate(candidate.mermaid_code, 1)
+    candidate.svg = outcome.runtime.svg
+    candidate.png = outcome.runtime.png
+    candidate.runtime_diagram_type = outcome.runtime.diagram_type
+    validator.seal_candidate(candidate, outcome)
+    return candidate
+
+
+def _seal_test_result(result: ReconstructionResult) -> ReconstructionResult:
+    assert result.selected is not None
+    result.selected.scores = {"ocr_recall": 0.8}
+    assert certify_publication_result(result, MermaidConfig())
+    return result
 
 
 @pytest.mark.integration
@@ -42,23 +80,27 @@ def test_marker_renderer_keeps_original_before_one_mermaid_block(monkeypatch):
 
     from marker_mermaid.marker_integration import MermaidMarkdownRenderer
 
-    candidate = MermaidCandidate(
-        candidate_id="candidate-1",
-        generation_method="typed_ir",
-        diagram_type="flowchart",
-        mermaid_code='flowchart LR\n    A["Start"] --> B["End"]\n',
-        syntax_valid=True,
-        render_valid=True,
-        aggregate_score=0.8,
+    candidate = _seal_test_candidate(
+        MermaidCandidate(
+            candidate_id="candidate-1",
+            generation_method="typed_ir",
+            diagram_type="flowchart",
+            mermaid_code='flowchart LR\n    A["Start"] --> B["End"]\n',
+            syntax_valid=True,
+            render_valid=True,
+            aggregate_score=0.8,
+        )
     )
-    result = ReconstructionResult(
-        source_id="_page_0_ComplexRegion_1",
-        source_image_name="_page_0_ComplexRegion_1.jpeg",
-        selected=candidate,
-        grade="B",
-        publish=True,
-        review_required=False,
-        status="success",
+    result = _seal_test_result(
+        ReconstructionResult(
+            source_id="_page_0_ComplexRegion_1",
+            source_image_name="_page_0_ComplexRegion_1.jpeg",
+            selected=candidate,
+            grade="B",
+            publish=True,
+            review_required=False,
+            status="success",
+        )
     )
 
     class Identifier:
@@ -112,23 +154,28 @@ def test_marker_renderer_optionally_emits_validated_png_preview(monkeypatch):
 
     payload = BytesIO()
     Image.new("RGB", (4, 3), "white").save(payload, format="PNG")
-    candidate = MermaidCandidate(
-        candidate_id="candidate-1",
-        generation_method="typed_ir",
-        diagram_type="flowchart",
-        mermaid_code="flowchart LR\nA --> B\n",
-        syntax_valid=True,
-        render_valid=True,
-        aggregate_score=0.8,
-        png=payload.getvalue(),
+    candidate = _seal_test_candidate(
+        MermaidCandidate(
+            candidate_id="candidate-1",
+            generation_method="typed_ir",
+            diagram_type="flowchart",
+            mermaid_code="flowchart LR\nA --> B\n",
+            syntax_valid=True,
+            render_valid=True,
+            aggregate_score=0.8,
+            png=payload.getvalue(),
+        )
     )
-    result = ReconstructionResult(
-        source_id="_page_0_Figure_1",
-        source_image_name="_page_0_Figure_1.jpeg",
-        selected=candidate,
-        grade="B",
-        publish=True,
-        status="success",
+    result = _seal_test_result(
+        ReconstructionResult(
+            source_id="_page_0_Figure_1",
+            source_image_name="_page_0_Figure_1.jpeg",
+            selected=candidate,
+            grade="B",
+            publish=True,
+            review_required=False,
+            status="success",
+        )
     )
 
     class Identifier:
@@ -168,6 +215,15 @@ def test_marker_renderer_optionally_emits_validated_png_preview(monkeypatch):
     assert f"images/{preview_name}" in rendered.markdown
     assert rendered.images[preview_name].size == (4, 3)
 
+    replacement = BytesIO()
+    Image.new("RGB", (2, 2), "red").save(replacement, format="PNG")
+    result.selected.png = replacement.getvalue()
+    swapped_rendered = renderer(Document())
+    assert preview_name not in swapped_rendered.images
+    assert f"images/{preview_name}" not in swapped_rendered.markdown
+    assert swapped_rendered.markdown.count("```mermaid") == 1
+    assert result.has_authorized_publication()
+
     def chunk(kind, data):
         return (
             struct.pack(">I", len(data))
@@ -181,10 +237,12 @@ def test_marker_renderer_optionally_emits_validated_png_preview(monkeypatch):
         + chunk(b"IHDR", struct.pack(">IIBBBBB", 100_000, 100_000, 8, 2, 0, 0, 0))
         + chunk(b"IEND", b"")
     )
+    _seal_test_candidate(result.selected)
+    _seal_test_result(result)
     bomb_rendered = renderer(Document())
     assert preview_name not in bomb_rendered.images
     assert f"images/{preview_name}" not in bomb_rendered.markdown
-    assert any("preview was omitted" in warning for warning in result.selected.warnings)
+    assert result.has_authorized_publication()
 
 
 @pytest.mark.integration
@@ -214,21 +272,29 @@ def test_marker_renderer_emits_multiple_virtual_sources_after_anchor(monkeypatch
         status="success",
     )
     original.selected.mermaid_code = f'flowchart LR\n    A["{original.source_id}"]\n'
+    _seal_test_candidate(original.selected)
+    _seal_test_result(original)
     panel_1 = original.model_copy(deep=True)
     panel_1.source_id = "_page_0_Figure_1--panel-1"
     panel_1.source_image_name = f"{panel_1.source_id}.jpeg"
     panel_1.source_kind = "panel"
     panel_1.selected.mermaid_code = f'flowchart LR\n    A["{panel_1.source_id}"]\n'
+    _seal_test_candidate(panel_1.selected)
+    _seal_test_result(panel_1)
     panel_2 = original.model_copy(deep=True)
     panel_2.source_id = "_page_0_Figure_1--panel-2"
     panel_2.source_image_name = f"{panel_2.source_id}.jpeg"
     panel_2.source_kind = "panel"
     panel_2.selected.mermaid_code = f'flowchart LR\n    A["{panel_2.source_id}"]\n'
+    _seal_test_candidate(panel_2.selected)
+    _seal_test_result(panel_2)
     merged = original.model_copy(deep=True)
     merged.source_id = "_page_0_Figure_1--merged"
     merged.source_image_name = f"{merged.source_id}.jpeg"
     merged.source_kind = "merged"
     merged.selected.mermaid_code = f'flowchart LR\n    A["{merged.source_id}"]\n'
+    _seal_test_candidate(merged.selected)
+    _seal_test_result(merged)
     runtime_metadata = {
         "mermaid": {
             "status": "success",

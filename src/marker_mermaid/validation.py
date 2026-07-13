@@ -18,7 +18,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from marker_mermaid.config import SecurityProfile
+from marker_mermaid.models import (
+    MermaidCandidate,
+    ValidatedArtifactCertificate,
+    _issue_validated_artifact_certificate,
+)
 from marker_mermaid.protocols import MermaidRuntime, RuntimeResult
+from marker_mermaid.render_artifacts import MAX_RENDER_BYTES, png_inspection_error
 from marker_mermaid.security import MermaidSecurityScanner
 
 MAX_RUNTIME_RESPONSE_BYTES = 64_000_000
@@ -28,6 +34,7 @@ MAX_RUNTIME_RESPONSE_BYTES = 64_000_000
 class ValidationOutcome:
     runtime: RuntimeResult
     warnings: list[str]
+    certificate: ValidatedArtifactCertificate | None = None
 
 
 def default_runtime_dir() -> Path:
@@ -210,6 +217,8 @@ class NodeMermaidRuntime(MermaidRuntime):
 
 
 class CandidateValidator:
+    __slots__ = ("runtime", "_profile", "max_chars", "max_lines", "_scanner")
+
     def __init__(
         self,
         runtime: MermaidRuntime,
@@ -218,18 +227,38 @@ class CandidateValidator:
         max_lines: int = 5_000,
     ):
         self.runtime = runtime
-        self.profile = profile
+        self._profile = profile
         self.max_chars = max_chars
         self.max_lines = max_lines
-        self.scanner = MermaidSecurityScanner(profile)
+        self._scanner = MermaidSecurityScanner(profile)
+
+    @property
+    def profile(self) -> SecurityProfile:
+        return self._profile
 
     def validate(self, code: str, timeout_seconds: float) -> ValidationOutcome:
+        profile = self._profile
+        scanner = self._scanner
+        if not (
+            type(profile) is SecurityProfile
+            and type(scanner) is MermaidSecurityScanner
+            and scanner.profile is profile
+        ):
+            return ValidationOutcome(
+                RuntimeResult(False, False, error="validator security profile is inconsistent"),
+                ["security:validator_profile: validator security profile is inconsistent"],
+            )
+        if type(code) is not str:
+            return ValidationOutcome(
+                RuntimeResult(False, False, error="Mermaid source must be a plain string"),
+                ["security:source_type: Mermaid source must be a plain string"],
+            )
         if len(code) > self.max_chars or code.count("\n") + 1 > self.max_lines:
             return ValidationOutcome(
                 RuntimeResult(False, False, error="Mermaid source exceeds resource limits"),
                 ["resource_limit: source is too large"],
             )
-        report = self.scanner.scan(code)
+        report = scanner.scan(code)
         if not report.safe:
             return ValidationOutcome(
                 RuntimeResult(False, False, error="security scan failed"),
@@ -238,7 +267,7 @@ class CandidateValidator:
         runtime_result = self.runtime.validate_and_render(code, timeout_seconds)
         warnings: list[str] = []
         if runtime_result.render_valid:
-            if not isinstance(runtime_result.svg, str) or not runtime_result.svg.strip():
+            if type(runtime_result.svg) is not str or not runtime_result.svg.strip():
                 warnings.append("rendered SVG artifact is missing or empty")
                 runtime_result = RuntimeResult(
                     syntax_valid=runtime_result.syntax_valid,
@@ -249,12 +278,76 @@ class CandidateValidator:
                     ),
                 )
                 return ValidationOutcome(runtime_result, warnings)
-            warnings.extend(inspect_svg(runtime_result.svg, self.profile))
-            if warnings:
+            if len(runtime_result.svg.encode("utf-8")) > MAX_RENDER_BYTES:
+                warnings.append("rendered SVG artifact exceeds the byte limit")
+                runtime_result = RuntimeResult(
+                    syntax_valid=runtime_result.syntax_valid,
+                    render_valid=False,
+                    diagram_type=runtime_result.diagram_type,
+                    error="rendered SVG exceeds the artifact size limit",
+                )
+                return ValidationOutcome(runtime_result, warnings)
+            svg_warnings = inspect_svg(runtime_result.svg, profile)
+            warnings.extend(svg_warnings)
+            if svg_warnings:
                 runtime_result = RuntimeResult(
                     syntax_valid=runtime_result.syntax_valid,
                     render_valid=False,
                     diagram_type=runtime_result.diagram_type,
                     error="rendered SVG failed security inspection",
                 )
-        return ValidationOutcome(runtime_result, warnings)
+                return ValidationOutcome(runtime_result, warnings)
+            if runtime_result.png is not None:
+                png_error = png_inspection_error(runtime_result.png)
+                if png_error is not None:
+                    warnings.append(f"rendered PNG artifact was omitted: {png_error}")
+                    runtime_result = RuntimeResult(
+                        syntax_valid=runtime_result.syntax_valid,
+                        render_valid=runtime_result.render_valid,
+                        diagram_type=runtime_result.diagram_type,
+                        svg=runtime_result.svg,
+                    )
+        certificate = None
+        if runtime_result.render_valid and not runtime_result.syntax_valid:
+            warnings.append("runtime reported render success without syntax validation")
+            runtime_result = RuntimeResult(
+                syntax_valid=False,
+                render_valid=False,
+                diagram_type=runtime_result.diagram_type,
+                error="runtime render result lacks successful syntax validation",
+            )
+        if runtime_result.syntax_valid and runtime_result.render_valid:
+            if not code.endswith("\n"):
+                warnings.append(
+                    "validated Mermaid source has no trailing newline; "
+                    "automatic publication certification was withheld"
+                )
+            elif type(runtime_result.svg) is str and (
+                runtime_result.diagram_type is None or type(runtime_result.diagram_type) is str
+            ):
+                certificate = _issue_validated_artifact_certificate(
+                    code=code,
+                    svg=runtime_result.svg,
+                    png=runtime_result.png,
+                    profile=profile,
+                    runtime_diagram_type=runtime_result.diagram_type,
+                )
+        return ValidationOutcome(runtime_result, warnings, certificate)
+
+    def seal_candidate(
+        self,
+        candidate: MermaidCandidate,
+        outcome: ValidationOutcome | None,
+    ) -> None:
+        """Install a receipt only from this validator's exact accepted outcome."""
+
+        certificate = outcome.certificate if type(outcome) is ValidationOutcome else None
+        if (
+            type(certificate) is not ValidatedArtifactCertificate
+            or type(self._profile) is not SecurityProfile
+            or type(self._scanner) is not MermaidSecurityScanner
+            or self._scanner.profile is not self._profile
+            or certificate.security_profile != self._profile
+        ):
+            certificate = None
+        candidate._seal_validation_receipt(certificate)

@@ -24,6 +24,14 @@ Group 삭제는 member node/edge를 보존하면서 exact Scene↔subgraph block
 - 자동 게시 코드는 사전 보안 검사, `mermaid.parse()`, `mermaid.render()`, 사후 SVG 검사를
   모두 통과해야 합니다. runtime이 render 성공을 보고해도 비어 있지 않은 SVG artifact가 없으면
   render 실패로 처리합니다.
+- 최종 Mermaid source, 검사된 SVG, 선택적 runtime PNG는 SHA-256 validation receipt로 결합되고,
+  게시 정책·보안 프로필·결정 상태는 별도 process-private authorization seal로 고정됩니다. 검증 뒤
+  source/SVG·품질 점수나 정책 결과가 바뀌면 Markdown과 게시 sidecar 경계가 fail-closed로 동작합니다.
+  선택적 PNG가 바뀌면 Markdown code는 유지하되 preview를 생략하며, PNG 저장을 요청한 sidecar는
+  거부합니다. Markdown/Marker는 동일한 봉인 snapshot에서 code와 preview를 만들고 sidecar는 원자적
+  deep snapshot을 기록하므로 동시 변경으로 서로 다른 상태가 섞이지 않습니다.
+- Process-private seal은 같은 process의 engine/plugin을 trusted code로 보는 무결성 경계입니다. 신뢰하지
+  않는 Python plugin은 별도 process/container에서 실행해야 합니다.
 - 후보 하나의 실패가 문서 전체를 실패시키지 않습니다.
 - `extended` 기본 budget은 type 2개, candidate 3개, repair 3회입니다.
 - 의미 점수가 없는 결과는 성공률을 부풀리지 않고 `U` 등급과 review 대상으로 둡니다.
@@ -45,6 +53,9 @@ Group 삭제는 member node/edge를 보존하면서 exact Scene↔subgraph block
 ## 설치
 
 Python 3.11+, Node 20+가 필요합니다. Marker 통합은 의도적으로 기준 버전에 고정됩니다.
+Atomic sidecar publication은 Linux의 `renameat2(RENAME_NOREPLACE)`와 macOS의
+`renameatx_np(RENAME_EXCL)`을 지원하며, 해당 no-replace primitive가 없는 OS에서는 기존 bundle을
+덮어쓸 가능성이 있는 fallback 대신 sidecar 쓰기를 거부합니다.
 
 ```bash
 python -m venv .venv
@@ -116,8 +127,8 @@ output/document/
     └── page_4_figure_2/
         ├── manifest.json
         ├── final.mmd
-        ├── final.svg
-        ├── final.png
+        ├── final.svg             # 자동 게시 bundle은 필수, 그 외 설정에 따라 선택적
+        ├── final.png             # runtime 생성 및 write_png 설정에 따라 선택적
         ├── scene-ir.json
         ├── generated-scene-ir.json # 생성 후보 구조(평가 대상, 가용한 경우)
         ├── typed-ir.json

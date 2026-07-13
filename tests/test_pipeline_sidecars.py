@@ -6,6 +6,7 @@ import json
 import pytest
 from PIL import Image
 
+import marker_mermaid.sidecars as sidecar_module
 from marker_mermaid.config import MermaidConfig, PublishPolicy
 from marker_mermaid.engines import JsonFixtureEngine
 from marker_mermaid.geometry import ContourObservation, GeometryEngine, GeometryObservation
@@ -1594,7 +1595,7 @@ def test_sidecar_tree_and_markdown(tmp_path, fake_runtime):
     assert (bundle / "provenance.json").is_file()
     assert (bundle / "source-map.json").is_file()
     manifest = json.loads((bundle / "manifest.json").read_text())
-    assert manifest["schema_version"] == "mmx-sidecar-0.4"
+    assert manifest["schema_version"] == "mmx-sidecar-0.5"
     assert manifest["source_kind"] == "panel"
     assert manifest["source_block_ids"] == ["/page/1/Figure/1"]
     assert manifest["page_ids"] == [1]
@@ -1889,6 +1890,325 @@ def test_sidecar_rejects_empty_traversal_component(tmp_path):
         SidecarStore(tmp_path).write(result)
 
 
+def test_sidecar_rejects_symlinked_diagrams_directory_without_external_writes(tmp_path):
+    output_root = tmp_path / "output"
+    outside = tmp_path / "outside"
+    output_root.mkdir()
+    outside.mkdir()
+    (output_root / "diagrams").symlink_to(outside, target_is_directory=True)
+    result = ReconstructionResult(
+        source_id="safe-source",
+        source_image_name="source.png",
+        status="failed",
+    )
+
+    with pytest.raises(ValueError, match="real direct child"):
+        SidecarStore(output_root).write(result)
+
+    assert list(outside.iterdir()) == []
+
+
+def test_sidecar_rechecks_diagrams_identity_before_atomic_publish(
+    tmp_path,
+    monkeypatch,
+):
+    output_root = tmp_path / "output"
+    outside = tmp_path / "outside"
+    moved = tmp_path / "moved-diagrams"
+    outside.mkdir()
+    result = ReconstructionResult(
+        source_id="safe-source",
+        source_image_name="source.png",
+        status="failed",
+    )
+    original_write = sidecar_module._write
+    swapped = False
+
+    def write_then_swap_directory(path, data):
+        nonlocal swapped
+        digest = original_write(path, data)
+        if path.name == "manifest.json" and not swapped:
+            (output_root / "diagrams").rename(moved)
+            (output_root / "diagrams").symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return digest
+
+    monkeypatch.setattr(sidecar_module, "_write", write_then_swap_directory)
+
+    with pytest.raises(ValueError, match="identity changed before bundle publication"):
+        SidecarStore(output_root).write(result)
+
+    assert swapped
+    assert list(outside.iterdir()) == []
+    assert not (outside / "safe-source").exists()
+
+
+def test_sidecar_anchors_first_staging_write_and_cleanup_to_open_diagrams_fd(
+    tmp_path,
+    monkeypatch,
+):
+    output_root = tmp_path / "output"
+    outside = tmp_path / "outside"
+    moved = tmp_path / "moved-diagrams"
+    outside.mkdir()
+    result = ReconstructionResult(
+        source_id="safe-source",
+        source_image_name="source.png",
+        status="failed",
+        alternatives=[
+            MermaidCandidate(
+                candidate_id="nested-candidate",
+                generation_method="test",
+                diagram_type="flowchart",
+                mermaid_code="flowchart LR\n    A --> B\n",
+            )
+        ],
+    )
+    original_write = sidecar_module._write
+    swapped = False
+
+    def swap_directory_then_write(path, data):
+        nonlocal swapped
+        if not swapped:
+            (output_root / "diagrams").rename(moved)
+            (output_root / "diagrams").symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return original_write(path, data)
+
+    monkeypatch.setattr(sidecar_module, "_write", swap_directory_then_write)
+
+    with pytest.raises(ValueError, match="identity changed before bundle publication"):
+        SidecarStore(output_root).write(result)
+
+    assert swapped
+    assert list(outside.iterdir()) == []
+    assert list(moved.iterdir()) == []
+
+
+def test_sidecar_atomic_publish_never_replaces_racing_destination(
+    tmp_path,
+    monkeypatch,
+):
+    result = ReconstructionResult(
+        source_id="safe-source",
+        source_image_name="source.png",
+        status="failed",
+    )
+    original_stat = sidecar_module.os.stat
+    destination_checks = 0
+
+    def create_destination_after_absence_check(
+        path,
+        *args,
+        dir_fd=None,
+        follow_symlinks=True,
+        **kwargs,
+    ):
+        nonlocal destination_checks
+        try:
+            return original_stat(
+                path,
+                *args,
+                dir_fd=dir_fd,
+                follow_symlinks=follow_symlinks,
+                **kwargs,
+            )
+        except FileNotFoundError:
+            if path == "safe-source" and dir_fd is not None:
+                destination_checks += 1
+                if destination_checks == 2:
+                    sidecar_module.os.mkdir("safe-source", mode=0o700, dir_fd=dir_fd)
+            raise
+
+    monkeypatch.setattr(sidecar_module.os, "stat", create_destination_after_absence_check)
+
+    with pytest.raises(FileExistsError, match="sidecar bundle already exists"):
+        SidecarStore(tmp_path).write(result)
+
+    destination = tmp_path / "diagrams" / "safe-source"
+    assert destination_checks == 2
+    assert destination.is_dir()
+    assert list(destination.iterdir()) == []
+    assert not (destination / "manifest.json").exists()
+    assert sorted(path.name for path in destination.parent.iterdir()) == ["safe-source"]
+
+
+def test_sidecar_publish_fails_closed_without_atomic_no_replace_primitive(
+    tmp_path,
+    monkeypatch,
+):
+    result = ReconstructionResult(
+        source_id="safe-source",
+        source_image_name="source.png",
+        status="failed",
+    )
+
+    monkeypatch.setattr(sidecar_module.ctypes, "CDLL", lambda *args, **kwargs: object())
+
+    with pytest.raises(RuntimeError, match="no-replace rename support"):
+        SidecarStore(tmp_path).write(result)
+
+    diagrams = tmp_path / "diagrams"
+    assert diagrams.is_dir()
+    assert list(diagrams.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("platform", "primitive_name", "expected_flags"),
+    [
+        ("linux", "renameat2", 1),
+        ("darwin", "renameatx_np", 0x00000004),
+    ],
+)
+def test_sidecar_no_replace_backend_dispatch(
+    monkeypatch,
+    platform,
+    primitive_name,
+    expected_flags,
+):
+    calls = []
+
+    class FakePrimitive:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *args):
+            calls.append(args)
+            return 0
+
+    class FakeLibrary:
+        pass
+
+    primitive = FakePrimitive()
+    library = FakeLibrary()
+    setattr(library, primitive_name, primitive)
+    monkeypatch.setattr(sidecar_module.sys, "platform", platform)
+    monkeypatch.setattr(sidecar_module.ctypes, "CDLL", lambda *args, **kwargs: library)
+
+    sidecar_module._rename_noreplace(11, ".source", 12, "destination")
+
+    assert calls == [(11, b".source", 12, b"destination", expected_flags)]
+    assert primitive.argtypes is not None
+    assert primitive.restype is sidecar_module.ctypes.c_int
+
+
+@pytest.mark.parametrize(
+    ("rename_errno", "expected_exception"),
+    [
+        (sidecar_module.errno.EEXIST, FileExistsError),
+        (sidecar_module.errno.EACCES, PermissionError),
+    ],
+)
+def test_sidecar_no_replace_backend_maps_errno(
+    monkeypatch,
+    rename_errno,
+    expected_exception,
+):
+    class FailingPrimitive:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *args):
+            sidecar_module.ctypes.set_errno(rename_errno)
+            return -1
+
+    class FakeLibrary:
+        renameat2 = FailingPrimitive()
+
+    monkeypatch.setattr(sidecar_module.sys, "platform", "linux")
+    monkeypatch.setattr(sidecar_module.ctypes, "CDLL", lambda *args, **kwargs: FakeLibrary())
+
+    with pytest.raises(expected_exception):
+        sidecar_module._rename_noreplace(11, ".source", 12, "destination")
+
+
+def test_sidecar_no_replace_backend_fails_closed_on_unsupported_platform(monkeypatch):
+    monkeypatch.setattr(sidecar_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        sidecar_module.ctypes,
+        "CDLL",
+        lambda *args, **kwargs: pytest.fail("unsupported platforms must not call libc rename"),
+    )
+
+    with pytest.raises(RuntimeError, match="no-replace rename support"):
+        sidecar_module._rename_noreplace(11, ".source", 12, "destination")
+
+
+def test_sidecar_rejects_torn_snapshot_created_by_deepcopy_side_effect(
+    tmp_path,
+    fake_runtime,
+):
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation())],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "atomic-source",
+        "source.png",
+        Image.new("RGB", (100, 60), "white"),
+        ocr_texts=["Start End"],
+    )
+    assert result.selected is not None
+    assert result.publish
+
+    class MutatingSourceMapping(dict):
+        def __deepcopy__(self, memo):
+            result.publish = False
+            result.review_required = True
+            result.status = "review_required"
+            assert result.selected is not None
+            result.selected.mermaid_code = (
+                'flowchart LR\n    A --> B; click A "https://evil.example"\n'
+            )
+            return dict(self)
+
+    result.source_mapping = MutatingSourceMapping(source={"source_id": result.source_id})
+    target = tmp_path / "diagrams" / "atomic-source"
+
+    with pytest.raises(ValueError, match="changed while its snapshot was captured"):
+        SidecarStore(tmp_path).write(result)
+
+    assert not target.exists()
+
+
+def test_sidecar_rejects_typed_ir_mutation_during_deepcopy_snapshot(
+    tmp_path,
+    fake_runtime,
+):
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation())],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "atomic-ir-source",
+        "source.png",
+        Image.new("RGB", (100, 60), "white"),
+        ocr_texts=["Start End"],
+    )
+    assert result.selected is not None
+    assert result.selected.typed_ir is not None
+
+    class MutatingSourceMapping(dict):
+        def __deepcopy__(self, memo):
+            assert result.selected is not None
+            result.selected.typed_ir = {
+                "title": "Injected",
+                "nodes": [{"id": "X", "label": "Injected"}],
+                "edges": [],
+            }
+            return dict(self)
+
+    result.source_mapping = MutatingSourceMapping(source={"source_id": result.source_id})
+    target = tmp_path / "diagrams" / "atomic-ir-source"
+
+    with pytest.raises(ValueError, match="changed while its snapshot was captured"):
+        SidecarStore(tmp_path).write(result)
+
+    assert not target.exists()
+
+
 def test_sidecar_write_flags_are_honored(tmp_path, fake_runtime):
     config = MermaidConfig(candidate_count=2)
     result = ReconstructionPipeline(
@@ -1906,7 +2226,7 @@ def test_sidecar_write_flags_are_honored(tmp_path, fake_runtime):
     ).write(result)
     bundle = tmp_path / relative
     assert (bundle / "final.mmd").is_file()
-    assert not (bundle / "final.svg").exists()
+    assert (bundle / "final.svg").is_file()
     assert not (bundle / "scene-ir.json").exists()
     assert not (bundle / "generated-scene-ir.json").exists()
     assert not (bundle / "provenance.json").exists()

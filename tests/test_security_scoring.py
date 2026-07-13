@@ -206,6 +206,27 @@ def test_publication_truth_table(policy, score, published):
     assert decide_publication(candidate, MermaidConfig(publish_policy=policy)).publish is published
 
 
+def test_best_effort_never_publishes_grade_d_even_with_zero_threshold() -> None:
+    candidate = MermaidCandidate(
+        candidate_id="c",
+        generation_method="typed_ir",
+        diagram_type="flowchart",
+        syntax_valid=True,
+        render_valid=True,
+        scores={"type_fitness": 0.49},
+        aggregate_score=0.49,
+    )
+
+    decision = decide_publication(
+        candidate,
+        MermaidConfig(publish_min_score=0.0),
+    )
+
+    assert decision.grade == "D"
+    assert not decision.publish
+    assert decision.review_required
+
+
 def test_invalid_candidate_is_never_published():
     candidate = MermaidCandidate(
         candidate_id="c",

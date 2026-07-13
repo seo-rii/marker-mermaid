@@ -52,6 +52,7 @@ document metadata에 복사하지 않습니다. `MermaidMarkdownRenderer`는 다
 
 - ComplexRegion 원본 추출
 - 원본 image 뒤 source별 검증된 Mermaid 1회 삽입
+- 최종 Mermaid/SVG와 게시 결정에 결합된 pipeline receipt 재확인
 - panel/merged virtual 원본 image 추가
 - B/C warning
 - Mermaid metadata 수집
@@ -60,6 +61,16 @@ document metadata에 복사하지 않습니다. `MermaidMarkdownRenderer`는 다
 
 Marker 기본 `save_output`은 nested sidecar를 지원하지 않으므로 CLI는 `save_document_output`을
 사용합니다.
+
+`publish=true`나 `syntax_valid/render_valid` flag만으로 renderer를 우회할 수 없습니다. 검증 뒤
+source/SVG 또는 게시 정책 결과가 변경되었거나 pipeline의 process-private receipt seal이 없는 결과는
+해당 source의 Mermaid와 preview를 생략하고 원본 image를 계속 보존합니다. Preview PNG는 별도 digest가
+현재 bytes와 일치할 때만 추가하며, 불일치하면 Mermaid code는 유지하고 preview만 격리합니다.
+Renderer는 boolean 검사 뒤 live candidate를 다시 읽지 않습니다. Code, grade/score, optional PNG와 두
+receipt를 한 번에 캡처한 immutable publication snapshot을 process-private HMAC으로 봉인하고, 같은
+snapshot에서 Mermaid fence와 preview를 만듭니다. Snapshot을 직접 만들거나
+`model_copy(update=...)`로 값을 바꾸면 seal 검사가 실패합니다. Preview 생략 진단은 이미 봉인된 candidate
+warning list를 수정하지 않으므로 이후 sidecar 기록의 품질 receipt도 그대로 유효합니다.
 
 ## metadata
 

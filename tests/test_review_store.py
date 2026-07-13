@@ -3,17 +3,36 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from io import BytesIO
 
 import pytest
+from PIL import Image
+from pydantic import ValidationError
 
 import marker_mermaid.review_store as review_store_module
 from marker_mermaid.review_store import (
+    MAX_JSON_BYTES,
+    MAX_RENDER_BYTES,
     ReviewConflictError,
     ReviewStore,
     ReviewValidationError,
     ReviewValidationResult,
     UnsafeReviewPathError,
 )
+
+
+def _png_bytes() -> bytes:
+    output = BytesIO()
+    Image.new("RGB", (1, 1), "white").save(output, format="PNG")
+    return output.getvalue()
+
+
+def _valid_render(code: str) -> ReviewValidationResult:
+    digest = hashlib.sha256(code.encode("utf-8")).hexdigest()
+    return ReviewValidationResult(
+        valid=True,
+        svg=f"<svg viewBox='0 0 1 1'><title>{digest}</title></svg>",
+    )
 
 
 def make_bundle(tmp_path, bundle_id="diagram-a", code="flowchart LR\n  A --> B\n"):
@@ -26,6 +45,41 @@ def make_bundle(tmp_path, bundle_id="diagram-a", code="flowchart LR\n  A --> B\n
     (bundle / "final.mmd").write_text(code, encoding="utf-8")
     (bundle / "review-history.json").write_text("[]\n", encoding="utf-8")
     return bundle
+
+
+def write_v05_generation_manifest(bundle):
+    svg = b"<svg viewBox='0 0 1 1'/>"
+    png = _png_bytes()
+    (bundle / "final.svg").write_bytes(svg)
+    (bundle / "final.png").write_bytes(png)
+    artifacts = {
+        "final.mmd": (bundle / "final.mmd").read_bytes(),
+        "final.svg": svg,
+        "final.png": png,
+    }
+    hashes = {name: hashlib.sha256(payload).hexdigest() for name, payload in artifacts.items()}
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest.update(
+        {
+            "schema_version": "mmx-sidecar-0.5",
+            "files": hashes,
+            "generation_artifact_presence": {name: True for name in artifacts},
+            "emitted_diagram_type": "flowchart",
+            "runtime_diagram_type": "flowchart",
+            "generation_validation_receipt": {
+                "schema_version": "1",
+                "code_sha256": hashes["final.mmd"],
+                "svg_sha256": hashes["final.svg"],
+                "png_sha256": hashes["final.png"],
+                "security_profile": "strict",
+                "emitted_diagram_type": "flowchart",
+                "runtime_diagram_type": "flowchart",
+            },
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest
 
 
 def evidence(evidence_id="ocr-1", text="Original"):
@@ -81,6 +135,131 @@ def test_list_and_load_bundle_without_mutating_legacy_sidecar(tmp_path):
     assert bundle.state.decision == "pending"
     assert bundle.mermaid_code.startswith("flowchart")
     assert not (bundle_path / "review-state.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("artifact", "replacement"),
+    [
+        ("final.mmd", b"flowchart LR\n  X --> Y\n"),
+        ("final.svg", b"<svg viewBox='0 0 2 2'/>"),
+        ("final.png", _png_bytes() + b"tampered"),
+    ],
+)
+def test_initial_load_rejects_manifest_artifact_tampering(tmp_path, artifact, replacement):
+    bundle = make_bundle(tmp_path)
+    write_v05_generation_manifest(bundle)
+    (bundle / artifact).write_bytes(replacement)
+
+    with pytest.raises(ReviewConflictError, match="manifest digest"):
+        ReviewStore(tmp_path).load_bundle("diagram-a")
+
+
+def test_initial_load_rejects_generation_presence_mismatch(tmp_path):
+    bundle = make_bundle(tmp_path)
+    manifest = write_v05_generation_manifest(bundle)
+    manifest["generation_artifact_presence"]["final.png"] = False
+    (bundle / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ReviewConflictError, match="artifact presence"):
+        ReviewStore(tmp_path).load_bundle("diagram-a")
+
+
+def test_initial_load_rejects_generation_receipt_mismatch(tmp_path):
+    bundle = make_bundle(tmp_path)
+    manifest = write_v05_generation_manifest(bundle)
+    manifest["generation_validation_receipt"]["svg_sha256"] = "0" * 64
+    (bundle / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ReviewConflictError, match="generation validation receipt"):
+        ReviewStore(tmp_path).load_bundle("diagram-a")
+
+
+def test_reviewed_bundle_keeps_generation_receipt_bound_to_initial_revision(tmp_path):
+    bundle = make_bundle(tmp_path)
+    write_v05_generation_manifest(bundle)
+    store = ReviewStore(tmp_path)
+    initial = store.load_bundle("diagram-a")
+    store.apply_mermaid_edit(
+        "diagram-a",
+        "flowchart LR\n  B --> A\n",
+        expected_version=initial.state.version,
+        expected_digest=initial.state.code_digest,
+    )
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["generation_validation_receipt"]["code_sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ReviewConflictError, match="generation validation receipt"):
+        store.load_bundle("diagram-a")
+
+
+def test_published_generation_requires_a_publication_receipt(tmp_path):
+    bundle = make_bundle(tmp_path)
+    manifest = write_v05_generation_manifest(bundle)
+    manifest.update(
+        {
+            "status": "success",
+            "grade": "A",
+            "publish": True,
+            "review_required": False,
+            "generation_publication_receipt": None,
+        }
+    )
+    (bundle / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ReviewConflictError, match="missing its publication receipt"):
+        ReviewStore(tmp_path).load_bundle("diagram-a")
+
+
+def test_initial_load_rejects_publication_receipt_reference_mismatch(tmp_path):
+    bundle = make_bundle(tmp_path)
+    manifest = write_v05_generation_manifest(bundle)
+    scores = {
+        "aggregate_score": 0.8,
+        "grade": "B",
+        "metrics": {"ocr_recall": 0.8},
+        "warnings": [],
+    }
+    scores_payload = (json.dumps(scores, indent=2, sort_keys=True) + "\n").encode()
+    (bundle / "scores.json").write_bytes(scores_payload)
+    manifest["files"]["scores.json"] = hashlib.sha256(scores_payload).hexdigest()
+    manifest.update(
+        {
+            "source_id": "diagram-a",
+            "selected_candidate_id": "candidate-1",
+            "status": "success",
+            "grade": "B",
+            "publish": True,
+            "review_required": False,
+            "generation_publication_receipt": {
+                "schema_version": "1",
+                "source_id": "diagram-a",
+                "selected_candidate_id": "candidate-1",
+                "candidate_validation_sha256": "0" * 64,
+                "candidate_quality_sha256": "0" * 64,
+                "publish_policy": "best_effort_validated",
+                "security_profile": "strict",
+                "publish": True,
+                "review_required": False,
+                "status": "success",
+                "grade": "B",
+            },
+        }
+    )
+    (bundle / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ReviewConflictError, match="publication receipt"):
+        ReviewStore(tmp_path).load_bundle("diagram-a")
+
+
+def test_legacy_bundle_keeps_uninspected_png_read_compatibility(tmp_path):
+    bundle = make_bundle(tmp_path)
+    (bundle / "final.png").write_bytes(b"legacy-uninspected-preview")
+
+    loaded = ReviewStore(tmp_path).load_bundle("diagram-a")
+
+    assert loaded.png == b"legacy-uninspected-preview"
 
 
 def test_layout_hint_is_revisioned_without_changing_code_scene_or_provenance(tmp_path):
@@ -170,9 +349,10 @@ def test_layout_hint_undo_redo_and_scene_reconciliation(tmp_path):
     )
     assert redone.layout_hints.nodes[0].node_id == "A"
 
+    managed_scene_bytes = (bundle_path / "scene-ir.json").read_bytes()
     scene_without_a = write_scene(bundle_path, ("B",))
     # Restore the managed Scene file before applying the explicit editor transaction.
-    (bundle_path / "scene-ir.json").write_text(json.dumps(redone.scene_ir), encoding="utf-8")
+    (bundle_path / "scene-ir.json").write_bytes(managed_scene_bytes)
     pruned = store.apply_edit(
         "diagram-a",
         redone.mermaid_code,
@@ -320,7 +500,7 @@ def test_approval_requires_validator_and_commits_fresh_render(tmp_path):
         validator=lambda code: ReviewValidationResult(
             valid=True,
             svg="<svg viewBox='0 0 2 2'/>",
-            png=b"approved-png",
+            png=_png_bytes(),
         ),
     )
     approved = store.approve(
@@ -331,8 +511,95 @@ def test_approval_requires_validator_and_commits_fresh_render(tmp_path):
 
     assert approved.state.decision == "approved"
     assert approved.svg == "<svg viewBox='0 0 2 2'/>"
-    assert approved.png == b"approved-png"
+    assert approved.png == _png_bytes()
     assert (bundle_path / "final.svg").read_text() == approved.svg
+
+
+def test_review_validation_result_is_frozen():
+    result = ReviewValidationResult(valid=True, svg="<svg viewBox='0 0 1 1'/>")
+
+    with pytest.raises(ValidationError, match="frozen"):
+        result.svg = "<svg viewBox='0 0 2 2'/>"
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"png": b"not-a-png"},
+        {"svg": "<svg viewBox='0 0 1 1'/>" + " " * MAX_RENDER_BYTES},
+        {"svg": "<svg viewBox='0 0 1 1'><script/></svg>"},
+    ],
+)
+def test_commit_revalidates_model_copy_bypassed_render_artifacts(tmp_path, update):
+    bundle = make_bundle(tmp_path)
+    trusted_shape = ReviewValidationResult(
+        valid=True,
+        svg="<svg viewBox='0 0 1 1'/>",
+        png=_png_bytes(),
+    )
+    bypassed = trusted_shape.model_copy(update=update)
+    store = ReviewStore(tmp_path, validator=lambda code: bypassed)
+    current = store.load_bundle("diagram-a")
+    before = {
+        path.relative_to(bundle): path.read_bytes()
+        for path in bundle.rglob("*")
+        if path.is_file() and path.name != ".review.lock"
+    }
+
+    with pytest.raises(ReviewValidationError):
+        store.apply_mermaid_edit(
+            "diagram-a",
+            "flowchart LR\n  B --> A\n",
+            expected_version=current.state.version,
+            expected_digest=current.state.code_digest,
+        )
+
+    after = {
+        path.relative_to(bundle): path.read_bytes()
+        for path in bundle.rglob("*")
+        if path.is_file() and path.name != ".review.lock"
+    }
+    assert after == before
+
+
+def test_code_edit_without_fresh_render_removes_stale_artifacts(tmp_path):
+    bundle = make_bundle(tmp_path)
+    (bundle / "final.svg").write_text("<svg><title>old code</title></svg>")
+    (bundle / "final.png").write_bytes(_png_bytes())
+    store = ReviewStore(tmp_path, validator=lambda code: True)
+    current = store.load_bundle("diagram-a")
+
+    edited = store.apply_mermaid_edit(
+        "diagram-a",
+        "flowchart LR\n  X --> Y\n",
+        expected_version=current.state.version,
+        expected_digest=current.state.code_digest,
+    )
+
+    assert edited.svg is None
+    assert edited.png is None
+    assert edited.state.svg_digest is None
+    assert edited.state.png_digest is None
+    assert not (bundle / "final.svg").exists()
+    assert not (bundle / "final.png").exists()
+    assert (bundle / "versions/r000000.svg").exists()
+    assert (bundle / "versions/r000000.png").exists()
+
+
+def test_approval_rejects_boolean_validator_without_writing(tmp_path):
+    bundle = make_bundle(tmp_path)
+    store = ReviewStore(tmp_path, validator=lambda code: True)
+    current = store.load_bundle("diagram-a")
+
+    with pytest.raises(ReviewValidationError, match="fresh render artifacts"):
+        store.approve(
+            "diagram-a",
+            expected_version=current.state.version,
+            expected_digest=current.state.code_digest,
+        )
+
+    assert not (bundle / "review-state.json").exists()
+    assert json.loads((bundle / "review-history.json").read_text()) == []
 
 
 def test_bundle_and_artifact_traversal_are_rejected(tmp_path):
@@ -371,6 +638,49 @@ def test_symlinked_diagrams_directory_is_never_followed(tmp_path):
         store.list_bundles()
     with pytest.raises(UnsafeReviewPathError):
         store.load_bundle("diagram-a")
+
+
+def test_bundle_swap_during_staging_never_touches_external_tree(monkeypatch, tmp_path):
+    bundle = make_bundle(tmp_path)
+    outside = tmp_path / "outside"
+    (outside / "versions").mkdir(parents=True)
+    sentinel = outside / "versions/r000000.mmd"
+    sentinel.write_text("DO NOT TOUCH", encoding="utf-8")
+    moved = tmp_path / "moved-bundle"
+    store = ReviewStore(tmp_path)
+    current = store.load_bundle("diagram-a")
+    real_open = review_store_module.os.open
+    swapped = False
+
+    def swap_before_first_staged_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if (
+            not swapped
+            and isinstance(path, str)
+            and path.startswith(".r000000.mmd.")
+            and path.endswith(".tmp")
+            and dir_fd is not None
+        ):
+            bundle.rename(moved)
+            bundle.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(review_store_module.os, "open", swap_before_first_staged_open)
+
+    with pytest.raises(UnsafeReviewPathError):
+        store.apply_mermaid_edit(
+            "diagram-a",
+            "flowchart LR\n  B --> A\n",
+            expected_version=current.state.version,
+            expected_digest=current.state.code_digest,
+        )
+
+    assert swapped
+    assert sentinel.read_text(encoding="utf-8") == "DO NOT TOUCH"
+    assert sorted(
+        path.relative_to(outside).as_posix() for path in outside.rglob("*") if path.is_file()
+    ) == ["versions/r000000.mmd"]
 
 
 def test_edit_uses_validator_and_is_atomic_on_rejection(tmp_path):
@@ -452,12 +762,17 @@ def test_io_failure_restores_code_history_and_state(monkeypatch, tmp_path):
     real_replace = review_store_module.os.replace
     calls = 0
 
-    def fail_during_commit(source, target):
+    def fail_during_commit(source, target, *, src_dir_fd=None, dst_dir_fd=None):
         nonlocal calls
         calls += 1
         if calls == 3:
             raise OSError("simulated commit failure")
-        return real_replace(source, target)
+        return real_replace(
+            source,
+            target,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
 
     monkeypatch.setattr(review_store_module.os, "replace", fail_during_commit)
     with pytest.raises(OSError, match="simulated"):
@@ -472,6 +787,58 @@ def test_io_failure_restores_code_history_and_state(monkeypatch, tmp_path):
     assert (bundle_path / "review-history.json").read_bytes() == original_history
     assert not (bundle_path / "review-state.json").exists()
     assert not list((bundle_path / "versions").iterdir())
+
+
+def test_staging_write_failure_removes_unpublished_temporary_file(monkeypatch, tmp_path):
+    bundle = make_bundle(tmp_path)
+    store = ReviewStore(tmp_path)
+    current = store.load_bundle("diagram-a")
+    real_fsync = review_store_module.os.fsync
+    failed = False
+
+    def fail_first_staging_fsync(descriptor):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise OSError("simulated staging fsync failure")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(review_store_module.os, "fsync", fail_first_staging_fsync)
+
+    with pytest.raises(OSError, match="staging fsync"):
+        store.apply_mermaid_edit(
+            "diagram-a",
+            "flowchart LR\n  B --> A\n",
+            expected_version=current.state.version,
+            expected_digest=current.state.code_digest,
+        )
+
+    assert failed
+    assert not [path for path in bundle.rglob("*.tmp") if path.is_file()]
+    assert not (bundle / "review-state.json").exists()
+
+
+def test_transaction_rejects_oversized_existing_target_without_partial_write(tmp_path):
+    bundle = make_bundle(tmp_path)
+    versions = bundle / "versions"
+    versions.mkdir()
+    oversized = versions / "r000001.json"
+    oversized.write_bytes(b"x" * (MAX_JSON_BYTES + 1))
+    store = ReviewStore(tmp_path)
+    current = store.load_bundle("diagram-a")
+    original_code = (bundle / "final.mmd").read_bytes()
+
+    with pytest.raises(ReviewValidationError, match="transaction limit"):
+        store.apply_mermaid_edit(
+            "diagram-a",
+            "flowchart LR\n  B --> A\n",
+            expected_version=current.state.version,
+            expected_digest=current.state.code_digest,
+        )
+
+    assert (bundle / "final.mmd").read_bytes() == original_code
+    assert oversized.stat().st_size == MAX_JSON_BYTES + 1
+    assert not (bundle / "review-state.json").exists()
 
 
 def test_stale_version_and_digest_are_rejected(tmp_path):
@@ -501,7 +868,7 @@ def test_stale_version_and_digest_are_rejected(tmp_path):
 
 def test_external_mermaid_change_after_state_creation_is_a_conflict(tmp_path):
     bundle_path = make_bundle(tmp_path)
-    store = ReviewStore(tmp_path, validator=lambda code: True)
+    store = ReviewStore(tmp_path, validator=_valid_render)
     initial = store.load_bundle("diagram-a")
     store.approve(
         "diagram-a",
@@ -517,7 +884,7 @@ def test_external_mermaid_change_after_state_creation_is_a_conflict(tmp_path):
 def test_external_render_change_after_state_creation_is_a_conflict(tmp_path):
     bundle_path = make_bundle(tmp_path)
     (bundle_path / "final.svg").write_text("<svg><title>initial</title></svg>")
-    store = ReviewStore(tmp_path, validator=lambda code: True)
+    store = ReviewStore(tmp_path, validator=_valid_render)
     initial = store.load_bundle("diagram-a")
     store.approve(
         "diagram-a",
@@ -532,7 +899,7 @@ def test_external_render_change_after_state_creation_is_a_conflict(tmp_path):
 
 def test_edit_approve_and_reject_append_compatible_history(tmp_path):
     make_bundle(tmp_path)
-    store = ReviewStore(tmp_path, validator=lambda code: True)
+    store = ReviewStore(tmp_path, validator=_valid_render)
     state = store.load_bundle("diagram-a")
     state = store.apply_mermaid_edit(
         "diagram-a",
@@ -584,7 +951,7 @@ def test_reject_requires_a_reason_without_writing(tmp_path):
 
 def test_undo_and_redo_restore_code_and_decision_without_deleting_history(tmp_path):
     make_bundle(tmp_path)
-    store = ReviewStore(tmp_path, validator=lambda code: True)
+    store = ReviewStore(tmp_path, validator=_valid_render)
     initial = store.load_bundle("diagram-a")
     edited = store.apply_mermaid_edit(
         "diagram-a",
@@ -622,7 +989,7 @@ def test_undo_and_redo_restore_code_and_decision_without_deleting_history(tmp_pa
 
 def test_checkout_revision_jumps_within_active_timeline_and_is_audited(tmp_path):
     make_bundle(tmp_path)
-    store = ReviewStore(tmp_path, validator=lambda code: True)
+    store = ReviewStore(tmp_path, validator=_valid_render)
     baseline = store.load_bundle("diagram-a")
     edited = store.apply_mermaid_edit(
         "diagram-a",
@@ -776,8 +1143,8 @@ def test_ir_and_render_artifacts_are_revisioned_and_restored_by_undo(tmp_path):
         tmp_path,
         validator=lambda code: ReviewValidationResult(
             valid=True,
-            svg="<svg><title>new</title></svg>",
-            png=b"new-png",
+            svg="<svg viewBox='0 0 1 1'><title>new</title></svg>",
+            png=_png_bytes(),
         ),
     )
     initial = store.load_bundle("diagram-a")
@@ -796,8 +1163,8 @@ def test_ir_and_render_artifacts_are_revisioned_and_restored_by_undo(tmp_path):
     )
 
     assert edited.scene_ir == new_ir
-    assert edited.svg == "<svg><title>new</title></svg>"
-    assert edited.png == b"new-png"
+    assert edited.svg == "<svg viewBox='0 0 1 1'><title>new</title></svg>"
+    assert edited.png == _png_bytes()
     assert edited.manifest["review_quality_status"] == "unscored_user_revision"
     assert (bundle_path / "versions/r000000.scene-ir.json").exists()
     assert (bundle_path / "versions/r000001.svg").exists()
@@ -1086,10 +1453,15 @@ def test_provenance_commit_io_failure_restores_every_bundle_file(monkeypatch, tm
     }
     real_replace = review_store_module.os.replace
 
-    def fail_at_root_provenance(source, target):
-        if os.fspath(target).endswith("/provenance.json") and "/versions/" not in os.fspath(target):
+    def fail_at_root_provenance(source, target, *, src_dir_fd=None, dst_dir_fd=None):
+        if os.fspath(target) == "provenance.json":
             raise OSError("simulated provenance commit failure")
-        return real_replace(source, target)
+        return real_replace(
+            source,
+            target,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
 
     monkeypatch.setattr(review_store_module.os, "replace", fail_at_root_provenance)
     with pytest.raises(OSError, match="provenance commit"):

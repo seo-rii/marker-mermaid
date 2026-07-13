@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
-import tempfile
+import stat
+import sys
 from collections import Counter
+from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -24,8 +29,11 @@ from marker_mermaid.models import (
     ReconstructionResult,
     VisualEvidence,
 )
+from marker_mermaid.render_artifacts import MAX_RENDER_BYTES, png_inspection_error
 
-SCHEMA_VERSION = "mmx-sidecar-0.4"
+SCHEMA_VERSION = "mmx-sidecar-0.5"
+_LINUX_RENAME_NOREPLACE = 1
+_DARWIN_RENAME_EXCL = 0x00000004
 
 
 def _safe_component(value: str) -> str:
@@ -51,11 +59,111 @@ def _candidate_json(candidate: MermaidCandidate) -> dict[str, Any]:
     return candidate.model_dump(mode="json", exclude={"svg", "png"})
 
 
-def _write(path: Path, data: bytes | str) -> str:
-    payload = data.encode() if isinstance(data, str) else data
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(payload)
+class _AnchoredArtifactPath:
+    """A relative artifact path rooted at an already-open directory descriptor."""
+
+    __slots__ = ("directory_fd", "relative")
+
+    def __init__(self, directory_fd: int, relative: str | PurePosixPath):
+        normalized = PurePosixPath(relative)
+        if (
+            normalized.is_absolute()
+            or not normalized.parts
+            or any(part in {"", ".", ".."} for part in normalized.parts)
+        ):
+            raise ValueError(f"unsafe anchored artifact path: {relative!r}")
+        self.directory_fd = directory_fd
+        self.relative = normalized
+
+    @property
+    def name(self) -> str:
+        return self.relative.name
+
+
+def _write(path: _AnchoredArtifactPath, data: bytes | str) -> str:
+    payload = str(data).encode("utf-8") if isinstance(data, str) else bytes(data)
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    parent_fd = os.dup(path.directory_fd)
+    try:
+        for component in path.relative.parts[:-1]:
+            with suppress(FileExistsError):
+                os.mkdir(component, mode=0o700, dir_fd=parent_fd)
+            child_fd = os.open(component, directory_flags, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = child_fd
+        file_flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        file_fd = os.open(path.name, file_flags, 0o600, dir_fd=parent_fd)
+        with os.fdopen(file_fd, "wb") as artifact:
+            artifact.write(payload)
+    finally:
+        os.close(parent_fd)
     return hashlib.sha256(payload).hexdigest()
+
+
+def _rename_noreplace(
+    source_fd: int,
+    source_name: str,
+    destination_fd: int,
+    destination_name: str,
+) -> None:
+    """Atomically publish a directory without replacing an existing entry."""
+
+    if sys.platform.startswith("linux"):
+        primitive_name = "renameat2"
+        flags = _LINUX_RENAME_NOREPLACE
+    elif sys.platform == "darwin":
+        primitive_name = "renameatx_np"
+        flags = _DARWIN_RENAME_EXCL
+    else:
+        raise RuntimeError(
+            "sidecar publication requires descriptor-anchored no-replace rename support"
+        )
+    try:
+        primitive = getattr(ctypes.CDLL(None, use_errno=True), primitive_name)
+    except (AttributeError, OSError) as exc:
+        raise RuntimeError(
+            "sidecar publication requires descriptor-anchored no-replace rename support"
+        ) from exc
+    primitive.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    primitive.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    rename_result = primitive(
+        source_fd,
+        os.fsencode(source_name),
+        destination_fd,
+        os.fsencode(destination_name),
+        flags,
+    )
+    if rename_result == 0:
+        return
+    rename_errno = ctypes.get_errno()
+    if rename_errno == errno.EEXIST:
+        raise FileExistsError(
+            rename_errno,
+            "sidecar bundle already exists",
+            destination_name,
+        )
+    raise OSError(
+        rename_errno,
+        "descriptor-anchored no-replace sidecar publication failed",
+    )
 
 
 class SidecarStore:
@@ -77,49 +185,421 @@ class SidecarStore:
         self.write_provenance = write_provenance
 
     def write(self, result: ReconstructionResult) -> str:
+        if type(result) is not ReconstructionResult:
+            raise TypeError("sidecar writes require a ReconstructionResult")
+        if result.publish and not result.has_authorized_publication():
+            raise ValueError(
+                "published results must retain their trusted publication authorization"
+            )
+        live_result = result
+        before_selected = result.selected
+        try:
+            before_sink_payload = _json_bytes(
+                {
+                    "selected": (
+                        _candidate_json(before_selected)
+                        if type(before_selected) is MermaidCandidate
+                        else None
+                    ),
+                    "alternatives": [
+                        _candidate_json(candidate) for candidate in result.alternatives
+                    ],
+                    "evidence": [item.model_dump(mode="json") for item in result.evidence],
+                    "source_mapping": result.source_mapping,
+                    "failures": [item.model_dump(mode="json") for item in result.failures],
+                }
+            )
+            if len(before_sink_payload) > MAX_RENDER_BYTES:
+                raise ValueError("sidecar source projection exceeds the snapshot byte limit")
+            before_sink_sha256 = hashlib.sha256(before_sink_payload).hexdigest()
+            before_quality_sha256 = (
+                hashlib.sha256(
+                    _json_bytes(
+                        {
+                            "aggregate_score": before_selected.aggregate_score,
+                            "scores": before_selected.scores,
+                            "warnings": before_selected.warnings,
+                        }
+                    )
+                ).hexdigest()
+                if type(before_selected) is MermaidCandidate
+                else None
+            )
+            before_core = (
+                result.source_id,
+                result.source_image_name,
+                result.source_kind,
+                tuple(result.source_block_ids),
+                tuple(result.page_ids),
+                result.anchor_block_id,
+                result.status,
+                result.grade,
+                result.publish,
+                result.review_required,
+                (
+                    before_selected.candidate_id,
+                    before_selected.diagram_type,
+                    before_selected.emitted_diagram_type,
+                    before_selected.runtime_diagram_type,
+                    before_selected.syntax_valid,
+                    before_selected.render_valid,
+                    hashlib.sha256(before_selected.mermaid_code.encode("utf-8")).hexdigest()
+                    if type(before_selected.mermaid_code) is str
+                    else None,
+                    hashlib.sha256(before_selected.svg.encode("utf-8")).hexdigest()
+                    if type(before_selected.svg) is str
+                    else None,
+                    hashlib.sha256(before_selected.png).hexdigest()
+                    if type(before_selected.png) is bytes
+                    else None,
+                    before_quality_sha256,
+                    before_selected.validation_receipt,
+                    before_selected._node_id_mapping_seal,
+                    before_selected._validation_receipt_seal,
+                )
+                if type(before_selected) is MermaidCandidate
+                else None,
+                result.publication_receipt,
+                result._publication_authorization_seal,
+                before_sink_sha256,
+            )
+            before_trusted_validation = bool(
+                type(before_selected) is MermaidCandidate
+                and before_selected.has_validated_publication_artifacts()
+            )
+            before_trusted_decision = result.has_trusted_publication_decision()
+            before_authorized_publication = result.has_authorized_publication()
+        except (AttributeError, TypeError, UnicodeEncodeError, ValueError) as exc:
+            raise ValueError("sidecar source has an invalid publication core") from exc
+        # Derive the path, policy decision, artifacts, and manifest exclusively
+        # from one snapshot so authorization cannot race later field reads.
+        try:
+            result = ReconstructionResult.model_copy(result, deep=True)
+        except Exception as exc:
+            raise ValueError("sidecar snapshot failed publication authorization") from exc
+        after_selected = live_result.selected
+        snapshot_selected = result.selected
+        try:
+            after_sink_payload = _json_bytes(
+                {
+                    "selected": (
+                        _candidate_json(after_selected)
+                        if type(after_selected) is MermaidCandidate
+                        else None
+                    ),
+                    "alternatives": [
+                        _candidate_json(candidate) for candidate in live_result.alternatives
+                    ],
+                    "evidence": [item.model_dump(mode="json") for item in live_result.evidence],
+                    "source_mapping": live_result.source_mapping,
+                    "failures": [item.model_dump(mode="json") for item in live_result.failures],
+                }
+            )
+            snapshot_sink_payload = _json_bytes(
+                {
+                    "selected": (
+                        _candidate_json(snapshot_selected)
+                        if type(snapshot_selected) is MermaidCandidate
+                        else None
+                    ),
+                    "alternatives": [
+                        _candidate_json(candidate) for candidate in result.alternatives
+                    ],
+                    "evidence": [item.model_dump(mode="json") for item in result.evidence],
+                    "source_mapping": result.source_mapping,
+                    "failures": [item.model_dump(mode="json") for item in result.failures],
+                }
+            )
+            if (
+                len(after_sink_payload) > MAX_RENDER_BYTES
+                or len(snapshot_sink_payload) > MAX_RENDER_BYTES
+            ):
+                raise ValueError("sidecar snapshot projection exceeds the snapshot byte limit")
+            after_sink_sha256 = hashlib.sha256(after_sink_payload).hexdigest()
+            snapshot_sink_sha256 = hashlib.sha256(snapshot_sink_payload).hexdigest()
+            after_quality_sha256 = (
+                hashlib.sha256(
+                    _json_bytes(
+                        {
+                            "aggregate_score": after_selected.aggregate_score,
+                            "scores": after_selected.scores,
+                            "warnings": after_selected.warnings,
+                        }
+                    )
+                ).hexdigest()
+                if type(after_selected) is MermaidCandidate
+                else None
+            )
+            after_core = (
+                live_result.source_id,
+                live_result.source_image_name,
+                live_result.source_kind,
+                tuple(live_result.source_block_ids),
+                tuple(live_result.page_ids),
+                live_result.anchor_block_id,
+                live_result.status,
+                live_result.grade,
+                live_result.publish,
+                live_result.review_required,
+                (
+                    after_selected.candidate_id,
+                    after_selected.diagram_type,
+                    after_selected.emitted_diagram_type,
+                    after_selected.runtime_diagram_type,
+                    after_selected.syntax_valid,
+                    after_selected.render_valid,
+                    hashlib.sha256(after_selected.mermaid_code.encode("utf-8")).hexdigest()
+                    if type(after_selected.mermaid_code) is str
+                    else None,
+                    hashlib.sha256(after_selected.svg.encode("utf-8")).hexdigest()
+                    if type(after_selected.svg) is str
+                    else None,
+                    hashlib.sha256(after_selected.png).hexdigest()
+                    if type(after_selected.png) is bytes
+                    else None,
+                    after_quality_sha256,
+                    after_selected.validation_receipt,
+                    after_selected._node_id_mapping_seal,
+                    after_selected._validation_receipt_seal,
+                )
+                if type(after_selected) is MermaidCandidate
+                else None,
+                live_result.publication_receipt,
+                live_result._publication_authorization_seal,
+                after_sink_sha256,
+            )
+            snapshot_quality_sha256 = (
+                hashlib.sha256(
+                    _json_bytes(
+                        {
+                            "aggregate_score": snapshot_selected.aggregate_score,
+                            "scores": snapshot_selected.scores,
+                            "warnings": snapshot_selected.warnings,
+                        }
+                    )
+                ).hexdigest()
+                if type(snapshot_selected) is MermaidCandidate
+                else None
+            )
+            snapshot_core = (
+                result.source_id,
+                result.source_image_name,
+                result.source_kind,
+                tuple(result.source_block_ids),
+                tuple(result.page_ids),
+                result.anchor_block_id,
+                result.status,
+                result.grade,
+                result.publish,
+                result.review_required,
+                (
+                    snapshot_selected.candidate_id,
+                    snapshot_selected.diagram_type,
+                    snapshot_selected.emitted_diagram_type,
+                    snapshot_selected.runtime_diagram_type,
+                    snapshot_selected.syntax_valid,
+                    snapshot_selected.render_valid,
+                    hashlib.sha256(snapshot_selected.mermaid_code.encode("utf-8")).hexdigest()
+                    if type(snapshot_selected.mermaid_code) is str
+                    else None,
+                    hashlib.sha256(snapshot_selected.svg.encode("utf-8")).hexdigest()
+                    if type(snapshot_selected.svg) is str
+                    else None,
+                    hashlib.sha256(snapshot_selected.png).hexdigest()
+                    if type(snapshot_selected.png) is bytes
+                    else None,
+                    snapshot_quality_sha256,
+                    snapshot_selected.validation_receipt,
+                    snapshot_selected._node_id_mapping_seal,
+                    snapshot_selected._validation_receipt_seal,
+                )
+                if type(snapshot_selected) is MermaidCandidate
+                else None,
+                result.publication_receipt,
+                result._publication_authorization_seal,
+                snapshot_sink_sha256,
+            )
+        except (AttributeError, TypeError, UnicodeEncodeError, ValueError) as exc:
+            raise ValueError("sidecar snapshot has an invalid publication core") from exc
+        if after_core != before_core or snapshot_core != before_core:
+            raise ValueError("sidecar source changed while its snapshot was captured")
+        if (
+            (
+                before_trusted_validation
+                and (
+                    type(snapshot_selected) is not MermaidCandidate
+                    or not snapshot_selected.has_validated_publication_artifacts()
+                )
+            )
+            or (before_trusted_decision and not result.has_trusted_publication_decision())
+            or (before_authorized_publication and not result.has_authorized_publication())
+        ):
+            raise ValueError("sidecar snapshot lost trusted publication authorization")
         name = _safe_component(result.source_id)
         relative = PurePosixPath("diagrams") / name
         if relative.is_absolute() or ".." in relative.parts:
             raise ValueError("sidecar path must remain inside the output root")
-        diagrams = self.output_root / "diagrams"
-        diagrams.mkdir(parents=True, exist_ok=True)
-        target = diagrams / name
-        if target.exists():
-            raise FileExistsError(f"sidecar bundle already exists: {target}")
-        temporary = Path(tempfile.mkdtemp(prefix=f".{name}-", dir=diagrams))
+        self.output_root.mkdir(parents=True, exist_ok=True)
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            output_fd = os.open(self.output_root, directory_flags)
+        except OSError as exc:
+            raise ValueError("sidecar output root must be a real directory") from exc
+        try:
+            with suppress(FileExistsError):
+                os.mkdir("diagrams", mode=0o700, dir_fd=output_fd)
+            try:
+                diagrams_fd = os.open("diagrams", directory_flags, dir_fd=output_fd)
+            except OSError as exc:
+                raise ValueError(
+                    "sidecar diagrams path must be a real direct child of the output root"
+                ) from exc
+        except Exception:
+            os.close(output_fd)
+            raise
+        diagrams_stat = os.fstat(diagrams_fd)
+        diagrams_identity = (diagrams_stat.st_dev, diagrams_stat.st_ino)
+        temporary_name: str | None = None
+        temporary_fd: int | None = None
+        try:
+            try:
+                os.stat(name, dir_fd=diagrams_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise FileExistsError(
+                    f"sidecar bundle already exists: {self.output_root / 'diagrams' / name}"
+                )
+            for _ in range(128):
+                proposal = f".{name}-{secrets.token_hex(8)}"
+                try:
+                    os.mkdir(proposal, mode=0o700, dir_fd=diagrams_fd)
+                except FileExistsError:
+                    continue
+                temporary_name = proposal
+                break
+            if temporary_name is None:
+                raise FileExistsError("unable to allocate a unique sidecar staging directory")
+            temporary_stat = os.stat(
+                temporary_name,
+                dir_fd=diagrams_fd,
+                follow_symlinks=False,
+            )
+            temporary_fd = os.open(temporary_name, directory_flags, dir_fd=diagrams_fd)
+            opened_temporary_stat = os.fstat(temporary_fd)
+            temporary_identity = (temporary_stat.st_dev, temporary_stat.st_ino)
+            if (
+                not stat.S_ISDIR(temporary_stat.st_mode)
+                or (opened_temporary_stat.st_dev, opened_temporary_stat.st_ino)
+                != temporary_identity
+            ):
+                raise ValueError("sidecar staging directory identity changed before writing")
+        except Exception:
+            if temporary_fd is not None:
+                os.close(temporary_fd)
+            if temporary_name is not None:
+                shutil.rmtree(temporary_name, dir_fd=diagrams_fd, ignore_errors=True)
+            os.close(diagrams_fd)
+            os.close(output_fd)
+            raise
+        assert temporary_fd is not None
+        assert temporary_name is not None
         hashes: dict[str, str] = {}
         mapping_requires_provenance = False
+        trusted_validation_receipt: dict[str, Any] | None = None
+        trusted_publication_receipt: dict[str, Any] | None = None
         try:
+            current_diagrams_stat = os.stat(
+                "diagrams",
+                dir_fd=output_fd,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISDIR(current_diagrams_stat.st_mode)
+                or stat.S_ISLNK(current_diagrams_stat.st_mode)
+                or (current_diagrams_stat.st_dev, current_diagrams_stat.st_ino) != diagrams_identity
+            ):
+                raise ValueError("sidecar diagrams directory identity changed before writing")
             selected = result.selected
+            has_trusted_decision = result.has_trusted_publication_decision()
+            if has_trusted_decision:
+                assert result.publication_receipt is not None
+                trusted_publication_receipt = result.publication_receipt.model_dump(mode="json")
             if selected is not None:
+                if result.publish and not result.has_authorized_publication():
+                    raise ValueError(
+                        "published results must retain their trusted publication authorization"
+                    )
+                has_trusted_validation = selected.has_validated_publication_artifacts()
+                if result.publish and not has_trusted_validation:
+                    raise ValueError(
+                        "published candidates must retain their trusted validation receipt"
+                    )
+                if has_trusted_validation:
+                    assert selected.validation_receipt is not None
+                    trusted_validation_receipt = selected.validation_receipt.model_dump(mode="json")
+                if (
+                    result.publish
+                    and self.write_png
+                    and selected.validation_receipt is not None
+                    and (
+                        selected.png is not None
+                        or selected.validation_receipt.png_sha256 is not None
+                    )
+                    and not selected.has_validated_rendered_preview()
+                ):
+                    raise ValueError("published PNG must retain its trusted validation receipt")
                 if selected.node_id_mappings and not selected._has_valid_node_id_mapping_seal():
                     raise ValueError(
                         "node id mappings must retain their trusted pipeline certification seal"
                     )
                 selected = MermaidCandidate.model_validate(selected.model_dump(mode="python"))
+                if (
+                    (self.write_svg or result.publish)
+                    and selected.svg is not None
+                    and len(selected.svg.encode("utf-8")) > MAX_RENDER_BYTES
+                ):
+                    raise ValueError("selected SVG exceeds the render artifact byte limit")
+                if self.write_png and selected.png is not None:
+                    png_error = png_inspection_error(selected.png)
+                    if png_error is not None:
+                        raise ValueError(f"selected PNG failed artifact inspection: {png_error}")
                 validated_evidence = [
                     VisualEvidence.model_validate(item.model_dump(mode="python"))
                     for item in result.evidence
                 ]
                 if selected.mermaid_code:
-                    hashes["final.mmd"] = _write(temporary / "final.mmd", selected.mermaid_code)
-                if self.write_svg and selected.svg:
-                    hashes["final.svg"] = _write(temporary / "final.svg", selected.svg)
+                    hashes["final.mmd"] = _write(
+                        _AnchoredArtifactPath(temporary_fd, "final.mmd"),
+                        selected.mermaid_code,
+                    )
+                if (self.write_svg or result.publish) and selected.svg:
+                    hashes["final.svg"] = _write(
+                        _AnchoredArtifactPath(temporary_fd, "final.svg"), selected.svg
+                    )
                 if self.write_png and selected.png:
-                    hashes["final.png"] = _write(temporary / "final.png", selected.png)
+                    hashes["final.png"] = _write(
+                        _AnchoredArtifactPath(temporary_fd, "final.png"), selected.png
+                    )
                 if self.write_ir and selected.scene_ir is not None:
                     hashes["scene-ir.json"] = _write(
-                        temporary / "scene-ir.json",
+                        _AnchoredArtifactPath(temporary_fd, "scene-ir.json"),
                         _json_bytes(selected.scene_ir.model_dump(mode="json")),
                     )
                 if self.write_ir and selected.generated_scene_ir is not None:
                     hashes["generated-scene-ir.json"] = _write(
-                        temporary / "generated-scene-ir.json",
+                        _AnchoredArtifactPath(temporary_fd, "generated-scene-ir.json"),
                         _json_bytes(selected.generated_scene_ir.model_dump(mode="json")),
                     )
                 if self.write_ir and selected.typed_ir is not None:
                     hashes["typed-ir.json"] = _write(
-                        temporary / "typed-ir.json", _json_bytes(selected.typed_ir)
+                        _AnchoredArtifactPath(temporary_fd, "typed-ir.json"),
+                        _json_bytes(selected.typed_ir),
                     )
                 if selected.node_id_mappings:
                     mapping_requires_provenance = True
@@ -225,13 +705,13 @@ class SidecarStore:
                                 "a source block"
                             )
                     hashes["node-id-map.json"] = _write(
-                        temporary / "node-id-map.json",
+                        _AnchoredArtifactPath(temporary_fd, "node-id-map.json"),
                         _json_bytes(
                             [item.model_dump(mode="json") for item in selected.node_id_mappings]
                         ),
                     )
                 hashes["scores.json"] = _write(
-                    temporary / "scores.json",
+                    _AnchoredArtifactPath(temporary_fd, "scores.json"),
                     _json_bytes(
                         {
                             "aggregate_score": selected.aggregate_score,
@@ -241,6 +721,22 @@ class SidecarStore:
                         }
                     ),
                 )
+                if trusted_validation_receipt is not None:
+                    if hashes.get("final.mmd") != trusted_validation_receipt["code_sha256"]:
+                        raise ValueError("written Mermaid source differs from validation receipt")
+                    if hashes.get("final.svg") != trusted_validation_receipt["svg_sha256"]:
+                        if result.publish:
+                            raise ValueError("written SVG differs from validation receipt")
+                        trusted_validation_receipt = None
+                        trusted_publication_receipt = None
+                    elif "final.png" in hashes:
+                        if trusted_validation_receipt.get("png_sha256") is None or hashes[
+                            "final.png"
+                        ] != trusted_validation_receipt.get("png_sha256"):
+                            if result.publish:
+                                raise ValueError("written PNG differs from validation receipt")
+                            trusted_validation_receipt = None
+                            trusted_publication_receipt = None
             if selected is None:
                 validated_evidence = [
                     VisualEvidence.model_validate(item.model_dump(mode="python"))
@@ -248,23 +744,30 @@ class SidecarStore:
                 ]
             if (self.write_provenance or mapping_requires_provenance) and validated_evidence:
                 hashes["provenance.json"] = _write(
-                    temporary / "provenance.json",
+                    _AnchoredArtifactPath(temporary_fd, "provenance.json"),
                     _json_bytes([item.model_dump(mode="json") for item in validated_evidence]),
                 )
             if result.source_mapping is not None:
                 hashes["source-map.json"] = _write(
-                    temporary / "source-map.json", _json_bytes(result.source_mapping)
+                    _AnchoredArtifactPath(temporary_fd, "source-map.json"),
+                    _json_bytes(result.source_mapping),
                 )
-            hashes["review-history.json"] = _write(temporary / "review-history.json", b"[]\n")
+            hashes["review-history.json"] = _write(
+                _AnchoredArtifactPath(temporary_fd, "review-history.json"), b"[]\n"
+            )
             if self.write_alternatives:
                 for candidate in result.alternatives:
                     filename = f"alternatives/{_safe_component(candidate.candidate_id)}.json"
                     hashes[filename] = _write(
-                        temporary / filename, _json_bytes(_candidate_json(candidate))
+                        _AnchoredArtifactPath(temporary_fd, filename),
+                        _json_bytes(_candidate_json(candidate)),
                     )
                     if candidate.mermaid_code:
                         mmd_name = f"alternatives/{_safe_component(candidate.candidate_id)}.mmd"
-                        hashes[mmd_name] = _write(temporary / mmd_name, candidate.mermaid_code)
+                        hashes[mmd_name] = _write(
+                            _AnchoredArtifactPath(temporary_fd, mmd_name),
+                            candidate.mermaid_code,
+                        )
             manifest = {
                 "schema_version": SCHEMA_VERSION,
                 "source_id": result.source_id,
@@ -283,13 +786,89 @@ class SidecarStore:
                 "runtime_diagram_type": selected.runtime_diagram_type if selected else None,
                 "fallback_chain": selected.fallback_chain if selected else [],
                 "serialization_stability": (selected.serialization_stability if selected else None),
+                "generation_validation_receipt": trusted_validation_receipt,
+                "generation_publication_receipt": trusted_publication_receipt,
+                "generation_artifact_presence": {
+                    name: name in hashes for name in ("final.mmd", "final.svg", "final.png")
+                },
                 "files": hashes,
                 "failures": [item.model_dump(mode="json") for item in result.failures],
             }
-            _write(temporary / "manifest.json", _json_bytes(manifest))
-            os.replace(temporary, target)
+            _write(_AnchoredArtifactPath(temporary_fd, "manifest.json"), _json_bytes(manifest))
+            try:
+                current_diagrams_stat = os.stat(
+                    "diagrams",
+                    dir_fd=output_fd,
+                    follow_symlinks=False,
+                )
+            except (FileNotFoundError, OSError) as exc:
+                raise ValueError(
+                    "sidecar directory identity changed before bundle publication"
+                ) from exc
+            if (
+                not stat.S_ISDIR(current_diagrams_stat.st_mode)
+                or stat.S_ISLNK(current_diagrams_stat.st_mode)
+                or (current_diagrams_stat.st_dev, current_diagrams_stat.st_ino) != diagrams_identity
+            ):
+                raise ValueError("sidecar directory identity changed before bundle publication")
+            try:
+                current_temporary_stat = os.stat(
+                    temporary_name,
+                    dir_fd=diagrams_fd,
+                    follow_symlinks=False,
+                )
+            except (FileNotFoundError, OSError) as exc:
+                raise ValueError(
+                    "sidecar directory identity changed before bundle publication"
+                ) from exc
+            if (
+                not stat.S_ISDIR(current_temporary_stat.st_mode)
+                or stat.S_ISLNK(current_temporary_stat.st_mode)
+                or (current_temporary_stat.st_dev, current_temporary_stat.st_ino)
+                != temporary_identity
+            ):
+                raise ValueError("sidecar directory identity changed before bundle publication")
+            try:
+                os.stat(name, dir_fd=diagrams_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise FileExistsError(
+                    f"sidecar bundle already exists: {self.output_root / 'diagrams' / name}"
+                )
+            _rename_noreplace(
+                diagrams_fd,
+                temporary_name,
+                diagrams_fd,
+                name,
+            )
+            temporary_name = None
         except Exception:
-            shutil.rmtree(temporary, ignore_errors=True)
+            if temporary_name is not None:
+                try:
+                    current_temporary_stat = os.stat(
+                        temporary_name,
+                        dir_fd=diagrams_fd,
+                        follow_symlinks=False,
+                    )
+                    cleanup_is_safe = (
+                        stat.S_ISDIR(current_temporary_stat.st_mode)
+                        and not stat.S_ISLNK(current_temporary_stat.st_mode)
+                        and (current_temporary_stat.st_dev, current_temporary_stat.st_ino)
+                        == temporary_identity
+                    )
+                except (FileNotFoundError, OSError):
+                    cleanup_is_safe = False
+                if cleanup_is_safe:
+                    shutil.rmtree(
+                        temporary_name,
+                        dir_fd=diagrams_fd,
+                        ignore_errors=True,
+                    )
             raise
-        result.sidecar_dir = relative.as_posix()
+        finally:
+            os.close(temporary_fd)
+            os.close(diagrams_fd)
+            os.close(output_fd)
+        live_result.sidecar_dir = relative.as_posix()
         return relative.as_posix()

@@ -74,6 +74,8 @@
 - Closed Review node relabeling from uniquely linked OCR/vector provenance with synchronized overlay selection, transactional revision history, and unchanged evidence snapshots.
 - Bounded Review audit history view with the newest 100 operation/target/source/timestamp/reason entries, expandable text-only deltas, and malformed-entry reporting while preserving canonical `review-history.json`.
 - Architecture, C4, Deployment, and Component candidates now retry one declared nested Flowchart fallback in the same candidate slot when `architecture-beta` runtime validation fails, preserving candidate budgets and requested/emitted/runtime fallback metadata.
+- SHA-256 validation receipts bind each automatically published Mermaid source to its inspected SVG and optional PNG, while a second authorization receipt binds policy/security/status/quality decisions; sealed immutable Markdown/Marker snapshots and atomic sidecar snapshots prevent check-then-reread races.
+- Validator-issued artifact certificates and canonical decimal quality digests prevent unchecked model flags and cross-runtime float formatting from manufacturing publication receipts.
 
 ### Changed
 
@@ -97,8 +99,11 @@
 - Chromium worker responses use a nonblocking bounded protocol with partial-line deadlines.
 - Review HTTP processing has a fixed in-flight worker budget and explicit busy responses.
 - The Marker rendered-preview option now emits validated PNG previews when requested.
+- Generated and Review SVG/PNG artifacts now share byte, format, dimension, and strict SVG security gates; detailed v0.5 Review loads verify immutable generation receipts against their root or `r000000` baseline and current revision hashes independently.
+- Sidecar and Review publication keep staging, replacement, rollback, and cleanup anchored to no-follow directory descriptors; sidecar disclosure additionally uses Linux/macOS kernel no-replace rename primitives so a racing destination is never overwritten.
+- Markdown publication sizes its backtick fence above every run in the validated Mermaid source, keeping multiline label content inside the authenticated code block.
 - SVG CSS inspection covers `<style>` text and edge styles require fully mapped Mermaid ordering.
-- Review approval revalidates the current digest and persists a fresh validated render.
+- Review approval revalidates the current digest and persists a fresh validated render; code-changing edits that return only a boolean discard stale SVG/PNG and cannot be approved without structured artifacts.
 - Review HTTP sockets have header deadlines, explicit wildcard Host allowlists, descriptor-based static serving, and bounded lightweight listing.
 - Scene/evidence/VLM inputs reject oversized identifiers, collections, paths, text, non-finite coordinates, and non-finite JSON.
 - Hostile or decompression-bomb Marker previews are omitted without failing document conversion.
@@ -107,6 +112,9 @@
 - Structured review operations reject stale revisions before interpretation and require exact Scene-to-Mermaid mappings.
 - Review undo/redo now restores provenance presence and content in the same boundary as code, IR, and renders.
 - Review editors preserve local drafts across validation errors and conflict refreshes, lock summary-only or stale states until guarded detail reload succeeds, reject stale responses, and confirm before dirty edits are discarded.
+- Security scanning now treats unquoted semicolons as Mermaid statement boundaries, closing same-line `click` and strict-profile style bypasses without rejecting quoted labels or comments.
+- Automatic publication now prefers validator-sealed candidates within the same semantic eligibility class and downgrades missing/mismatched runtime type certificates to review instead of returning contradictory publish metadata.
+- Malformed Unicode scalar values in engine IR/code are isolated per candidate, while diagnostic warnings and failure messages are converted to bounded sink-safe UTF-8 text.
 
 ## 0.1.0
 
