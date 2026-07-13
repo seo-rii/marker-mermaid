@@ -85,6 +85,12 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
         "add-edge-target",
         "add-edge-reason",
         "add-edge",
+        "evidence-label-form",
+        "evidence-label-node",
+        "evidence-label-select",
+        "evidence-label-help",
+        "evidence-label-status",
+        "apply-evidence-label",
         "delete-node-form",
         "node-select",
         "add-node-form",
@@ -139,6 +145,7 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert "innerHTML" not in assets.javascript
     assert 'operation: "reconnect_edge"' in assets.javascript
     assert 'operation: "add_edge"' in assets.javascript
+    assert 'operation: "relabel_node_from_evidence"' in assets.javascript
     assert 'operation: "delete_edge"' in assets.javascript
     assert 'operation: "delete_node"' in assets.javascript
     assert 'operation: "add_node"' in assets.javascript
@@ -159,6 +166,28 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert "group_id: groupId" in assets.javascript
     assert "Source-anchored node added." in assets.javascript
     assert "An evidence note is required to add an edge." in assets.javascript
+    assert "function evidenceLabelChoices(diagram)" in assets.javascript
+    assert "node.evidence_ids" in assets.javascript
+    assert "evidenceIdCounts.get(evidenceId) !== 1" in assets.javascript
+    assert "links.length !== 1 || links[0] !== node" in assets.javascript
+    assert "node[labelKey] === label" in assets.javascript
+    assert '/^[A-Za-z][A-Za-z0-9_-]{0,63}$/' in assets.javascript
+    assert "declarationCounts.get(node.id) !== 1" in assets.javascript
+    assert "[\\p{Cc}\\p{Cf}\\p{Cs}\\p{Zl}\\p{Zp}]" in assets.javascript
+    assert 'rect.setAttribute("aria-pressed", selected ? "true" : "false")' in assets.javascript
+    assert 'rect.setAttribute("role", "button")' in assets.javascript
+    assert "Use source-backed label" in assets.html
+    assert (
+        'id="evidence-label-status" class="muted" role="status" aria-live="polite"'
+        in assets.html
+    )
+    assert ".evidence-box.selected" in assets.css
+    relabel_submit = assets.javascript.split(
+        'byId("evidence-label-form").addEventListener("submit"', 1
+    )[1].split('byId("group-nodes-form").addEventListener("submit"', 1)[0]
+    assert "node_id: nodeId, evidence_id: evidenceId" in relabel_submit
+    for forbidden in ("label:", "kind:", "score:", "bbox:", "provenance:"):
+        assert forbidden not in relabel_submit
     assert "Delete relation ${edgeId}?" in assets.javascript
     assert "data-node-id" in assets.javascript
     assert 'addEventListener("keydown"' in assets.javascript
@@ -1045,6 +1074,244 @@ try {
         "failedSafe": True,
         "emptySafe": True,
     }
+
+
+def test_review_workspace_selects_and_submits_only_linked_source_label_ids():
+    summary = {
+        "id": "diagram-a",
+        "source_id": "page-1-figure-1",
+        "label": "page-1-figure-1",
+        "status": "review",
+        "grade": "C",
+        "decision": None,
+        "version": 0,
+        "digest": "digest-0",
+    }
+    scene = {
+        "coordinate_space": "normalized",
+        "elements": [
+            {
+                "id": "A",
+                "role": "node",
+                "text": "Old label",
+                "bbox": [0.05, 0.1, 0.45, 0.4],
+                "evidence_ids": ["ocr-a", "vector-a", "vector-no-box", "same", "shared", "bad"],
+            },
+            {
+                "id": "B",
+                "role": "node",
+                "text": "B",
+                "bbox": [0.55, 0.1, 0.95, 0.4],
+                "evidence_ids": ["shared", "b-label"],
+            },
+        ],
+        "relations": [],
+        "groups": [],
+    }
+    provenance = [
+        {
+            "id": "vector-a",
+            "kind": "vector_text",
+            "bbox": [0.1, 0.22, 0.4, 0.3],
+            "text": "Observed label",
+            "score": 0.99,
+        },
+        {"id": "bad", "kind": "vlm_observation", "text": "Generated label"},
+        {
+            "id": "shared",
+            "kind": "ocr_token",
+            "bbox": [0.4, 0.45, 0.6, 0.55],
+            "text": "Shared label",
+        },
+        {"id": "same", "kind": "ocr_token", "text": "Old label"},
+        {
+            "id": "ocr-a",
+            "kind": "ocr_token",
+            "bbox": [0.1, 0.12, 0.4, 0.2],
+            "text": "  Observed label  ",
+            "score": 0.91,
+        },
+        {"id": "vector-no-box", "kind": "vector_text", "text": "Observed label"},
+        {"id": "b-label", "kind": "ocr_token", "text": "Observed B"},
+    ]
+    detail = {
+        **summary,
+        "source_url": "/images/source.svg",
+        "mermaid_code": 'flowchart LR\n  A["Old label"]\n  B\n',
+        "scene_ir": scene,
+        "provenance": provenance,
+        "issues": [],
+        "alternatives": [],
+        "can_undo": False,
+        "can_redo": False,
+        "revision_navigation": {"current_revision": "r000000", "timeline": ["r000000"]},
+    }
+    updated_scene = json.loads(json.dumps(scene))
+    updated_scene["elements"][0]["text"] = "Observed label"
+    updated = {
+        **detail,
+        "version": 1,
+        "digest": "digest-1",
+        "mermaid_code": 'flowchart LR\n  A["Observed label"]\n  B\n',
+        "scene_ir": updated_scene,
+        "can_undo": True,
+        "revision_navigation": {
+            "current_revision": "r000001",
+            "timeline": ["r000000", "r000001"],
+        },
+    }
+    assets = build_review_workspace_assets({"diagrams": [summary]})
+    node_script = r"""
+import fs from "node:fs";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const { chromium } = require(process.env.MMX_PLAYWRIGHT);
+const payload = JSON.parse(fs.readFileSync(0, "utf8"));
+const browser = await chromium.launch({ headless: true });
+try {
+  const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+  const postBodies = [];
+  let releaseOperation;
+  let operationStarted;
+  const operationGate = new Promise((resolve) => { releaseOperation = resolve; });
+  const operationStart = new Promise((resolve) => { operationStarted = resolve; });
+  await page.route("http://review.test/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/") return route.fulfill({ contentType: "text/html", body: payload.html });
+    if (path === "/assets/review.css") {
+      return route.fulfill({ contentType: "text/css", body: payload.css });
+    }
+    if (path === "/assets/review.js") {
+      return route.fulfill({ contentType: "text/javascript", body: payload.javascript });
+    }
+    if (path === "/api/diagrams/diagram-a" && route.request().method() === "GET") {
+      return route.fulfill({
+        contentType: "application/json", body: JSON.stringify({ diagram: payload.detail }),
+      });
+    }
+    if (path === "/api/diagrams/diagram-a/operations") {
+      postBodies.push(route.request().postDataJSON());
+      operationStarted();
+      await operationGate;
+      return route.fulfill({
+        contentType: "application/json", body: JSON.stringify({ diagram: payload.updated }),
+      });
+    }
+    if (path === "/images/source.svg") {
+      return route.fulfill({
+        contentType: "image/svg+xml",
+        body: "<svg xmlns='http://www.w3.org/2000/svg' width='400' height='200'/>",
+      });
+    }
+    return route.abort("blockedbyclient");
+  });
+  await page.goto("http://review.test/", { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => {
+    return !document.getElementById("evidence-label-node").disabled
+      && document.querySelectorAll("#provenance-overlay .evidence-box.eligible").length === 2;
+  });
+  const choices = await page.locator("#evidence-label-select option").evaluateAll(
+    (options) => options.map((option) => option.value),
+  );
+  await page.selectOption("#evidence-label-node", "B");
+  const emptyForB = await page.evaluate(() => ({
+    evidenceDisabled: document.getElementById("evidence-label-select").disabled,
+    applyDisabled: document.getElementById("apply-evidence-label").disabled,
+  }));
+  await page.locator("#provenance-overlay [data-evidence-id='ocr-a']").click();
+  const clickSelection = await page.evaluate(() => ({
+    node: document.getElementById("evidence-label-node").value,
+    evidence: document.getElementById("evidence-label-select").value,
+    pressed: document.querySelector("[data-evidence-id='ocr-a']").getAttribute("aria-pressed"),
+    selected: document.querySelector("[data-evidence-id='ocr-a']").classList.contains("selected"),
+    applyDisabled: document.getElementById("apply-evidence-label").disabled,
+  }));
+  await page.selectOption("#evidence-label-node", "B");
+  await page.locator("#provenance-overlay [data-evidence-id='vector-a']").focus();
+  await page.keyboard.press("Space");
+  const keyboardSelection = await page.evaluate(() => ({
+    node: document.getElementById("evidence-label-node").value,
+    evidence: document.getElementById("evidence-label-select").value,
+    pressed: document.querySelector("[data-evidence-id='vector-a']").getAttribute("aria-pressed"),
+  }));
+  await page.locator("#provenance-overlay [data-evidence-id='ocr-a']").click();
+  await page.click("#apply-evidence-label");
+  await operationStart;
+  const pending = await page.evaluate(() => ({
+    nodeDisabled: document.getElementById("evidence-label-node").disabled,
+    evidenceDisabled: document.getElementById("evidence-label-select").disabled,
+    applyDisabled: document.getElementById("apply-evidence-label").disabled,
+    overlayDisabled: document.querySelector("[data-evidence-id='ocr-a']")
+      .getAttribute("aria-disabled"),
+  }));
+  releaseOperation();
+  await page.waitForFunction(() => document.getElementById("mermaid-editor").value
+    .includes("Observed label"));
+  const after = await page.evaluate(() => ({
+    irLabel: JSON.parse(document.getElementById("ir-editor").value).elements[0].text,
+    options: [...document.querySelectorAll("#evidence-label-select option")]
+      .map((option) => option.value),
+    evidenceDisabled: document.getElementById("evidence-label-select").disabled,
+    applyDisabled: document.getElementById("apply-evidence-label").disabled,
+    status: document.getElementById("evidence-label-status").textContent,
+  }));
+  process.stdout.write(JSON.stringify({
+    choices, emptyForB, clickSelection, keyboardSelection, pending, after, postBodies,
+  }));
+} finally {
+  await browser.close();
+}
+"""
+
+    result = _run_review_browser(
+        node_script,
+        {
+            "html": assets.html,
+            "css": assets.css,
+            "javascript": assets.javascript,
+            "detail": detail,
+            "updated": updated,
+        },
+    )
+
+    assert result["choices"] == ["ocr-a", "vector-a", "vector-no-box"]
+    assert result["emptyForB"] == {"evidenceDisabled": True, "applyDisabled": True}
+    assert result["clickSelection"] == {
+        "node": "A",
+        "evidence": "ocr-a",
+        "pressed": "true",
+        "selected": True,
+        "applyDisabled": False,
+    }
+    assert result["keyboardSelection"] == {
+        "node": "A",
+        "evidence": "vector-a",
+        "pressed": "true",
+    }
+    assert result["pending"] == {
+        "nodeDisabled": True,
+        "evidenceDisabled": True,
+        "applyDisabled": True,
+        "overlayDisabled": "true",
+    }
+    assert result["after"] == {
+        "irLabel": "Observed label",
+        "options": ["same"],
+        "evidenceDisabled": False,
+        "applyDisabled": False,
+        "status": "Ready to use ocr_token evidence same: Old label",
+    }
+    assert result["postBodies"] == [
+        {
+            "operation": {
+                "operation": "relabel_node_from_evidence",
+                "node_id": "A",
+                "evidence_id": "ocr-a",
+            },
+            "expected_version": 0,
+            "expected_digest": "digest-0",
+        }
+    ]
 
 
 def test_review_workspace_edge_drag_reuses_validated_reconnect_operation():

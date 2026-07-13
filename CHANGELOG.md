@@ -64,6 +64,7 @@
 - Ishikawa raw-line labels that begin with either reserved header token remain visible instead of being consumed by the lexer.
 - Runtime render success without a non-empty SVG artifact now fails the post-render security gate.
 - Organization TreeView runtime rejection now retries the declared nested Flowchart fallback in the same candidate slot.
+- Closed Review node relabeling from uniquely linked OCR/vector provenance with synchronized overlay selection, transactional revision history, and unchanged evidence snapshots.
 
 ### Changed
 

@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import re
+import unicodedata
 from collections import Counter
 from collections.abc import Mapping
 from copy import deepcopy
@@ -87,6 +88,7 @@ class ParsedReviewCommand(BaseModel):
     operation: Literal[
         "reverse_edge",
         "relabel_node",
+        "relabel_node_from_evidence",
         "group_nodes",
         "delete_group",
         "change_diagram_type",
@@ -196,6 +198,16 @@ class DeleteGroupOperation(BaseModel):
     group_id: str
 
 
+class RelabelNodeFromEvidenceOperation(BaseModel):
+    """Relabel one node from an already-linked OCR or vector-text observation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation: Literal["relabel_node_from_evidence"]
+    node_id: str
+    evidence_id: str = Field(min_length=1, max_length=256)
+
+
 StructuredReviewOperation = Annotated[
     AddNodeOperation
     | DeleteNodeOperation
@@ -203,7 +215,8 @@ StructuredReviewOperation = Annotated[
     | GroupNodesOperation
     | AddEdgeOperation
     | DeleteEdgeOperation
-    | DeleteGroupOperation,
+    | DeleteGroupOperation
+    | RelabelNodeFromEvidenceOperation,
     Field(discriminator="operation"),
 ]
 _STRUCTURED_OPERATION_ADAPTER = TypeAdapter(StructuredReviewOperation)
@@ -253,6 +266,28 @@ def _validated_label(value: str) -> str:
         raise ReviewCommandError("invalid_label", "label exceeds the safe single-line limit")
     if any(ord(character) < 32 for character in label):
         raise ReviewCommandError("invalid_label", "label contains control characters")
+    return label
+
+
+def _validated_evidence_label(value: str | None) -> str:
+    """Validate an observed label without rewriting its linguistic content."""
+
+    if not isinstance(value, str):
+        raise ReviewCommandError("invalid_label", "selected evidence has no text label")
+    if any(
+        unicodedata.category(character) in {"Cc", "Cf", "Cs", "Zl", "Zp"}
+        for character in value
+    ):
+        raise ReviewCommandError(
+            "invalid_label", "selected evidence text must be a safe single-line label"
+        )
+    label = value.strip()
+    if not label:
+        raise ReviewCommandError("invalid_label", "selected evidence text is empty")
+    if len(label) > MAX_LABEL_LENGTH:
+        raise ReviewCommandError(
+            "invalid_label", "selected evidence text exceeds the label length limit"
+        )
     return label
 
 
@@ -834,7 +869,7 @@ def _apply_ir(
         target = str(edge.get("id") or f"{intent.source_id}->{intent.target_id}")
         return ir, target, before, after
 
-    if intent.operation == "relabel_node":
+    if intent.operation in {"relabel_node", "relabel_node_from_evidence"}:
         assert intent.node_id and intent.label is not None
         matches = [node for node in _node_container(ir)[0] if node.get("id") == intent.node_id]
         if len(matches) != 1:
@@ -842,8 +877,17 @@ def _apply_ir(
         node = matches[0]
         label_key = next((key for key in ("text", "label", "name") if key in node), "label")
         before = {label_key: node.get(label_key)}
+        if (
+            intent.operation == "relabel_node_from_evidence"
+            and before[label_key] == intent.label
+        ):
+            raise ReviewCommandError("no_change", "node already has the selected evidence label")
         node[label_key] = intent.label
-        return ir, intent.node_id, before, {label_key: intent.label}
+        after = {label_key: intent.label}
+        if intent.operation == "relabel_node_from_evidence":
+            assert intent.evidence_id
+            after["evidence_id"] = intent.evidence_id
+        return ir, intent.node_id, before, after
 
     if intent.operation == "delete_group":
         assert intent.group_id
@@ -1019,7 +1063,7 @@ def _apply_mermaid(
         escaped = intent.label.replace("\\", "\\\\").replace('"', '\\"')
         return code.rstrip("\n") + f'\n    {intent.node_id}["{escaped}"]\n'
 
-    if intent.operation == "relabel_node":
+    if intent.operation in {"relabel_node", "relabel_node_from_evidence"}:
         assert intent.node_id and intent.label is not None
         declaration = re.compile(
             rf'(?m)^(?P<indent>\s*){re.escape(intent.node_id)}\s*\[\s*"(?P<label>(?:[^"\\]|\\.)*)"\s*\](?P<tail>\s*)$'
@@ -1431,6 +1475,54 @@ def apply_review_operation(
             payload["node_ids"] = [_validated_id(value) for value in payload["node_ids"]]
         if payload.get("label") is not None:
             payload["label"] = _validated_label(payload["label"])
+        selected_evidence: VisualEvidence | None = None
+        if parsed.operation == "relabel_node_from_evidence":
+            node_id = payload["node_id"]
+            evidence_id = payload["evidence_id"]
+            nodes, _ = _node_container(original_ir)
+            _node_ids(original_ir)
+            node_matches = [node for node in nodes if node.get("id") == node_id]
+            if len(node_matches) != 1:
+                raise ReviewCommandError(
+                    "unresolved_reference", "node id does not identify one Scene node"
+                )
+            linked_node_ids: list[str] = []
+            target_reference_count = 0
+            for node in nodes:
+                references = node.get("evidence_ids", [])
+                if not isinstance(references, list) or not all(
+                    isinstance(reference, str) for reference in references
+                ):
+                    raise ReviewCommandError(
+                        "unsupported_ir", "Scene node evidence references must be string lists"
+                    )
+                reference_count = references.count(evidence_id)
+                if node.get("id") == node_id:
+                    target_reference_count = reference_count
+                if reference_count:
+                    linked_node_ids.append(node["id"])
+            if target_reference_count == 0:
+                raise ReviewCommandError(
+                    "unresolved_reference", "selected evidence is not linked to the target node"
+                )
+            if target_reference_count != 1 or linked_node_ids != [node_id]:
+                raise ReviewCommandError(
+                    "ambiguous_reference",
+                    "selected evidence must be linked exactly once to one Scene node",
+                )
+            evidence_matches = [
+                evidence for evidence in normalized_provenance if evidence.id == evidence_id
+            ]
+            if len(evidence_matches) != 1:
+                raise ReviewCommandError(
+                    "unresolved_reference", "selected evidence does not exist in provenance"
+                )
+            selected_evidence = evidence_matches[0]
+            if selected_evidence.kind not in {"ocr_token", "vector_text"}:
+                raise ReviewCommandError(
+                    "invalid_evidence", "only OCR or vector-text evidence can supply a label"
+                )
+            payload["label"] = _validated_evidence_label(selected_evidence.text)
         if parsed.operation in {"add_node", "add_edge"}:
             if (
                 not isinstance(reason, str)
@@ -1494,7 +1586,14 @@ def apply_review_operation(
             before=before,
             after=after,
             source="user",
-            reason=reason or intent.operation,
+            reason=(
+                reason
+                or (
+                    f"selected {selected_evidence.kind} evidence {selected_evidence.id}"
+                    if selected_evidence is not None
+                    else intent.operation
+                )
+            ),
         )
         return ReviewCommandResult(
             applied=True,

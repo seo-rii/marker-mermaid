@@ -182,6 +182,23 @@ def build_review_workspace_assets(
             <input id="add-edge-reason" maxlength="4096" required>
             <button id="add-edge" type="submit">Add edge</button>
           </form>
+          <form id="evidence-label-form">
+            <h3>Use source-backed label</h3>
+            <label for="evidence-label-node">Explicit node</label>
+            <select id="evidence-label-node" required
+              aria-describedby="evidence-label-help evidence-label-status"></select>
+            <label for="evidence-label-select">Linked evidence</label>
+            <select id="evidence-label-select" required
+              aria-describedby="evidence-label-help evidence-label-status"></select>
+            <p id="evidence-label-help" class="muted">
+              Only a uniquely linked, single-line OCR or PDF vector-text observation can replace
+              the node label. The server derives the label from provenance; browser text is never
+              submitted as authority.
+            </p>
+            <p id="evidence-label-status" class="muted" role="status" aria-live="polite"
+              tabindex="-1">No eligible source label selected.</p>
+            <button id="apply-evidence-label" type="submit" disabled>Use source label</button>
+          </form>
           <form id="delete-node-form">
             <h3>Delete node</h3>
             <label for="node-select">Explicit node</label>
@@ -311,7 +328,12 @@ figcaption, label { font-weight: 650; }
   fill: rgb(54 162 235 / .12); stroke: #087dbd; stroke-width: 2;
   vector-effect: non-scaling-stroke;
 }
-.evidence-box:hover, .evidence-box:focus { fill: rgb(255 159 64 / .25); stroke: #e26f00; }
+.evidence-box.eligible { cursor: pointer; }
+.evidence-box:not(.eligible) { pointer-events: none; }
+.evidence-box:hover, .evidence-box:focus, .evidence-box.selected {
+  fill: rgb(255 159 64 / .25); stroke: #e26f00;
+}
+.evidence-box.selected { stroke-width: 3; }
 .node-box {
   fill: transparent; stroke: #7453c6; stroke-width: 2; stroke-dasharray: 6 3;
   vector-effect: non-scaling-stroke; cursor: pointer;
@@ -354,8 +376,10 @@ textarea {
 #structure-operations { border: 1px solid GrayText; padding: 0 1rem 1rem; margin-block: 1rem; }
 .structure-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
 .structure-grid form {
-  display: grid; grid-template-columns: max-content 1fr; gap: .6rem; align-items: center;
+  display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .6rem;
+  align-items: center; min-width: 0;
 }
+.structure-grid input, .structure-grid select { min-width: 0; width: 100%; }
 .structure-grid h3, .structure-grid p { grid-column: 1 / -1; }
 .structure-grid button { justify-self: end; grid-column: 2; }
 .bbox-fields {
@@ -429,6 +453,10 @@ REVIEW_JAVASCRIPT = r"""
     deleteEdge: byId("delete-edge"), deleteNode: byId("delete-node"),
     addEdge: byId("add-edge"), addEdgeSource: byId("add-edge-source"),
     addEdgeTarget: byId("add-edge-target"), addEdgeReason: byId("add-edge-reason"),
+    evidenceLabelNode: byId("evidence-label-node"),
+    evidenceLabel: byId("evidence-label-select"),
+    evidenceLabelStatus: byId("evidence-label-status"),
+    applyEvidenceLabel: byId("apply-evidence-label"),
     groupNodes: byId("group-nodes"), groupNodeSelect: byId("group-node-select"),
     groupLabel: byId("group-label"), groupStatus: byId("group-selection-status"),
     deleteGroup: byId("delete-group"), deleteGroupSelect: byId("delete-group-select"),
@@ -720,6 +748,67 @@ REVIEW_JAVASCRIPT = r"""
     renderDifference(state.current || {});
   }
 
+  function evidenceLabelChoices(diagram) {
+    const scene = diagram.scene_ir && typeof diagram.scene_ir === "object"
+      ? diagram.scene_ir : {};
+    const nodes = Array.isArray(scene.elements)
+      ? scene.elements.filter((item) => item && typeof item === "object") : [];
+    const evidence = Array.isArray(diagram.provenance)
+      ? diagram.provenance : Object.values(diagram.provenance?.evidence || {});
+    const code = typeof diagram.mermaid_code === "string" ? diagram.mermaid_code : "";
+    const declarationCounts = new Map();
+    if (code.length <= 1000000
+      && /^\s*(?:flowchart|graph)\s+(?:TB|TD|BT|RL|LR)\b/.test(code)) {
+      for (const line of code.split(/\r?\n/)) {
+        const match = line.match(
+          /^\s*([A-Za-z][A-Za-z0-9_-]{0,63})\s*\[\s*"(?:[^"\\]|\\.)*"\s*\]\s*$/,
+        );
+        if (match) declarationCounts.set(match[1], (declarationCounts.get(match[1]) || 0) + 1);
+      }
+    }
+    const evidenceIdCounts = new Map(); const evidenceById = new Map();
+    const nodeIdCounts = new Map();
+    const linkedNodes = new Map();
+    for (const item of evidence) {
+      if (typeof item?.id !== "string" || !item.id) continue;
+      evidenceIdCounts.set(item.id, (evidenceIdCounts.get(item.id) || 0) + 1);
+      if (!evidenceById.has(item.id)) evidenceById.set(item.id, item);
+    }
+    for (const node of nodes) {
+      if (typeof node.id !== "string" || !node.id) continue;
+      nodeIdCounts.set(node.id, (nodeIdCounts.get(node.id) || 0) + 1);
+      for (const evidenceId of Array.isArray(node.evidence_ids) ? node.evidence_ids : []) {
+        if (typeof evidenceId !== "string" || !evidenceId) continue;
+        const links = linkedNodes.get(evidenceId) || [];
+        links.push(node); linkedNodes.set(evidenceId, links);
+      }
+    }
+    const choices = [];
+    for (const node of nodes) {
+      if (typeof node.id !== "string" || nodeIdCounts.get(node.id) !== 1
+        || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(node.id)
+        || declarationCounts.get(node.id) !== 1) continue;
+      const references = Array.isArray(node.evidence_ids) ? node.evidence_ids : [];
+      for (const evidenceId of references) {
+        const item = evidenceById.get(evidenceId);
+        if (!item || evidenceIdCounts.get(evidenceId) !== 1
+          || !["ocr_token", "vector_text"].includes(item.kind)
+          || typeof item.text !== "string") continue;
+        const hasControl = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(item.text);
+        const label = item.text.trim();
+        const links = linkedNodes.get(evidenceId) || [];
+        if (!label || [...label].length > 200 || hasControl
+          || links.length !== 1 || links[0] !== node) continue;
+        const labelKey = ["text", "label", "name"].find(
+          (key) => Object.prototype.hasOwnProperty.call(node, key),
+        );
+        if (labelKey && node[labelKey] === label) continue;
+        choices.push({ id: evidenceId, kind: item.kind, label, nodeId: node.id });
+      }
+    }
+    return choices;
+  }
+
   function renderOverlay(diagram) {
     controls.overlay.replaceChildren();
     const expectedSource = sourceUrl(diagram);
@@ -728,6 +817,9 @@ REVIEW_JAVASCRIPT = r"""
     }
     const evidence = Array.isArray(diagram.provenance)
       ? diagram.provenance : Object.values(diagram.provenance?.evidence || {});
+    const labelChoices = new Map(
+      evidenceLabelChoices(diagram).map((item) => [item.id, item]),
+    );
     const scene = diagram.scene_ir && typeof diagram.scene_ir === "object"
       ? diagram.scene_ir : {};
     const coordinateSpace = text(scene.coordinate_space || "pixels");
@@ -743,6 +835,7 @@ REVIEW_JAVASCRIPT = r"""
       controls.sourceCanvas.hidden = true; return;
     }
     controls.overlay.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    const evidenceRects = [];
     for (const item of evidence) {
       if (!Array.isArray(item?.bbox) || item.bbox.length !== 4) continue;
       const [x0, y0, x1, y1] = item.bbox.map(Number);
@@ -751,12 +844,31 @@ REVIEW_JAVASCRIPT = r"""
       const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
       rect.setAttribute("x", String(x0)); rect.setAttribute("y", String(y0));
       rect.setAttribute("width", String(x1 - x0)); rect.setAttribute("height", String(y1 - y0));
-      rect.setAttribute("class", "evidence-box"); rect.setAttribute("tabindex", "0");
-      rect.setAttribute(
-        "aria-label", `${text(item.kind || "evidence")}: ${text(item.text || item.id)}`,
-      );
+      rect.setAttribute("class", "evidence-box");
+      const choice = labelChoices.get(text(item.id));
+      if (choice) {
+        rect.classList.add("eligible");
+        rect.setAttribute("tabindex", mutationLocked() ? "-1" : "0");
+        rect.setAttribute("role", "button");
+        rect.setAttribute("aria-disabled", mutationLocked() ? "true" : "false");
+        rect.setAttribute(
+          "aria-label", `Select ${choice.kind} ${choice.id} as the label for node `
+            + `${choice.nodeId}: ${choice.label}`,
+        );
+        const selected = choice.id === controls.evidenceLabel.value
+          && choice.nodeId === controls.evidenceLabelNode.value;
+        rect.setAttribute("aria-pressed", selected ? "true" : "false");
+        if (selected) {
+          rect.classList.add("selected");
+        }
+      } else {
+        rect.setAttribute("tabindex", "0");
+        rect.setAttribute(
+          "aria-label", `${text(item.kind || "evidence")}: ${text(item.text || item.id)}`,
+        );
+      }
       rect.dataset.evidenceId = text(item.id);
-      controls.overlay.append(rect);
+      evidenceRects.push(rect);
     }
     const elements = Array.isArray(scene.elements) ? scene.elements : [];
     for (const item of elements) {
@@ -768,11 +880,15 @@ REVIEW_JAVASCRIPT = r"""
       rect.setAttribute("x", String(x0)); rect.setAttribute("y", String(y0));
       rect.setAttribute("width", String(x1 - x0)); rect.setAttribute("height", String(y1 - y0));
       rect.setAttribute("class", "node-box"); rect.setAttribute("tabindex", "0");
+      rect.setAttribute("role", "button");
       rect.setAttribute("aria-label", `node ${text(item.id)}: ${text(item.text || "unlabelled")}`);
       rect.dataset.nodeId = text(item.id);
-      if (text(item.id) === controls.node.value) rect.classList.add("selected");
+      const selected = text(item.id) === controls.node.value;
+      rect.setAttribute("aria-pressed", selected ? "true" : "false");
+      if (selected) rect.classList.add("selected");
       controls.overlay.append(rect);
     }
+    for (const rect of evidenceRects) controls.overlay.append(rect);
     controls.sourceCanvas.hidden = false;
   }
 
@@ -882,6 +998,7 @@ REVIEW_JAVASCRIPT = r"""
       ? ir.groups.filter((item) => item?.id && Array.isArray(item?.member_ids)) : [];
     const selectedNode = controls.node.value;
     const selectedEdge = controls.edge.value;
+    const selectedEvidence = controls.evidenceLabel.value;
     const selectedGroupNodes = new Set(
       [...controls.groupNodeSelect.selectedOptions].map((option) => option.value),
     );
@@ -889,6 +1006,27 @@ REVIEW_JAVASCRIPT = r"""
       controls.node, nodes, selectedNode,
       (item) => `${text(item.id)} · ${text(item.text || item.role || "node")}`,
     );
+    replaceOptions(
+      controls.evidenceLabelNode, nodes, controls.node.value,
+      (item) => `${text(item.id)} · ${text(item.text || item.role || "node")}`,
+    );
+    const labelChoices = evidenceLabelChoices(diagram).filter(
+      (item) => item.nodeId === controls.evidenceLabelNode.value,
+    );
+    replaceOptions(
+      controls.evidenceLabel, labelChoices, selectedEvidence,
+      (item) => `${item.kind} · ${item.id} · ${item.label}`,
+    );
+    const selectedLabelChoice = labelChoices.find(
+      (item) => item.id === controls.evidenceLabel.value,
+    );
+    controls.evidenceLabelStatus.textContent = selectedLabelChoice
+      ? `Ready to use ${selectedLabelChoice.kind} evidence ${selectedLabelChoice.id}: `
+        + selectedLabelChoice.label
+      : (controls.evidenceLabelNode.value
+        ? `No eligible linked OCR or vector-text label for node `
+          + `${controls.evidenceLabelNode.value}.`
+        : "No explicit node is available for source-backed relabelling.");
     for (const select of [
       controls.edgeSource, controls.edgeTarget, controls.addEdgeSource, controls.addEdgeTarget,
     ]) {
@@ -938,6 +1076,9 @@ REVIEW_JAVASCRIPT = r"""
     const locked = mutationLocked();
     const unavailable = locked || !nodes.length;
     controls.node.disabled = unavailable; controls.deleteNode.disabled = unavailable;
+    controls.evidenceLabelNode.disabled = unavailable;
+    controls.evidenceLabel.disabled = locked || !labelChoices.length;
+    controls.applyEvidenceLabel.disabled = locked || !selectedLabelChoice;
     controls.edge.disabled = locked || !relations.length;
     controls.edgeSource.disabled = unavailable; controls.edgeTarget.disabled = unavailable;
     controls.reconnect.disabled = locked || !relations.length || !nodes.length;
@@ -1202,22 +1343,56 @@ REVIEW_JAVASCRIPT = r"""
   controls.diffOpacity.addEventListener("input", () => renderDifference(state.current || {}));
   function selectOverlayNode(nodeId) {
     controls.node.value = text(nodeId);
+    controls.evidenceLabelNode.value = text(nodeId);
     renderStructure(state.current || {}); renderOverlay(state.current || {});
   }
+  function selectOverlayEvidence(evidenceId) {
+    if (mutationLocked()) return;
+    const choice = evidenceLabelChoices(state.current || {}).find(
+      (item) => item.id === text(evidenceId),
+    );
+    if (!choice) {
+      showMessage(
+        "This observation is not a uniquely linked, safe OCR or vector-text label.", true,
+      );
+      return;
+    }
+    controls.node.value = choice.nodeId;
+    controls.evidenceLabelNode.value = choice.nodeId;
+    renderStructure(state.current || {});
+    controls.evidenceLabel.value = choice.id;
+    renderStructure(state.current || {}); renderOverlay(state.current || {});
+    renderLayout(state.current || {}); controls.evidenceLabel.focus();
+  }
   controls.overlay.addEventListener("click", (event) => {
+    const evidence = event.target.closest("[data-evidence-id]");
+    if (evidence) { selectOverlayEvidence(evidence.dataset.evidenceId); return; }
     const node = event.target.closest("[data-node-id]");
     if (!node) return;
     selectOverlayNode(node.dataset.nodeId);
   });
   controls.overlay.addEventListener("keydown", (event) => {
     if (!['Enter', ' '].includes(event.key)) return;
+    const evidence = event.target.closest("[data-evidence-id]");
+    if (evidence) {
+      event.preventDefault(); selectOverlayEvidence(evidence.dataset.evidenceId); return;
+    }
     const node = event.target.closest("[data-node-id]");
     if (!node) return;
     event.preventDefault(); selectOverlayNode(node.dataset.nodeId);
   });
   controls.node.addEventListener("change", () => {
+    controls.evidenceLabelNode.value = controls.node.value;
     renderStructure(state.current || {}); renderOverlay(state.current || {});
     renderLayout(state.current || {});
+  });
+  controls.evidenceLabelNode.addEventListener("change", () => {
+    controls.node.value = controls.evidenceLabelNode.value;
+    renderStructure(state.current || {}); renderOverlay(state.current || {});
+    renderLayout(state.current || {});
+  });
+  controls.evidenceLabel.addEventListener("change", () => {
+    renderStructure(state.current || {}); renderOverlay(state.current || {});
   });
   controls.edge.addEventListener("change", () => {
     renderStructure(state.current || {}); renderLayout(state.current || {});
@@ -1515,6 +1690,25 @@ REVIEW_JAVASCRIPT = r"""
         target_id: controls.addEdgeTarget.value }, reason },
       "Edge added.",
     );
+  });
+  byId("evidence-label-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const nodeId = controls.evidenceLabelNode.value;
+    const evidenceId = controls.evidenceLabel.value;
+    const choice = evidenceLabelChoices(state.current || {}).find(
+      (item) => item.nodeId === nodeId && item.id === evidenceId,
+    );
+    if (!choice) {
+      showMessage("Select an eligible source-backed label for this node.", true); return;
+    }
+    const saved = await perform(
+      route("/operations"),
+      { operation: {
+        operation: "relabel_node_from_evidence", node_id: nodeId, evidence_id: evidenceId,
+      } },
+      "Node relabelled from source evidence.",
+    );
+    if (saved) controls.evidenceLabelStatus.focus();
   });
   byId("group-nodes-form").addEventListener("submit", async (event) => {
     event.preventDefault();

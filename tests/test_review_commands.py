@@ -36,6 +36,13 @@ def flowchart() -> str:
     )
 
 
+def evidence_scene_ir(evidence_id: str = "ocr:api/18") -> dict:
+    ir = scene_ir()
+    for element in ir["elements"]:
+        element["evidence_ids"] = [evidence_id] if element["id"] == "API" else []
+    return ir
+
+
 def test_spec_korean_reverse_edge_updates_ir_and_mermaid_transactionally() -> None:
     result = apply_review_command(
         "DB에서 API로 가는 화살표를 반대로 바꿔 줘.",
@@ -184,6 +191,221 @@ def test_label_is_escaped_without_becoming_mermaid_syntax() -> None:
 
     assert result.applied
     assert 'API["Approved \\"locally\\""]' in result.mermaid_code
+
+
+def test_structured_evidence_relabel_preserves_observation_and_literal_text() -> None:
+    for kind in ("ocr_token", "vector_text"):
+        evidence_id = f"{kind}:api/18"
+        provenance = [
+            {
+                "id": evidence_id,
+                "kind": kind,
+                "bbox": [20, 0, 30, 10],
+                "text": '  승인입니다. "확정" \\A  ',
+                "font_weight": None,
+                "score": 0.94,
+                "source_block_ids": ["block-1"],
+            }
+        ]
+
+        result = apply_review_operation(
+            {
+                "operation": "relabel_node_from_evidence",
+                "node_id": "API",
+                "evidence_id": evidence_id,
+            },
+            ir=evidence_scene_ir(evidence_id),
+            mermaid_code=flowchart(),
+            provenance=provenance,
+        )
+
+        assert result.applied
+        assert result.ir["elements"][1]["text"] == '승인입니다. "확정" \\A'
+        assert result.ir["elements"][1]["evidence_ids"] == [evidence_id]
+        assert 'API["승인입니다. \\"확정\\" \\\\A"]' in result.mermaid_code
+        assert result.provenance == provenance
+        assert not result.provenance_changed
+        assert result.history_entry.operation == "relabel_node_from_evidence"
+        assert result.history_entry.target == "API"
+        assert result.history_entry.before == {"text": "API"}
+        assert result.history_entry.after == {
+            "text": '승인입니다. "확정" \\A',
+            "evidence_id": evidence_id,
+        }
+        assert result.history_entry.reason == f"selected {kind} evidence {evidence_id}"
+
+
+def test_structured_evidence_relabel_rejects_untrusted_or_ambiguous_input_atomically() -> None:
+    evidence_id = "ocr:api/18"
+    valid_evidence = {
+        "id": evidence_id,
+        "kind": "ocr_token",
+        "bbox": [20, 0, 30, 10],
+        "text": "결제 승인",
+        "score": 0.9,
+        "source_block_ids": [],
+    }
+    cases = [
+        (
+            {
+                "operation": "relabel_node_from_evidence",
+                "node_id": "API",
+                "evidence_id": evidence_id,
+                "label": "client supplied",
+            },
+            evidence_scene_ir(evidence_id),
+            [valid_evidence],
+            "invalid_operation",
+        ),
+        (
+            {
+                "operation": "relabel_node_from_evidence",
+                "node_id": "API",
+                "evidence_id": evidence_id,
+            },
+            scene_ir(),
+            [valid_evidence],
+            "unresolved_reference",
+        ),
+        (
+            {
+                "operation": "relabel_node_from_evidence",
+                "node_id": "API",
+                "evidence_id": evidence_id,
+            },
+            evidence_scene_ir(evidence_id),
+            [],
+            "unresolved_reference",
+        ),
+        (
+            {
+                "operation": "relabel_node_from_evidence",
+                "node_id": "API",
+                "evidence_id": evidence_id,
+            },
+            evidence_scene_ir(evidence_id),
+            [{**valid_evidence, "kind": "vlm_observation"}],
+            "invalid_evidence",
+        ),
+    ]
+    shared = evidence_scene_ir(evidence_id)
+    shared["elements"][0]["evidence_ids"] = [evidence_id]
+    cases.append(
+        (
+            {
+                "operation": "relabel_node_from_evidence",
+                "node_id": "API",
+                "evidence_id": evidence_id,
+            },
+            shared,
+            [valid_evidence],
+            "ambiguous_reference",
+        )
+    )
+    duplicated_link = evidence_scene_ir(evidence_id)
+    duplicated_link["elements"][1]["evidence_ids"].append(evidence_id)
+    cases.append(
+        (
+            {
+                "operation": "relabel_node_from_evidence",
+                "node_id": "API",
+                "evidence_id": evidence_id,
+            },
+            duplicated_link,
+            [valid_evidence],
+            "ambiguous_reference",
+        )
+    )
+
+    for operation, ir, provenance, error_code in cases:
+        original_ir = deepcopy(ir)
+        original_code = flowchart()
+        result = apply_review_operation(
+            operation,
+            ir=ir,
+            mermaid_code=original_code,
+            provenance=provenance,
+        )
+        assert not result.applied
+        assert result.error_code == error_code
+        assert result.ir == original_ir
+        assert result.mermaid_code == original_code
+        assert ir == original_ir
+
+
+def test_structured_evidence_relabel_rejects_unsafe_text_noop_and_ambiguous_code() -> None:
+    evidence_id = "ocr:api/18"
+    for text in (
+        None,
+        "   ",
+        "x" * 201,
+        "line\nbreak",
+        "line\u2028break",
+        "zero\u200bwidth",
+        "lone\ud800surrogate",
+    ):
+        original_ir = evidence_scene_ir(evidence_id)
+        result = apply_review_operation(
+            {
+                "operation": "relabel_node_from_evidence",
+                "node_id": "API",
+                "evidence_id": evidence_id,
+            },
+            ir=original_ir,
+            mermaid_code=flowchart(),
+            provenance=[
+                {
+                    "id": evidence_id,
+                    "kind": "ocr_token",
+                    "text": text,
+                    "source_block_ids": [],
+                }
+            ],
+        )
+        assert not result.applied
+        assert result.error_code == "invalid_label"
+        assert result.ir == original_ir
+        assert result.mermaid_code == flowchart()
+
+    no_change = apply_review_operation(
+        {
+            "operation": "relabel_node_from_evidence",
+            "node_id": "API",
+            "evidence_id": evidence_id,
+        },
+        ir=evidence_scene_ir(evidence_id),
+        mermaid_code=flowchart(),
+        provenance=[
+            {
+                "id": evidence_id,
+                "kind": "vector_text",
+                "text": "API",
+                "source_block_ids": [],
+            }
+        ],
+    )
+    duplicate_code = apply_review_operation(
+        {
+            "operation": "relabel_node_from_evidence",
+            "node_id": "API",
+            "evidence_id": evidence_id,
+        },
+        ir=evidence_scene_ir(evidence_id),
+        mermaid_code=flowchart() + '    API["duplicate"]\n',
+        provenance=[
+            {
+                "id": evidence_id,
+                "kind": "vector_text",
+                "text": "결제 승인",
+                "source_block_ids": [],
+            }
+        ],
+    )
+
+    assert not no_change.applied
+    assert no_change.error_code == "no_change"
+    assert not duplicate_code.applied
+    assert duplicate_code.error_code == "ambiguous_reference"
 
 
 def test_structured_reconnect_uses_relation_id_and_updates_both_artifacts() -> None:

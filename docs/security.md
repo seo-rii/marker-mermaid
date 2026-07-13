@@ -83,9 +83,10 @@ request identity와 일치한 load만 Scene-coordinate overlay를 다시 표시�
 함께 기록합니다. Review validator를 구성하지 않은 API embedding은 승인할 수 없습니다.
 
 구조 연산 API는 자연어 command와 분리된 closed discriminated schema를 사용합니다. 현재
-source-anchored node 추가, edge 재연결, node 삭제와 advisory node 이동만 허용합니다. 기존 IR relation/node와 독립 Mermaid
-line이 정확히 대응하지 않거나 group, style, chained/labeled edge 같은 추가 참조가 있으면 mutation 전에 거부합니다. optimistic revision은
-operation을 IR에 해석하기 전과 실제 commit lock 안에서 모두 검사합니다. node 추가는 safe ID/label,
+source-backed node label 선택·추가·삭제, edge 추가·재연결·삭제, group 생성·삭제와 advisory node 이동만
+허용합니다. 기존 IR relation/node와 독립 Mermaid line이 정확히 대응하지 않거나 group, style,
+chained/labeled edge 같은 추가 참조가 있으면 mutation 전에 거부합니다. optimistic revision은 operation을
+IR에 해석하기 전과 실제 commit lock 안에서 모두 검사합니다. node 추가는 safe ID/label,
 reason, positive bbox, explicit Scene canvas bounds를 요구하며 client가 evidence ID/kind/score/source를
 정하지 못하게 서버가 revision 기반 `user_edit` evidence를 생성합니다. 이동 payload는 현재 Scene node
 ID와 finite/non-boolean `0..1` center만 허용하며 bbox/style/URL/evidence field를 받을 수 없습니다.
@@ -148,6 +149,15 @@ manifest hash가 있으면 먼저 검증한 뒤 정적 provenance digest를 고�
 editor는 provenance replacement switch를 노출하지 않으며 trusted structured operation만 명시적으로
 교체할 수 있습니다. replacement를 포함한 모든 review commit은 Scene element/relation의
 `evidence_ids`가 current provenance의 고유 ID 집합에 포함되는지도 검사합니다.
+
+provenance 기반 node relabel payload는 `node_id`와 `evidence_id`만 허용합니다. optimistic
+version/digest를 확인한 current bundle에서 서버가 evidence text를 해석하므로 client는 label, evidence
+kind/score/bbox 또는 provenance replacement를 주입할 수 없습니다. 선택 evidence는 고유한
+`ocr_token`/`vector_text`이고 target node에 정확히 한 번, 다른 node에는 연결되지 않아야 합니다. text는
+control/format/surrogate/line-separator가 없는 200자 이하 single-line이어야 하며, 기존 provenance와 node
+`evidence_ids`를 수정하지 않은 채 target, before/after label과 선택 ID를 user audit에 남깁니다. 결과
+code는 다른 edit와 같은 strict scanner, parse/render, SVG 검사와 commit-lock optimistic 재검사를
+통과해야 합니다.
 
 VLM/fixture JSON에는 Scene/IR 개수·깊이·문자·point·ID 상한과 finite-number 검사를 적용하며 sidecar
 JSON은 비표준 `NaN`/Infinity를 허용하지 않습니다. Marker preview image도 dimension 8,192와 5천만

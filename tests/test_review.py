@@ -674,6 +674,77 @@ def test_group_command_persists_member_bbox_union_through_scene_schema(tmp_path)
     assert group["bbox"] == [0.0, 0.0, 30.0, 10.0]
 
 
+def test_evidence_relabel_is_revisioned_audited_stale_safe_and_undoable(tmp_path):
+    diagram_path = make_bundle(tmp_path)
+    (diagram_path / "final.mmd").write_text(
+        'flowchart LR\n  A["Old label"]\n  B["B"]\n  A --> B\n', encoding="utf-8"
+    )
+    scene = json.loads((diagram_path / "scene-ir.json").read_text(encoding="utf-8"))
+    scene["elements"][0]["text"] = "Old label"
+    scene["elements"][0]["evidence_ids"] = ["e1"]
+    scene["elements"][1]["text"] = "B"
+    scene["elements"][1]["evidence_ids"] = []
+    (diagram_path / "scene-ir.json").write_text(json.dumps(scene), encoding="utf-8")
+    (diagram_path / "provenance.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "e1",
+                    "kind": "ocr_token",
+                    "bbox": [0, 0, 10, 10],
+                    "text": "결제 승인입니다.",
+                    "score": 0.93,
+                    "source_block_ids": ["source-a"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with running_server(tmp_path) as (base, store):
+        baseline = store.load_bundle("diagram-a")
+        provenance_before = [item.model_dump(mode="json") for item in baseline.provenance]
+        payload = {
+            **expected(baseline),
+            "operation": {
+                "operation": "relabel_node_from_evidence",
+                "node_id": "A",
+                "evidence_id": "e1",
+            },
+        }
+        relabelled, _ = post_json(f"{base}/api/diagrams/diagram-a/operations", payload)
+        with pytest.raises(urllib.error.HTTPError) as stale:
+            post_json(f"{base}/api/diagrams/diagram-a/operations", payload)
+        current = store.load_bundle("diagram-a")
+        undone, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/history",
+            {**expected(current), "action": "undo"},
+        )
+        current = store.load_bundle("diagram-a")
+        redone, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/history",
+            {**expected(current), "action": "redo"},
+        )
+
+    diagram = relabelled["diagram"]
+    assert diagram["scene_ir"]["elements"][0]["text"] == "결제 승인입니다."
+    assert diagram["scene_ir"]["elements"][0]["evidence_ids"] == ["e1"]
+    assert 'A["결제 승인입니다."]' in diagram["mermaid_code"]
+    assert diagram["provenance"] == provenance_before
+    assert stale.value.code == HTTPStatus.CONFLICT
+    assert undone["diagram"]["scene_ir"]["elements"][0]["text"] == "Old label"
+    assert 'A["Old label"]' in undone["diagram"]["mermaid_code"]
+    assert undone["diagram"]["provenance"] == provenance_before
+    assert redone["diagram"]["scene_ir"]["elements"][0]["text"] == "결제 승인입니다."
+    assert redone["diagram"]["provenance"] == provenance_before
+    entries = json.loads((diagram_path / "review-history.json").read_text(encoding="utf-8"))
+    relabel = next(entry for entry in entries if entry["operation"] == "relabel_node_from_evidence")
+    assert relabel["target"] == "A"
+    assert relabel["before"] == {"text": "Old label"}
+    assert relabel["after"] == {"text": "결제 승인입니다.", "evidence_id": "e1"}
+    assert relabel["reason"] == "selected ocr_token evidence e1"
+
+
 def test_structured_group_is_validated_rendered_audited_and_preserves_source_state(tmp_path):
     diagram_path = make_bundle(tmp_path)
     (diagram_path / "final.mmd").write_text(

@@ -74,7 +74,7 @@ audit entry는 디스크에서 삭제하지 않습니다. UI는 restore 전에 �
 
 workspace의 `Validated structure operations`는 자유 형식 JSON 편집보다 작은 동기화 경계를
 제공합니다. 원본 overlay에서 node bbox를 클릭하거나 ID select를 사용해 entity를 선택할 수 있습니다.
-현재 지원 연산은 다음 여덟 가지입니다.
+현재 지원 연산은 다음 아홉 가지입니다.
 
 원본 image와 provenance SVG는 stage 전체가 아니라 image가 실제로 차지하는 shrink-to-fit canvas를
 공유합니다. normalized Scene은 `0 0 1 1`, pixel Scene은 유효한 `canvas_size`, 크기가 없는 pixel
@@ -89,6 +89,12 @@ request identity를 사용하므로 늦게 도착한 이전 load가 현재 bbox�
   revision 기반 `user_edit` evidence ID를 생성하고 node `evidence_ids`, provenance snapshot, quoted
   rectangle Mermaid declaration을 한 transaction으로 추가합니다. UI의 네 bbox field는 Mermaid render
   위치가 아니라 원본 overlay와 같은 Scene coordinate입니다.
+- `relabel_node_from_evidence`: stable node ID와 그 node에 이미 연결된 provenance evidence ID만 받습니다.
+  evidence는 provenance에서 고유하고 정확히 한 Scene node에 한 번 연결된 `ocr_token` 또는 `vector_text`여야
+  합니다. client는 label, kind, score, bbox를 보내지 않으며 서버가 현재 digest에 묶인 evidence text에서
+  trim 외의 언어적 수정을 하지 않고 200자 이하 single-line label을 도출합니다. Scene text와 정확히 하나의
+  quoted rectangle Mermaid declaration만 함께 바꾸고 기존 provenance와 `evidence_ids`는 그대로 유지하며,
+  선택한 evidence ID를 구조화 audit에 기록합니다.
 - `reconnect_edge`: stable relation ID와 새 source/target node ID를 지정합니다. Scene IR relation과
   독립적인 Mermaid edge line이 정확히 1:1로 대응할 때만 connector를 보존하며 양쪽을 함께 바꿉니다.
 - `add_edge`: 두 explicit node ID와 필수 evidence note만 받습니다. client는 relation/evidence ID, label,
@@ -121,6 +127,12 @@ request identity를 사용하므로 늦게 도착한 이전 load가 현재 bbox�
 요청을 현재 IR에 해석하기 전에 version/digest를 확인하고, 저장 시 lock 안에서 다시 확인합니다. 성공한
 결과는 full Scene schema와 strict Mermaid parse/render를 통과한 뒤에만 하나의 revision으로 저장되며,
 실패하면 IR, code, render, history 중 어느 것도 바뀌지 않습니다.
+
+`Use source-backed label` form은 선택한 node에 위 계약으로 유일하게 연결된 OCR/vector evidence만 원래
+`evidence_ids` 순서대로 표시합니다. provenance bbox는 pointer와 Enter/Space로 선택할 수 있고 form 선택과
+overlay highlight가 동기화됩니다. bbox가 없는 text evidence도 select에서는 사용할 수 있습니다. 공유되거나
+잘못된 종류·빈 text·현재 label과 같은 evidence는 mutation 후보가 되지 않으며, browser filter와 무관하게
+서버가 같은 linkage와 text 계약을 다시 검사합니다.
 
 edge add/delete 전에는 기존 Scene relation의 ordered endpoint multiset과 Mermaid의 지원되는 plain edge
 multiset 전체가 1:1인지 확인합니다. `--o`, `--x`, bidirectional, labeled, chained 등 지원하지 않는 edge
