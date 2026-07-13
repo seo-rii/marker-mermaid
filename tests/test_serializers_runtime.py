@@ -21,6 +21,7 @@ CASES = [
             "title": "Flow",
             "nodes": [{"id": "A", "label": "Start"}, {"id": "B", "label": "End"}],
             "edges": [{"source": "A", "target": "B"}],
+            "groups": [{"id": "phase", "label": "Phase", "member_ids": ["A", "B"]}],
         }
     ),
     serialize_swimlane(
@@ -76,6 +77,10 @@ def test_bpmn_swimlane_is_explicit_flowchart_fallback():
     code = CASES[1]
     assert code.startswith("flowchart")
     assert "subgraph user" in code
+
+
+def test_flowchart_groups_are_emitted_as_subgraphs():
+    assert 'subgraph phase["Phase"]' in CASES[0]
 
 
 @pytest.mark.integration

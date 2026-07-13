@@ -49,6 +49,7 @@
 - Provenance-backed Review edge creation and exact-mapped deletion with global topology preflight.
 - Exact-mapped Review group deletion that preserves member nodes, edges, provenance, and layout.
 - Trusted-geometry-backed typed Flowchart direction reversal and unlabeled missing-edge repair with shared source-block attribution and collision revocation.
+- Shared deterministic Flowchart group emission plans with validated flat subgraphs and generated SceneGroup reconstruction.
 
 ### Changed
 

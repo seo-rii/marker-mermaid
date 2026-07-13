@@ -45,6 +45,17 @@ State/Class/ER serializer는 provenance 없는 구조를 문법적으로 만들 
 endpoint, 추측 cardinality, ER의 identifying flag 누락도 `SerializationError`입니다. Requirement/Block과
 fallback serializer 역시 unknown relation endpoint를 임의 node로 만들지 않습니다.
 
+Flowchart `groups`는 명시적 `id`, label, non-empty `member_ids`가 있는 flat/disjoint group만 portable
+`subgraph`로 방출합니다. 공용 emission plan이 source node/group ID를 한 번만 정규화하고 serializer와
+generated Scene adapter가 emitted node/group/relation/member ID까지 같은 mapping으로 사용합니다. Unknown
+member, duplicate source node, overlapping membership, nested intent, normalized node/group collision과 Scene
+node/group/member/ID cap 초과와 non-scalar/oversized group label은 주석으로 손실시키거나 추측하지 않고
+`SerializationError`로 거부합니다.
+Group이 없을 때의 Mermaid output은 기존과 byte-identical합니다. Swimlane/BPMN도 lane을 같은 공용 plan
+입력으로 준비해 한 번만 Flowchart serialization하며, missing node ID fallback과 bidirectional edge를 포함한
+실제 subgraph membership을 generated `SceneGroup`에 보존합니다. Top-level `groups`는 lane topology에 섞지
+않고 lane에서 nested intent를 발견하면 거부합니다. 이 단계는 group style을 복원하지 않습니다.
+
 validation 이후 Mermaid runtime이 보고한 diagram type도 `runtime_diagram_type`에 저장합니다. deterministic
 typed serializer의 declared emitted type과 runtime type이 다르면 render-valid 후보로 취급하지 않습니다.
 direct Mermaid는 실제 runtime type으로 재분류하고 type-fitness를 0으로 두어 검토 경고를 유지합니다.

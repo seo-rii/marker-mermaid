@@ -11,7 +11,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from marker_mermaid.models import DiagramSceneIR, SceneElement, SceneRelation
+from marker_mermaid.flowchart_structure import (
+    FlowchartStructureError,
+    FlowchartStructurePlan,
+    plan_flowchart_structure,
+    prepare_swimlane_structure,
+)
+from marker_mermaid.models import DiagramSceneIR, SceneElement, SceneGroup, SceneRelation
 
 
 def _hierarchy_records(
@@ -65,17 +71,20 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
 
     node_records: list[dict[str, Any]] = []
     edge_records: list[dict[str, Any]] = []
+    group_records: list[dict[str, Any]] = []
+    flowchart_structure: FlowchartStructurePlan | None = None
     if diagram_type in {"flowchart", "generic_network"}:
         node_records = list(ir.get("nodes") or [])
         edge_records = list(ir.get("edges") or [])
+        group_records = list(ir.get("groups") or [])
     elif diagram_type in {"swimlane", "bpmn"}:
-        node_records = [
-            node
-            for lane in ir.get("lanes") or []
-            if isinstance(lane, dict)
-            for node in lane.get("nodes") or []
-        ]
+        try:
+            swimlane_structure = prepare_swimlane_structure(ir.get("lanes"))
+        except FlowchartStructureError:
+            return None
+        node_records = list(swimlane_structure.nodes)
         edge_records = list(ir.get("edges") or [])
+        group_records = list(swimlane_structure.groups)
     elif diagram_type == "architecture":
         node_records = list(ir.get("services") or [])
         edge_records = list(ir.get("edges") or [])
@@ -204,12 +213,22 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
     else:
         return None
 
+    if diagram_type in {"flowchart", "generic_network", "swimlane", "bpmn"}:
+        try:
+            flowchart_structure = plan_flowchart_structure(node_records, group_records)
+        except FlowchartStructureError:
+            return None
+
     elements: list[SceneElement] = []
     known_ids: set[str] = set()
     for index, node in enumerate(node_records, start=1):
         if not isinstance(node, dict):
             continue
-        node_id = str(node.get("id") or f"N{index}")
+        node_id = (
+            flowchart_structure.nodes[index - 1].emitted_id
+            if flowchart_structure is not None
+            else str(node.get("id") or f"N{index}")
+        )
         if node_id in known_ids:
             continue
         bbox = _bbox(node.get("bbox"))
@@ -240,11 +259,18 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
         "data_flow",
         "unknown",
     }
+    emitted_id_by_source = (
+        {node.source_id: node.emitted_id for node in flowchart_structure.nodes}
+        if flowchart_structure is not None
+        else {}
+    )
     for index, edge in enumerate(edge_records, start=1):
         if not isinstance(edge, dict):
             continue
-        source = str(edge.get("source") or "")
-        target = str(edge.get("target") or "")
+        raw_source = str(edge.get("source") or "")
+        raw_target = str(edge.get("target") or "")
+        source = emitted_id_by_source.get(raw_source, raw_source)
+        target = emitted_id_by_source.get(raw_target, raw_target)
         if source not in known_ids or target not in known_ids:
             continue
         semantic_relation = str(edge.get("semantic_relation") or "unknown")
@@ -265,12 +291,51 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
                 evidence_ids=list(edge.get("evidence_ids") or []),
             )
         )
+    groups: list[SceneGroup] = []
+    known_group_ids: set[str] = set()
+    grouped_members: set[str] = set()
+    elements_by_id = {element.id: element for element in elements}
+    planned_groups = flowchart_structure.groups if flowchart_structure is not None else ()
+    group_record_by_id = {
+        str(group.get("id")): group
+        for group in group_records
+        if isinstance(group, dict) and group.get("id") is not None
+    }
+    for group in planned_groups:
+        group_record = group_record_by_id.get(group.source_id, {})
+        group_id = group.emitted_id
+        member_ids = list(group.member_emitted_ids)
+        if group_id in known_group_ids or grouped_members.intersection(member_ids):
+            return None
+        explicit_bbox = group_record.get("bbox")
+        if isinstance(explicit_bbox, list | tuple) and len(explicit_bbox) == 4:
+            bbox = _bbox(explicit_bbox)
+        else:
+            member_boxes = [elements_by_id[member_id].bbox for member_id in member_ids]
+            bbox = (
+                min(item[0] for item in member_boxes),
+                min(item[1] for item in member_boxes),
+                max(item[2] for item in member_boxes),
+                max(item[3] for item in member_boxes),
+            )
+        groups.append(
+            SceneGroup(
+                id=group_id,
+                role=str(group_record.get("role") or "subgraph"),
+                label=str(group.label),
+                bbox=bbox,
+                member_ids=member_ids,
+            )
+        )
+        known_group_ids.add(group_id)
+        grouped_members.update(member_ids)
     direction = ir.get("direction", "unknown")
     if direction not in {"TB", "BT", "LR", "RL", "radial", "timeline", "unknown"}:
         direction = "unknown"
     return DiagramSceneIR(
         elements=elements,
         relations=relations,
+        groups=groups,
         reading_direction=direction,
         diagram_type_candidates=[diagram_type],
         coordinate_space="pixels",

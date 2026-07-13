@@ -38,6 +38,7 @@ flowchart TB
 | `fusion.py` | vector/geometry/OCR/VLM Scene IR와 후보의 결정적 병합 |
 | `views.py` | type-aware thumbnail/edge/threshold/overlay와 source-resolution tile 생성 |
 | `engines.py` | Marker BaseService adapter와 offline fixture engine |
+| `flowchart_structure.py` | node/group ID와 flat disjoint subgraph membership의 공용 emission plan |
 | `serializers*.py`, `serialization.py` | software/chart typed IR, requested/emitted type와 fallback 계약 |
 | `ast_repair.py` | 의미를 추가하지 않는 bounded lexical/structural repair와 AST adapter seam |
 | `semantic_repair.py` | exact text와 고신뢰 line/arrow 근거가 있는 typed flowchart label·directed-edge 교정 |
@@ -47,7 +48,7 @@ flowchart TB
 | `scoring.py` | OCR/numeric score, available-weight aggregation, 게시 결정 |
 | `quality.py` | edge/arrow/layout/path 구조 점수와 unavailable 판정 |
 | `evaluation.py` | hash-bound corpus manifest와 고정 MMX-001 release gate/report 집계 |
-| `candidate_scene.py` | typed serializer가 실제 방출한 구조를 평가 Scene으로 변환 |
+| `candidate_scene.py` | typed serializer가 실제 방출한 node/relation/subgraph 구조를 평가 Scene으로 변환 |
 | `accessibility.py` | requested type 기반 bounded 설명과 emitted grammar 지원 판정 |
 | `pipeline.py` | budget, failure isolation, selection, 개선 시에만 repair 채택 |
 | `marker_integration.py` | processor 순서, Marker OCR provenance, 전용 renderer/converter |

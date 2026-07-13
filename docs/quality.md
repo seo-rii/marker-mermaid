@@ -13,8 +13,11 @@
 | `layout_similarity` | node 쌍의 좌/우·상/하 상대 순서 | 2개 미만 정렬, explicit generated position 없음 |
 | `path_consistency` | 명시적 방향 root→terminal simple path multiset F1 | root/terminal 없음, cycle, path budget 초과 |
 
-node 정렬은 같은 ID를 먼저 사용하고, 그다음 중복되지 않는 NFKC/casefold label만 사용합니다. geometry로
-node를 맞추지 않으므로 layout metric이 자신의 가정을 검증하는 순환을 피합니다. edge topology는 방향을
+node 정렬은 같은 ID, collision-free portable emitted-ID alias 순서로 사용하고, 그다음 중복되지 않는
+NFKC/casefold label만 사용합니다. normalized ID collision은 alias로 강제 정렬하지 않습니다. 방출 ID가
+다른 raw source ID와 우연히 같아지는 collision cluster는 raw exact-ID provenance도 부여하지 않고 unique
+label/evidence 같은 독립 근거가 있을 때만 정렬합니다. Geometry로 node를 맞추지 않으므로 layout metric이
+자신의 가정을 검증하는 순환을 피합니다. edge topology는 방향을
 무시하고 방향 오류는 arrow metric이 별도로 측정합니다.
 
 typed IR은 serializer가 실제 방출하는 node/edge 구조로 다시 변환합니다. bbox가 IR에 명시되지 않으면

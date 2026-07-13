@@ -20,7 +20,7 @@
 | structured Marker VLM | 구현 | enabled-type root contract prompt/validation과 bounded response schema adapter |
 | Direct Mermaid | 구현 | extended/maximal, 동일 hard gate |
 | Fusion engine | 구현 | source-explicit precedence, spatial match, label/edge/type/provenance consensus |
-| Flowchart | 구현 | typed serializer + real render fixture |
+| Flowchart | 구현 | typed serializer, validated flat/disjoint group→subgraph emission과 SceneGroup round-trip + real render fixture |
 | Architecture | 구현 | `architecture-beta` serializer + real render fixture |
 | Sequence | 구현 | typed serializer + real render fixture |
 | Mindmap | 구현 | typed serializer; Mermaid 11.16 accessibility 제한 문서화 |
@@ -32,7 +32,7 @@
 | Phase 5 special types | 구현 | Packet/Ishikawa/TreeView native+runtime fallback, Wardley/Cynefin/Railroad native, EventModeling/ZenUML fallback |
 | Organization/Data Lineage | 구현 | TreeView/Flowchart portable fallback과 endpoint 검증 |
 | AST repair/mermaid-ast | 기반 | pre-validation bounded repair, event/history, AST adapter seam; mermaid-ast package adapter 후속 |
-| style recovery | 기반 | Flowchart node fill/border, vector-backed bold label와 edge color/style 구현; group/lane/chart series 후속 |
+| style recovery | 기반 | Flowchart node fill/border, vector-backed bold label와 edge color/style 구현; group/lane 구조 target은 구현, trusted color attribution과 chart series 후속 |
 | OCR recall | 구현 | Unicode token coverage |
 | numeric consistency | 구현 | source에 존재하는 숫자만 비교 |
 | edge agreement | 구현 | aligned topology F1, 불가 시 source/render edge IoU fallback |

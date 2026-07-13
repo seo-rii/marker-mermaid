@@ -18,6 +18,10 @@ from marker_mermaid.accessibility import (
 from marker_mermaid.ast_repair import DeterministicMermaidRepair
 from marker_mermaid.candidate_scene import typed_ir_to_scene
 from marker_mermaid.config import MermaidConfig, Mode
+from marker_mermaid.flowchart_structure import (
+    ambiguous_portable_ids,
+    unique_portable_id_aliases,
+)
 from marker_mermaid.fusion import FusionEngine, FusionInput
 from marker_mermaid.geometry import GeometryEngine
 from marker_mermaid.models import (
@@ -186,7 +190,8 @@ def _generated_node_provenance_score(
 
     Typed serializers do not always copy evidence IDs into their emitted IR.  In that
     case a generated node may inherit attribution from a source node with the same ID,
-    or from one unique normalized label match.  Ambiguous label matches never count.
+    one collision-free portable emitted-ID alias, or one unique normalized label match.
+    Ambiguous ID aliases and label matches never count.
     """
 
     if generated_scene is None or not generated_scene.elements:
@@ -194,6 +199,17 @@ def _generated_node_provenance_score(
     known = {item.id for item in evidence}
     source_by_id = {
         element.id: element for element in (source_scene.elements if source_scene else [])
+    }
+    ambiguous_source_ids, ambiguous_emitted_ids = ambiguous_portable_ids(list(source_by_id))
+    safe_source_by_id = {
+        source_id: element
+        for source_id, element in source_by_id.items()
+        if source_id not in ambiguous_source_ids
+        and source_id not in ambiguous_emitted_ids
+    }
+    source_by_portable_id = {
+        emitted_id: source_by_id[source_id]
+        for emitted_id, source_id in unique_portable_id_aliases(list(source_by_id)).items()
     }
     source_by_label: dict[str, list] = {}
     for element in source_by_id.values():
@@ -206,7 +222,9 @@ def _generated_node_provenance_score(
         if known.intersection(element.evidence_ids):
             supported += 1
             continue
-        source_element = source_by_id.get(element.id)
+        source_element = safe_source_by_id.get(element.id) or source_by_portable_id.get(
+            element.id
+        )
         if source_element is None:
             matches = source_by_label.get(_normalized_label(element.text), [])
             source_element = matches[0] if len(matches) == 1 else None

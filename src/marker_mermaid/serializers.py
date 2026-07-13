@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
@@ -13,6 +12,12 @@ from marker_mermaid.accessibility import (
     resolve_accessibility,
     supports_accessibility_directives,
 )
+from marker_mermaid.flowchart_structure import (
+    FlowchartStructureError,
+    plan_flowchart_structure,
+    portable_identifier,
+    prepare_swimlane_structure,
+)
 from marker_mermaid.models import DiagramSceneIR
 from marker_mermaid.serialization import SerializationResult, registry_from_string_serializers
 
@@ -22,12 +27,7 @@ class SerializationError(ValueError):
 
 
 def _identifier(value: str, fallback: str = "node") -> str:
-    normalized = re.sub(r"[^A-Za-z0-9_]", "_", value).strip("_")
-    if not normalized:
-        normalized = fallback
-    if normalized[0].isdigit():
-        normalized = f"n_{normalized}"
-    return normalized
+    return portable_identifier(value, fallback)
 
 
 def _text(value: Any) -> str:
@@ -56,7 +56,11 @@ def serialize_flowchart(ir: dict[str, Any], *, experimental: bool = False) -> st
         f"flowchart {direction}",
         *_accessibility(ir, experimental, diagram_type="flowchart"),
     ]
-    ids: set[str] = set()
+    groups = ir.get("groups", [])
+    try:
+        structure = plan_flowchart_structure(nodes, groups)
+    except FlowchartStructureError as exc:
+        raise SerializationError(str(exc)) from exc
     id_map: dict[str, str] = {}
     shapes = {
         "round": ('(["', '"])'),
@@ -75,17 +79,10 @@ def serialize_flowchart(ir: dict[str, Any], *, experimental: bool = False) -> st
         "cylinder": '")]',
         "subroutine": '"]]',
     }
-    for index, node in enumerate(nodes, start=1):
-        if not isinstance(node, dict):
-            raise SerializationError("flowchart nodes must be objects")
-        source_id = str(node.get("id") or f"N{index}")
-        node_id = _identifier(source_id, f"N{index}")
-        suffix = 2
-        base = node_id
-        while node_id in ids:
-            node_id = f"{base}_{suffix}"
-            suffix += 1
-        ids.add(node_id)
+    node_declarations: list[tuple[str, str, str]] = []
+    for node, placement in zip(nodes, structure.nodes, strict=True):
+        source_id = placement.source_id
+        node_id = placement.emitted_id
         id_map[source_id] = node_id
         label = _text(node.get("label") or node.get("text") or "[unreadable]")
         shape = str(node.get("shape") or "rectangle").lower()
@@ -94,7 +91,28 @@ def serialize_flowchart(ir: dict[str, Any], *, experimental: bool = False) -> st
         else:
             start = shapes.get(shape, '["')
             end = shape_ends.get(shape, '"]')
-        lines.append(f"    {node_id}{start}{label}{end}")
+        node_declarations.append(
+            (source_id, node_id, f"    {node_id}{start}{label}{end}")
+        )
+
+    grouped_source_ids = {
+        member for group in structure.groups for member in group.member_source_ids
+    }
+
+    declaration_by_source = {
+        source_id: line for source_id, _node_id, line in node_declarations
+    }
+    for group in structure.groups:
+        lines.append(f'    subgraph {group.emitted_id}["{_text(group.label)}"]')
+        lines.extend(
+            f"    {declaration_by_source[member]}" for member in group.member_source_ids
+        )
+        lines.append("    end")
+    lines.extend(
+        line
+        for source_id, _node_id, line in node_declarations
+        if source_id not in grouped_source_ids
+    )
     for edge in edges:
         if not isinstance(edge, dict):
             continue
@@ -108,45 +126,25 @@ def serialize_flowchart(ir: dict[str, Any], *, experimental: bool = False) -> st
         label = edge.get("label")
         connector = f"-->|{_text(label)}|" if label else arrow
         lines.append(f"    {source} {connector} {target}")
-    groups = ir.get("groups", [])
-    if groups:
-        lines.append("    %% Groups are retained in typed IR; nested layout requires review.")
     return "\n".join(lines) + "\n"
 
 
 def serialize_swimlane(ir: dict[str, Any], *, experimental: bool = False) -> str:
     lanes = ir.get("lanes")
-    if not isinstance(lanes, list) or not lanes:
-        raise SerializationError("swimlane IR requires lanes")
-    flat_nodes: list[dict[str, Any]] = []
-    for lane in lanes:
-        flat_nodes.extend(lane.get("nodes", []))
+    try:
+        structure = prepare_swimlane_structure(lanes)
+    except FlowchartStructureError as exc:
+        raise SerializationError(str(exc)) from exc
     accessibility = resolve_accessibility(ir, "swimlane", experimental=experimental)
     flow_ir = {
         **ir,
         "acc_title": accessibility.title,
         "acc_description": accessibility.description,
-        "nodes": flat_nodes,
+        "nodes": list(structure.nodes),
         "edges": ir.get("edges", []),
+        "groups": list(structure.groups),
     }
-    base = serialize_flowchart(flow_ir, experimental=experimental).splitlines()
-    declaration = base[:3]
-    node_lines = {
-        re.match(r"\s+([A-Za-z0-9_]+)", line).group(1): line
-        for line in base[len(declaration) :]
-        if re.match(r"\s+([A-Za-z0-9_]+)[\[({]", line)
-    }
-    output = declaration
-    for index, lane in enumerate(lanes, start=1):
-        lane_id = _identifier(str(lane.get("id") or f"lane_{index}"))
-        output.append(f'    subgraph {lane_id}["{_text(lane.get("label") or lane_id)}"]')
-        for node in lane.get("nodes", []):
-            node_id = _identifier(str(node.get("id")))
-            if node_id in node_lines:
-                output.append("    " + node_lines[node_id])
-        output.append("    end")
-    output.extend(line for line in base[len(declaration) :] if "-->" in line or "-.->" in line)
-    return "\n".join(output) + "\n"
+    return serialize_flowchart(flow_ir, experimental=experimental)
 
 
 def serialize_sequence(ir: dict[str, Any], *, experimental: bool = False) -> str:

@@ -79,6 +79,43 @@ def test_alignment_uses_unique_labels_after_ids() -> None:
     assert alignment.unmatched_generated_ids == ("Y", "Z")
 
 
+def test_alignment_uses_collision_free_portable_emitted_id_aliases() -> None:
+    source = DiagramSceneIR(
+        elements=[
+            _element("logical-node", "Original", (0, 0, 1, 1)),
+            _element("other", "Other", (2, 0, 3, 1)),
+        ]
+    )
+    generated = DiagramSceneIR(
+        elements=[
+            _element("logical_node", "Changed", (0, 0, 1, 1)),
+            _element("other", "Other", (2, 0, 3, 1)),
+        ]
+    )
+
+    alignment = align_scene_elements(source, generated)
+
+    assert alignment.generated_to_source["logical_node"] == "logical-node"
+
+    collision_source = DiagramSceneIR(
+        elements=[
+            _element("A-B", "First", (0, 0, 1, 1)),
+            _element("A_B", "Second", (2, 0, 3, 1)),
+        ]
+    )
+    collision_generated = DiagramSceneIR(
+        elements=[
+            _element("A_B", "Changed", (0, 0, 1, 1)),
+            _element("A_B_2", "Changed too", (2, 0, 3, 1)),
+        ]
+    )
+
+    collision = align_scene_elements(collision_source, collision_generated)
+
+    assert "A_B" not in collision.generated_to_source
+    assert "A_B_2" in collision.unmatched_generated_ids
+
+
 def test_edge_topology_ignores_direction_but_detects_missing_edge() -> None:
     source = _linear_scene()
     generated = DiagramSceneIR(

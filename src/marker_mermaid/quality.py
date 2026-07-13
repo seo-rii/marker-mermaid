@@ -7,9 +7,9 @@ structure cannot be established.  In particular, missing arrows are not
 silently interpreted as ``source -> target`` and cyclic graphs without a root
 are not assigned an arbitrary path score.
 
-Element correspondence uses identical IDs first, then unique normalized text
-labels.  Geometry is compared through relative ordering, so translation and
-uniform or non-uniform scaling do not affect the layout score.
+Element correspondence uses identical IDs, collision-free portable emitted-ID aliases,
+then unique normalized text labels. Geometry is compared through relative ordering, so
+translation and uniform or non-uniform scaling do not affect the layout score.
 """
 
 from __future__ import annotations
@@ -21,6 +21,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import combinations
 
+from marker_mermaid.flowchart_structure import (
+    ambiguous_portable_ids,
+    unique_portable_id_aliases,
+)
 from marker_mermaid.models import DiagramSceneIR, MetricResult, SceneElement, SceneRelation
 
 
@@ -34,7 +38,7 @@ class SceneAlignment:
 
 
 def align_scene_elements(source: DiagramSceneIR, generated: DiagramSceneIR) -> SceneAlignment:
-    """Align elements by stable ID and then by unique, non-empty label.
+    """Align by stable/emitted ID and then by unique, non-empty label.
 
     Ambiguous duplicate labels are intentionally left unmatched.  Geometry is
     not used for matching because doing so would make the layout metric partly
@@ -43,7 +47,26 @@ def align_scene_elements(source: DiagramSceneIR, generated: DiagramSceneIR) -> S
 
     source_ids = {element.id for element in source.elements}
     generated_ids = {element.id for element in generated.elements}
-    mapping = {element_id: element_id for element_id in source_ids & generated_ids}
+    ambiguous_source_ids, ambiguous_emitted_ids = ambiguous_portable_ids(
+        [element.id for element in source.elements]
+    )
+    mapping = {
+        element_id: element_id
+        for element_id in source_ids & generated_ids
+        if element_id not in ambiguous_source_ids
+        and element_id not in ambiguous_emitted_ids
+    }
+
+    unmatched_source = source_ids - set(mapping.values())
+    unmatched_generated = generated_ids - set(mapping)
+
+    portable_source_ids = unique_portable_id_aliases(
+        [element.id for element in source.elements if element.id in unmatched_source]
+    )
+    for generated_id in tuple(unmatched_generated):
+        source_id = portable_source_ids.get(generated_id)
+        if source_id is not None:
+            mapping[generated_id] = source_id
 
     unmatched_source = source_ids - set(mapping.values())
     unmatched_generated = generated_ids - set(mapping)

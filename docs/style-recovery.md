@@ -40,4 +40,7 @@ evidence ID, match method는 `recover_style` repair history에 저장됩니다.
 
 외부 Markdown consumer는 Mermaid version/theme에 따라 색과 선을 다르게 보일 수 있어 compatibility
 warning을 기록합니다. normal weight를 강제로 지정하는 style, group background, lane/series color는 아직
-공통 evidence와 안전한 serializer mapping이 연결되지 않은 후속 범위입니다.
+공통 evidence와 안전한 style attribution이 연결되지 않은 후속 범위입니다. Typed Flowchart의 explicit
+flat/disjoint group과 Swimlane/BPMN lane은 이미 검증된 subgraph 및 generated `SceneGroup`으로 round-trip되어
+style target 구조는 준비됐습니다. 후속 group/lane color는 이 target에 trusted vector contour evidence를
+1:1로 연결해야 하며, VLM이 self-declare한 색을 직접 사용하지 않습니다.
