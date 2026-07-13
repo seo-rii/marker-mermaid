@@ -31,6 +31,7 @@ from marker_mermaid.models import (
     MermaidCandidate,
     ReconstructionResult,
     RepairEvent,
+    SceneElement,
     TypedIRCandidate,
     VisualEvidence,
 )
@@ -352,6 +353,7 @@ class ReconstructionPipeline:
         }
         known_evidence_ids = {item.id for item in all_evidence}
         trusted_bold_evidence: dict[str, VisualEvidence] = {}
+        trusted_group_style_evidence: dict[str, SceneElement] = {}
         try:
             views, view_warnings = build_visual_priors(image, all_evidence, self.config)
         except Exception as exc:
@@ -400,6 +402,7 @@ class ReconstructionPipeline:
                 fusion_source = "other"
             trusted_vector_engine = type(engine) is VectorPrimitiveEngine
             trusted_geometry_engine = type(engine) is GeometryEngine
+            new_trusted_vector_contours: set[str] = set()
             relation_counts: dict[frozenset[str], int] = {}
             if observation.scene_ir is not None:
                 for relation in observation.scene_ir.relations:
@@ -458,6 +461,8 @@ class ReconstructionPipeline:
                         and source_block_id_set.intersection(item.source_block_ids)
                     ):
                         context.trusted_label_evidence_ids.add(item.id)
+                    if trusted_vector_engine and item.kind == "contour":
+                        new_trusted_vector_contours.add(item.id)
                     if (
                         trusted_vector_engine
                         and item.kind == "vector_text"
@@ -468,6 +473,8 @@ class ReconstructionPipeline:
                     # A provenance ID collision cannot authorize style even
                     # when the duplicate payload happens to be identical.
                     trusted_bold_evidence.pop(item.id, None)
+                    trusted_group_style_evidence.pop(item.id, None)
+                    new_trusted_vector_contours.discard(item.id)
                     context.trusted_label_evidence_ids.discard(item.id)
                     context.trusted_connector_evidence_ids.discard(item.id)
                     context.trusted_connector_relations = {
@@ -475,6 +482,19 @@ class ReconstructionPipeline:
                         for relation in context.trusted_connector_relations
                         if item.id not in relation[2]
                     }
+            if trusted_vector_engine and observation.scene_ir is not None:
+                for element in observation.scene_ir.elements:
+                    if not (
+                        element.fill_color
+                        or element.border_color
+                        or element.border_style in {"dashed", "thick"}
+                    ):
+                        continue
+                    for evidence_id in element.evidence_ids:
+                        if evidence_id in new_trusted_vector_contours:
+                            trusted_group_style_evidence[evidence_id] = element.model_copy(
+                                deep=True
+                            )
             if trusted_geometry_engine and observation.scene_ir is not None:
                 for relation in observation.scene_ir.relations:
                     if (
@@ -685,6 +705,7 @@ class ReconstructionPipeline:
                     security_profile=self.config.security_profile,
                     known_evidence_ids={item.id for item in all_evidence},
                     known_bold_evidence=trusted_bold_evidence,
+                    known_group_style_evidence=trusted_group_style_evidence,
                 )
                 styled_code = style_recovery.code
                 style_repair_history = (
@@ -696,6 +717,7 @@ class ReconstructionPipeline:
                             details={
                                 "element_ids": list(style_recovery.applied_element_ids),
                                 "link_indexes": list(style_recovery.applied_link_indexes),
+                                "group_ids": list(style_recovery.applied_group_ids),
                                 "attributions": [
                                     {
                                         "source_element_id": item.source_element_id,
@@ -704,6 +726,15 @@ class ReconstructionPipeline:
                                         "match_method": item.match_method,
                                     }
                                     for item in style_recovery.attributions
+                                ],
+                                "group_attributions": [
+                                    {
+                                        "source_group_id": item.source_group_id,
+                                        "emitted_group_id": item.emitted_group_id,
+                                        "evidence_ids": list(item.evidence_ids),
+                                        "match_method": item.match_method,
+                                    }
+                                    for item in style_recovery.group_attributions
                                 ],
                                 "stage": "pre_validation",
                             },

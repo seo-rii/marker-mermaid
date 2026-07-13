@@ -49,7 +49,7 @@ fixture도 trusted Marker/Vector provenance가 없으면 자동 교정하지 않
 | `max_repair_iterations` | 모드별 | 개선 후보 repair 상한 |
 | `enable_fusion` | `true` | 여러 engine observation의 결정적 병합 |
 | `enable_page_detector` | `true` | full-page coverage와 missed structural region proposal |
-| `enable_style_recovery` | `true` | compatibility/security가 허용할 때 style evidence 방출 |
+| `enable_style_recovery` | `true` | compatibility/security가 허용할 때 node/edge/trusted-vector-group style evidence 방출 |
 | `runtime_dir` | cache 자동 탐색 | Node worker와 dependencies 위치 |
 | `render_timeout_seconds` | `20` | candidate당 parse/render 제한 |
 | `max_mermaid_chars` | `50000` | browser 전달 전 source 문자 상한 |

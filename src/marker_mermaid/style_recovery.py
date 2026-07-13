@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from marker_mermaid.config import CompatibilityProfile, SecurityProfile
+from marker_mermaid.flowchart_structure import ambiguous_portable_ids
 from marker_mermaid.models import DiagramSceneIR, SceneElement, VisualEvidence
 
 _HEX_COLOR = re.compile(r"#[0-9a-fA-F]{3,8}\Z")
@@ -33,6 +34,7 @@ _EDGE = re.compile(
     re.MULTILINE,
 )
 _EDGE_OPERATOR = re.compile(r"<-->|-->|-\.->|==>|---|--?>\|")
+_SUBGRAPH_DECLARATION = re.compile(r"^\s*subgraph\s+([A-Za-z_][A-Za-z0-9_]*)\s*\[", re.MULTILINE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,16 +46,26 @@ class StyleAttribution:
 
 
 @dataclass(frozen=True, slots=True)
+class GroupStyleAttribution:
+    source_group_id: str
+    emitted_group_id: str
+    evidence_ids: tuple[str, ...]
+    match_method: str
+
+
+@dataclass(frozen=True, slots=True)
 class StyleRecoveryResult:
     code: str
     applied_element_ids: tuple[str, ...] = ()
     applied_link_indexes: tuple[int, ...] = ()
+    applied_group_ids: tuple[str, ...] = ()
     attributions: tuple[StyleAttribution, ...] = ()
+    group_attributions: tuple[GroupStyleAttribution, ...] = ()
     warnings: tuple[str, ...] = ()
 
     @property
     def changed(self) -> bool:
-        return bool(self.applied_element_ids or self.applied_link_indexes)
+        return bool(self.applied_element_ids or self.applied_link_indexes or self.applied_group_ids)
 
 
 def _identifier(value: str, fallback: str = "node") -> str:
@@ -112,6 +124,9 @@ def _map_elements(
     list[tuple[SceneElement, SceneElement, str, tuple[str, ...]]],
     list[str],
 ]:
+    ambiguous_source_ids, ambiguous_emitted_ids = ambiguous_portable_ids(
+        [element.id for element in source_scene.elements]
+    )
     generated_by_id = {element.id: element for element in generated_scene.elements}
     generated_by_label: dict[str, list[SceneElement]] = {}
     generated_by_evidence: dict[str, list[SceneElement]] = {}
@@ -128,25 +143,27 @@ def _map_elements(
         source_evidence = tuple(sorted(set(source.evidence_ids) & known_evidence_ids))
         source_evidence_set = set(source_evidence)
         exact = generated_by_id.get(source.id)
-        if exact is not None:
-            exact_overlap = tuple(
-                sorted(set(exact.evidence_ids) & source_evidence_set)
-            )
+        if (
+            exact is not None
+            and source.id not in ambiguous_source_ids
+            and exact.id not in ambiguous_emitted_ids
+        ):
+            exact_overlap = tuple(sorted(set(exact.evidence_ids) & source_evidence_set))
             if _normalized_label(source.text) == _normalized_label(exact.text) or exact_overlap:
-                proposals.append(
-                    (source, exact, "exact_id", exact_overlap or source_evidence)
-                )
+                proposals.append((source, exact, "exact_id", exact_overlap or source_evidence))
                 continue
             warnings.append(f"style mapping exact ID content mismatch for {source.id}")
+        elif exact is not None:
+            warnings.append(
+                f"style mapping exact ID has ambiguous normalized identity for {source.id}"
+            )
         evidence_match_by_id: dict[str, SceneElement] = {}
         for evidence_id in source_evidence:
             for candidate in generated_by_evidence.get(evidence_id, ()):  # bounded index lookup
                 evidence_match_by_id[candidate.id] = candidate
         evidence_matches = list(evidence_match_by_id.values())
         if len(evidence_matches) == 1:
-            overlap = tuple(
-                sorted(set(evidence_matches[0].evidence_ids) & set(source_evidence))
-            )
+            overlap = tuple(sorted(set(evidence_matches[0].evidence_ids) & set(source_evidence)))
             proposals.append((source, evidence_matches[0], "evidence_overlap", overlap))
             continue
         if len(evidence_matches) > 1:
@@ -218,6 +235,7 @@ def recover_flowchart_styles(
     security_profile: SecurityProfile,
     known_evidence_ids: set[str] | frozenset[str] = frozenset(),
     known_bold_evidence: Mapping[str, VisualEvidence] | None = None,
+    known_group_style_evidence: Mapping[str, SceneElement] | None = None,
 ) -> StyleRecoveryResult:
     """Append an allowlisted style subset when both product profiles permit it.
 
@@ -225,7 +243,9 @@ def recover_flowchart_styles(
     Unsupported colors remain in Scene IR and are disclosed through warnings.
     """
 
-    if scene is None or not _has_style_evidence(scene):
+    if scene is None or not (
+        _has_style_evidence(scene) or (scene.groups and known_group_style_evidence)
+    ):
         return StyleRecoveryResult(code=code)
     if generated_scene is None:
         return StyleRecoveryResult(
@@ -257,13 +277,18 @@ def recover_flowchart_styles(
         generated_scene,
         set(known_evidence_ids),
     )
+    ambiguous_scene_source_ids, _ambiguous_scene_emitted_ids = ambiguous_portable_ids(
+        [element.id for element in scene.elements]
+    )
     declarations = set(_NODE_DECLARATION.findall(code))
     normalized_sources: dict[str, list[str]] = {}
     for element in generated_scene.elements:
         normalized_sources.setdefault(_identifier(element.id), []).append(element.id)
     lines: list[str] = []
     applied_elements: list[str] = []
+    applied_groups: list[str] = []
     attributions: list[StyleAttribution] = []
+    group_attributions: list[GroupStyleAttribution] = []
     warnings: list[str] = list(mapping_warnings)
     for element, emitted, method, evidence_ids in mappings:
         node_id = _identifier(emitted.id)
@@ -317,13 +342,226 @@ def recover_flowchart_styles(
                 )
             )
 
+    mapped_ids = {source.id: emitted.id for source, emitted, _method, _ids in mappings}
+    used_group_evidence: set[str] = set()
+    trusted_group_styles = dict(known_group_style_evidence or {})
+    total_group_members = sum(len(group.member_ids) for group in scene.groups)
+    group_style_work = len(trusted_group_styles) * (
+        len(scene.groups) + (len(scene.elements) + 1) * total_group_members
+    )
+    if group_style_work > 2_000_000:
+        warnings.append("group style matching exceeded the deterministic work budget")
+        trusted_group_styles = {}
+    source_group_member_counts: dict[tuple[str, ...], int] = {}
+    if scene.groups and trusted_group_styles and scene.coordinate_space != "pixels":
+        warnings.append("group styles require source groups in pixel coordinates")
+    elif scene.groups and trusted_group_styles:
+        emitted_groups_by_members: dict[tuple[str, ...], list] = {}
+        for group in generated_scene.groups:
+            emitted_groups_by_members.setdefault(tuple(sorted(group.member_ids)), []).append(group)
+        group_declaration_counts: dict[str, int] = {}
+        for group_id in _SUBGRAPH_DECLARATION.findall(code):
+            group_declaration_counts[group_id] = group_declaration_counts.get(group_id, 0) + 1
+        source_elements_by_id = {element.id: element for element in scene.elements}
+        for group in scene.groups:
+            if all(member_id in mapped_ids for member_id in group.member_ids):
+                key = tuple(sorted(mapped_ids[member_id] for member_id in group.member_ids))
+                source_group_member_counts[key] = source_group_member_counts.get(key, 0) + 1
+        for source_group in scene.groups:
+            if any(member_id not in mapped_ids for member_id in source_group.member_ids):
+                warnings.append(f"group style could not map every member for {source_group.id}")
+                continue
+            emitted_members = tuple(
+                sorted(mapped_ids[member_id] for member_id in source_group.member_ids)
+            )
+            if source_group_member_counts.get(emitted_members) != 1:
+                warnings.append(f"source group membership was ambiguous for {source_group.id}")
+                continue
+            emitted_group_matches = emitted_groups_by_members.get(emitted_members, [])
+            if len(emitted_group_matches) != 1:
+                warnings.append(f"group style target was ambiguous for {source_group.id}")
+                continue
+            emitted_group = emitted_group_matches[0]
+            if emitted_group.id in declarations:
+                warnings.append(f"group style id collided with a node for {source_group.id}")
+                continue
+            if group_declaration_counts.get(emitted_group.id) != 1:
+                warnings.append(f"group style declaration was unavailable for {source_group.id}")
+                continue
+            trusted_matches: list[tuple[str, SceneElement]] = []
+            group_box = source_group.bbox
+            group_area = max(0.0, group_box[2] - group_box[0]) * max(
+                0.0, group_box[3] - group_box[1]
+            )
+            if group_area == 0:
+                warnings.append(f"group style bbox was empty for {source_group.id}")
+                continue
+            member_centers = [
+                (
+                    (
+                        source_elements_by_id[member_id].bbox[0]
+                        + source_elements_by_id[member_id].bbox[2]
+                    )
+                    / 2,
+                    (
+                        source_elements_by_id[member_id].bbox[1]
+                        + source_elements_by_id[member_id].bbox[3]
+                    )
+                    / 2,
+                )
+                for member_id in source_group.member_ids
+            ]
+            member_boxes = [
+                source_elements_by_id[member_id].bbox for member_id in source_group.member_ids
+            ]
+            member_evidence_ids = {
+                evidence_id
+                for member_id in source_group.member_ids
+                for evidence_id in source_elements_by_id[member_id].evidence_ids
+            }
+            for evidence_id, vector_element in trusted_group_styles.items():
+                if evidence_id in used_group_evidence:
+                    continue
+                if evidence_id not in vector_element.evidence_ids:
+                    continue
+                if evidence_id in member_evidence_ids:
+                    continue
+                vector_box = vector_element.bbox
+                matches_member_geometry = False
+                for member_box in member_boxes:
+                    member_intersection = max(
+                        0.0,
+                        min(vector_box[2], member_box[2]) - max(vector_box[0], member_box[0]),
+                    ) * max(
+                        0.0,
+                        min(vector_box[3], member_box[3]) - max(vector_box[1], member_box[1]),
+                    )
+                    member_area = max(0.0, member_box[2] - member_box[0]) * max(
+                        0.0, member_box[3] - member_box[1]
+                    )
+                    vector_area = max(0.0, vector_box[2] - vector_box[0]) * max(
+                        0.0, vector_box[3] - vector_box[1]
+                    )
+                    member_union = member_area + vector_area - member_intersection
+                    if member_union > 0 and member_intersection / member_union >= 0.8:
+                        matches_member_geometry = True
+                        break
+                if matches_member_geometry:
+                    continue
+                intersection = max(
+                    0.0, min(group_box[2], vector_box[2]) - max(group_box[0], vector_box[0])
+                ) * max(
+                    0.0,
+                    min(group_box[3], vector_box[3]) - max(group_box[1], vector_box[1]),
+                )
+                vector_area = max(0.0, vector_box[2] - vector_box[0]) * max(
+                    0.0, vector_box[3] - vector_box[1]
+                )
+                union = group_area + vector_area - intersection
+                if union <= 0 or intersection / union < 0.8:
+                    continue
+                if not all(
+                    vector_box[0] <= center[0] <= vector_box[2]
+                    and vector_box[1] <= center[1] <= vector_box[3]
+                    for center in member_centers
+                ):
+                    continue
+                outside_inside = False
+                for element in scene.elements:
+                    if element.id in source_group.member_ids:
+                        continue
+                    if evidence_id in element.evidence_ids:
+                        continue
+                    duplicate_member_geometry = False
+                    for member_box in member_boxes:
+                        overlap = max(
+                            0.0,
+                            min(element.bbox[2], member_box[2])
+                            - max(element.bbox[0], member_box[0]),
+                        ) * max(
+                            0.0,
+                            min(element.bbox[3], member_box[3])
+                            - max(element.bbox[1], member_box[1]),
+                        )
+                        element_area = max(0.0, element.bbox[2] - element.bbox[0]) * max(
+                            0.0, element.bbox[3] - element.bbox[1]
+                        )
+                        member_area = max(0.0, member_box[2] - member_box[0]) * max(
+                            0.0, member_box[3] - member_box[1]
+                        )
+                        overlap_union = element_area + member_area - overlap
+                        if overlap_union > 0 and overlap / overlap_union >= 0.8:
+                            duplicate_member_geometry = True
+                            break
+                    if duplicate_member_geometry:
+                        continue
+                    center = (
+                        (element.bbox[0] + element.bbox[2]) / 2,
+                        (element.bbox[1] + element.bbox[3]) / 2,
+                    )
+                    if (
+                        vector_box[0] <= center[0] <= vector_box[2]
+                        and vector_box[1] <= center[1] <= vector_box[3]
+                    ):
+                        outside_inside = True
+                        break
+                if not outside_inside:
+                    trusted_matches.append((evidence_id, vector_element))
+                    if len(trusted_matches) > 1:
+                        break
+            if len(trusted_matches) != 1:
+                if trusted_matches:
+                    warnings.append(
+                        f"group style vector evidence was ambiguous for {source_group.id}"
+                    )
+                continue
+            evidence_id, vector_element = trusted_matches[0]
+            attributes: list[str] = []
+            fill = _color(vector_element.fill_color)
+            border = _color(vector_element.border_color)
+            if fill is not None:
+                attributes.append(f"fill:{fill}")
+            if border is not None:
+                attributes.append(f"stroke:{border}")
+            if vector_element.border_style == "dashed":
+                attributes.append("stroke-dasharray:5 5")
+            elif vector_element.border_style == "thick":
+                attributes.append("stroke-width:3px")
+            elif vector_element.border_style not in {None, "solid"}:
+                warnings.append(
+                    f"unsupported group border style for {source_group.id}: "
+                    f"{vector_element.border_style}"
+                )
+            if vector_element.fill_color and fill is None:
+                warnings.append(
+                    f"unsupported group fill color for {source_group.id}: "
+                    f"{_warning_value(vector_element.fill_color)}"
+                )
+            if vector_element.border_color and border is None:
+                warnings.append(
+                    f"unsupported group border color for {source_group.id}: "
+                    f"{_warning_value(vector_element.border_color)}"
+                )
+            if not attributes:
+                continue
+            lines.append(f"    style {emitted_group.id} {','.join(attributes)}")
+            applied_groups.append(source_group.id)
+            used_group_evidence.add(evidence_id)
+            group_attributions.append(
+                GroupStyleAttribution(
+                    source_group_id=source_group.id,
+                    emitted_group_id=emitted_group.id,
+                    evidence_ids=(evidence_id,),
+                    match_method="exact_members_and_vector_bbox",
+                )
+            )
+
     edge_lines = [line for line in code.splitlines() if _EDGE_OPERATOR.search(line)]
     edge_matches = [_EDGE.fullmatch(line) for line in edge_lines]
     edge_mapping_safe = bool(edge_lines) and all(match is not None for match in edge_matches)
     edge_pairs = [match.groups() for match in edge_matches if match is not None]
     used_edge_indexes: set[int] = set()
     applied_links: list[int] = []
-    mapped_ids = {source.id: emitted.id for source, emitted, _method, _ids in mappings}
     if not edge_mapping_safe and any(
         relation.line_color or relation.line_style in {"dashed", "thick"}
         for relation in scene.relations
@@ -347,7 +585,15 @@ def recover_flowchart_styles(
         mapped_source = mapped_ids.get(relation.source_id)
         mapped_target = mapped_ids.get(relation.target_id)
         if mapped_source is None or mapped_target is None:
-            warnings.append(f"edge style could not map source nodes for {relation.id}")
+            if (
+                relation.source_id in ambiguous_scene_source_ids
+                or relation.target_id in ambiguous_scene_source_ids
+            ):
+                warnings.append(
+                    f"edge style skipped for ambiguous normalized endpoint in {relation.id}"
+                )
+            else:
+                warnings.append(f"edge style could not map source nodes for {relation.id}")
             continue
         normalized_source = _identifier(mapped_source)
         normalized_target = _identifier(mapped_target)
@@ -392,6 +638,8 @@ def recover_flowchart_styles(
         code=styled,
         applied_element_ids=tuple(applied_elements),
         applied_link_indexes=tuple(applied_links),
+        applied_group_ids=tuple(applied_groups),
         attributions=tuple(attributions),
+        group_attributions=tuple(group_attributions),
         warnings=tuple(dict.fromkeys(warnings)),
     )

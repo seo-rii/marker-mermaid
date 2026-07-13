@@ -11,6 +11,7 @@ from marker_mermaid.models import (
     DiagramTypePrediction,
     EngineObservation,
     SceneElement,
+    SceneGroup,
     SceneRelation,
     TypedIRCandidate,
     VisualEvidence,
@@ -68,9 +69,7 @@ def _bold_vector_engine() -> VectorPrimitiveEngine:
         extractor=lambda _source, size: VectorObservation(
             canvas_size=size,
             texts=(VectorText("API", (2, 2, 18, 10), font_weight="bold"),),
-            primitives=(
-                VectorPrimitive(kind="rectangle", bbox=(0, 0, 20, 15), closed=True),
-            ),
+            primitives=(VectorPrimitive(kind="rectangle", bbox=(0, 0, 20, 15), closed=True),),
         )
     )
 
@@ -96,6 +95,49 @@ def _bold_semantic_observation(label: str = "API") -> EngineObservation:
     )
 
 
+def _group_vector_engine() -> VectorPrimitiveEngine:
+    return VectorPrimitiveEngine(
+        extractor=lambda _source, size: VectorObservation(
+            canvas_size=size,
+            primitives=(
+                VectorPrimitive(
+                    kind="rectangle",
+                    bbox=(0, 0, 60, 30),
+                    fill_color="#eef4ff",
+                    stroke_color="#225588",
+                    line_style="thick",
+                    closed=True,
+                ),
+                VectorPrimitive(kind="rectangle", bbox=(5, 5, 20, 20), closed=True),
+                VectorPrimitive(kind="rectangle", bbox=(40, 5, 55, 20), closed=True),
+            ),
+        )
+    )
+
+
+def _group_semantic_observation() -> EngineObservation:
+    return EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[0.9]),
+        scene_ir=_group_scenes(),
+        typed_candidates=[
+            TypedIRCandidate(
+                diagram_type="flowchart",
+                ir={
+                    "nodes": [{"id": "A", "label": "API"}, {"id": "B", "label": "DB"}],
+                    "edges": [],
+                    "groups": [
+                        {
+                            "id": "backend",
+                            "label": "Backend",
+                            "member_ids": ["A", "B"],
+                        }
+                    ],
+                },
+            )
+        ],
+    )
+
+
 def _bold_evidence_registry() -> dict[str, VisualEvidence]:
     return {
         "vector-text-001": VisualEvidence(
@@ -104,6 +146,35 @@ def _bold_evidence_registry() -> dict[str, VisualEvidence]:
             text="API",
             bbox=(0, 0, 10, 10),
             font_weight="bold",
+        )
+    }
+
+
+def _group_scenes():
+    elements = [
+        SceneElement(id="A", role="node", text="API", bbox=(5, 5, 20, 20)),
+        SceneElement(id="B", role="node", text="DB", bbox=(40, 5, 55, 20)),
+    ]
+    group = SceneGroup(
+        id="backend",
+        role="subgraph",
+        label="Backend",
+        bbox=(0, 0, 60, 30),
+        member_ids=["A", "B"],
+    )
+    return DiagramSceneIR(elements=elements, groups=[group], coordinate_space="pixels")
+
+
+def _trusted_group_style_registry():
+    return {
+        "vector-shape-001": SceneElement(
+            id="vector-node-001",
+            role="unknown",
+            bbox=(0, 0, 60, 30),
+            fill_color="#eef4ff",
+            border_color="#225588",
+            border_style="thick",
+            evidence_ids=["vector-shape-001"],
         )
     }
 
@@ -135,6 +206,272 @@ def test_style_only_profile_emits_allowlisted_node_and_link_styles():
     assert "style DB fill:blue,stroke-dasharray:5 5" in result.code
     assert "linkStyle 0 stroke:#445566,stroke-width:3px" in result.code
     assert MermaidSecurityScanner(SecurityProfile.STYLE_ONLY).scan(result.code).safe
+
+
+def test_group_style_requires_exact_members_and_trusted_vector_bbox():
+    source = _group_scenes()
+    generated = _group_scenes()
+    result = recover_flowchart_styles(
+        'flowchart LR\n    subgraph backend["Backend"]\n'
+        '        A["API"]\n        B["DB"]\n    end\n',
+        source,
+        generated,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+        known_group_style_evidence=_trusted_group_style_registry(),
+    )
+
+    assert result.applied_group_ids == ("backend",)
+    assert "style backend fill:#eef4ff,stroke:#225588,stroke-width:3px" in result.code
+    assert result.group_attributions[0].evidence_ids == ("vector-shape-001",)
+    assert result.group_attributions[0].match_method == "exact_members_and_vector_bbox"
+    assert MermaidSecurityScanner(SecurityProfile.STYLE_ONLY).scan(result.code).safe
+
+
+def test_group_style_refuses_untrusted_ambiguous_or_extra_member_geometry():
+    source = _group_scenes()
+    generated = _group_scenes()
+    code = (
+        'flowchart LR\n    subgraph backend["Backend"]\n'
+        '        A["API"]\n        B["DB"]\n    end\n'
+    )
+
+    untrusted = recover_flowchart_styles(
+        code,
+        source,
+        generated,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+    )
+    assert not untrusted.changed
+
+    ambiguous_registry = _trusted_group_style_registry()
+    ambiguous_registry["vector-shape-002"] = next(iter(ambiguous_registry.values())).model_copy(
+        deep=True
+    )
+    ambiguous_registry["vector-shape-002"].evidence_ids = ["vector-shape-002"]
+    ambiguous = recover_flowchart_styles(
+        code,
+        source,
+        generated,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+        known_group_style_evidence=ambiguous_registry,
+    )
+    assert not ambiguous.changed
+
+    source.elements.append(
+        SceneElement(id="outside", role="node", text="Other", bbox=(25, 10, 30, 15))
+    )
+    extra = recover_flowchart_styles(
+        code,
+        source,
+        generated,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+        known_group_style_evidence=_trusted_group_style_registry(),
+    )
+    assert not extra.changed
+
+
+def test_group_style_refuses_duplicate_source_membership_or_subgraph_declaration():
+    source = _group_scenes()
+    generated = _group_scenes()
+    source.groups.append(
+        SceneGroup(
+            id="duplicate",
+            role="subgraph",
+            label="Duplicate",
+            bbox=(0, 0, 60, 30),
+            member_ids=["A", "B"],
+        )
+    )
+    code = (
+        'flowchart LR\n    subgraph backend["Backend"]\n'
+        '        A["API"]\n        B["DB"]\n    end\n'
+    )
+    duplicate_source = recover_flowchart_styles(
+        code,
+        source,
+        generated,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+        known_group_style_evidence=_trusted_group_style_registry(),
+    )
+    assert not duplicate_source.changed
+
+    duplicate_declaration = recover_flowchart_styles(
+        code + '    subgraph backend["Again"]\n    end\n',
+        _group_scenes(),
+        generated,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+        known_group_style_evidence=_trusted_group_style_registry(),
+    )
+    assert not duplicate_declaration.changed
+
+    node_collision = recover_flowchart_styles(
+        code.replace("flowchart LR\n", 'flowchart LR\n    backend["Node"]\n'),
+        _group_scenes(),
+        generated,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+        known_group_style_evidence=_trusted_group_style_registry(),
+    )
+    assert not node_collision.changed
+
+
+def test_group_style_refuses_normalized_member_id_collision():
+    source = DiagramSceneIR(
+        elements=[
+            SceneElement(id="A-B", role="node", text="First", bbox=(5, 5, 15, 15)),
+            SceneElement(id="A_B", role="node", text="Second", bbox=(20, 5, 30, 15)),
+            SceneElement(id="C", role="node", text="Third", bbox=(35, 5, 45, 15)),
+        ],
+        groups=[
+            SceneGroup(
+                id="backend",
+                role="subgraph",
+                label="Backend",
+                bbox=(0, 0, 50, 20),
+                member_ids=["A_B", "C"],
+            )
+        ],
+        coordinate_space="pixels",
+    )
+    generated = DiagramSceneIR(
+        elements=[
+            SceneElement(id="A_B", role="node", text="Unknown 1", bbox=(0, 0, 0, 0)),
+            SceneElement(id="A_B_2", role="node", text="Unknown 2", bbox=(0, 0, 0, 0)),
+            SceneElement(id="C", role="node", text="Third", bbox=(0, 0, 0, 0)),
+        ],
+        groups=[
+            SceneGroup(
+                id="backend",
+                role="subgraph",
+                label="Backend",
+                bbox=(0, 0, 0, 0),
+                member_ids=["A_B", "C"],
+            )
+        ],
+    )
+    registry = {
+        "vector-container": SceneElement(
+            id="vector-container",
+            role="unknown",
+            bbox=(0, 0, 50, 20),
+            fill_color="blue",
+            evidence_ids=["vector-container"],
+        )
+    }
+
+    result = recover_flowchart_styles(
+        'flowchart LR\n    subgraph backend["Backend"]\n'
+        '        A_B["Unknown 1"]\n        C["Third"]\n    end\n',
+        source,
+        generated,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+        known_group_style_evidence=registry,
+    )
+
+    assert not result.changed
+    assert any("ambiguous normalized" in warning for warning in result.warnings)
+
+
+def test_group_style_refuses_member_contour_as_single_member_container():
+    member = SceneElement(
+        id="A",
+        role="node",
+        text="API",
+        bbox=(0, 0, 20, 20),
+        evidence_ids=["member-contour"],
+    )
+    source = DiagramSceneIR(
+        elements=[member],
+        groups=[
+            SceneGroup(
+                id="backend",
+                role="subgraph",
+                label="Backend",
+                bbox=(0, 0, 20, 20),
+                member_ids=["A"],
+            )
+        ],
+        coordinate_space="pixels",
+    )
+    registry = {
+        "member-contour": member.model_copy(
+            update={"fill_color": "red", "border_color": "blue"}, deep=True
+        )
+    }
+
+    result = recover_flowchart_styles(
+        'flowchart LR\n    subgraph backend["Backend"]\n        A["API"]\n    end\n',
+        source,
+        source,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+        known_group_style_evidence=registry,
+    )
+
+    assert not result.changed
+
+
+def test_group_style_work_budget_accounts_for_member_comparisons(monkeypatch):
+    elements = [
+        SceneElement(
+            id=f"N{index}",
+            role="node",
+            text=str(index),
+            bbox=(float(index), 0, float(index + 1), 1),
+        )
+        for index in range(1_500)
+    ]
+    source = DiagramSceneIR(
+        elements=elements,
+        groups=[
+            SceneGroup(
+                id="large",
+                role="subgraph",
+                label="Large",
+                bbox=(0, 0, 1_500, 1),
+                member_ids=[element.id for element in elements],
+            )
+        ],
+        coordinate_space="pixels",
+    )
+    registry = {
+        "vector-container": SceneElement(
+            id="vector-container",
+            role="unknown",
+            bbox=(0, 0, 1_500, 1),
+            fill_color="blue",
+            evidence_ids=["vector-container"],
+        )
+    }
+
+    real_sorted = sorted
+
+    def reject_large_sort(iterable, *args, **kwargs):
+        values = list(iterable)
+        if len(values) > 100:
+            raise AssertionError("group membership was sorted after the work budget failed")
+        return real_sorted(values, *args, **kwargs)
+
+    with monkeypatch.context() as patch_context:
+        patch_context.setattr("builtins.sorted", reject_large_sort)
+        result = recover_flowchart_styles(
+            'flowchart LR\n    subgraph large["Large"]\n    end\n',
+            source,
+            source,
+            compatibility_profile=CompatibilityProfile.STYLE_RICH,
+            security_profile=SecurityProfile.STYLE_ONLY,
+            known_group_style_evidence=registry,
+        )
+
+    assert not result.changed
+    assert any("work budget" in warning for warning in result.warnings)
 
 
 def test_strict_and_portable_basic_keep_style_only_in_scene_ir():
@@ -400,9 +737,7 @@ def test_style_mapping_rejects_exact_id_with_inconsistent_content():
         ]
     )
     generated = DiagramSceneIR(
-        elements=[
-            SceneElement(id="API", role="node", text="Database", bbox=(0, 0, 0, 0))
-        ]
+        elements=[SceneElement(id="API", role="node", text="Database", bbox=(0, 0, 0, 0))]
     )
 
     result = recover_flowchart_styles(
@@ -584,6 +919,67 @@ def test_pipeline_maps_trusted_vector_bold_to_semantic_typed_node(fake_runtime):
     assert attribution["match_method"] == "evidence_overlap"
 
 
+def test_pipeline_maps_trusted_vector_container_style_to_typed_group(fake_runtime):
+    config = MermaidConfig(
+        candidate_count=1,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+    )
+
+    result = ReconstructionPipeline(
+        config,
+        [_group_vector_engine(), JsonFixtureEngine(_group_semantic_observation())],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (60, 30), "white"))
+
+    assert result.selected is not None
+    assert (
+        "style backend fill:#eef4ff,stroke:#225588,stroke-width:3px" in result.selected.mermaid_code
+    )
+    details = result.selected.repair_history[0].details
+    assert details["group_ids"] == ["backend"]
+    assert details["group_attributions"] == [
+        {
+            "source_group_id": "backend",
+            "emitted_group_id": "backend",
+            "evidence_ids": ["vector-shape-001"],
+            "match_method": "exact_members_and_vector_bbox",
+        }
+    ]
+
+
+def test_pipeline_revokes_group_style_trust_on_evidence_id_collision(fake_runtime):
+    spoof = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["unknown"], scores=[1.0]),
+        evidence=[
+            VisualEvidence(
+                id="vector-shape-001",
+                kind="contour",
+                bbox=(0, 0, 60, 30),
+                source_block_ids=["source"],
+            )
+        ],
+    )
+    config = MermaidConfig(
+        candidate_count=1,
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+    )
+
+    result = ReconstructionPipeline(
+        config,
+        [
+            JsonFixtureEngine(spoof),
+            _group_vector_engine(),
+            JsonFixtureEngine(_group_semantic_observation()),
+        ],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (60, 30), "white"))
+
+    assert result.selected is not None
+    assert "style backend" not in result.selected.mermaid_code
+
+
 def test_pipeline_rejects_bold_evidence_id_collision(fake_runtime):
     spoof = EngineObservation(
         prediction=DiagramTypePrediction(candidates=["unknown"], scores=[1.0]),
@@ -657,3 +1053,25 @@ def test_recovered_styles_parse_and_render_in_pinned_mermaid():
     assert outcome.runtime.syntax_valid
     assert outcome.runtime.render_valid, (outcome.runtime.error, outcome.warnings)
     assert "font-weight:bold" in result.code
+
+
+@pytest.mark.integration
+def test_recovered_group_style_parses_and_renders_in_pinned_mermaid():
+    result = recover_flowchart_styles(
+        'flowchart LR\n    subgraph backend["Backend"]\n'
+        '        A["API"]\n        B["DB"]\n    end\n',
+        _group_scenes(),
+        _group_scenes(),
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+        known_group_style_evidence=_trusted_group_style_registry(),
+    )
+    runtime = NodeMermaidRuntime()
+    try:
+        outcome = CandidateValidator(runtime, SecurityProfile.STYLE_ONLY).validate(result.code, 20)
+    finally:
+        runtime.close()
+
+    assert outcome.runtime.syntax_valid
+    assert outcome.runtime.render_valid, (outcome.runtime.error, outcome.warnings)
+    assert "style backend fill:#eef4ff" in result.code
