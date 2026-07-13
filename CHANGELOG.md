@@ -53,6 +53,7 @@
 - Trusted vector-container Flowchart group style recovery with exact membership, bbox, collision, and audit gates.
 - Trusted vector-origin gates and explicit attribution for Flowchart node and edge styles.
 - Publication-aware candidate selection that retains aggregate ordering within the same eligibility class.
+- Bounded online path-consistency search with explicit state/stack exhaustion reporting.
 
 ### Changed
 

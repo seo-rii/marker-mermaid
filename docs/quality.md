@@ -37,7 +37,10 @@ data-lineage, Venn까지 포함하며 typed record의 evidence ID를 보존합�
   evidence coverage proxy입니다. source scene 자체를 후보 precision으로 재사용하지 않습니다. model scorer는 후속입니다.
 - 구조 edge를 평가할 수 없고 render PNG가 있으면 raster edge IoU를 fallback으로 사용합니다.
 
-path enumeration은 기본 10,000개 path에서 중단합니다. budget을 넘은 부분 결과로 점수를 만들지 않습니다.
+path enumeration은 기본 10,000개 completed path와 100,000개 탐색 state/stack에서 중단합니다. Terminal로
+이어지지 않는 cyclic dead branch도 state budget을 소비하므로 simple-path 조합 폭발이 완료 path 수를 우회할
+수 없습니다. Source 또는 generated graph가 path/state/depth budget을 넘으면 부분 결과로 점수를 만들지 않고
+metric 전체를 unavailable로 둡니다.
 표시용 total score와 별도로 non-runtime semantic score를 계산합니다. syntax/render는 hard gate와 total
 score에는 참여하지만 0인 의미 점수를 게시 가능 등급으로 희석할 수 없습니다. `extended`/`maximal`의
 구조 후보는 생성 node provenance가 80% 미만이거나 계산 불가능하면 review 대상으로 둡니다.

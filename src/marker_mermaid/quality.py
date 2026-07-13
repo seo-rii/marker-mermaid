@@ -230,24 +230,28 @@ def path_consistency(
     generated: DiagramSceneIR,
     *,
     max_paths: int = 10_000,
+    max_states: int = 100_000,
     max_depth: int | None = None,
 ) -> MetricResult:
     """Return multiset F1 for explicit directed root-to-terminal paths.
 
     Paths are simple (a node cannot repeat) and must contain at least one edge.
     Explicit arrowheads determine direction.  If enumeration reaches the
-    supplied budget, the metric is unavailable rather than based on a partial
-    path set.
+    supplied path, state, or depth budget, the metric is unavailable rather
+    than based on a partial path set.
     """
 
     if max_paths < 1:
         raise ValueError("max_paths must be positive")
+    if max_states < 1:
+        raise ValueError("max_states must be positive")
     if max_depth is not None and max_depth < 2:
         raise ValueError("max_depth must be at least 2")
 
     source_paths, source_warning = _root_to_terminal_paths(
         source,
         max_paths=max_paths,
+        max_states=max_states,
         max_depth=max_depth,
     )
     if source_warning is not None:
@@ -267,6 +271,7 @@ def path_consistency(
     generated_paths, generated_warning = _root_to_terminal_paths(
         generated,
         max_paths=max_paths,
+        max_states=max_states,
         max_depth=max_depth,
     )
     if generated_warning is not None:
@@ -407,6 +412,7 @@ def _root_to_terminal_paths(
     scene: DiagramSceneIR,
     *,
     max_paths: int,
+    max_states: int,
     max_depth: int | None,
 ) -> tuple[list[tuple[str, ...]], str | None]:
     adjacency = _directed_adjacency(scene)
@@ -424,7 +430,13 @@ def _root_to_terminal_paths(
     depth_limit = max_depth or len(nodes)
     paths: list[tuple[str, ...]] = []
     stack = [(root, (root,)) for root in reversed(roots)]
+    if len(stack) > max_states:
+        return [], f"path enumeration exceeded the {max_states}-state budget"
+    expanded = 0
     while stack:
+        expanded += 1
+        if expanded > max_states:
+            return [], f"path enumeration exceeded the {max_states}-state budget"
         node, path = stack.pop()
         if node in terminals and len(path) >= 2:
             paths.append(path)
@@ -437,6 +449,8 @@ def _root_to_terminal_paths(
             continue
         for target in sorted(adjacency.get(node, ()), reverse=True):
             if target not in path:
+                if expanded + len(stack) >= max_states:
+                    return [], f"path enumeration exceeded the {max_states}-state budget"
                 stack.append((target, (*path, target)))
     return paths, None
 

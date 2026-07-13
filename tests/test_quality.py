@@ -60,6 +60,29 @@ def _linear_scene(*, reverse: bool = False) -> DiagramSceneIR:
     return DiagramSceneIR(elements=elements, relations=relations, canvas_size=(100, 20))
 
 
+def _dead_branch_scene() -> DiagramSceneIR:
+    branch_ids = [f"C{index}" for index in range(6)]
+    elements = [
+        _element("R", "Root", (0, 0, 1, 1)),
+        _element("T", "Terminal", (20, 0, 21, 1)),
+        *[
+            _element(node_id, node_id, (index * 2 + 2, 2, index * 2 + 3, 3))
+            for index, node_id in enumerate(branch_ids)
+        ],
+    ]
+    relations = [
+        _relation("RT", "R", "T"),
+        _relation("RC0", "R", "C0"),
+        *[
+            _relation(f"{source}{target}", source, target)
+            for source in branch_ids
+            for target in branch_ids
+            if source != target
+        ],
+    ]
+    return DiagramSceneIR(elements=elements, relations=relations)
+
+
 def test_alignment_uses_unique_labels_after_ids() -> None:
     source = DiagramSceneIR(
         elements=[_element("A", "Start", (0, 0, 1, 1)), _element("B", "Same", (2, 0, 3, 1))]
@@ -263,6 +286,35 @@ def test_path_consistency_is_unavailable_when_enumeration_budget_is_exceeded() -
 
     assert not result.available
     assert "budget" in (result.warning or "")
+
+
+def test_path_consistency_bounds_search_states_before_dead_branch_expansion() -> None:
+    result = path_consistency(_dead_branch_scene(), _dead_branch_scene(), max_states=10)
+
+    assert not result.available
+    assert "10-state budget" in (result.warning or "")
+
+
+def test_generated_path_state_budget_is_reported_without_partial_score() -> None:
+    source = DiagramSceneIR(
+        elements=[
+            _element("R", "Root", (0, 0, 1, 1)),
+            _element("T", "Terminal", (20, 0, 21, 1)),
+        ],
+        relations=[_relation("RT", "R", "T")],
+    )
+
+    result = path_consistency(source, _dead_branch_scene(), max_states=10)
+
+    assert not result.available
+    assert "generated path enumeration exceeded the 10-state budget" in (
+        result.warning or ""
+    )
+
+
+def test_path_consistency_rejects_nonpositive_state_budget() -> None:
+    with pytest.raises(ValueError, match="max_states must be positive"):
+        path_consistency(_linear_scene(), _linear_scene(), max_states=0)
 
 
 def test_missing_generated_structure_is_a_real_zero_not_unavailable() -> None:
