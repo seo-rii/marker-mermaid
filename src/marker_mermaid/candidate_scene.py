@@ -16,7 +16,11 @@ from typing import Any
 from marker_mermaid.flowchart_structure import (
     FlowchartStructureError,
     FlowchartStructurePlan,
+    MindmapStructureError,
+    SequenceStructureError,
     plan_flowchart_structure,
+    plan_mindmap_nodes,
+    plan_sequence_structure,
     portable_identifier,
     prepare_swimlane_structure,
 )
@@ -87,7 +91,15 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
     group_records: list[dict[str, Any]] = []
     flowchart_structure: FlowchartStructurePlan | None = None
     if diagram_type in {"flowchart", "generic_network"}:
-        node_records = list(ir.get("nodes") or [])
+        node_records = [
+            {
+                **node,
+                "label": node.get("label") or node.get("text") or "[unreadable]",
+            }
+            if isinstance(node, dict)
+            else node
+            for node in ir.get("nodes") or []
+        ]
         edge_records = list(ir.get("edges") or [])
         group_records = list(ir.get("groups") or [])
     elif diagram_type in {"swimlane", "bpmn"}:
@@ -95,11 +107,27 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
             swimlane_structure = prepare_swimlane_structure(ir.get("lanes"))
         except FlowchartStructureError:
             return None
-        node_records = list(swimlane_structure.nodes)
+        node_records = [
+            {
+                **node,
+                "label": node.get("label") or node.get("text") or "[unreadable]",
+            }
+            for node in swimlane_structure.nodes
+        ]
         edge_records = list(ir.get("edges") or [])
         group_records = list(swimlane_structure.groups)
     elif diagram_type == "architecture":
-        node_records = list(ir.get("services") or [])
+        for index, service in enumerate(ir.get("services") or [], start=1):
+            if not isinstance(service, dict):
+                continue
+            source_id = str(service.get("id") or f"S{index}")
+            node_records.append(
+                {
+                    **service,
+                    "id": source_id,
+                    "label": service.get("label") or service.get("name") or source_id,
+                }
+            )
         edge_records = list(ir.get("edges") or [])
     elif diagram_type == "state":
         node_records = list(ir.get("states") or [])
@@ -159,18 +187,54 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
             {**source, **message} for source, message in zip(source_messages, messages, strict=True)
         ]
     elif diagram_type == "sequence":
-        for index, participant in enumerate(ir.get("participants") or [], start=1):
-            if isinstance(participant, str):
-                node_records.append({"id": participant, "label": participant})
-            elif isinstance(participant, dict):
-                node_records.append(
-                    {
-                        **participant,
-                        "id": participant.get("id") or f"P{index}",
-                    }
-                )
-        edge_records = list(ir.get("messages") or [])
-    elif diagram_type in {"mindmap", "treemap", "treeview", "organization"} and isinstance(
+        try:
+            structure = plan_sequence_structure(
+                ir.get("participants"),
+                ir.get("messages", []),
+            )
+        except SequenceStructureError:
+            return None
+        source_participants = list(ir.get("participants") or [])
+        node_records = [
+            {
+                **(source if isinstance(source, dict) else {}),
+                "id": participant.emitted_id,
+                "label": participant.label,
+            }
+            for source, participant in zip(
+                source_participants,
+                structure.participants,
+                strict=True,
+            )
+        ]
+        edge_records = [
+            {
+                **message.source,
+                "id": message.emitted_id,
+                "source": message.source_id,
+                "target": message.target_id,
+            }
+            for message in structure.messages
+        ]
+    elif diagram_type == "mindmap":
+        try:
+            node_plan = plan_mindmap_nodes(ir.get("root"))
+        except MindmapStructureError:
+            return None
+        node_records = [
+            {**node.source, "id": node.emitted_id, "label": node.label} for node in node_plan
+        ]
+        edge_records = [
+            {
+                "source": node.parent_id,
+                "target": node.emitted_id,
+                "semantic_relation": "containment",
+                "evidence_ids": list(node.source.get("evidence_ids") or []),
+            }
+            for node in node_plan
+            if node.parent_id is not None
+        ]
+    elif diagram_type in {"treemap", "treeview", "organization"} and isinstance(
         ir.get("root"), dict
     ):
         node_records, edge_records = _hierarchy_records(ir["root"])
@@ -377,6 +441,20 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
         semantic_relation = str(edge.get("semantic_relation") or "unknown")
         if semantic_relation not in semantic_relations:
             semantic_relation = "unknown"
+        if diagram_type in {"flowchart", "generic_network", "swimlane", "bpmn", "architecture"}:
+            arrow_at_start = bool(edge.get("bidirectional"))
+            arrow_at_end = True
+        elif diagram_type in {"sequence", "zenuml"}:
+            arrow_at_start = False
+            arrow_at_end = True
+        else:
+            arrow_at_start = bool(edge.get("bidirectional") or edge.get("arrow_at_start"))
+            arrow_at_end = bool(edge.get("arrow_at_end", diagram_type not in {"class", "er"}))
+        relation_label = (
+            None
+            if diagram_type == "architecture" or edge.get("label") is None
+            else str(edge.get("label"))
+        )
         relations.append(
             SceneRelation(
                 id=str(edge.get("id") or f"generated-relation-{index}"),
@@ -384,9 +462,9 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
                 target_id=target,
                 relation_type=str(edge.get("relation_type") or "generated_connector"),
                 semantic_relation=semantic_relation,
-                label=str(edge.get("label")) if edge.get("label") is not None else None,
-                arrow_at_start=bool(edge.get("bidirectional") or edge.get("arrow_at_start")),
-                arrow_at_end=bool(edge.get("arrow_at_end", diagram_type not in {"class", "er"})),
+                label=relation_label,
+                arrow_at_start=arrow_at_start,
+                arrow_at_end=arrow_at_end,
                 line_style=str(edge.get("style")) if edge.get("style") else None,
                 confidence=1.0,
                 evidence_ids=list(edge.get("evidence_ids") or []),

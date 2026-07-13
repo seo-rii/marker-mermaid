@@ -2,7 +2,8 @@
 
 Structured VLM은 `diagram_type`만 맞춘 임의 JSON을 내보내지 않습니다. 활성화된 Mermaid 유형마다
 root 필드와 container 종류를 고정한 `TypedIRContract`를 prompt로 받고, 응답은 Pydantic 모델 생성
-시점에 같은 registry로 다시 검사됩니다. serializer의 세부 의미 검사는 그 다음 단계에서 수행합니다.
+시점에 같은 registry로 다시 검사됩니다. Phase 1 유형은 record 내부의 알려진 필드와 recursive container도
+전용 Pydantic model로 검사합니다. serializer의 세부 의미 검사는 그 다음 단계에서 수행합니다.
 
 이 경계는 두 문제를 분리합니다.
 
@@ -13,6 +14,52 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 실패합니다. Prompt에는 현재 `enabled_types`만 들어가므로 비활성 유형의 schema가 token budget을
 소비하지 않습니다. 공통 선택 필드는 `title`, `description`, `acc_title`, `acc_description`,
 `direction`이며 semantic node/relation record에는 prior에서 얻은 `evidence_ids`를 요구합니다.
+
+## Phase 1 중첩 계약
+
+다음 유형은 root container 검사 뒤 strict nested model을 통과해야 합니다.
+
+| 유형 | 검사하는 record 구조 |
+| --- | --- |
+| Flowchart / Generic Network | node, edge, group과 member/evidence list |
+| Swimlane / BPMN | lane, lane 안의 node, top-level edge |
+| Sequence | string 또는 object participant, message |
+| Mindmap | 재귀 root/children hierarchy |
+| Timeline | event와 여러 label을 담는 `events: string[]` |
+| Gantt | section과 task/date/duration field |
+| Architecture | service, group, edge/port field |
+
+알려진 scalar field에는 object/list를 넣을 수 없고, record와 child container의 종류도 고정합니다. `bbox`는
+정확히 네 개의 finite number, `evidence_ids`와 membership은 string list여야 합니다. `extra="allow"`를
+사용하므로 style, geometry, plugin 또는 향후 Mermaid field 같은 미등록 metadata는 삭제하지 않습니다.
+검증 결과 model은 원본 IR을 대체하지 않습니다. 기존 dict를 그대로 serializer, repair, canonical hash,
+sidecar에 전달하므로 coercion이나 field stripping이 일어나지 않습니다.
+
+Prompt의 record 목록은 각 serializer가 실제 출력하는 canonical field만 광고합니다. Nested model은 보존할
+style/compatibility metadata의 알려진 type도 추가로 검사할 수 있으므로 Pydantic field 집합과 prompt 문자열을
+기계적으로 동일하게 만들지는 않습니다. 예를 들어 Architecture `name`과 relation `label`, Sequence participant
+`text`, Flow edge의 raw arrow hint처럼 compatibility metadata의 type도 검사합니다. Architecture `name`은
+`label`의 serializer-visible alias지만 relation `label`, Sequence participant `text`, raw arrow hint는 원
+IR/sidecar에 남아도 node/relation label 또는 구조 방향으로 평가하지 않습니다. 접근성 description에 보존된
+metadata도 OCR 구조 점수에서는 제외합니다.
+
+이 경계는 구조를 확인할 뿐 의미를 추측하지 않습니다. 빈 후보, 읽을 수 없는 label, 누락 label처럼 부분
+복원 placeholder로 처리할 수 있는 입력은 허용합니다. non-empty 조건, ID uniqueness, endpoint/group reference,
+Gantt 날짜와 Mermaid 표현 가능성은 serializer 및 evaluation gate가 계속 판정합니다. Architecture port는
+nested contract에서 `L/R/T/B`만 허용합니다.
+`evidence_ids`도 prompt에서는 필수지만 legacy/partial candidate 호환을 위해 model에서는 선택 사항이며,
+실제 자동 게시 여부는 provenance gate가 결정합니다.
+
+평가 Scene은 serializer-visible fallback을 그대로 사용합니다. label이 없는 Flowchart/Generic Network,
+Swimlane/BPMN, Mindmap node는 내부 ID가 아니라 `[unreadable]`로 기록합니다. Sequence participant는 serializer와
+공유하는 planner가 portable ID 충돌에 suffix를 붙이고, 같은 logical ID가 중복되면 모호한 message mapping을
+거부합니다. 같은 planner가 message container/record 형태와 Scene relation 예산을 검사한 뒤 실제로 해석되는
+message만 serializer와 Scene에 함께 전달하고, raw message ID와 무관한 고유 emitted relation ID를 순서대로
+부여합니다. 따라서 Mermaid에서 합쳐진 actor나 생략된 message를 평가 Scene이 별도 구조로 세지 않습니다.
+
+현재 Marker `response_schema`의 외부 envelope는 여전히 `TypedIRCandidate.ir: dict`입니다. 따라서 이 단계는
+prompt와 응답 후 검증을 중첩 구조까지 강화하지만, 모든 Mermaid 유형을 하나의 discriminated JSON Schema로
+직접 노출하지는 않습니다. 나머지 유형의 전용 model과 envelope-level discriminated schema는 후속 작업입니다.
 
 `flowchart`와 `generic_network` prompt에는 더 좁은 identity 계약이 있습니다. typed `nodes[].id`는 같은
 VLM 응답에서 대응하는 `scene_ir.elements[].id`를 byte-for-byte 재사용해야 하며 rename, normalize 또는

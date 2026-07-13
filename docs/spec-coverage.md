@@ -17,7 +17,7 @@
 | accessibility | 구현 | requested type 기반 title/description 파생, direct revalidation, 비지원 grammar warning/IR 보존 |
 | type-aware visual priors | 구현 | edge/Hough/arrow/OCR/contour/threshold/grayscale, source-resolution tile과 view manifest |
 | color cluster/vector primitive | 구현 | PIL color map, Marker PyMuPDF/duck-typed provider와 page→canvas affine |
-| structured Marker VLM | 구현 | enabled-type root contract prompt/validation과 bounded response schema adapter |
+| structured Marker VLM | 구현 | enabled-type root contract와 Phase 1 nested record Pydantic prompt/후검증, bounded response schema adapter; generic `ir` envelope와 나머지 유형의 discriminated schema는 후속 |
 | Direct Mermaid | 구현 | extended/maximal, 동일 hard gate |
 | Fusion engine | 구현 | source-explicit Scene consensus; prior payload의 bbox/text 정합 source evidence와 owner-local spatial contour, 최소 IoU 0.45, noncolliding provenance를 요구하는 flat Flowchart/Generic Network full/injective node-ID remap, atomic refusal, direction-conflict 전파와 hash-bound mapping/provenance sidecar. nested/non-flow remap은 후속 |
 | Flowchart | 구현 | typed serializer, validated flat/disjoint group→subgraph emission과 SceneGroup round-trip + real render fixture |
@@ -52,8 +52,9 @@
 ## 릴리스 해석
 
 현재 버전은 Phase 1~5 serializer를 제공하는 experimental engineering baseline이지 MMX-001의 모든
-end-to-end 기능 gate를 달성한 production `extended` 릴리스가 아닙니다. 특히 유형 내부 discriminated extraction schema,
-아직 fallback adapter가 없는 experimental grammar, 연구 데이터셋 규모의 실제 corpus와 trusted
+end-to-end 기능 gate를 달성한 production `extended` 릴리스가 아닙니다. 특히 Phase 1 밖 유형 및 generic
+`ir` envelope의 discriminated extraction schema, 아직 fallback adapter가 없는 experimental grammar,
+연구 데이터셋 규모의 실제 corpus와 trusted
 runner 측정이 필요합니다. precision/recall 목표와 유형별 최소 fixture 수량을 판정하는 고정 평가기는
 제공합니다. 자동 게시 hard gate, 원본 보존, candidate failure
 isolation, budget, sidecar/review 가능성은 현재 test 대상으로 삼습니다.

@@ -14,7 +14,11 @@ from marker_mermaid.accessibility import (
 )
 from marker_mermaid.flowchart_structure import (
     FlowchartStructureError,
+    MindmapStructureError,
+    SequenceStructureError,
     plan_flowchart_structure,
+    plan_mindmap_nodes,
+    plan_sequence_structure,
     portable_identifier,
     prepare_swimlane_structure,
 )
@@ -91,22 +95,16 @@ def serialize_flowchart(ir: dict[str, Any], *, experimental: bool = False) -> st
         else:
             start = shapes.get(shape, '["')
             end = shape_ends.get(shape, '"]')
-        node_declarations.append(
-            (source_id, node_id, f"    {node_id}{start}{label}{end}")
-        )
+        node_declarations.append((source_id, node_id, f"    {node_id}{start}{label}{end}"))
 
     grouped_source_ids = {
         member for group in structure.groups for member in group.member_source_ids
     }
 
-    declaration_by_source = {
-        source_id: line for source_id, _node_id, line in node_declarations
-    }
+    declaration_by_source = {source_id: line for source_id, _node_id, line in node_declarations}
     for group in structure.groups:
         lines.append(f'    subgraph {group.emitted_id}["{_text(group.label)}"]')
-        lines.extend(
-            f"    {declaration_by_source[member]}" for member in group.member_source_ids
-        )
+        lines.extend(f"    {declaration_by_source[member]}" for member in group.member_source_ids)
         lines.append("    end")
     lines.extend(
         line
@@ -150,23 +148,16 @@ def serialize_swimlane(ir: dict[str, Any], *, experimental: bool = False) -> str
 def serialize_sequence(ir: dict[str, Any], *, experimental: bool = False) -> str:
     participants = ir.get("participants")
     messages = ir.get("messages", [])
-    if not isinstance(participants, list) or not participants:
-        raise SerializationError("sequence IR requires participants")
+    try:
+        structure = plan_sequence_structure(participants, messages)
+    except SequenceStructureError as exc:
+        raise SerializationError(str(exc)) from exc
     lines = [
         "sequenceDiagram",
         *_accessibility(ir, experimental, diagram_type="sequence"),
     ]
-    id_map: dict[str, str] = {}
-    for index, participant in enumerate(participants, start=1):
-        if isinstance(participant, str):
-            source_id = participant
-            label = participant
-        else:
-            source_id = str(participant.get("id") or f"P{index}")
-            label = participant.get("label") or source_id
-        participant_id = _identifier(source_id, f"P{index}")
-        id_map[source_id] = participant_id
-        lines.append(f"    participant {participant_id} as {_text(label)}")
+    for participant in structure.participants:
+        lines.append(f"    participant {participant.emitted_id} as {_text(participant.label)}")
     arrows = {
         "solid": "->>",
         "dotted": "-->>",
@@ -174,42 +165,31 @@ def serialize_sequence(ir: dict[str, Any], *, experimental: bool = False) -> str
         "dotted_open": "-->",
         "cross": "-x",
     }
-    for message in messages:
-        source = id_map.get(str(message.get("source")))
-        target = id_map.get(str(message.get("target")))
-        if source is None or target is None:
-            continue
-        arrow = arrows.get(message.get("style"), "->>")
+    for message in structure.messages:
+        arrow = arrows.get(message.source.get("style"), "->>")
         lines.append(
-            f"    {source}{arrow}{target}: {_text(message.get('label') or '[unreadable]')}"
+            f"    {message.source_id}{arrow}{message.target_id}: "
+            f"{_text(message.source.get('label') or '[unreadable]')}"
         )
     return "\n".join(lines) + "\n"
 
 
 def serialize_mindmap(ir: dict[str, Any], *, experimental: bool = False) -> str:
     root = ir.get("root")
-    if not isinstance(root, dict):
-        raise SerializationError("mindmap IR requires a root object")
+    try:
+        node_plan = plan_mindmap_nodes(root)
+    except MindmapStructureError as exc:
+        raise SerializationError(str(exc)) from exc
     # Mermaid 11.16 parses accTitle/accDescr as additional roots in mindmaps.
     # Preserve the hard render gate and keep the requested text in typed IR until
     # upstream supports accessible directives for this grammar.
     lines = ["mindmap"]
-    node_number = 0
-
-    def append_branch(node: dict[str, Any], depth: int) -> None:
-        nonlocal node_number
-        node_number += 1
-        label = _text(node.get("label") or node.get("text") or "[unreadable]")
-        node_id = "root" if depth == 1 else f"node_{node_number}"
-        if depth == 1:
-            lines.append(f"{'    ' * depth}{node_id}(({label}))")
+    for node in node_plan:
+        label = _text(node.label)
+        if node.depth == 1:
+            lines.append(f"{'    ' * node.depth}{node.emitted_id}(({label}))")
         else:
-            lines.append(f'{"    " * depth}{node_id}["{label}"]')
-        for child in node.get("children", []):
-            if isinstance(child, dict):
-                append_branch(child, depth + 1)
-
-    append_branch(root, 1)
+            lines.append(f'{"    " * node.depth}{node.emitted_id}["{label}"]')
     return "\n".join(lines) + "\n"
 
 
@@ -275,7 +255,7 @@ def serialize_architecture(ir: dict[str, Any], *, experimental: bool = False) ->
         icon = _identifier(str(service.get("icon") or "server"))
         group = service.get("group")
         suffix = f" in {_identifier(str(group))}" if group else ""
-        label = _text(service.get("label") or source_id)
+        label = _text(service.get("label") or service.get("name") or source_id)
         lines.append(f'    service {service_id}({icon})["{label}"]{suffix}')
     for edge in ir.get("edges", []):
         source = id_map.get(str(edge.get("source")))

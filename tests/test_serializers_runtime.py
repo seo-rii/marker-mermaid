@@ -4,7 +4,14 @@ import pytest
 
 from marker_mermaid.accessibility import supports_accessibility_directives
 from marker_mermaid.config import SecurityProfile
+from marker_mermaid.models import (
+    MAX_ID_CHARS,
+    MAX_SCENE_ELEMENTS,
+    MAX_SCENE_RELATIONS,
+    MAX_TEXT_CHARS,
+)
 from marker_mermaid.serializers import (
+    SerializationError,
     serialize_architecture,
     serialize_flowchart,
     serialize_gantt,
@@ -70,6 +77,15 @@ CASES = [
             "edges": [{"source": "api", "target": "db"}],
         }
     ),
+    serialize_sequence(
+        {
+            "participants": [
+                {"id": "A-B", "label": "First"},
+                {"id": "A B", "label": "Second"},
+            ],
+            "messages": [{"source": "A-B", "target": "A B", "label": "Next"}],
+        }
+    ),
 ]
 
 
@@ -81,6 +97,93 @@ def test_bpmn_swimlane_is_explicit_flowchart_fallback():
 
 def test_flowchart_groups_are_emitted_as_subgraphs():
     assert 'subgraph phase["Phase"]' in CASES[0]
+
+
+def test_sequence_participant_ids_are_collision_free_and_unambiguous():
+    code = serialize_sequence(
+        {
+            "participants": [
+                {"id": "A-B", "label": "First"},
+                {"id": "A B", "label": "Second"},
+            ],
+            "messages": [{"source": "A-B", "target": "A B", "label": "Next"}],
+        }
+    )
+
+    assert "participant A_B as First" in code
+    assert "participant A_B_2 as Second" in code
+    assert "A_B->>A_B_2: Next" in code
+
+    with pytest.raises(SerializationError, match="participant ids must be unique"):
+        serialize_sequence(
+            {
+                "participants": ["client", {"id": "client", "label": "Duplicate"}],
+                "messages": [],
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("participants", "message"),
+    [
+        (["A"] * (MAX_SCENE_ELEMENTS + 1), "participant count exceeds"),
+        ([{"id": "x" * (MAX_ID_CHARS + 1)}], "identifier limit"),
+        (
+            [{"id": "A", "label": "x" * (MAX_TEXT_CHARS + 1)}],
+            "label exceeds",
+        ),
+    ],
+)
+def test_sequence_participant_planning_is_resource_bounded(participants, message):
+    with pytest.raises(SerializationError, match=message):
+        serialize_sequence({"participants": participants, "messages": []})
+
+
+@pytest.mark.parametrize(
+    ("messages", "message"),
+    [
+        ([{}] * (MAX_SCENE_RELATIONS + 1), "message count exceeds"),
+        (["not-an-object"], "messages must be objects"),
+        ({"source": "A", "target": "A"}, "messages must be a list"),
+    ],
+)
+def test_sequence_message_planning_is_resource_bounded(messages, message):
+    with pytest.raises(SerializationError, match=message):
+        serialize_sequence({"participants": ["A"], "messages": messages})
+
+
+def test_sequence_raw_message_ids_do_not_change_rendered_messages():
+    code = serialize_sequence(
+        {
+            "participants": ["A", "B"],
+            "messages": [
+                {"id": "call", "source": "A", "target": "B"},
+                {"id": "call", "source": "B", "target": "A"},
+            ],
+        }
+    )
+
+    assert code.count("A->>B") == 1
+    assert code.count("B->>A") == 1
+
+
+def test_mindmap_uses_unique_serializer_ids_for_duplicate_logical_ids():
+    code = serialize_mindmap(
+        {
+            "root": {
+                "id": "duplicate",
+                "label": "Root",
+                "children": [
+                    {"id": "duplicate", "label": "First"},
+                    {"id": "duplicate", "label": "Second"},
+                ],
+            }
+        }
+    )
+
+    assert "root((Root))" in code
+    assert 'node_2["First"]' in code
+    assert 'node_3["Second"]' in code
 
 
 @pytest.mark.integration

@@ -23,6 +23,137 @@ def test_flowchart_typed_ir_preserves_explicit_direction_and_arrows():
     assert scene.relations[0].arrow_at_end
 
 
+def test_generated_scene_arrows_follow_serializer_visible_direction() -> None:
+    flowchart = typed_ir_to_scene(
+        "flowchart",
+        {
+            "nodes": [{"id": "A"}, {"id": "B"}],
+            "edges": [
+                {
+                    "source": "A",
+                    "target": "B",
+                    "arrow_at_start": True,
+                    "arrow_at_end": False,
+                }
+            ],
+        },
+    )
+    bidirectional = typed_ir_to_scene(
+        "flowchart",
+        {
+            "nodes": [{"id": "A"}, {"id": "B"}],
+            "edges": [
+                {
+                    "source": "A",
+                    "target": "B",
+                    "bidirectional": True,
+                    "arrow_at_start": False,
+                    "arrow_at_end": False,
+                }
+            ],
+        },
+    )
+    sequence = typed_ir_to_scene(
+        "sequence",
+        {
+            "participants": ["A", "B"],
+            "messages": [
+                {
+                    "source": "A",
+                    "target": "B",
+                    "arrow_at_start": True,
+                    "arrow_at_end": False,
+                }
+            ],
+        },
+    )
+
+    assert flowchart is not None and bidirectional is not None and sequence is not None
+    assert (
+        flowchart.relations[0].arrow_at_start,
+        flowchart.relations[0].arrow_at_end,
+    ) == (False, True)
+    assert (
+        bidirectional.relations[0].arrow_at_start,
+        bidirectional.relations[0].arrow_at_end,
+    ) == (True, True)
+    assert (
+        sequence.relations[0].arrow_at_start,
+        sequence.relations[0].arrow_at_end,
+    ) == (False, True)
+
+
+def test_sequence_scene_uses_collision_free_emitted_participant_ids() -> None:
+    scene = typed_ir_to_scene(
+        "sequence",
+        {
+            "participants": [
+                {"id": "A-B", "label": "First"},
+                {"id": "A B", "label": "Second"},
+            ],
+            "messages": [{"source": "A-B", "target": "A B", "label": "Next"}],
+        },
+    )
+
+    assert scene is not None
+    assert [(element.id, element.text) for element in scene.elements] == [
+        ("A_B", "First"),
+        ("A_B_2", "Second"),
+    ]
+    assert (scene.relations[0].source_id, scene.relations[0].target_id) == (
+        "A_B",
+        "A_B_2",
+    )
+
+
+def test_sequence_scene_assigns_collision_free_emitted_message_ids() -> None:
+    scene = typed_ir_to_scene(
+        "sequence",
+        {
+            "participants": ["A", "B"],
+            "messages": [
+                {"source": "A", "target": "B"},
+                {"id": "generated-relation-1", "source": "B", "target": "A"},
+                {"id": "generated-relation-1", "source": "A", "target": "B"},
+            ],
+        },
+    )
+
+    assert scene is not None
+    assert [relation.id for relation in scene.relations] == [
+        "generated-relation-1",
+        "generated-relation-2",
+        "generated-relation-3",
+    ]
+
+
+def test_mindmap_scene_uses_serializer_ids_even_when_logical_ids_repeat() -> None:
+    scene = typed_ir_to_scene(
+        "mindmap",
+        {
+            "root": {
+                "id": "duplicate",
+                "label": "Root",
+                "children": [
+                    {"id": "duplicate", "label": "First"},
+                    {"id": "duplicate", "label": "Second"},
+                ],
+            }
+        },
+    )
+
+    assert scene is not None
+    assert [(element.id, element.text) for element in scene.elements] == [
+        ("root", "Root"),
+        ("node_2", "First"),
+        ("node_3", "Second"),
+    ]
+    assert [(relation.source_id, relation.target_id) for relation in scene.relations] == [
+        ("root", "node_2"),
+        ("root", "node_3"),
+    ]
+
+
 def test_swimlane_and_mindmap_flatten_only_resolved_relations():
     swimlane = typed_ir_to_scene(
         "swimlane",
@@ -44,8 +175,27 @@ def test_swimlane_and_mindmap_flatten_only_resolved_relations():
 
     assert swimlane is not None and len(swimlane.relations) == 1
     assert mindmap is not None
-    assert [item.id for item in mindmap.elements] == ["root", "child"]
-    assert mindmap.relations[0].source_id == "root"
+    assert [item.id for item in mindmap.elements] == ["root", "node_2"]
+    assert (
+        mindmap.relations[0].source_id,
+        mindmap.relations[0].target_id,
+    ) == ("root", "node_2")
+
+
+def test_partial_phase_one_scenes_use_the_serializers_unreadable_label() -> None:
+    cases = [
+        ("flowchart", {"nodes": [{"id": "A"}]}),
+        ("generic_network", {"nodes": [{"id": "A"}]}),
+        ("swimlane", {"lanes": [{"id": "lane", "nodes": [{"id": "A"}]}]}),
+        ("bpmn", {"lanes": [{"id": "lane", "nodes": [{"id": "A"}]}]}),
+        ("mindmap", {"root": {"id": "A"}}),
+    ]
+
+    for diagram_type, ir in cases:
+        scene = typed_ir_to_scene(diagram_type, ir)
+
+        assert scene is not None
+        assert [element.text for element in scene.elements] == ["[unreadable]"]
 
 
 def test_unsupported_or_empty_typed_ir_is_unavailable():
@@ -190,6 +340,52 @@ def test_serializer_aware_texts_exclude_hidden_generic_text_and_task_ids():
     assert ocr_recall(["Hidden class text"], "", generated_texts=class_texts) == 0
     assert ocr_recall(["Hidden entity text"], "", generated_texts=er_texts) == 0
     assert ocr_recall(["Secret payload internal-id"], "", generated_texts=gantt_texts) == 0
+
+
+def test_phase_one_semantic_texts_exclude_unrendered_aliases_and_relation_labels():
+    architecture_ir = {
+        "services": [
+            {
+                "id": "api",
+                "name": "Concealed service alias",
+                "text": "Secret service payload",
+            },
+            {"id": "db", "label": "Database"},
+        ],
+        "edges": [
+            {
+                "source": "api",
+                "target": "db",
+                "label": "Invisible connector caption",
+            }
+        ],
+    }
+    sequence_ir = {
+        "participants": [
+            {"id": "client", "text": "Concealed caller payload"},
+            {"id": "api", "label": "Payment API"},
+        ],
+        "messages": [{"source": "client", "target": "api", "label": "Request"}],
+    }
+    architecture_scene = typed_ir_to_scene("architecture", architecture_ir)
+    sequence_scene = typed_ir_to_scene("sequence", sequence_ir)
+
+    assert architecture_scene is not None and sequence_scene is not None
+    architecture_texts = list(
+        typed_ir_semantic_texts("architecture", architecture_ir, architecture_scene)
+    )
+    sequence_texts = list(typed_ir_semantic_texts("sequence", sequence_ir, sequence_scene))
+    assert architecture_texts == ["Concealed service alias", "Database"]
+    assert sequence_texts == ["client", "Payment API", "Request"]
+    assert (
+        ocr_recall(
+            ["Secret payload Invisible connector caption"],
+            "",
+            generated_texts=architecture_texts,
+        )
+        == 0
+    )
+    assert ocr_recall(["Concealed caller payload"], "", generated_texts=sequence_texts) == 0
 
 
 def test_c4_semantic_texts_follow_architecture_fallback_visible_labels_only():

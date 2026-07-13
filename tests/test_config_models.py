@@ -110,6 +110,139 @@ def test_typed_candidate_rejects_another_diagram_familys_root_shape():
         )
 
 
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "location"),
+    [
+        (
+            "flowchart",
+            {"nodes": [{"id": "A", "evidence_ids": [1]}]},
+            "nodes[0].evidence_ids[0]",
+        ),
+        (
+            "generic_network",
+            {"nodes": [{"id": "A"}], "groups": [{"member_ids": "A"}]},
+            "groups[0].member_ids",
+        ),
+        (
+            "swimlane",
+            {"lanes": [{"id": "lane", "nodes": ["not-an-object"]}]},
+            "lanes[0].nodes[0]",
+        ),
+        (
+            "bpmn",
+            {"lanes": [{"nodes": [{"id": "task", "label": ["wrong"]}]}]},
+            "lanes[0].nodes[0].label",
+        ),
+        (
+            "sequence",
+            {"participants": ["A"], "messages": [{"source": [], "target": "A"}]},
+            "messages[0].source",
+        ),
+        (
+            "mindmap",
+            {"root": {"label": "Root", "children": ["not-an-object"]}},
+            "root.children[0]",
+        ),
+        (
+            "timeline",
+            {"events": [{"time": "Q1", "events": ["Launch", {}]}]},
+            "events[0].events[1]",
+        ),
+        (
+            "gantt",
+            {"sections": [{"tasks": [{"start": 2026, "duration": "1d"}]}]},
+            "sections[0].tasks[0].start",
+        ),
+        (
+            "architecture",
+            {"services": [{"id": "api", "group": ["cloud"]}]},
+            "services[0].group",
+        ),
+        (
+            "architecture",
+            {
+                "services": [{"id": "api"}, {"id": "db"}],
+                "edges": [{"source": "api", "target": "db", "source_side": "X"}],
+            },
+            "edges[0].source_side",
+        ),
+    ],
+)
+def test_phase_one_nested_contracts_reject_wrong_record_shapes(
+    diagram_type: str,
+    ir: dict[str, object],
+    location: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    message = str(exc_info.value)
+    assert "violates its nested contract" in message
+    assert location in message
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        ("flowchart", {"nodes": []}),
+        ("generic_network", {"nodes": [{"label": "[unreadable]"}]}),
+        ("swimlane", {"lanes": [{"id": "lane"}]}),
+        ("bpmn", {"lanes": [{"nodes": []}]}),
+        ("sequence", {"participants": ["Client"], "messages": []}),
+        ("mindmap", {"root": {"children": [{"text": "Child"}]}}),
+        ("timeline", {"events": [{"period": "Q1", "events": ["Launch"]}]}),
+        (
+            "gantt",
+            {
+                "date_format": "YYYY-MM-DD",
+                "sections": [{"title": "Build", "tasks": []}],
+            },
+        ),
+        (
+            "architecture",
+            {
+                "services": [
+                    {
+                        "id": "api",
+                        "name": "API",
+                        "bbox": [0, 0, 10, 10],
+                        "evidence_ids": ["vector-api"],
+                        "future_metadata": {"kept": True},
+                    }
+                ]
+            },
+        ),
+    ],
+)
+def test_phase_one_nested_contracts_preserve_partial_and_forward_compatible_ir(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    assert candidate.ir == ir
+
+
+@pytest.mark.parametrize("bbox", [[0, 0, 10], [0, 0, True, 10], ["0", 0, 10, 10]])
+def test_phase_one_nested_contracts_require_four_strict_finite_bbox_numbers(bbox) -> None:
+    with pytest.raises(ValidationError, match="bbox"):
+        TypedIRCandidate(
+            diagram_type="architecture",
+            ir={"services": [{"id": "api", "bbox": bbox}]},
+        )
+
+
+def test_canonical_key_revalidates_mutated_nested_contracts() -> None:
+    candidate = TypedIRCandidate(
+        diagram_type="timeline",
+        ir={"events": [{"time": "Q1", "events": ["Launch"]}]},
+    )
+    candidate.ir["events"][0]["events"] = "Launch"
+
+    with pytest.raises(ValidationError, match=r"events\[0\]\.events"):
+        candidate.canonical_key()
+
+
 def test_candidate_confidence_is_a_probability():
     with pytest.raises(ValidationError):
         TypedIRCandidate(diagram_type="flowchart", ir={"nodes": []}, confidence=1.1)

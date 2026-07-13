@@ -1,4 +1,4 @@
-"""Shared deterministic node/group emission planning for Flowchart fallbacks."""
+"""Shared deterministic identity/group planning for serializer and Scene consumers."""
 
 from __future__ import annotations
 
@@ -8,14 +8,24 @@ from typing import Any
 
 from marker_mermaid.models import (
     MAX_ID_CHARS,
+    MAX_IR_DEPTH,
     MAX_SCENE_ELEMENTS,
     MAX_SCENE_GROUPS,
+    MAX_SCENE_RELATIONS,
     MAX_TEXT_CHARS,
 )
 
 
 class FlowchartStructureError(ValueError):
     """Raised when flat Flowchart group membership cannot be emitted exactly."""
+
+
+class SequenceStructureError(ValueError):
+    """Raised when participant identity cannot be emitted without ambiguity."""
+
+
+class MindmapStructureError(ValueError):
+    """Raised when a recursive Mindmap cannot be planned within resource limits."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +55,36 @@ class SwimlaneStructureInput:
     groups: tuple[dict[str, Any], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class SequenceParticipantPlacement:
+    source_id: str
+    emitted_id: str
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
+class SequenceMessagePlacement:
+    source: dict[str, Any]
+    emitted_id: str
+    source_id: str
+    target_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class SequenceStructurePlan:
+    participants: tuple[SequenceParticipantPlacement, ...]
+    messages: tuple[SequenceMessagePlacement, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class MindmapNodePlacement:
+    source: dict[str, Any]
+    emitted_id: str
+    label: str
+    depth: int
+    parent_id: str | None
+
+
 def portable_identifier(value: str, fallback: str = "node") -> str:
     """Return the portable identifier form shared by planning and serialization."""
 
@@ -54,6 +94,108 @@ def portable_identifier(value: str, fallback: str = "node") -> str:
     if normalized[0].isdigit():
         normalized = f"n_{normalized}"
     return normalized
+
+
+def plan_sequence_structure(participants: Any, messages: Any) -> SequenceStructurePlan:
+    """Resolve the exact bounded participants and messages emitted by Sequence consumers."""
+
+    if not isinstance(participants, list) or not participants:
+        raise SequenceStructureError("sequence IR requires participants")
+    if len(participants) > MAX_SCENE_ELEMENTS:
+        raise SequenceStructureError("sequence participant count exceeds the Scene element limit")
+    placements: list[SequenceParticipantPlacement] = []
+    source_ids: set[str] = set()
+    emitted_ids: set[str] = set()
+    next_suffix_by_base: dict[str, int] = {}
+    for index, participant in enumerate(participants, start=1):
+        if isinstance(participant, str):
+            source_id = participant
+            label = participant
+        elif isinstance(participant, dict):
+            source_id = str(participant.get("id") or f"P{index}")
+            label = str(participant.get("label") or source_id)
+        else:
+            raise SequenceStructureError("sequence participants must be strings or objects")
+        if not source_id or len(source_id) > MAX_ID_CHARS:
+            raise SequenceStructureError(
+                "sequence participant id must be non-empty and within the Scene identifier limit"
+            )
+        if len(label) > MAX_TEXT_CHARS:
+            raise SequenceStructureError("sequence participant label exceeds the Scene text limit")
+        if source_id in source_ids:
+            raise SequenceStructureError("sequence participant ids must be unique")
+        base = portable_identifier(source_id, f"P{index}")
+        emitted_id = base
+        suffix = next_suffix_by_base.get(base, 2)
+        while emitted_id in emitted_ids:
+            emitted_id = f"{base}_{suffix}"
+            suffix += 1
+        next_suffix_by_base[base] = suffix
+        if len(emitted_id) > MAX_ID_CHARS:
+            raise SequenceStructureError(
+                "sequence emitted participant id exceeds the Scene identifier limit"
+            )
+        source_ids.add(source_id)
+        emitted_ids.add(emitted_id)
+        placements.append(SequenceParticipantPlacement(source_id, emitted_id, label))
+    if not isinstance(messages, list):
+        raise SequenceStructureError("sequence messages must be a list of objects")
+    if len(messages) > MAX_SCENE_RELATIONS:
+        raise SequenceStructureError("sequence message count exceeds the Scene relation limit")
+    emitted_by_source = {
+        participant.source_id: participant.emitted_id for participant in placements
+    }
+    message_placements: list[SequenceMessagePlacement] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            raise SequenceStructureError("sequence messages must be objects")
+        for field in ("id", "source", "target", "label", "style"):
+            value = message.get(field)
+            if value is not None and not isinstance(value, str):
+                raise SequenceStructureError(f"sequence message {field} must be a string")
+        message_id = message.get("id")
+        if message_id is not None and len(message_id) > MAX_ID_CHARS:
+            raise SequenceStructureError("sequence message id exceeds the Scene identifier limit")
+        label = message.get("label")
+        if label is not None and len(label) > MAX_TEXT_CHARS:
+            raise SequenceStructureError("sequence message label exceeds the Scene text limit")
+        source_id = emitted_by_source.get(message.get("source"))
+        target_id = emitted_by_source.get(message.get("target"))
+        if source_id is None or target_id is None:
+            continue
+        emitted_id = f"generated-relation-{len(message_placements) + 1}"
+        message_placements.append(
+            SequenceMessagePlacement(message, emitted_id, source_id, target_id)
+        )
+    return SequenceStructurePlan(tuple(placements), tuple(message_placements))
+
+
+def plan_mindmap_nodes(root: Any) -> tuple[MindmapNodePlacement, ...]:
+    """Return the exact preorder IDs, labels, and parents emitted by Mindmap serialization."""
+
+    if not isinstance(root, dict):
+        raise MindmapStructureError("mindmap IR requires a root object")
+    placements: list[MindmapNodePlacement] = []
+    pending: list[tuple[dict[str, Any], int, str | None]] = [(root, 1, None)]
+    while pending:
+        node, depth, parent_id = pending.pop()
+        if depth > MAX_IR_DEPTH:
+            raise MindmapStructureError("mindmap hierarchy exceeds the nesting depth limit")
+        node_number = len(placements) + 1
+        if node_number > MAX_SCENE_ELEMENTS:
+            raise MindmapStructureError("mindmap node count exceeds the Scene element limit")
+        emitted_id = "root" if depth == 1 else f"node_{node_number}"
+        label = str(node.get("label") or node.get("text") or "[unreadable]")
+        if len(label) > MAX_TEXT_CHARS:
+            raise MindmapStructureError("mindmap node label exceeds the Scene text limit")
+        placements.append(MindmapNodePlacement(node, emitted_id, label, depth, parent_id))
+        children = node.get("children", [])
+        if not isinstance(children, list):
+            raise MindmapStructureError("mindmap children must be a list of objects")
+        if any(not isinstance(child, dict) for child in children):
+            raise MindmapStructureError("mindmap children must be objects")
+        pending.extend((child, depth + 1, emitted_id) for child in reversed(children))
+    return tuple(placements)
 
 
 def prepare_swimlane_structure(lanes: Any) -> SwimlaneStructureInput:
@@ -82,9 +224,7 @@ def prepare_swimlane_structure(lanes: Any) -> SwimlaneStructureInput:
                 raise FlowchartStructureError("swimlane nodes must be objects")
             node_index += 1
             if node_index > MAX_SCENE_ELEMENTS:
-                raise FlowchartStructureError(
-                    "swimlane node count exceeds the Scene element limit"
-                )
+                raise FlowchartStructureError("swimlane node count exceeds the Scene element limit")
             source_id = str(node.get("id") or f"N{node_index}")
             nodes.append({**node, "id": source_id})
             member_ids.append(source_id)
@@ -92,9 +232,7 @@ def prepare_swimlane_structure(lanes: Any) -> SwimlaneStructureInput:
             {
                 "id": lane.get("id") or f"lane_{lane_index}",
                 "label": (
-                    lane.get("label")
-                    if "label" in lane
-                    else lane.get("id") or f"lane_{lane_index}"
+                    lane.get("label") if "label" in lane else lane.get("id") or f"lane_{lane_index}"
                 ),
                 "member_ids": member_ids,
                 "role": "lane",
@@ -164,9 +302,7 @@ def plan_flowchart_structure(nodes: Any, groups: Any) -> FlowchartStructurePlan:
         if emitted_group_id in emitted_node_ids:
             raise FlowchartStructureError("flowchart group id collides with a node id")
         if emitted_group_id in emitted_group_ids:
-            raise FlowchartStructureError(
-                "flowchart group ids must be unique after normalization"
-            )
+            raise FlowchartStructureError("flowchart group ids must be unique after normalization")
         members = group.get("member_ids")
         if not isinstance(members, list) or not members:
             raise FlowchartStructureError("flowchart group requires at least one member")
@@ -181,9 +317,7 @@ def plan_flowchart_structure(nodes: Any, groups: Any) -> FlowchartStructurePlan:
             raise FlowchartStructureError("flowchart group member ids must be unique")
         unknown = [member for member in member_source_ids if member not in emitted_by_source]
         if unknown:
-            raise FlowchartStructureError(
-                f"flowchart group references unknown node: {unknown[0]}"
-            )
+            raise FlowchartStructureError(f"flowchart group references unknown node: {unknown[0]}")
         overlap = grouped_source_ids.intersection(member_source_ids)
         if overlap:
             raise FlowchartStructureError(
@@ -206,9 +340,7 @@ def plan_flowchart_structure(nodes: Any, groups: Any) -> FlowchartStructurePlan:
                 emitted_id=emitted_group_id,
                 label=label,
                 member_source_ids=member_source_ids,
-                member_emitted_ids=tuple(
-                    emitted_by_source[member] for member in member_source_ids
-                ),
+                member_emitted_ids=tuple(emitted_by_source[member] for member in member_source_ids),
             )
         )
     return FlowchartStructurePlan(tuple(node_placements), tuple(group_placements))

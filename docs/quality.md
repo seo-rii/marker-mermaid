@@ -19,6 +19,9 @@ NFKC/casefold label만 사용합니다. normalized ID collision은 alias로 강�
 label/evidence 같은 독립 근거가 있을 때만 정렬합니다. Geometry로 node를 맞추지 않으므로 layout metric이
 자신의 가정을 검증하는 순환을 피합니다. edge topology는 방향을
 무시하고 방향 오류는 arrow metric이 별도로 측정합니다.
+Flowchart/Swimlane/BPMN/Architecture와 Sequence 계열의 generated Scene 방향은 raw
+`arrow_at_start`/`arrow_at_end` hint가 아니라 serializer가 실제 방출하는 단방향 또는 `bidirectional`
+connector에서 파생합니다.
 
 typed IR은 serializer가 실제 방출하는 node/edge 구조로 다시 변환합니다. bbox가 IR에 명시되지 않으면
 layout을 추측하지 않습니다. Scene IR portable fallback은 deterministic serializer 보존 여부를 평가할 수
@@ -65,7 +68,7 @@ participant도 임의 `text`가 아니라 serializer가 실제 표시하는 safe
 - Requested type이 fallback으로 방출되는 경우 projection은 요청 문법이 아니라 실제 emitted serializer를
   따릅니다. C4의 `architecture` 또는 nested Flowchart 결과는 같은 projection을 사용해 boundary와
   service label만 세고 technology, relation label, description은 제외합니다. Architecture도 native와
-  nested Flowchart에서 service label과 label 없는 topology를 동일하게 평가합니다. Flowchart에 표시되는
+  nested Flowchart에서 service `label`/`name` alias와 label 없는 topology를 동일하게 평가합니다. Flowchart에 표시되는
   Architecture group label의 별도 Scene projection은 후속 범위입니다. Requirement는 serializer와 같은 normalized/collision-safe output ID,
   requirement type·ID·text·risk·verification, element type·docref, relation type을 셉니다. 접근성 metadata와
   serializer가 무시한 대체 label은 포함하지 않습니다. Event Modeling은 lane label과 실제 fallback의

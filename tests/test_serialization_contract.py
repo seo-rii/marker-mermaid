@@ -364,6 +364,7 @@ def test_architecture_runtime_fallback_keeps_labels_and_plain_topology() -> None
             "services": [
                 {"id": "api", "label": "Public API"},
                 {"id": "db", "label": "Ledger DB"},
+                {"id": "cache", "name": "Hidden fallback-only alias"},
             ],
             "edges": [{"source": "api", "target": "db"}],
         },
@@ -372,5 +373,6 @@ def test_architecture_runtime_fallback_keeps_labels_and_plain_topology() -> None
     assert result is not None
     assert 'api["Public API"]' in result.code
     assert 'db["Ledger DB"]' in result.code
+    assert 'cache["Hidden fallback-only alias"]' in result.code
     assert "api --> db" in result.code
     assert "api -->|" not in result.code
