@@ -242,6 +242,14 @@ def build_review_workspace_assets(
         </div>
       </section>
 
+      <section id="audit-history" class="audit-history" aria-labelledby="audit-history-heading">
+        <h2 id="audit-history-heading">Recent audit history</h2>
+        <p id="history-summary" class="muted" role="status" aria-live="polite">
+          Audit history is available after diagram detail loads.
+        </p>
+        <ol id="history-list" class="item-list audit-list"></ol>
+      </section>
+
       <form id="command-form">
         <label for="command-input">Natural-language correction</label>
         <div class="command-row">
@@ -391,6 +399,14 @@ textarea {
 .item-list li, .candidate { padding: .55rem; border-top: 1px solid GrayText; }
 .candidate { display: flex; justify-content: space-between; align-items: center; gap: .8rem; }
 .candidate.selected { border-inline-start: .35rem solid #1b7f3b; }
+.audit-history { border: 1px solid GrayText; padding: 0 1rem 1rem; margin-block: 1rem; }
+.audit-entry header { display: flex; flex-wrap: wrap; gap: .4rem; align-items: baseline; }
+.audit-entry p { margin-block: .4rem; overflow-wrap: anywhere; }
+.audit-entry details { margin-top: .4rem; }
+.audit-entry pre {
+  max-height: 16rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  border: 1px solid GrayText; padding: .6rem;
+}
 #command-form { margin-block: 1rem; }
 .command-row input { flex: 1; }
 .decision-actions { padding-block: 1rem; border-top: 1px solid GrayText; }
@@ -444,6 +460,7 @@ REVIEW_JAVASCRIPT = r"""
     diffLayers: byId("diff-layers"), diffEnabled: byId("diff-enabled"),
     diffOpacity: byId("diff-opacity"), diffNote: byId("diff-note"),
     issues: byId("issue-list"), alternatives: byId("alternative-list"), message: byId("message"),
+    history: byId("history-list"), historySummary: byId("history-summary"),
     saveState: byId("save-state"), reloadLatest: byId("reload-latest"),
     saveEditors: byId("save-editors"), undo: byId("undo"), redo: byId("redo"),
     revision: byId("revision-select"), checkoutRevision: byId("checkout-revision"),
@@ -1143,6 +1160,86 @@ REVIEW_JAVASCRIPT = r"""
     if (!alternatives.length) controls.alternatives.textContent = "No alternative candidates.";
   }
 
+  function renderHistory(diagram) {
+    const visibleLimit = 100;
+    const clip = (value, limit) => {
+      const rendered = text(value);
+      return rendered.length <= limit ? rendered : rendered.slice(0, limit) + "…";
+    };
+    controls.history.replaceChildren();
+    if (!state.detailReady) {
+      controls.historySummary.textContent =
+        "Audit history is available after diagram detail loads.";
+      return;
+    }
+    if (!Array.isArray(diagram.history)) {
+      controls.historySummary.textContent = "Audit history unavailable: invalid detail payload.";
+      return;
+    }
+    const valid = [];
+    let ignored = 0;
+    for (const entry of diagram.history) {
+      const beforeValid = entry?.before === null || entry?.before === undefined
+        || (typeof entry.before === "object" && !Array.isArray(entry.before));
+      const afterValid = entry?.after === null || entry?.after === undefined
+        || (typeof entry.after === "object" && !Array.isArray(entry.after));
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)
+        || typeof entry.operation !== "string" || !entry.operation
+        || typeof entry.target !== "string" || !entry.target
+        || !["user", "system", "vlm"].includes(entry.source)
+        || typeof entry.timestamp !== "string" || !entry.timestamp
+        || (entry.reason !== null && entry.reason !== undefined
+          && typeof entry.reason !== "string")
+        || !beforeValid || !afterValid) {
+        ignored += 1; continue;
+      }
+      valid.push(entry);
+    }
+    const ignoredLabel = ignored
+      ? `${ignored} malformed entr${ignored === 1 ? "y" : "ies"} ignored.`
+      : "";
+    if (!valid.length) {
+      controls.historySummary.textContent = ignored
+        ? `No valid audit history entries; ${ignoredLabel}`
+        : "No audit history entries recorded.";
+      return;
+    }
+    const visible = valid.slice(-visibleLimit).reverse();
+    controls.historySummary.textContent = [
+      `Showing newest ${visible.length} of ${valid.length} valid audit entries.`,
+      ignoredLabel,
+    ].filter(Boolean).join(" ");
+    for (const entry of visible) {
+      const item = document.createElement("li");
+      item.className = "audit-entry";
+      const header = document.createElement("header");
+      const title = document.createElement("strong");
+      title.textContent = `${clip(entry.operation, 256)} · ${clip(entry.target, 256)}`;
+      const metadata = document.createElement("span");
+      metadata.className = "muted";
+      metadata.textContent = `${clip(entry.source, 32)} · ${clip(entry.timestamp, 128)}`;
+      header.append(title, metadata); item.append(header);
+      if (entry.reason) {
+        const reason = document.createElement("p");
+        reason.textContent = clip(entry.reason, 4096); item.append(reason);
+      }
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = "Before / after";
+      const delta = document.createElement("pre");
+      let serialized;
+      try {
+        serialized = JSON.stringify(
+          { before: entry.before ?? null, after: entry.after ?? null }, null, 2,
+        );
+      } catch (error) {
+        serialized = `Unable to display structured delta: ${text(error?.message || error)}`;
+      }
+      delta.textContent = clip(serialized, 20000);
+      details.append(summary, delta); item.append(details); controls.history.append(item);
+    }
+  }
+
   function renderCurrent() {
     const diagram = state.current;
     if (!diagram) return;
@@ -1184,7 +1281,7 @@ REVIEW_JAVASCRIPT = r"""
       || controls.revision.value === currentRevision;
     renderEditorState(diagram);
     renderStructure(diagram); renderOverlay(diagram); renderLayout(diagram);
-    renderIssues(diagram); renderAlternatives(diagram);
+    renderIssues(diagram); renderAlternatives(diagram); renderHistory(diagram);
   }
 
   function errorText(error) {

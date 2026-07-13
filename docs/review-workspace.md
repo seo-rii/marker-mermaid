@@ -43,11 +43,21 @@ diagram ID 검사로 무시합니다.
 `versions/r000000.*`을 만들며 각 변경은 `review-history.json`에 사용자 작업과 사유를 남깁니다.
 자연어 patch는 generic edit로 축약하지 않고 `reverse_edge`, `relabel_node`, `group_nodes`의 target과
 구조화된 before/after를 그대로 commit history에 보존합니다.
+
+`Recent audit history`는 이 append-only 기록 중 유효한 최신 100개를 newest-first로 표시합니다. 각 항목은
+operation, target, source, timestamp와 선택적 reason을 요약하고, before/after 구조는 접을 수 있는 상세
+영역에서 확인할 수 있습니다. 잘못된 항목은 실행하거나 일부 필드를 추정하지 않고 무시한 수를 알리며,
+history payload 자체가 잘못된 경우에는 사용할 수 없다고 표시합니다. 모든 값은 HTML로 해석하지 않고
+text로만 렌더링합니다. 이 bounded 화면은 canonical `review-history.json`을 자르거나 다시 쓰지 않으며,
+전체 append-only 기록은 계속 sidecar에 유지됩니다.
+
 Undo/Redo 옆의 `Restore revision`은 서버가 검증한 active timeline ID만 표시합니다. 선택 시 현재 working
 copy의 code, IR, SVG/PNG, provenance, layout, decision, candidate와 manifest hash를 그 snapshot으로
 원자적으로 복원하고 `checkout_revision` audit를 append합니다. 이는 read-only preview가 아니며 version이
 한 번 증가합니다. 임의 path, cursor index, active timeline에서 이미 분기 탈락한 snapshot은 요청할 수
-없고, optimistic version/digest를 target membership 검사 전에 확인합니다.
+없고, optimistic version/digest를 target membership 검사 전에 확인합니다. 따라서 revision selector는
+working copy를 복원하는 active timeline이고, Recent audit history는 분기 이후에도 삭제되지 않는 작업
+기록을 읽는 화면으로 서로 다른 목적을 가집니다.
 
 restore/undo 뒤 새 편집을 하면 선택 cursor 이후 active timeline은 분기하지만 기존 immutable snapshot과
 audit entry는 디스크에서 삭제하지 않습니다. UI는 restore 전에 이 동작을 명시적으로 경고합니다.
@@ -214,5 +224,6 @@ review server는 인증 시스템이 아닙니다. 기본 loopback bind를 권�
 source-sized provenance/node overlay와 bounds-normalized read-only difference blend, active timeline
 revision restore, JSON editor, source-anchored node 추가, advisory node drag-and-drop, ID 기반 edge
 재연결/node 삭제, canvas endpoint drag는 제공합니다. Mermaid render의 실제 좌표 강제는 아직
-구현하지 않았습니다. version history는 undo/redo timeline으로 제공하며
-분기 탈락 snapshot preview와 VLM 기반 자유 형식 명령은 후속 범위입니다.
+구현하지 않았습니다. version restore는 undo/redo active timeline으로, audit 열람은 canonical log의
+newest-first bounded view로 제공하며 분기 탈락 snapshot preview와 VLM 기반 자유 형식 명령은 후속
+범위입니다.

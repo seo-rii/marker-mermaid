@@ -67,6 +67,9 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
         "reload-latest",
         "issue-list",
         "alternative-list",
+        "audit-history",
+        "history-summary",
+        "history-list",
         "approve",
         "reject",
         "undo",
@@ -207,6 +210,12 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert "A later edit will branch the active timeline" in assets.javascript
     assert "diagram.revision_navigation" in assets.javascript
     assert "navigation.current_revision" in assets.javascript
+    assert "function renderHistory(diagram)" in assets.javascript
+    assert "controls.history.replaceChildren()" in assets.javascript
+    assert "Array.isArray(diagram.history)" in assets.javascript
+    assert "valid.slice(-visibleLimit).reverse()" in assets.javascript
+    assert "delta.textContent = clip(serialized, 20000)" in assets.javascript
+    assert 'summary.textContent = "Before / after"' in assets.javascript
     assert "renderDifference" in assets.javascript
     assert "mix-blend-mode: difference" in assets.css
     assert "object-fit: contain" in assets.css
@@ -241,6 +250,221 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert 'preserveAspectRatio="none"' in assets.html
     assert 'id="source-canvas" class="source-canvas" hidden' in assets.html
     assert ".source-canvas" in assets.css
+
+
+def test_review_workspace_renders_bounded_safe_audit_history_and_refreshes_mutations():
+    attack = '<img id="history-xss" src=x onerror="alert(1)"><script>alert(2)</script>'
+    history = [
+        {
+            "operation": f"operation-{index}",
+            "target": f"node-{index}",
+            "before": {"label": f"before-{index}"},
+            "after": {"label": f"after-{index}"},
+            "source": "user" if index % 2 else "system",
+            "timestamp": f"2026-07-13T00:00:{index:03d}+09:00",
+            "reason": f"reason-{index}",
+        }
+        for index in range(102)
+    ]
+    history[-1]["reason"] = attack
+    history[-1]["after"] = {"label": attack}
+    malformed = {
+        "operation": "malformed",
+        "target": "ignored",
+        "before": [],
+        "after": {},
+        "source": "browser",
+        "timestamp": "",
+    }
+    approved_entry = {
+        "operation": "approve",
+        "target": "diagram-a",
+        "before": {"decision": None},
+        "after": {"decision": "approve"},
+        "source": "user",
+        "timestamp": "2026-07-13T12:00:00+09:00",
+        "reason": "reviewer approved",
+    }
+    summaries = [
+        {"id": "diagram-a", "label": "Diagram A", "version": 0, "digest": "digest-a0"},
+        {"id": "diagram-b", "label": "Diagram B", "version": 0, "digest": "digest-b0"},
+    ]
+    scene = {
+        "coordinate_space": "normalized",
+        "elements": [{"id": "A", "text": "A", "bbox": [0.1, 0.1, 0.4, 0.4]}],
+        "relations": [],
+        "groups": [],
+    }
+    detail_a = {
+        **summaries[0],
+        "mermaid_code": 'flowchart LR\n  A["A"]\n',
+        "scene_ir": scene,
+        "history": [*history, malformed],
+        "issues": [],
+        "alternatives": [],
+        "can_undo": False,
+        "can_redo": False,
+        "revision_navigation": {"current_revision": "r000000", "timeline": ["r000000"]},
+    }
+    approved = {
+        **detail_a,
+        "version": 1,
+        "digest": "digest-a1",
+        "decision": "approve",
+        "history": [*history, malformed, approved_entry],
+        "can_undo": True,
+        "revision_navigation": {
+            "current_revision": "r000001",
+            "timeline": ["r000000", "r000001"],
+        },
+    }
+    detail_b = {
+        **summaries[1],
+        "mermaid_code": 'flowchart LR\n  B["B"]\n',
+        "scene_ir": {
+            **scene,
+            "elements": [{"id": "B", "text": "B", "bbox": [0.2, 0.2, 0.5, 0.5]}],
+        },
+        "history": {"unexpected": "non-array"},
+        "issues": [],
+        "alternatives": [],
+        "can_undo": False,
+        "can_redo": False,
+        "revision_navigation": {"current_revision": "r000000", "timeline": ["r000000"]},
+    }
+    assets = build_review_workspace_assets(
+        {"diagrams": summaries, "csrf_token": "history-token"}
+    )
+    node_script = r"""
+import fs from "node:fs";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const { chromium } = require(process.env.MMX_PLAYWRIGHT);
+const payload = JSON.parse(fs.readFileSync(0, "utf8"));
+const browser = await chromium.launch({ headless: true });
+try {
+  const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+  const decisionBodies = [];
+  await page.route("http://review.test/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/") return route.fulfill({ contentType: "text/html", body: payload.html });
+    if (path === "/assets/review.css") {
+      return route.fulfill({ contentType: "text/css", body: payload.css });
+    }
+    if (path === "/assets/review.js") {
+      return route.fulfill({ contentType: "text/javascript", body: payload.javascript });
+    }
+    if (path === "/api/diagrams/diagram-a" && request.method() === "GET") {
+      return route.fulfill({
+        contentType: "application/json", body: JSON.stringify({ diagram: payload.detailA }),
+      });
+    }
+    if (path === "/api/diagrams/diagram-a/decision" && request.method() === "POST") {
+      decisionBodies.push(request.postDataJSON());
+      return route.fulfill({
+        contentType: "application/json", body: JSON.stringify({ diagram: payload.approved }),
+      });
+    }
+    if (path === "/api/diagrams/diagram-b" && request.method() === "GET") {
+      return route.fulfill({
+        contentType: "application/json", body: JSON.stringify({ diagram: payload.detailB }),
+      });
+    }
+    return route.abort("blockedbyclient");
+  });
+  await page.goto("http://review.test/", { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => {
+    return document.getElementById("history-summary").textContent
+      === "Showing newest 100 of 102 valid audit entries. 1 malformed entry ignored.";
+  });
+  const initialTitles = await page.locator("#history-list .audit-entry strong").allTextContents();
+  const first = page.locator("#history-list .audit-entry").first();
+  const literalReason = await first.locator("p").textContent();
+  const unsafeElementCount = await first.locator("img, script").count();
+  await first.locator("summary").click();
+  const detailsOpen = await first.locator("details").evaluate((details) => details.open);
+  const delta = JSON.parse(await first.locator("pre").textContent());
+
+  const decisionResponse = page.waitForResponse((response) => {
+    return new URL(response.url()).pathname === "/api/diagrams/diagram-a/decision"
+      && response.request().method() === "POST";
+  });
+  await page.click("#approve");
+  await decisionResponse;
+  await page.waitForFunction(() => {
+    return document.querySelector("#history-list .audit-entry strong")?.textContent
+      === "approve · diagram-a";
+  });
+  const afterMutation = await page.evaluate(() => ({
+    count: document.querySelectorAll("#history-list .audit-entry").length,
+    first: document.querySelector("#history-list .audit-entry strong")?.textContent,
+    summary: document.getElementById("history-summary").textContent,
+  }));
+
+  const otherResponse = page.waitForResponse((response) => {
+    return new URL(response.url()).pathname === "/api/diagrams/diagram-b"
+      && response.request().method() === "GET";
+  });
+  await page.selectOption("#diagram-select", "diagram-b");
+  await otherResponse;
+  await page.waitForFunction(() => {
+    return document.getElementById("history-summary").textContent
+      === "Audit history unavailable: invalid detail payload.";
+  });
+  const invalidFallback = await page.evaluate(() => ({
+    count: document.querySelectorAll("#history-list .audit-entry").length,
+    summary: document.getElementById("history-summary").textContent,
+    mermaid: document.getElementById("mermaid-editor").value,
+  }));
+  process.stdout.write(JSON.stringify({
+    initialTitles, literalReason, unsafeElementCount, detailsOpen, delta,
+    afterMutation, invalidFallback, decisionBodies,
+  }));
+} finally {
+  await browser.close();
+}
+"""
+
+    result = _run_review_browser(
+        node_script,
+        {
+            "html": assets.html,
+            "css": assets.css,
+            "javascript": assets.javascript,
+            "detailA": detail_a,
+            "approved": approved,
+            "detailB": detail_b,
+        },
+    )
+
+    assert len(result["initialTitles"]) == 100
+    assert result["initialTitles"][0] == "operation-101 · node-101"
+    assert result["initialTitles"][-1] == "operation-2 · node-2"
+    assert "operation-1 · node-1" not in result["initialTitles"]
+    assert "operation-0 · node-0" not in result["initialTitles"]
+    assert result["literalReason"] == attack
+    assert result["unsafeElementCount"] == 0
+    assert result["detailsOpen"] is True
+    assert result["delta"] == {"before": {"label": "before-101"}, "after": {"label": attack}}
+    assert result["afterMutation"] == {
+        "count": 100,
+        "first": "approve · diagram-a",
+        "summary": "Showing newest 100 of 103 valid audit entries. 1 malformed entry ignored.",
+    }
+    assert result["invalidFallback"] == {
+        "count": 0,
+        "summary": "Audit history unavailable: invalid detail payload.",
+        "mermaid": 'flowchart LR\n  B["B"]\n',
+    }
+    assert result["decisionBodies"] == [
+        {
+            "decision": "approve",
+            "reason": "",
+            "expected_version": 0,
+            "expected_digest": "digest-a0",
+        }
+    ]
 
 
 def test_review_workspace_preserves_drafts_and_recovers_revision_conflicts():
