@@ -61,14 +61,47 @@ message만 serializer와 Scene에 함께 전달하고, raw message ID와 무관�
 prompt와 응답 후 검증을 중첩 구조까지 강화하지만, 모든 Mermaid 유형을 하나의 discriminated JSON Schema로
 직접 노출하지는 않습니다. 나머지 유형의 전용 model과 envelope-level discriminated schema는 후속 작업입니다.
 
+Marker 1.10.2의 stock Ollama service는 원래 schema의 최상위 `properties`와 `required`만 복사해 `$defs`를
+버립니다. 이 adapter를 감지하면 local `#/$defs/*` 참조를 재귀적으로 inline한 schema-only
+`EngineObservation` subclass를 전달합니다. 외부·재귀·sibling reference와 65,536자 초과 schema는 거부하고,
+응답은 provider 종류와 무관하게 원래 `EngineObservation`으로 다시 정규 검증합니다.
+
+## Prompt 선택 경계
+
+Marker service 호출 전 provider-visible text에는 별도 문자 예산을 적용합니다. system instruction, 활성
+type 계약, view manifest, 빈 selection section과 Marker 1.10.2 canonical response-schema reserve만으로
+예산을 넘으면 provider를 호출하지 않습니다. user edit/trusted connector 뒤 남은 evidence slot의 최소
+25%는 arrow/line/contour/vector에 round-robin으로 예약하고, trusted label 및 전역 우선순위로 남은 slot을
+backfill합니다. Evidence/OCR root container는 exact plain list여야 하며, 한 번 만든 bounded shallow
+snapshot을 preflight와 canonical selection에 공통 사용합니다. canonical copy 전 evidence 문자열 합계에는
+8,000,000자 hard cap을 적용합니다. 문자 예산에 맞지 않는 큰 record는 JSON escape 길이를 allocation 없이
+계산해 전체 직렬화 전에 건너뜁니다.
+설정된 item 상한으로 자른 OCR prefix에도 plain-string 및 8,000,000자 aggregate preflight를 적용합니다.
+남은 prompt보다 raw string lower bound가 큰 OCR은 escape scan 없이 건너뜁니다. 선택된 evidence와 OCR
+text는 완전한 compact JSON item으로만 추가합니다.
+
+각 exact `VisualEvidence`의 scalar와 nested source-block list도 mutable 입력으로 취급합니다. Nested list는
+reference 상한보다 하나 많은 항목까지만 snapshot하고, bbox/score의 shape·type·finite 값과 모든 문자열의
+type·길이·UTF-8을 `model_dump()` 전에 확인합니다. 검증 뒤에는 이 field snapshot으로 만든 payload만
+canonicalize합니다. Trusted label/connector set도 같은 방식으로 bounded immutable snapshot을 만들어
+selection 전체에서 재사용합니다.
+
+Selection manifest는 입력/검사/포함 수, schema reserve와 선택 profile을 prompt에 기록합니다. 누락은
+candidate warning에도 표시하지만, 후보가 없는 prediction-only 응답에서도 사라지지 않는 source of truth는
+`ReconstructionResult.prompt_budget_notices`입니다. sidecar `manifest.json`과 Marker internal metadata가
+같은 구조화 notice를 보존합니다. 입력 `SourceContext`의 evidence/OCR 배열은 재정렬하거나 수정하지
+않습니다. 이 경계는 provider 응답 token limit, image encoding, SDK 내부 wire overhead와는 별개인 bounded
+text request 계약입니다.
+
 `flowchart`와 `generic_network` prompt에는 더 좁은 identity 계약이 있습니다. typed `nodes[].id`는 같은
 VLM 응답에서 대응하는 `scene_ir.elements[].id`를 byte-for-byte 재사용해야 하며 rename, normalize 또는
 새 ID 생성은 허용하지 않습니다. 각 semantic typed node의 `evidence_ids`도 prompt에 전달한 `Prior
 evidence`의 ID를 인용하고 대응하는 same-response Scene element와 최소 하나를 공유해야 하며, 응답이
-스스로 만든 evidence ID는 근거가 아닙니다. Pipeline은 각 engine 호출 직전의 evidence ID와 payload
-snapshot을 보존하고 뒤늦게 선언되거나 충돌한 ID를 제외합니다. Prompt 준수만으로 신뢰하지 않고
-fusion에서 prior payload의 bbox/text와 same-owner Scene 연결, 독립 vector/geometry node의 unique IoU
-대응, authority observation이 직접 선언한 spatially aligned contour provenance를 다시 검사합니다.
+스스로 만든 evidence ID는 근거가 아닙니다. Pipeline은 각 engine 호출 직전의 비충돌 evidence payload를
+실제 prompt-selected private ID 집합과 교차하고, 뒤늦게 선언되거나 충돌한 ID를 제외합니다. 이 private
+집합과 prompt notice는 response schema에 없으며 provider payload로 설정할 수 없습니다. Prompt 준수만으로
+신뢰하지 않고 fusion에서 prior payload의 bbox/text와 same-owner Scene 연결, 독립 vector/geometry node의
+unique IoU 대응, authority observation이 직접 선언한 spatially aligned contour provenance를 다시 검사합니다.
 
 ## 입력 budget
 

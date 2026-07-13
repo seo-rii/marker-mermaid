@@ -6,7 +6,12 @@ from collections.abc import Iterable
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
 
-from marker_mermaid.config import MermaidConfig
+from marker_mermaid.config import (
+    MAX_VLM_TOTAL_VIEW_PIXELS,
+    MAX_VLM_VIEW_DIMENSION,
+    MAX_VLM_VIEW_PIXELS,
+    MermaidConfig,
+)
 from marker_mermaid.models import VisualEvidence
 
 _FLOW_TYPES = {
@@ -160,7 +165,11 @@ def _tile_starts(length: int, tile_size: int, overlap: int) -> list[int]:
 
 
 def _high_resolution_tiles(
-    source: Image.Image, config: MermaidConfig, limit: int
+    source: Image.Image,
+    config: MermaidConfig,
+    limit: int,
+    *,
+    pixel_budget: int,
 ) -> list[tuple[str, Image.Image]]:
     if not config.use_tiled_images or limit <= 0 or max(source.size) <= config.tile_size:
         return []
@@ -169,8 +178,19 @@ def _high_resolution_tiles(
         for left in _tile_starts(source.width, config.tile_size, config.tile_overlap):
             right = min(source.width, left + config.tile_size)
             bottom = min(source.height, top + config.tile_size)
+            width = right - left
+            height = bottom - top
+            pixels = width * height
+            if (
+                width > MAX_VLM_VIEW_DIMENSION
+                or height > MAX_VLM_VIEW_DIMENSION
+                or pixels > MAX_VLM_VIEW_PIXELS
+                or pixels > pixel_budget
+            ):
+                return result
             name = f"tile_{len(result) + 1}_x{left}_y{top}_x{right}_y{bottom}"
             result.append((name, source.crop((left, top, right, bottom))))
+            pixel_budget -= pixels
             if len(result) >= limit:
                 return result
     return result
@@ -187,8 +207,15 @@ def build_visual_priors(
 
     source = ImageOps.exif_transpose(image).convert("RGB")
     evidence_items = list(evidence)
-    original = source.copy()
-    original.thumbnail((config.max_image_dimension, config.max_image_dimension))
+    original_limit = (
+        min(config.max_image_dimension, MAX_VLM_VIEW_DIMENSION),
+        min(config.max_image_dimension, MAX_VLM_VIEW_DIMENSION),
+    )
+    original = (
+        source.copy()
+        if source.width <= original_limit[0] and source.height <= original_limit[1]
+        else ImageOps.contain(source, original_limit)
+    )
     scale_x = original.width / source.width
     scale_y = original.height / source.height
     warnings: list[str] = []
@@ -196,13 +223,41 @@ def build_visual_priors(
     requested_tile_slots = 0
     if config.use_tiled_images and max(source.size) > config.tile_size and config.max_views > 2:
         requested_tile_slots = min(2, max(1, config.max_views // 4))
-    tiles = _high_resolution_tiles(source, config, requested_tile_slots)
+    original_pixels = original.width * original.height
+    tiles = _high_resolution_tiles(
+        source,
+        config,
+        requested_tile_slots,
+        pixel_budget=MAX_VLM_TOTAL_VIEW_PIXELS - original_pixels,
+    )
+    if len(tiles) < requested_tile_slots:
+        warnings.append("visual prior pixel budget omitted one or more optional tiles")
+    tile_pixels = sum(tile.width * tile.height for _name, tile in tiles)
+    non_tile_pixel_budget = MAX_VLM_TOTAL_VIEW_PIXELS - tile_pixels
     non_tile_limit = config.max_views - len(tiles)
     views: dict[str, Image.Image] = {"original": original}
+    non_tile_pixels = original_pixels
+    pixel_budget_warning_added = False
+
     if len(views) < non_tile_limit:
-        thumbnail = source.copy()
-        thumbnail.thumbnail((768, 768))
-        views["global_thumbnail"] = thumbnail
+        thumbnail = (
+            source.copy()
+            if source.width <= 768 and source.height <= 768
+            else ImageOps.contain(source, (768, 768))
+        )
+        thumbnail_pixels = thumbnail.width * thumbnail.height
+        if (
+            thumbnail.mode != "RGB"
+            or thumbnail.width > MAX_VLM_VIEW_DIMENSION
+            or thumbnail.height > MAX_VLM_VIEW_DIMENSION
+            or thumbnail_pixels > MAX_VLM_VIEW_PIXELS
+            or non_tile_pixels + thumbnail_pixels > non_tile_pixel_budget
+        ):
+            warnings.append("visual prior pixel budget omitted one or more optional views")
+            pixel_budget_warning_added = True
+        else:
+            views["global_thumbnail"] = thumbnail
+            non_tile_pixels += thumbnail_pixels
 
     ocr_items = [
         item
@@ -316,9 +371,27 @@ def build_visual_priors(
     for name in _view_priority(diagram_types):
         if len(views) >= non_tile_limit:
             break
+        if non_tile_pixels + original_pixels > non_tile_pixel_budget:
+            if not pixel_budget_warning_added:
+                warnings.append("visual prior pixel budget omitted one or more optional views")
+                pixel_budget_warning_added = True
+            break
         view = build(name)
         if view is not None:
+            pixels = view.width * view.height
+            if (
+                view.mode != "RGB"
+                or view.width > MAX_VLM_VIEW_DIMENSION
+                or view.height > MAX_VLM_VIEW_DIMENSION
+                or pixels > MAX_VLM_VIEW_PIXELS
+                or non_tile_pixels + pixels > non_tile_pixel_budget
+            ):
+                if not pixel_budget_warning_added:
+                    warnings.append("visual prior pixel budget omitted one or more optional views")
+                    pixel_budget_warning_added = True
+                continue
             views[name] = view
+            non_tile_pixels += pixels
     for name, tile in tiles:
         views[name] = tile
     return views, list(dict.fromkeys(warnings))

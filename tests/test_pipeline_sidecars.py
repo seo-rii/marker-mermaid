@@ -6,9 +6,11 @@ import json
 import pytest
 from PIL import Image
 
+import marker_mermaid.pipeline as pipeline_module
 import marker_mermaid.sidecars as sidecar_module
 from marker_mermaid.config import MermaidConfig, PublishPolicy
-from marker_mermaid.engines import JsonFixtureEngine
+from marker_mermaid.engines import JsonFixtureEngine, MarkerStructuredVLMEngine
+from marker_mermaid.fusion import FusionEngine
 from marker_mermaid.geometry import ContourObservation, GeometryEngine, GeometryObservation
 from marker_mermaid.markdown import standalone_document_markdown
 from marker_mermaid.models import (
@@ -18,6 +20,7 @@ from marker_mermaid.models import (
     EngineObservation,
     MermaidCandidate,
     NodeIdMapping,
+    PromptBudgetNotice,
     ReconstructionResult,
     SceneElement,
     SceneRelation,
@@ -29,6 +32,17 @@ from marker_mermaid.protocols import RuntimeResult
 from marker_mermaid.scoring import aggregate_scores, decide_publication
 from marker_mermaid.sidecars import SidecarStore
 from marker_mermaid.validation import CandidateValidator
+
+
+class _ExplosiveList(list):
+    def __len__(self):
+        raise AssertionError("non-canonical collection length must not be inspected")
+
+    def __iter__(self):
+        raise AssertionError("non-canonical collection must not be iterated")
+
+    def __getitem__(self, key):
+        raise AssertionError("non-canonical collection must not be sliced")
 
 
 def observation():
@@ -485,6 +499,308 @@ def test_generated_node_provenance_gate_holds_unattributed_typed_nodes(fake_runt
     assert not result.publish
     assert result.review_required
     assert any("provenance gate" in warning for warning in result.selected.warnings)
+
+
+def test_marker_vlm_omitted_prior_cannot_satisfy_publication_provenance(fake_runtime):
+    captured = {}
+
+    def service(**kwargs):
+        captured.update(kwargs)
+        return EngineObservation(
+            prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+            scene_ir=DiagramSceneIR(
+                elements=[
+                    SceneElement(
+                        id="A",
+                        role="process",
+                        text="Payment",
+                        bbox=(0, 0, 20, 10),
+                        evidence_ids=["omitted-secret"],
+                    )
+                ]
+            ),
+            typed_candidates=[
+                TypedIRCandidate(
+                    diagram_type="flowchart",
+                    ir={
+                        "nodes": [
+                            {
+                                "id": "A",
+                                "label": "Payment",
+                                "evidence_ids": ["omitted-secret"],
+                            }
+                        ],
+                        "edges": [],
+                    },
+                )
+            ],
+        ).model_dump(mode="json")
+
+    source_evidence = [
+        VisualEvidence(id="selected-edit", kind="user_edit", text="Confirmed"),
+        VisualEvidence(id="omitted-secret", kind="ocr_token", text="Payment"),
+    ]
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [
+            MarkerStructuredVLMEngine(
+                service,
+                enabled_types={"flowchart"},
+                max_evidence_items=1,
+            )
+        ],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        evidence=source_evidence,
+        ocr_texts=["Payment"],
+    )
+
+    prior_json = captured["prompt"].rsplit("\nPrior evidence: ", 1)[1].split("\nOCR tokens: ", 1)[0]
+    assert [item["id"] for item in json.loads(prior_json)] == ["selected-edit"]
+    assert result.selected is not None
+    assert result.selected.scores["visual_entailment_precision"] == 0
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert result.prompt_budget_notices[0].evidence_included == 1
+
+
+def test_marker_vlm_self_declared_evidence_is_review_only(fake_runtime):
+    def service(**_kwargs):
+        return EngineObservation(
+            prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+            scene_ir=DiagramSceneIR(
+                elements=[
+                    SceneElement(
+                        id="A",
+                        role="process",
+                        text="Invented",
+                        bbox=(0, 0, 20, 10),
+                        evidence_ids=["self-declared"],
+                    )
+                ]
+            ),
+            typed_candidates=[
+                TypedIRCandidate(
+                    diagram_type="flowchart",
+                    ir={
+                        "nodes": [
+                            {
+                                "id": "A",
+                                "label": "Invented",
+                                "evidence_ids": ["self-declared"],
+                            }
+                        ],
+                        "edges": [],
+                    },
+                )
+            ],
+            evidence=[
+                VisualEvidence(
+                    id="self-declared",
+                    kind="vlm_observation",
+                    text="Invented",
+                    score=1.0,
+                )
+            ],
+        ).model_dump(mode="json")
+
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [MarkerStructuredVLMEngine(service, enabled_types={"flowchart"})],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is not None
+    assert result.selected.scores["visual_entailment_precision"] == 0
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert [item.id for item in result.evidence] == ["self-declared"]
+
+
+def test_pipeline_fusion_receives_only_marker_prompt_selected_prior(
+    monkeypatch,
+    fake_runtime,
+):
+    captured_inputs = []
+    original_fuse = FusionEngine.fuse
+
+    def capture_fusion_inputs(self, inputs):
+        values = list(inputs)
+        captured_inputs.extend(values)
+        return original_fuse(self, values)
+
+    monkeypatch.setattr(FusionEngine, "fuse", capture_fusion_inputs)
+
+    class PriorEngine:
+        name = "prior"
+        fusion_source = "geometry"
+
+        def observe(self, _context):
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["unknown"], scores=[1.0]),
+                evidence=[VisualEvidence(id="geometry-own", kind="contour", bbox=(0, 0, 5, 5))],
+            )
+
+    def service(**_kwargs):
+        return EngineObservation(
+            prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+            direct_candidates=[
+                DirectMermaidCandidate(
+                    diagram_type="flowchart",
+                    code="flowchart LR\n    A --> B\n",
+                )
+            ],
+            evidence=[VisualEvidence(id="self-declared", kind="vlm_observation", score=1.0)],
+        ).model_dump(mode="json")
+
+    config = MermaidConfig(candidate_count=1)
+    ReconstructionPipeline(
+        config,
+        [
+            PriorEngine(),
+            MarkerStructuredVLMEngine(
+                service,
+                enabled_types={"flowchart"},
+                max_evidence_items=1,
+            ),
+        ],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        evidence=[
+            VisualEvidence(id="selected-edit", kind="user_edit", text="Confirmed"),
+            VisualEvidence(id="omitted-secret", kind="ocr_token", text="Payment"),
+        ],
+    )
+
+    marker_input = next(item for item in captured_inputs if item.name == "marker_structured_vlm")
+    assert marker_input.prior_evidence_ids == {"selected-edit"}
+    assert [item.id for item in marker_input.prior_evidence] == ["selected-edit"]
+    assert marker_input.publication_evidence_ids == {"selected-edit"}
+
+
+def test_fused_direct_candidate_cannot_inherit_later_engine_evidence(fake_runtime):
+    def service(**_kwargs):
+        return EngineObservation(
+            prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+            direct_candidates=[
+                DirectMermaidCandidate(
+                    diagram_type="flowchart",
+                    code="flowchart LR\n    A --> B\n",
+                    confidence=0.9,
+                )
+            ],
+        ).model_dump(mode="json")
+
+    class LaterEvidenceEngine:
+        name = "later_evidence"
+        fusion_source = "geometry"
+
+        def observe(self, _context):
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+                evidence=[
+                    VisualEvidence(
+                        id="geometry-own",
+                        kind="contour",
+                        bbox=(1, 1, 5, 5),
+                    )
+                ],
+            )
+
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [
+            MarkerStructuredVLMEngine(service, enabled_types={"flowchart"}),
+            LaterEvidenceEngine(),
+        ],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is not None
+    assert result.selected.generation_engine == FusionEngine.name
+    assert result.selected.publication_evidence_authority_ids == frozenset()
+    assert "geometry-own" not in result.selected.publication_evidence_authority_ids
+
+
+def test_prompt_budget_notice_survives_prediction_only_result_and_sidecar(
+    tmp_path,
+    fake_runtime,
+):
+    def service(**_kwargs):
+        return EngineObservation(
+            prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0])
+        ).model_dump(mode="json")
+
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [
+            MarkerStructuredVLMEngine(
+                service,
+                enabled_types={"flowchart"},
+                max_evidence_items=1,
+            )
+        ],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "notice-only",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        evidence=[
+            VisualEvidence(id="first", kind="user_edit", text="First"),
+            VisualEvidence(id="second", kind="ocr_token", text="Second"),
+        ],
+    )
+
+    assert result.selected is None
+    assert len(result.prompt_budget_notices) == 1
+    notice = result.prompt_budget_notices[0]
+    assert notice.evidence_total == 2
+    assert notice.evidence_included == 1
+    assert notice.omission_reasons == ["evidence_item_limit"]
+
+    relative = SidecarStore(tmp_path).write(result)
+    manifest = json.loads((tmp_path / relative / "manifest.json").read_text())
+    assert manifest["prompt_budget_notices"] == [notice.model_dump(mode="json")]
+
+
+def test_prompt_budget_notice_survives_provider_failure_and_sidecar(
+    tmp_path,
+    fake_runtime,
+):
+    def service(**_kwargs):
+        raise TimeoutError("provider timeout")
+
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [MarkerStructuredVLMEngine(service, enabled_types={"flowchart"})],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "failed-request-notice",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        evidence=[VisualEvidence(id="kept", kind="contour", bbox=(1, 1, 2, 2))],
+    )
+
+    assert result.selected is None
+    assert len(result.prompt_budget_notices) == 1
+    notice = result.prompt_budget_notices[0]
+    assert notice.evidence_total == notice.evidence_included == 1
+    assert any(failure.error_type == "StructuredVLMRequestError" for failure in result.failures)
+
+    relative = SidecarStore(tmp_path).write(result)
+    manifest = json.loads((tmp_path / relative / "manifest.json").read_text())
+    assert manifest["prompt_budget_notices"] == [notice.model_dump(mode="json")]
 
 
 def test_attributed_timeline_typed_candidate_can_pass_extended_provenance_gate():
@@ -2209,6 +2525,95 @@ def test_sidecar_rejects_typed_ir_mutation_during_deepcopy_snapshot(
     assert not target.exists()
 
 
+def test_sidecar_rejects_prompt_notice_mutation_during_deepcopy_snapshot(
+    tmp_path,
+    fake_runtime,
+):
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation())],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "atomic-prompt-notice",
+        "source.png",
+        Image.new("RGB", (100, 60), "white"),
+        ocr_texts=["Start End"],
+    )
+    result.prompt_budget_notices = [
+        PromptBudgetNotice(
+            engine="marker_structured_vlm",
+            selection_profile="structural-quota-v1",
+            prompt_chars=10_000,
+            max_prompt_chars=100_000,
+            schema_reserve_chars=14_753,
+            max_evidence_items=2,
+            max_ocr_items=0,
+            evidence_total=2,
+            evidence_considered=2,
+            evidence_included=1,
+            ocr_total=0,
+            ocr_considered=0,
+            ocr_included=0,
+            omission_reasons=["evidence_char_limit"],
+            selected_evidence_sha256="0" * 64,
+        )
+    ]
+
+    class MutatingSourceMapping(dict):
+        def __deepcopy__(self, memo):
+            result.prompt_budget_notices[0].prompt_chars += 1
+            return dict(self)
+
+    result.source_mapping = MutatingSourceMapping(source={"source_id": result.source_id})
+    target = tmp_path / "diagrams" / "atomic-prompt-notice"
+
+    with pytest.raises(ValueError, match="changed while its snapshot was captured"):
+        SidecarStore(tmp_path).write(result)
+
+    assert not target.exists()
+
+
+def test_sidecar_rejects_pre_mutated_prompt_budget_notice(
+    tmp_path,
+    fake_runtime,
+):
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation())],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "invalid-prompt-notice",
+        "source.png",
+        Image.new("RGB", (100, 60), "white"),
+        ocr_texts=["Start End"],
+    )
+    notice = PromptBudgetNotice(
+        engine="marker_structured_vlm",
+        selection_profile="structural-quota-v1",
+        prompt_chars=10_000,
+        max_prompt_chars=100_000,
+        schema_reserve_chars=14_753,
+        max_evidence_items=1,
+        max_ocr_items=0,
+        evidence_total=1,
+        evidence_considered=1,
+        evidence_included=1,
+        ocr_total=0,
+        ocr_considered=0,
+        ocr_included=0,
+        selected_evidence_sha256="0" * 64,
+    )
+    notice.prompt_chars = 100_000
+    result.prompt_budget_notices = [notice]
+
+    with pytest.raises(ValueError, match="invalid publication core"):
+        SidecarStore(tmp_path).write(result)
+
+    assert not (tmp_path / "diagrams" / "invalid-prompt-notice").exists()
+
+
 def test_sidecar_write_flags_are_honored(tmp_path, fake_runtime):
     config = MermaidConfig(candidate_count=2)
     result = ReconstructionPipeline(
@@ -2231,3 +2636,596 @@ def test_sidecar_write_flags_are_honored(tmp_path, fake_runtime):
     assert not (bundle / "generated-scene-ir.json").exists()
     assert not (bundle / "provenance.json").exists()
     assert not (bundle / "alternatives").exists()
+
+
+def test_pipeline_isolates_non_plain_source_collections_without_touching_them(fake_runtime):
+    captured = {}
+    source_block = object()
+
+    class CaptureEngine:
+        name = "capture"
+
+        def observe(self, context):
+            captured.update(
+                source_block_ids=context.source_block_ids,
+                page_ids=None,
+                evidence=context.evidence,
+                ocr_texts=context.ocr_texts,
+                source_blocks=context.source_blocks,
+                vector_sources=context.vector_sources,
+            )
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["unknown"], scores=[1.0])
+            )
+
+    hostile = _ExplosiveList()
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [CaptureEngine()],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (20, 20), "white"),
+        source_block_ids=hostile,
+        page_ids=hostile,
+        evidence=hostile,
+        ocr_texts=hostile,
+        source_block=source_block,
+        source_blocks=hostile,
+        vector_sources=hostile,
+    )
+
+    assert captured["source_block_ids"] == ["source"]
+    assert captured["evidence"] == []
+    assert captured["ocr_texts"] == []
+    assert captured["source_blocks"] == [source_block]
+    assert captured["vector_sources"] == []
+    assert result.page_ids == []
+    assert len(result.failures) == 6
+    assert all(item.stage == "source_context" for item in result.failures)
+
+
+def test_pipeline_drops_each_oversized_source_collection_as_one_unit(
+    monkeypatch,
+    fake_runtime,
+):
+    monkeypatch.setattr(pipeline_module, "MAX_OBSERVATION_EVIDENCE", 1)
+    monkeypatch.setattr(pipeline_module, "MAX_EVIDENCE_REFS", 1)
+    monkeypatch.setattr(pipeline_module, "_MAX_OCR_REFERENCE_TEXTS", 1)
+    captured = {}
+    fallback_block = object()
+
+    class CaptureEngine:
+        name = "capture"
+
+        def observe(self, context):
+            captured.update(
+                source_block_ids=context.source_block_ids,
+                evidence=context.evidence,
+                ocr_texts=context.ocr_texts,
+                source_blocks=context.source_blocks,
+                vector_sources=context.vector_sources,
+            )
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["unknown"], scores=[1.0])
+            )
+
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [CaptureEngine()],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (20, 20), "white"),
+        source_block_ids=["first", "second"],
+        page_ids=[1, 2],
+        evidence=[
+            VisualEvidence(id="first", kind="contour"),
+            VisualEvidence(id="second", kind="contour"),
+        ],
+        ocr_texts=["first", "second"],
+        source_block=fallback_block,
+        source_blocks=[object(), object()],
+        vector_sources=[object(), object()],
+    )
+
+    assert captured == {
+        "source_block_ids": ["source"],
+        "evidence": [],
+        "ocr_texts": [],
+        "source_blocks": [fallback_block],
+        "vector_sources": [],
+    }
+    assert result.page_ids == []
+    assert len(result.failures) == 6
+    assert all("isolated" in item.message for item in result.failures)
+
+
+def test_pipeline_canonicalizes_initial_evidence_without_model_dump(
+    monkeypatch,
+    fake_runtime,
+):
+    item = VisualEvidence(
+        id="safe",
+        kind="ocr_token",
+        text="Safe",
+        source_block_ids=["source"],
+    )
+
+    def forbidden_model_dump(*_args, **_kwargs):
+        raise AssertionError("live evidence model_dump must not be used")
+
+    monkeypatch.setattr(VisualEvidence, "model_dump", forbidden_model_dump)
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (20, 20), "white"),
+        evidence=[item],
+    )
+
+    assert [evidence.id for evidence in result.evidence] == ["safe"]
+    assert result.evidence[0] is not item
+    assert result.evidence[0].source_block_ids is not item.source_block_ids
+    item.id = "mutated"
+    item.source_block_ids.append("mutated")
+    assert result.evidence[0].id == "safe"
+    assert result.evidence[0].source_block_ids == ["source"]
+
+
+def test_pipeline_drops_aggregate_oversized_evidence_and_ocr_collections(
+    monkeypatch,
+    fake_runtime,
+):
+    monkeypatch.setattr(pipeline_module, "MAX_VLM_EVIDENCE_INPUT_CHARS", 4)
+    monkeypatch.setattr(pipeline_module, "_MAX_OCR_REFERENCE_CHARS", 3)
+    captured = {}
+
+    class CaptureEngine:
+        name = "capture"
+
+        def observe(self, context):
+            captured["evidence"] = context.evidence
+            captured["ocr_texts"] = context.ocr_texts
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["unknown"], scores=[1.0])
+            )
+
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [CaptureEngine()],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (20, 20), "white"),
+        evidence=[VisualEvidence(id="safe", kind="contour")],
+        ocr_texts=["four"],
+    )
+
+    assert captured == {"evidence": [], "ocr_texts": []}
+    assert len(result.failures) == 2
+    assert all("aggregate" in item.message for item in result.failures)
+
+
+def test_pipeline_reports_global_engine_evidence_limit_only_once(monkeypatch, fake_runtime):
+    monkeypatch.setattr(pipeline_module, "MAX_OBSERVATION_EVIDENCE", 1)
+
+    class EvidenceEngine:
+        def __init__(self, name, evidence_id, *, direct=False):
+            self.name = name
+            self.evidence_id = evidence_id
+            self.direct = direct
+
+        def observe(self, _context):
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+                direct_candidates=(
+                    [
+                        DirectMermaidCandidate(
+                            diagram_type="flowchart",
+                            code='flowchart LR\n    A["Start"]\n',
+                        )
+                    ]
+                    if self.direct
+                    else []
+                ),
+                evidence=[VisualEvidence(id=self.evidence_id, kind="contour")],
+            )
+
+    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    result = ReconstructionPipeline(
+        config,
+        [
+            EvidenceEngine("first", "engine-first", direct=True),
+            EvidenceEngine("second", "engine-second"),
+        ],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (20, 20), "white"),
+        evidence=[VisualEvidence(id="initial", kind="contour")],
+    )
+
+    assert [item.id for item in result.evidence] == ["initial"]
+    limit_failures = [item for item in result.failures if item.error_type == "EvidenceLimitError"]
+    assert len(limit_failures) == 1
+    assert result.selected is not None
+    assert (
+        sum("global evidence item or character limit" in item for item in result.selected.warnings)
+        == 1
+    )
+
+
+def test_engine_name_cannot_spoof_internal_fusion_authority(fake_runtime):
+    class SpoofedFusionEngine:
+        name = FusionEngine.name
+
+        def observe(self, _context):
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+                direct_candidates=[
+                    DirectMermaidCandidate(
+                        diagram_type="flowchart",
+                        code='flowchart LR\n    A["Start"]\n',
+                    )
+                ],
+            )
+
+    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    result = ReconstructionPipeline(
+        config,
+        [SpoofedFusionEngine()],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (20, 20), "white"),
+        evidence=[
+            VisualEvidence(
+                id="initial",
+                kind="ocr_token",
+                text="Start",
+                bbox=(0, 0, 10, 10),
+                source_block_ids=["source"],
+            )
+        ],
+    )
+
+    assert result.selected is not None
+    assert result.selected.generation_engine == FusionEngine.name
+    assert result.selected.publication_evidence_authority_ids == frozenset({"initial"})
+
+
+def test_pipeline_isolates_source_mapping_subclass_without_running_hooks(fake_runtime):
+    calls = []
+    captured = {}
+
+    class HookedMapping(dict):
+        def __iter__(self):
+            calls.append("iter")
+            return super().__iter__()
+
+        def __deepcopy__(self, _memo):
+            calls.append("deepcopy")
+            return dict(self)
+
+    class CaptureEngine:
+        name = "capture"
+
+        def observe(self, context):
+            captured["source_mapping"] = context.source_mapping
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["unknown"], scores=[1.0])
+            )
+
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [CaptureEngine()],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (20, 20), "white"),
+        source_mapping=HookedMapping(source={"source_id": "source"}),
+    )
+
+    assert calls == []
+    assert captured["source_mapping"] is None
+    assert result.source_mapping is None
+    assert len(result.failures) == 1
+    assert "invalid source_mapping was isolated" in result.failures[0].message
+
+
+def test_pipeline_restores_plain_repair_context_after_candidate_engine_mutation(
+    fake_runtime,
+):
+    captured = {}
+
+    class HostileImage(Image.Image):
+        def __init__(self):
+            super().__init__()
+            self.copy_calls = 0
+
+        def copy(self):
+            self.copy_calls += 1
+            raise AssertionError("candidate-owned image hook must not run")
+
+    hostile_image = HostileImage()
+
+    class MutatingEngine:
+        name = "mutating"
+
+        def observe(self, context):
+            context.image = hostile_image
+            context.views = {"original": hostile_image}
+            context.source_mapping = {"injected": "value"}
+            context.evidence = _ExplosiveList()
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+                direct_candidates=[
+                    DirectMermaidCandidate(
+                        diagram_type="flowchart",
+                        code='flowchart LR\n    A["Start"]\n',
+                    )
+                ],
+            )
+
+    class CaptureRepair:
+        name = "capture_repair"
+
+        def repair(self, context, _candidate):
+            captured["image_type"] = type(context.image)
+            captured["view_types"] = {name: type(view) for name, view in context.views.items()}
+            captured["source_mapping"] = context.source_mapping
+            captured["evidence"] = [item.id for item in context.evidence]
+            return None
+
+    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    result = ReconstructionPipeline(
+        config,
+        [MutatingEngine()],
+        CandidateValidator(fake_runtime, config.security_profile),
+        repair_engine=CaptureRepair(),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (20, 20), "white"),
+        source_mapping={"source": {"source_id": "source"}},
+        evidence=[VisualEvidence(id="initial", kind="contour")],
+    )
+
+    assert result.selected is not None
+    assert hostile_image.copy_calls == 0
+    assert captured == {
+        "image_type": Image.Image,
+        "view_types": {name: Image.Image for name in captured["view_types"]},
+        "source_mapping": {"source": {"source_id": "source"}},
+        "evidence": ["initial"],
+    }
+
+
+def test_repair_image_snapshot_checks_exact_mode_before_equality_hooks():
+    calls = []
+
+    class HookedMode:
+        def __ne__(self, _other):
+            calls.append("ne")
+            raise AssertionError("mode equality hook must not run")
+
+    image = Image.Image()
+    image._mode = HookedMode()
+    image._size = (1, 1)
+
+    with pytest.raises(ValueError, match="canonical RGB dimensions"):
+        pipeline_module._canonical_rgb_image_snapshot(image)
+
+    assert calls == []
+
+
+def test_each_candidate_engine_receives_an_independent_authoritative_context(fake_runtime):
+    retained = []
+    source_block = object()
+    vector_source = object()
+
+    class MutatingEngine:
+        name = "mutating"
+
+        def observe(self, context):
+            retained.append(context)
+            context.source_block_ids[:] = ["injected"]
+            context.image = object()
+            context.views.clear()
+            context.evidence.clear()
+            context.ocr_texts[:] = ["Injected"]
+            context.source_blocks.clear()
+            context.vector_sources.clear()
+            context.source_mapping["source"]["source_id"] = "injected"
+            context.trusted_label_evidence_ids.add("spoof-label")
+            context.trusted_connector_evidence_ids.add("spoof-connector")
+            context.trusted_connector_relations.add(("A", "B", frozenset({"spoof-connector"})))
+            context.conflicted_connector_pairs.add(frozenset({"A", "B"}))
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["unknown"], scores=[1.0]),
+                evidence=[VisualEvidence(id="engine-new", kind="contour")],
+            )
+
+    class CapturingEngine:
+        name = "capturing"
+
+        def observe(self, context):
+            retained.append(context)
+            assert context is not retained[0]
+            assert context.source_block_ids == ["source"]
+            assert type(context.image) is Image.Image
+            assert context.image.size == (20, 20)
+            assert context.views
+            assert all(type(view) is Image.Image for view in context.views.values())
+            assert [item.id for item in context.evidence] == ["initial", "engine-new"]
+            assert context.ocr_texts == ["Safe OCR"]
+            assert context.source_blocks == [source_block]
+            assert context.vector_sources == [vector_source]
+            assert context.source_mapping == {"source": {"source_id": "source"}}
+            assert context.trusted_label_evidence_ids == set()
+            assert context.trusted_connector_evidence_ids == set()
+            assert context.trusted_connector_relations == set()
+            assert context.conflicted_connector_pairs == set()
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+                direct_candidates=[
+                    DirectMermaidCandidate(
+                        diagram_type="flowchart",
+                        code='flowchart LR\n    A["Start"]\n',
+                    )
+                ],
+            )
+
+    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    result = ReconstructionPipeline(
+        config,
+        [MutatingEngine(), CapturingEngine()],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (20, 20), "white"),
+        evidence=[VisualEvidence(id="initial", kind="contour")],
+        ocr_texts=["Safe OCR"],
+        source_block=source_block,
+        source_blocks=[source_block],
+        vector_sources=[vector_source],
+        source_mapping={"source": {"source_id": "source"}},
+    )
+
+    assert result.selected is not None
+    assert len(retained) == 2
+    assert retained[0].source_block_ids == ["injected"]
+
+
+def test_pipeline_caps_reconstruction_global_evidence_characters(
+    monkeypatch,
+    fake_runtime,
+):
+    monkeypatch.setattr(pipeline_module, "MAX_VLM_EVIDENCE_INPUT_CHARS", 40)
+
+    class EvidenceEngine:
+        def __init__(self, name, evidence_id, *, direct=False):
+            self.name = name
+            self.evidence_id = evidence_id
+            self.direct = direct
+
+        def observe(self, _context):
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+                direct_candidates=(
+                    [
+                        DirectMermaidCandidate(
+                            diagram_type="flowchart",
+                            code='flowchart LR\n    A["Start"]\n',
+                        )
+                    ]
+                    if self.direct
+                    else []
+                ),
+                evidence=[
+                    VisualEvidence(
+                        id=self.evidence_id,
+                        kind="contour",
+                        text="x" * 10,
+                    )
+                ],
+            )
+
+    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    result = ReconstructionPipeline(
+        config,
+        [
+            EvidenceEngine("first", "e1", direct=True),
+            EvidenceEngine("second", "e2"),
+        ],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (20, 20), "white"),
+        evidence=[VisualEvidence(id="i", kind="contour")],
+    )
+
+    assert [item.id for item in result.evidence] == ["i", "e1"]
+    limit_failures = [item for item in result.failures if item.error_type == "EvidenceLimitError"]
+    assert len(limit_failures) == 1
+    assert "character limit" in limit_failures[0].message
+
+
+def test_large_source_keeps_full_coordinate_canvas_across_engines_and_fusion(
+    monkeypatch,
+    fake_runtime,
+):
+    captured_fusion_inputs = []
+    original_fuse = FusionEngine.fuse
+
+    def capture_fusion(self, inputs):
+        values = list(inputs)
+        captured_fusion_inputs.extend(values)
+        return original_fuse(self, values)
+
+    monkeypatch.setattr(FusionEngine, "fuse", capture_fusion)
+
+    class EvidenceEngine:
+        name = "evidence"
+
+        def observe(self, context):
+            assert context.image.size == (300, 100)
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["unknown"], scores=[1.0]),
+                evidence=[
+                    VisualEvidence(
+                        id="right-contour",
+                        kind="contour",
+                        bbox=(250, 10, 290, 40),
+                    )
+                ],
+            )
+
+    class CapturingEngine:
+        name = "capturing"
+
+        def observe(self, context):
+            assert context.image.size == (300, 100)
+            assert context.views["original"].size == (128, 43)
+            assert "contour_overlay" in context.views
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+                direct_candidates=[
+                    DirectMermaidCandidate(
+                        diagram_type="flowchart",
+                        code='flowchart LR\n    A["Start"]\n',
+                    )
+                ],
+            )
+
+    config = MermaidConfig(candidate_count=1, max_image_dimension=128)
+    result = ReconstructionPipeline(
+        config,
+        [EvidenceEngine(), CapturingEngine()],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (300, 100), "white"),
+    )
+
+    assert result.selected is not None
+    assert captured_fusion_inputs
+    assert all(item.trusted_canvas_size == (300.0, 100.0) for item in captured_fusion_inputs)

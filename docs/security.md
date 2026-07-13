@@ -190,8 +190,59 @@ code는 다른 edit와 같은 strict scanner, parse/render, SVG 검사와 commit
 통과해야 합니다.
 
 VLM/fixture JSON에는 Scene/IR 개수·깊이·문자·point·ID 상한과 finite-number 검사를 적용하며 sidecar
-JSON은 비표준 `NaN`/Infinity를 허용하지 않습니다. Marker preview image도 dimension 8,192와 5천만
-pixel 상한을 넘거나 Pillow decompression-bomb 판정이 나면 preview만 격리해 생략합니다.
+JSON은 비표준 `NaN`/Infinity를 허용하지 않습니다. Structured VLM은 mutable evidence를 canonical
+model로 다시 검증합니다. canonical copy 전 evidence ID/text/source-block 문자의 합이 8,000,000을
+넘는 입력은 거부합니다. Evidence와 OCR root container는 exact plain list만 허용하고 각각 한 번 만든
+bounded snapshot을 이후 검사와 선택에 공통 사용합니다. 선택 대상으로 자른 OCR prefix도 plain `str`만
+허용하고 문자열 합계 8,000,000자를 넘으면 escape scan 전에 거부합니다. OCR/evidence 전체를 먼저 JSON
+직렬화하지 않으며, 설정된 item/문자 예산과 구조 quota 안에서 선택합니다. Prompt에 맞지 않는 OCR
+string은 raw length lower bound를 먼저 검사해 큰 문자열을 JSON escape scan 없이 건너뜁니다. Marker 1.10.2의 canonical
+response-schema text reserve까지 더한 고정 system/schema/view 영역이 prompt 상한을 넘으면 외부 provider
+호출 전에 실패합니다. 선택 record는 완전한 JSON 단위로만 포함되고 최종 prompt도 UTF-8로 다시
+검사합니다.
+
+Post-construction mutation도 신뢰하지 않습니다. Evidence의 bbox/score/text/font/id를 exact type,
+finite-number, field-size 계약으로 먼저 검사하고, nested `source_block_ids`는 허용 개수보다 하나만 더 읽는
+bounded snapshot으로 고정합니다. 이 snapshot들로 새 canonical payload를 만들어 검증하므로 live evidence
+model을 뒤에서 다시 dump하지 않습니다. Trusted connector/label ID도 exact `set`/`frozenset`에서 bounded
+UTF-8 ID snapshot을 만든 뒤 그 immutable snapshot만 우선순위와 provenance 선택에 사용합니다.
+
+Marker 1.10.2 stock Ollama가 nested `$defs`를 버리는 경로에는 local reference만 허용하는 bounded inline
+schema adapter를 사용합니다. 외부·재귀 reference나 schema 상한 초과는 provider 호출 전에 실패하며,
+Ollama 응답도 공통 canonical model 검증을 우회하지 않습니다.
+
+VLM candidate의 게시 provenance 권한은 해당 호출 직전의 비충돌 evidence 중 실제 prompt에 선택된
+ID에만 있습니다. 문자/item 예산으로 빠진 ID와 같은 응답이 새로 선언한 `vlm_observation`은 review
+overlay와 sidecar evidence로 보존할 수 있지만, 원본 후보·fusion 후보·repair의 자동 게시 근거가 될 수
+없습니다. 다른 trusted engine은 자기 호출에서 canonicalized된 evidence 권한을 유지하며, fusion typed
+candidate는 선택된 원 owner의 닫힌 권한 집합과 독립적으로 인증된 ID mapping 근거만 이어받습니다.
+중복 direct Mermaid candidate도 전체 fusion input 권한의 합집합이 아니라 실제 선택된 원 owner의 권한만
+이어받으며, 명시적 빈 집합은 빈 상태로 유지됩니다.
+
+Structured VLM view도 첫 `original`, portable name, RGB Pillow type, 개별/전체 pixel budget을 호출 전에
+검사합니다. View dict는 전체를 materialize하지 않고 설정 상한보다 하나 많은 항목까지만 읽어 개수를
+판정합니다. 호출자 소유 image를 검사 뒤 그대로 넘기지 않고, 독립된 plain `PIL.Image.Image` snapshot을
+Pillow의 exact pixel core에서 복제하고 다시 크기 검증해 view manifest와 provider image list 양쪽에
+사용합니다. 호출자 객체의 `size`/`mode` property와 `load`/`copy` hook은 이 복사 경로에서 실행하지
+않습니다. Lazy ImageFile subclass는 호출 전에 이미 load되어 exact Pillow pixel core를 가져야 합니다.
+Marker preview image는 별도로 dimension 8,192와 5천만 pixel 상한을 넘거나 Pillow decompression-bomb
+판정이 나면 preview만 격리해 생략합니다.
+
+Reconstruction 진입점도 engine adapter와 별개의 trust boundary입니다. Source block/page ID, OCR,
+initial evidence, opaque source/vector object list는 exact plain list와 item/aggregate 문자 상한으로 먼저
+snapshot합니다. 잘못되거나 초과한 collection은 prefix를 부분 신뢰하지 않고 collection 전체를 격리해
+안전한 기본값과 source-context failure를 사용합니다. Initial·engine·fusion evidence는 reconstruction
+전체 20,000-item/8,000,000-character cap을 공유하며, cap 뒤 evidence는 publication authority를 얻지
+않습니다. 각 engine 호출 전 image/view/evidence/OCR/mapping/trusted-set snapshot을 다시 복원해 앞선
+custom engine의 mutation을 다음 engine으로 전달하지 않습니다. Built-in fusion 후보 여부도
+engine-controlled 이름 비교가 아니라 내부 pipeline 표식으로만 결정됩니다.
+
+`source_mapping`은 exact built-in `dict`/`list`/`tuple`과 JSON scalar만 받는 iterative walker로
+복사합니다. Depth 32, 25,000 items, field 50,000 characters, escaped compact JSON 4,000,000 bytes와
+finite/safe numeric 범위를 적용하고 tuple은 list로 정규화합니다. Built-in container primitive만 사용해
+subclass iteration/lookup/`deepcopy` hook을 실행하지 않으며 reference cycle도 거부합니다. Pipeline은
+engine과 repair에 이 snapshot만 전달하고, sidecar writer는 JSON 직렬화·deep copy 전에 재검증한 뒤
+before/live/snapshot canonical digest가 같을 때만 bundle을 publish합니다.
 
 ## SVG 검사
 

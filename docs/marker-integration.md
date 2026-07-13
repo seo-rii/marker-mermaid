@@ -41,9 +41,20 @@ Marker의 dependency resolver가 `llm_service`라는 생성자 parameter에 serv
 `MarkerStructuredVLMEngine`만 Marker service API를 알고 core pipeline은 `CandidateEngine` Protocol만
 사용합니다. 기본 engine 순서는 Vector Primitive, Geometry, Structured VLM입니다. merged source는
 모든 source block과 assembly `page_to_canvas` mapping을 vector engine에 전달합니다. VLM 호출은 OCR
-token과 앞선 vector/geometry evidence가 포함된 `prompt`, 갱신된 다중 view image list, anchor block,
-`EngineObservation` response schema를 전달합니다. fused 후보와 개별 engine 후보에 candidate budget을
-round-robin으로 적용합니다.
+token과 앞선 vector/geometry evidence 중 bounded selector가 고른 subset을 포함한 `prompt`, 갱신된 다중
+view image list, anchor block, `EngineObservation` response schema를 전달합니다. Marker 1.10.2 Claude가
+같은 schema를 system text로 추가하는 크기를 보수적으로 request budget에 예약하며, 다른 built-in
+provider에도 같은 reserve를 적용합니다. adapter는 실제 선택한 prior ID와 `PromptBudgetNotice`를 provider
+schema에 없는 private metadata로 최종 observation에 붙입니다. Pipeline은 observation을 다시 검증한 뒤
+이 metadata를 별도로 보존하고 fused 후보와 개별 engine 후보에 candidate budget을 round-robin으로
+적용합니다.
+
+Marker processor가 넘긴 block/page ID, OCR, evidence, block/vector source collection은 engine adapter보다
+앞선 pipeline 경계에서 exact plain list와 hard cap을 검사합니다. 잘못된 collection 하나는 다른 source
+metadata나 문서 변환을 실패시키지 않고 안전한 기본값으로 격리됩니다. Composite/merged source의
+`source_mapping`도 bounded canonical JSON snapshot으로 고정되며, 유효하지 않으면 mapping만 생략하고
+review 가능한 failure metadata를 남깁니다. 각 engine은 새로 복원한 source snapshot을 받으므로 앞선
+custom engine의 context mutation이 다음 engine이나 semantic repair로 전달되지 않습니다.
 
 ## 전용 renderer가 필요한 이유
 

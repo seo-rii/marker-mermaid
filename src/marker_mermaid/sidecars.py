@@ -28,6 +28,8 @@ from marker_mermaid.models import (
     MermaidCandidate,
     ReconstructionResult,
     VisualEvidence,
+    canonical_prompt_budget_notice_json,
+    canonical_source_mapping_snapshot,
 )
 from marker_mermaid.render_artifacts import MAX_RENDER_BYTES, png_inspection_error
 
@@ -194,6 +196,12 @@ class SidecarStore:
         live_result = result
         before_selected = result.selected
         try:
+            before_source_mapping = canonical_source_mapping_snapshot(result.source_mapping)
+        except (AttributeError, TypeError, UnicodeEncodeError, ValueError) as exc:
+            raise ValueError(
+                "sidecar source changed while its snapshot was captured: invalid source mapping"
+            ) from exc
+        try:
             before_sink_payload = _json_bytes(
                 {
                     "selected": (
@@ -205,8 +213,11 @@ class SidecarStore:
                         _candidate_json(candidate) for candidate in result.alternatives
                     ],
                     "evidence": [item.model_dump(mode="json") for item in result.evidence],
-                    "source_mapping": result.source_mapping,
+                    "source_mapping": before_source_mapping,
                     "failures": [item.model_dump(mode="json") for item in result.failures],
+                    "prompt_budget_notices": canonical_prompt_budget_notice_json(
+                        result.prompt_budget_notices
+                    ),
                 }
             )
             if len(before_sink_payload) > MAX_RENDER_BYTES:
@@ -274,11 +285,21 @@ class SidecarStore:
         # Derive the path, policy decision, artifacts, and manifest exclusively
         # from one snapshot so authorization cannot race later field reads.
         try:
-            result = ReconstructionResult.model_copy(result, deep=True)
+            shallow_result = ReconstructionResult.model_copy(result, deep=False)
+            shallow_result.source_mapping = before_source_mapping
+            result = ReconstructionResult.model_copy(shallow_result, deep=True)
         except Exception as exc:
             raise ValueError("sidecar snapshot failed publication authorization") from exc
         after_selected = live_result.selected
         snapshot_selected = result.selected
+        try:
+            after_source_mapping = canonical_source_mapping_snapshot(live_result.source_mapping)
+            snapshot_source_mapping = canonical_source_mapping_snapshot(result.source_mapping)
+            result.source_mapping = snapshot_source_mapping
+        except (AttributeError, TypeError, UnicodeEncodeError, ValueError) as exc:
+            raise ValueError(
+                "sidecar source changed while its snapshot was captured: invalid source mapping"
+            ) from exc
         try:
             after_sink_payload = _json_bytes(
                 {
@@ -291,8 +312,11 @@ class SidecarStore:
                         _candidate_json(candidate) for candidate in live_result.alternatives
                     ],
                     "evidence": [item.model_dump(mode="json") for item in live_result.evidence],
-                    "source_mapping": live_result.source_mapping,
+                    "source_mapping": after_source_mapping,
                     "failures": [item.model_dump(mode="json") for item in live_result.failures],
+                    "prompt_budget_notices": canonical_prompt_budget_notice_json(
+                        live_result.prompt_budget_notices
+                    ),
                 }
             )
             snapshot_sink_payload = _json_bytes(
@@ -306,8 +330,11 @@ class SidecarStore:
                         _candidate_json(candidate) for candidate in result.alternatives
                     ],
                     "evidence": [item.model_dump(mode="json") for item in result.evidence],
-                    "source_mapping": result.source_mapping,
+                    "source_mapping": snapshot_source_mapping,
                     "failures": [item.model_dump(mode="json") for item in result.failures],
+                    "prompt_budget_notices": canonical_prompt_budget_notice_json(
+                        result.prompt_budget_notices
+                    ),
                 }
             )
             if (
@@ -793,6 +820,9 @@ class SidecarStore:
                 },
                 "files": hashes,
                 "failures": [item.model_dump(mode="json") for item in result.failures],
+                "prompt_budget_notices": canonical_prompt_budget_notice_json(
+                    result.prompt_budget_notices
+                ),
             }
             _write(_AnchoredArtifactPath(temporary_fd, "manifest.json"), _json_bytes(manifest))
             try:

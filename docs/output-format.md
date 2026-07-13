@@ -90,9 +90,43 @@ OCR/CV/VLM 추출 근거이며 후자는 품질 평가 대상입니다. Direct M
     "review-history.json": "sha256...",
     "source-map.json": "sha256..."
   },
+  "prompt_budget_notices": [
+    {
+      "engine": "marker_structured_vlm",
+      "selection_profile": "structural-quota-v1",
+      "prompt_chars": 72144,
+      "max_prompt_chars": 100000,
+      "schema_reserve_chars": 14753,
+      "max_evidence_items": 256,
+      "max_ocr_items": 512,
+      "evidence_total": 380,
+      "evidence_considered": 259,
+      "evidence_included": 256,
+      "ocr_total": 640,
+      "ocr_considered": 512,
+      "ocr_included": 498,
+      "omission_reasons": [
+        "evidence_item_limit",
+        "evidence_char_limit",
+        "ocr_item_limit",
+        "ocr_char_limit"
+      ],
+      "selected_evidence_sha256": "sha256..."
+    }
+  ],
   "failures": []
 }
 ```
+
+`prompt_budget_notices`는 optional additive `0.5` 필드이며 Structured VLM 호출마다 adapter가 만든
+bounded audit record입니다. provider response schema에는 이 필드와 선택 evidence ID 집합이 없으므로
+응답이 notice나 게시 권한을 위조할 수 없습니다. 후보 생성 여부와 무관하게 남으며, `prompt_chars +
+schema_reserve_chars <= max_prompt_chars`와 input/considered/included 수, item/character omission 원인을
+기록합니다. bounded prompt를 완성한 뒤 provider 호출 또는 응답 정규 검증이 실패해도 같은 notice를
+실패 결과와 sidecar에 남깁니다. 위 숫자는 출력 형식을 설명하는 예시이며 schema 직렬화 길이는 지원되는
+Pydantic 환경에 따라 달라질 수 있습니다. `selected_evidence_sha256`은 정렬된 선택 ID 집합에 대한 opaque run
+commitment이자 상관관계 식별자입니다. 선택 ID 집합은 process-private이므로 sidecar만으로 독립 검증할
+수 있는 감사 digest나 게시 권한은 아니며, 실제 게시 권한도 process-private metadata로 유지됩니다.
 
 `files`의 값은 content SHA-256입니다. `final.*`은 hard gate를 통과해 selected가 된 candidate에만
 생성됩니다. 실패하거나 선택되지 않은 후보는 `alternatives/`에 JSON과 가능한 `.mmd`로 남습니다.
@@ -188,6 +222,12 @@ SVG와 선택적 inspected PNG를 반환한 경우에만 가능하므로 stale r
 `review-state.json.selected_candidate_id`가 현재 review 선택을 나타냅니다.
 `source-map.json`은 serialized `DiscoveredSource`, fragment crop/page bbox, canvas placement,
 source→canvas/page→canvas affine을 보존하여 canvas provenance를 PDF page와 source block으로 역추적합니다.
+이 파일은 pipeline이 수용한 exact JSON-compatible mapping의 canonical snapshot만 기록합니다. Object
+key는 정렬되고 tuple은 JSON array로 변환됩니다. Mapping은 depth 32, 전체 25,000 items, field당 50,000
+characters, compact escaped JSON 4,000,000 bytes로 제한되며 non-finite 또는 JavaScript safe-integer
+범위를 벗어난 숫자는 허용하지 않습니다. Sidecar writer는 serialization이나 deep copy 전에 같은
+hook-free walker로 mapping을 다시 고정하고, snapshot 도중 live mapping이 바뀌면 bundle을 publish하지
+않습니다. Pipeline에서 격리된 mapping은 `source-map.json`을 만들지 않으며 원인은 `failures`에 남습니다.
 
 `include_rendered_preview`를 켠 Marker Markdown 출력은 validation receipt의 PNG SHA-256과 exact bytes가
 일치하는 runtime PNG만 `images/`에 추가합니다.

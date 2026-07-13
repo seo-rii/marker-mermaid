@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 
 import pytest
 
@@ -86,6 +87,7 @@ def _harmonization_authority() -> FusionInput:
             ],
         ),
         "geometry",
+        publication_evidence_ids=frozenset({"contour-a", "contour-b", "line-a-b", "arrow-b"}),
         trusted_canvas_size=(100, 100),
         trusted_source_block_ids=frozenset({"source"}),
     )
@@ -245,6 +247,7 @@ def _harmonization_semantic(
         prior_evidence=tuple(
             item.model_copy(deep=True) for item in all_evidence if item.id in {"text-a", "text-b"}
         ),
+        publication_evidence_ids=frozenset(item.id for item in all_evidence),
         trusted_canvas_size=(100, 100),
         trusted_source_block_ids=frozenset({"source"}),
     )
@@ -395,8 +398,38 @@ def test_harmonizes_typed_graph_ids_to_unique_geometry_clusters(diagram_type) ->
             "authority_evidence_ids": ("contour-b",),
         },
     }
+    assert fused.fusion_typed_evidence_authority_for(candidate) == {
+        "text-a",
+        "text-b",
+        "branch-yes",
+        "branch-no",
+        "contour-a",
+        "contour-b",
+    }
+    assert fused.fusion_scene_evidence_authority == frozenset()
     assert authority.observation == authority_before
     assert semantic.observation == semantic_before
+
+
+@pytest.mark.parametrize("empty_side", ["source", "authority"])
+def test_harmonization_cannot_launder_explicitly_unauthorized_evidence(empty_side) -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic()
+    if empty_side == "source":
+        semantic = replace(semantic, publication_evidence_ids=frozenset())
+    else:
+        authority = replace(authority, publication_evidence_ids=frozenset())
+    original_ir = copy.deepcopy(semantic.observation.typed_candidates[0].ir)
+
+    fused = _assert_harmonization_refused(authority, semantic, original_ir)
+
+    [candidate] = fused.typed_candidates
+    candidate_authority = fused.fusion_typed_evidence_authority_for(candidate)
+    expected_authority = (
+        frozenset() if empty_side == "source" else semantic.publication_evidence_ids
+    )
+    assert candidate_authority == expected_authority
+    assert not set(candidate_authority or ()).intersection({"contour-a", "contour-b"})
 
 
 def test_harmonization_records_certified_exact_id_as_identity() -> None:
@@ -1206,6 +1239,39 @@ def test_prediction_and_candidate_fusion_is_order_independent() -> None:
     assert forward.prediction.visual_signals == ["arrows", "groups"]
     assert len(forward.typed_candidates) == 1
     assert len(forward.direct_candidates) == 1
+
+
+def test_fused_direct_candidate_keeps_only_winning_owner_publication_authority() -> None:
+    code = "flowchart LR\n A --> B"
+    restricted = _observation("flowchart", 0.9)
+    restricted.direct_candidates = [
+        DirectMermaidCandidate(diagram_type="flowchart", code=code, confidence=0.9)
+    ]
+    unrelated = _observation("flowchart", 0.8)
+    unrelated.direct_candidates = [
+        DirectMermaidCandidate(diagram_type="flowchart", code=code, confidence=0.8)
+    ]
+
+    fused = FusionEngine().fuse(
+        [
+            FusionInput(
+                "vlm",
+                restricted,
+                "restricted",
+                publication_evidence_ids=frozenset(),
+            ),
+            FusionInput(
+                "geometry",
+                unrelated,
+                "unrelated",
+                publication_evidence_ids=frozenset({"geometry-own"}),
+            ),
+        ]
+    )
+
+    [candidate] = fused.direct_candidates
+    assert candidate.confidence == 0.9
+    assert fused.fusion_direct_evidence_authority_for(candidate) == frozenset()
 
 
 def test_rejects_empty_or_untyped_inputs() -> None:

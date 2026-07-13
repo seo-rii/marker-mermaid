@@ -83,6 +83,14 @@ ALL_TYPES = frozenset(
     }
 )
 
+MIN_VLM_PROMPT_CHARS = 32_768
+MAX_VLM_PROMPT_CHARS = 1_000_000
+MAX_VLM_PROMPT_ITEMS = 4_096
+MAX_VLM_VIEWS = 16
+MAX_VLM_VIEW_DIMENSION = 4_096
+MAX_VLM_VIEW_PIXELS = 16_777_216
+MAX_VLM_TOTAL_VIEW_PIXELS = 33_554_432
+
 
 class ScoreWeights(BaseModel):
     """Normalized aggregate score weights.
@@ -170,12 +178,19 @@ class MermaidConfig(BaseModel):
     render_timeout_seconds: float = 20.0
     max_mermaid_chars: int = 50_000
     max_mermaid_lines: int = 5_000
-    max_image_dimension: int = 2048
+    max_vlm_prompt_chars: int = Field(
+        default=100_000,
+        ge=MIN_VLM_PROMPT_CHARS,
+        le=MAX_VLM_PROMPT_CHARS,
+    )
+    max_vlm_evidence_items: int = Field(default=256, ge=1, le=MAX_VLM_PROMPT_ITEMS)
+    max_vlm_ocr_items: int = Field(default=512, ge=0, le=MAX_VLM_PROMPT_ITEMS)
+    max_image_dimension: int = Field(default=2048, ge=1, le=MAX_VLM_VIEW_DIMENSION)
     max_virtual_source_dimension: int = 32_768
     max_virtual_source_pixels: int = 100_000_000
-    tile_size: int = 1280
+    tile_size: int = Field(default=1280, ge=64, le=MAX_VLM_VIEW_DIMENSION)
     tile_overlap: int = 128
-    max_views: int = 8
+    max_views: int = Field(default=8, ge=1, le=MAX_VLM_VIEWS)
 
     @field_validator("enabled_types")
     @classmethod
@@ -218,10 +233,8 @@ class MermaidConfig(BaseModel):
     @field_validator(
         "max_mermaid_chars",
         "max_mermaid_lines",
-        "max_image_dimension",
         "max_virtual_source_dimension",
         "max_virtual_source_pixels",
-        "max_views",
     )
     @classmethod
     def resource_limit_is_positive(cls, value: int) -> int:
@@ -256,8 +269,6 @@ class MermaidConfig(BaseModel):
             raise ValueError("trusted-local output cannot be published to automatic Markdown")
         if self.review_below_score < self.publish_min_score:
             raise ValueError("review_below_score cannot be below publish_min_score")
-        if self.tile_size < 64:
-            raise ValueError("tile_size must be at least 64 pixels")
         if self.tile_overlap < 0 or self.tile_overlap >= self.tile_size:
             raise ValueError("tile_overlap must be non-negative and smaller than tile_size")
         return self

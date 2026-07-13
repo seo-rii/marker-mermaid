@@ -42,6 +42,11 @@ MAX_SCENE_RELATIONS = 10_000
 MAX_SCENE_GROUPS = 1_000
 MAX_POLYGON_POINTS = 4_096
 MAX_POLYLINE_POINTS = 10_000
+MAX_SOURCE_MAPPING_DEPTH = 32
+MAX_SOURCE_MAPPING_ITEMS = 25_000
+MAX_SOURCE_MAPPING_STRING_CHARS = 50_000
+MAX_SOURCE_MAPPING_JSON_BYTES = 4_000_000
+MAX_SOURCE_MAPPING_ABS_NUMBER = 9_007_199_254_740_991
 
 
 def _sink_safe_diagnostic_text(value: str) -> str:
@@ -124,6 +129,20 @@ def _finite_points(values: list[Point] | None, field: str, limit: int) -> list[P
     if any(not all(math.isfinite(item) for item in point) for point in values):
         raise ValueError(f"{field} coordinates must be finite")
     return values
+
+
+def _bounded_evidence_authority_ids(
+    evidence_ids: set[str] | frozenset[str],
+) -> frozenset[str]:
+    if type(evidence_ids) not in {set, frozenset} or len(evidence_ids) > MAX_OBSERVATION_EVIDENCE:
+        raise ValueError("evidence authority IDs must be a bounded set")
+    for evidence_id in evidence_ids:
+        if type(evidence_id) is not str:
+            raise ValueError("evidence authority IDs must be plain strings")
+        _require_utf8_text(evidence_id, "evidence authority ID")
+        if not evidence_id or len(evidence_id) > MAX_ID_CHARS:
+            raise ValueError("evidence authority ID must be non-empty and bounded")
+    return frozenset(evidence_ids)
 
 
 class VisualEvidence(BaseModel):
@@ -591,6 +610,104 @@ class DirectMermaidCandidate(BaseModel):
     def text_is_utf8(cls, value: str) -> str:
         return _require_utf8_text(value, "direct Mermaid candidate")  # type: ignore[return-value]
 
+    def canonical_key(self) -> str:
+        """Return the fusion identity without treating confidence as source content."""
+
+        validated = type(self).model_validate(self.model_dump(mode="python"))
+        return json.dumps(
+            [validated.diagram_type, validated.code.strip()],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+
+class PromptBudgetNotice(BaseModel):
+    """Adapter-owned audit record for one bounded Structured VLM request."""
+
+    engine: str = Field(max_length=MAX_ID_CHARS)
+    selection_profile: Literal["structural-quota-v1"]
+    prompt_chars: int = Field(ge=0, le=1_000_000)
+    max_prompt_chars: int = Field(ge=1, le=1_000_000)
+    schema_reserve_chars: int = Field(ge=0, le=65_536)
+    max_evidence_items: int = Field(ge=1, le=4_096)
+    max_ocr_items: int = Field(ge=0, le=4_096)
+    evidence_total: int = Field(ge=0, le=MAX_OBSERVATION_EVIDENCE)
+    evidence_considered: int = Field(ge=0, le=MAX_OBSERVATION_EVIDENCE)
+    evidence_included: int = Field(ge=0, le=MAX_OBSERVATION_EVIDENCE)
+    ocr_total: int = Field(ge=0)
+    ocr_considered: int = Field(ge=0, le=4_096)
+    ocr_included: int = Field(ge=0, le=4_096)
+    omission_reasons: list[
+        Literal[
+            "evidence_item_limit",
+            "evidence_char_limit",
+            "ocr_item_limit",
+            "ocr_char_limit",
+        ]
+    ] = Field(default_factory=list, max_length=4)
+    selected_evidence_sha256: str
+
+    @field_validator("engine")
+    @classmethod
+    def engine_is_plain_utf8(cls, value: str) -> str:
+        _require_utf8_text(value, "prompt budget engine")
+        if not value:
+            raise ValueError("prompt budget engine must be non-empty")
+        return value
+
+    @field_validator("selected_evidence_sha256")
+    @classmethod
+    def selected_digest_is_sha256(cls, value: str) -> str:
+        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+            raise ValueError("selected evidence digest must be lowercase SHA-256 hex")
+        return value
+
+    @model_validator(mode="after")
+    def counts_and_request_fit(self) -> PromptBudgetNotice:
+        if not self.evidence_included <= self.evidence_considered <= self.evidence_total:
+            raise ValueError("prompt evidence counts must be ordered")
+        if not self.ocr_included <= self.ocr_considered <= self.ocr_total:
+            raise ValueError("prompt OCR counts must be ordered")
+        if self.evidence_included > min(self.evidence_total, self.max_evidence_items):
+            raise ValueError("included prompt evidence exceeds its item budget")
+        if self.ocr_considered != min(self.ocr_total, self.max_ocr_items):
+            raise ValueError("considered prompt OCR must match its bounded input prefix")
+        if self.prompt_chars + self.schema_reserve_chars > self.max_prompt_chars:
+            raise ValueError("prompt plus schema reserve exceeds its request budget")
+        if len(self.omission_reasons) != len(set(self.omission_reasons)):
+            raise ValueError("prompt omission reasons must be unique")
+        reasons = set(self.omission_reasons)
+        if (self.evidence_total > self.max_evidence_items) != ("evidence_item_limit" in reasons):
+            raise ValueError("evidence item-limit reason does not match its item budget")
+        if (self.ocr_total > self.max_ocr_items) != ("ocr_item_limit" in reasons):
+            raise ValueError("OCR item-limit reason does not match its item budget")
+        if (self.evidence_considered > self.evidence_included) != (
+            "evidence_char_limit" in reasons
+        ):
+            raise ValueError("evidence character-limit reason does not match selection counts")
+        if (self.ocr_considered > self.ocr_included) != ("ocr_char_limit" in reasons):
+            raise ValueError("OCR character-limit reason does not match selection counts")
+        return self
+
+
+def canonical_prompt_budget_notice_json(
+    notices: list[PromptBudgetNotice],
+) -> list[dict[str, Any]]:
+    """Return canonical JSON records for bounded prompt-audit sinks."""
+
+    if type(notices) is not list or len(notices) > MAX_OBSERVATION_WARNINGS:
+        raise TypeError("prompt budget notices must be a bounded plain list")
+    values: list[dict[str, Any]] = []
+    for item in notices:
+        if type(item) is not PromptBudgetNotice:
+            raise TypeError("prompt budget notices must be canonical records")
+        values.append(
+            PromptBudgetNotice.model_validate(item.model_dump(mode="python")).model_dump(
+                mode="json"
+            )
+        )
+    return values
+
 
 class EngineObservation(BaseModel):
     prediction: DiagramTypePrediction
@@ -607,6 +724,15 @@ class EngineObservation(BaseModel):
     warnings: list[str] = Field(default_factory=list, max_length=MAX_OBSERVATION_WARNINGS)
     _fusion_node_id_mappings: dict[str, list[NodeIdMapping]] = PrivateAttr(default_factory=dict)
     _fusion_conflicted_connector_pairs: set[frozenset[str]] = PrivateAttr(default_factory=set)
+    _prompt_supplied_prior_evidence_ids: frozenset[str] | None = PrivateAttr(default=None)
+    _prompt_budget_notice: PromptBudgetNotice | None = PrivateAttr(default=None)
+    _fusion_typed_evidence_authorities: dict[str, frozenset[str]] = PrivateAttr(
+        default_factory=dict
+    )
+    _fusion_direct_evidence_authorities: dict[str, frozenset[str]] = PrivateAttr(
+        default_factory=dict
+    )
+    _fusion_scene_evidence_authority: frozenset[str] | None = PrivateAttr(default=None)
 
     @field_validator("warnings")
     @classmethod
@@ -620,12 +746,68 @@ class EngineObservation(BaseModel):
         self,
         node_id_mappings: dict[str, list[NodeIdMapping]],
         conflicted_connector_pairs: set[frozenset[str]],
+        typed_evidence_authorities: dict[str, frozenset[str]] | None = None,
+        scene_evidence_authority: frozenset[str] | None = None,
+        direct_evidence_authorities: dict[str, frozenset[str]] | None = None,
     ) -> None:
         self._fusion_node_id_mappings = {
             key: [item.model_copy(deep=True) for item in values]
             for key, values in node_id_mappings.items()
         }
         self._fusion_conflicted_connector_pairs = set(conflicted_connector_pairs)
+        self._fusion_typed_evidence_authorities = {
+            key: _bounded_evidence_authority_ids(values)
+            for key, values in (typed_evidence_authorities or {}).items()
+        }
+        self._fusion_direct_evidence_authorities = {
+            key: _bounded_evidence_authority_ids(values)
+            for key, values in (direct_evidence_authorities or {}).items()
+        }
+        self._fusion_scene_evidence_authority = (
+            _bounded_evidence_authority_ids(scene_evidence_authority)
+            if scene_evidence_authority is not None
+            else None
+        )
+
+    def _set_prompt_supplied_prior_evidence_ids(self, evidence_ids: set[str]) -> None:
+        """Attach adapter-owned prompt authority without exposing it in provider schemas."""
+
+        self._prompt_supplied_prior_evidence_ids = _bounded_evidence_authority_ids(evidence_ids)
+
+    @property
+    def prompt_supplied_prior_evidence_ids(self) -> frozenset[str] | None:
+        return self._prompt_supplied_prior_evidence_ids
+
+    def _set_prompt_budget_notice(self, notice: PromptBudgetNotice) -> None:
+        if type(notice) is not PromptBudgetNotice:
+            raise ValueError("prompt budget notice must be canonical")
+        self._prompt_budget_notice = PromptBudgetNotice.model_validate(
+            notice.model_dump(mode="python")
+        )
+
+    @property
+    def prompt_budget_notice(self) -> PromptBudgetNotice | None:
+        return (
+            self._prompt_budget_notice.model_copy(deep=True)
+            if self._prompt_budget_notice is not None
+            else None
+        )
+
+    def fusion_typed_evidence_authority_for(
+        self,
+        candidate: TypedIRCandidate,
+    ) -> frozenset[str] | None:
+        return self._fusion_typed_evidence_authorities.get(candidate.canonical_key())
+
+    def fusion_direct_evidence_authority_for(
+        self,
+        candidate: DirectMermaidCandidate,
+    ) -> frozenset[str] | None:
+        return self._fusion_direct_evidence_authorities.get(candidate.canonical_key())
+
+    @property
+    def fusion_scene_evidence_authority(self) -> frozenset[str] | None:
+        return self._fusion_scene_evidence_authority
 
     def fusion_node_id_mappings_for(
         self,
@@ -846,6 +1028,139 @@ def _canonical_json_bytes(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+def canonical_source_mapping_snapshot(
+    value: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return a bounded, hook-free JSON snapshot of source mapping metadata.
+
+    Source mappings cross engine, repair, and sidecar trust boundaries.  Accept
+    only exact built-in JSON containers/scalars, normalize exact tuples to JSON
+    arrays, and construct the copy iteratively so hostile subclasses cannot run
+    iteration or ``deepcopy`` hooks.  The aggregate limit measures the compact
+    canonical JSON representation after string escaping.
+    """
+
+    if value is None:
+        return None
+    if type(value) is not dict:
+        raise ValueError("source mapping must be an exact plain dictionary")
+
+    holder: list[Any] = [None]
+    # Visit records contain source, destination container, destination slot, and depth.
+    pending: list[tuple[str, Any, Any, Any, int]] = [("visit", value, holder, 0, 0)]
+    active_container_ids: set[int] = set()
+    item_count = 1
+    encoded_size = 0
+
+    while pending:
+        operation, source, destination, slot, depth = pending.pop()
+        if operation == "exit":
+            active_container_ids.remove(source)
+            continue
+        if depth > MAX_SOURCE_MAPPING_DEPTH:
+            raise ValueError("source mapping exceeds the nesting depth budget")
+
+        source_type = type(source)
+        if source_type is dict:
+            source_id = id(source)
+            if source_id in active_container_ids:
+                raise ValueError("source mapping must not contain reference cycles")
+            source_length = dict.__len__(source)
+            if item_count + source_length > MAX_SOURCE_MAPPING_ITEMS:
+                raise ValueError("source mapping exceeds the item budget")
+            shallow_source = dict.copy(source)
+            if dict.__len__(shallow_source) != source_length:
+                raise ValueError("source mapping changed while it was captured")
+            keys = list(dict.keys(shallow_source))
+            for key in keys:
+                if type(key) is not str:
+                    raise ValueError("source mapping object keys must be plain strings")
+                if len(key) > MAX_SOURCE_MAPPING_STRING_CHARS:
+                    raise ValueError("source mapping string exceeds the field size budget")
+                _require_utf8_text(key, "source mapping string")
+            keys.sort()
+            item_count += source_length
+            encoded_size += 2 + source_length + max(0, source_length - 1)
+            if encoded_size > MAX_SOURCE_MAPPING_JSON_BYTES:
+                raise ValueError("source mapping exceeds the escaped JSON byte budget")
+            for key in keys:
+                encoded_size += len(_canonical_json_bytes(key))
+                if encoded_size > MAX_SOURCE_MAPPING_JSON_BYTES:
+                    raise ValueError("source mapping exceeds the escaped JSON byte budget")
+
+            copied: dict[str, Any] = {}
+            destination[slot] = copied
+            active_container_ids.add(source_id)
+            pending.append(("exit", source_id, None, None, depth))
+            for key in reversed(keys):
+                pending.append(
+                    (
+                        "visit",
+                        dict.__getitem__(shallow_source, key),
+                        copied,
+                        key,
+                        depth + 1,
+                    )
+                )
+            continue
+
+        if source_type in {list, tuple}:
+            source_id = id(source)
+            if source_id in active_container_ids:
+                raise ValueError("source mapping must not contain reference cycles")
+            source_length = list.__len__(source) if source_type is list else tuple.__len__(source)
+            if item_count + source_length > MAX_SOURCE_MAPPING_ITEMS:
+                raise ValueError("source mapping exceeds the item budget")
+            shallow_source = list.copy(source) if source_type is list else source
+            if len(shallow_source) != source_length:
+                raise ValueError("source mapping changed while it was captured")
+            item_count += source_length
+            encoded_size += 2 + max(0, source_length - 1)
+            if encoded_size > MAX_SOURCE_MAPPING_JSON_BYTES:
+                raise ValueError("source mapping exceeds the escaped JSON byte budget")
+
+            copied = [None] * source_length
+            destination[slot] = copied
+            active_container_ids.add(source_id)
+            pending.append(("exit", source_id, None, None, depth))
+            item_getter = list.__getitem__ if source_type is list else tuple.__getitem__
+            for index in range(source_length - 1, -1, -1):
+                pending.append(
+                    (
+                        "visit",
+                        item_getter(shallow_source, index),
+                        copied,
+                        index,
+                        depth + 1,
+                    )
+                )
+            continue
+
+        if source_type is str:
+            if len(source) > MAX_SOURCE_MAPPING_STRING_CHARS:
+                raise ValueError("source mapping string exceeds the field size budget")
+            _require_utf8_text(source, "source mapping string")
+        elif source_type is int:
+            if not -MAX_SOURCE_MAPPING_ABS_NUMBER <= source <= MAX_SOURCE_MAPPING_ABS_NUMBER:
+                raise ValueError("source mapping integer exceeds the numeric budget")
+        elif source_type is float:
+            if not math.isfinite(source) or abs(source) > MAX_SOURCE_MAPPING_ABS_NUMBER:
+                raise ValueError("source mapping number must be finite and bounded")
+        elif source_type not in {bool, type(None)}:
+            raise ValueError("source mapping values must be exact JSON-compatible built-ins")
+        encoded_size += len(_canonical_json_bytes(source))
+        if encoded_size > MAX_SOURCE_MAPPING_JSON_BYTES:
+            raise ValueError("source mapping exceeds the escaped JSON byte budget")
+        destination[slot] = source
+
+    snapshot = holder[0]
+    if type(snapshot) is not dict:
+        raise ValueError("source mapping snapshot did not retain a dictionary root")
+    if len(_canonical_json_bytes(snapshot)) != encoded_size:
+        raise ValueError("source mapping escaped JSON accounting was inconsistent")
+    return snapshot
+
+
 def _canonical_model_bytes(value: BaseModel) -> bytes:
     return _canonical_json_bytes(value.model_dump(mode="json"))
 
@@ -1014,6 +1329,7 @@ class MermaidCandidate(BaseModel):
     repair_history: list[RepairEvent] = Field(default_factory=list)
     _node_id_mapping_seal: str | None = PrivateAttr(default=None)
     _validation_receipt_seal: str | None = PrivateAttr(default=None)
+    _publication_evidence_authority_ids: frozenset[str] | None = PrivateAttr(default=None)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -1023,6 +1339,16 @@ class MermaidCandidate(BaseModel):
         self._node_id_mapping_seal = (
             _node_id_mapping_seal(self.node_id_mappings) if self.node_id_mappings else None
         )
+
+    def _set_publication_evidence_authority_ids(
+        self,
+        evidence_ids: set[str] | frozenset[str],
+    ) -> None:
+        self._publication_evidence_authority_ids = _bounded_evidence_authority_ids(evidence_ids)
+
+    @property
+    def publication_evidence_authority_ids(self) -> frozenset[str] | None:
+        return self._publication_evidence_authority_ids
 
     def _has_valid_node_id_mapping_seal(self) -> bool:
         if not self.node_id_mappings or self._node_id_mapping_seal is None:
@@ -1231,6 +1557,9 @@ class ReconstructionResult(BaseModel):
     alternatives: list[MermaidCandidate] = Field(default_factory=list)
     evidence: list[VisualEvidence] = Field(default_factory=list)
     failures: list[CandidateFailure] = Field(default_factory=list)
+    prompt_budget_notices: list[PromptBudgetNotice] = Field(
+        default_factory=list, max_length=MAX_OBSERVATION_WARNINGS
+    )
     grade: QualityGrade = "U"
     publish: bool = False
     review_required: bool = True

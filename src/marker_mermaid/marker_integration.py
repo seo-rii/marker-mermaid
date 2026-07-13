@@ -26,7 +26,11 @@ from marker_mermaid.marker_discovery import (
     discover_marker_sources,
     iter_marker_candidate_blocks,
 )
-from marker_mermaid.models import ReconstructionResult, VisualEvidence
+from marker_mermaid.models import (
+    ReconstructionResult,
+    VisualEvidence,
+    canonical_prompt_budget_notice_json,
+)
 from marker_mermaid.pipeline import ReconstructionPipeline
 from marker_mermaid.render_artifacts import MAX_PREVIEW_DIMENSION, MAX_PREVIEW_PIXELS
 from marker_mermaid.semantic_repair import EvidenceBackedFlowchartRepair
@@ -94,6 +98,7 @@ def _result_summary(result: ReconstructionResult) -> dict[str, Any]:
         "fallback_chain": selected.fallback_chain if selected else [],
         "quality_score": selected.aggregate_score if selected else None,
         "selected_candidate_id": selected.candidate_id if selected else None,
+        "prompt_budget_notices": canonical_prompt_budget_notice_json(result.prompt_budget_notices),
         "sidecar_dir": result.sidecar_dir,
     }
 
@@ -232,6 +237,10 @@ class MermaidDiagramProcessor(BaseProcessor):
                     MarkerStructuredVLMEngine(
                         llm_service,
                         enabled_types=self.mermaid_config.enabled_types,
+                        max_prompt_chars=self.mermaid_config.max_vlm_prompt_chars,
+                        max_evidence_items=self.mermaid_config.max_vlm_evidence_items,
+                        max_ocr_items=self.mermaid_config.max_vlm_ocr_items,
+                        max_views=self.mermaid_config.max_views,
                     )
                 )
         selected_runtime = runtime or NodeMermaidRuntime(self.mermaid_config.runtime_dir)

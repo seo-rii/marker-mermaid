@@ -10,7 +10,7 @@ import pytest
 from PIL import Image
 
 from marker_mermaid.config import MermaidConfig, SecurityProfile
-from marker_mermaid.models import MermaidCandidate, ReconstructionResult
+from marker_mermaid.models import MermaidCandidate, PromptBudgetNotice, ReconstructionResult
 from marker_mermaid.pipeline import certify_publication_result
 from marker_mermaid.protocols import RuntimeResult
 from marker_mermaid.validation import CandidateValidator
@@ -71,6 +71,69 @@ def test_marker_1102_processor_order():
         MermaidDiagramProcessor
     )
     assert processors.index(MermaidDiagramProcessor) < processors.index(BlankPageProcessor)
+
+
+@pytest.mark.integration
+def test_marker_1102_ollama_receives_fully_inlined_observation_schema(monkeypatch):
+    if importlib.metadata.version("marker-pdf") != "1.10.2":
+        pytest.skip("compatibility smoke is pinned to marker-pdf 1.10.2")
+    from marker.services.ollama import OllamaService
+
+    from marker_mermaid.engines import MarkerStructuredVLMEngine
+    from marker_mermaid.protocols import SourceContext
+
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "prompt_eval_count": 1,
+                "eval_count": 1,
+                "response": json.dumps(
+                    {
+                        "prediction": {
+                            "candidates": ["flowchart"],
+                            "scores": [1.0],
+                            "visual_signals": [],
+                            "negative_signals": [],
+                        },
+                        "scene_ir": None,
+                        "typed_candidates": [],
+                        "direct_candidates": [],
+                        "evidence": [],
+                        "warnings": [],
+                    }
+                ),
+            }
+
+    def post(url, json, headers):
+        captured.update(url=url, payload=json, headers=headers)
+        return Response()
+
+    monkeypatch.setattr("marker.services.ollama.requests.post", post)
+    image = Image.new("RGB", (20, 20), "white")
+    result = MarkerStructuredVLMEngine(
+        OllamaService(),
+        enabled_types={"flowchart"},
+    ).observe(
+        SourceContext(
+            source_id="figure-1",
+            source_block_ids=["/page/0/Figure/1"],
+            source_image_name="figure.png",
+            image=image,
+            views={"original": image.copy()},
+        )
+    )
+
+    format_schema = captured["payload"]["format"]
+    schema_text = json.dumps(format_schema)
+    assert '"$ref"' not in schema_text
+    assert '"$defs"' not in schema_text
+    assert format_schema["properties"]["prediction"]["properties"]["candidates"]
+    assert result.prediction.candidates == ["flowchart"]
 
 
 @pytest.mark.integration
@@ -378,6 +441,61 @@ def test_marker_processor_uses_vector_and_geometry_without_an_llm(fake_runtime):
         "geometry",
     ]
     assert processor.pipeline.repair_engine.name == "evidence_backed_flowchart_repair"
+
+
+@pytest.mark.integration
+def test_marker_processor_passes_structured_vlm_prompt_budgets(fake_runtime):
+    from marker_mermaid.marker_integration import MermaidDiagramProcessor
+
+    processor = MermaidDiagramProcessor(
+        llm_service=object(),
+        config={
+            "MermaidDiagramProcessor_max_vlm_prompt_chars": 32_768,
+            "MermaidDiagramProcessor_max_vlm_evidence_items": 32,
+            "MermaidDiagramProcessor_max_vlm_ocr_items": 64,
+            "MermaidDiagramProcessor_max_views": 10,
+        },
+        runtime=fake_runtime,
+    )
+    engine = next(
+        item for item in processor.pipeline.engines if item.name == "marker_structured_vlm"
+    )
+
+    assert engine.max_prompt_chars == 32_768
+    assert engine.max_evidence_items == 32
+    assert engine.max_ocr_items == 64
+    assert engine.max_views == 10
+
+
+@pytest.mark.integration
+def test_marker_result_summary_revalidates_prompt_budget_notices():
+    from marker_mermaid.marker_integration import _result_summary
+
+    notice = PromptBudgetNotice(
+        engine="marker_structured_vlm",
+        selection_profile="structural-quota-v1",
+        prompt_chars=10_000,
+        max_prompt_chars=100_000,
+        schema_reserve_chars=14_753,
+        max_evidence_items=1,
+        max_ocr_items=0,
+        evidence_total=1,
+        evidence_considered=1,
+        evidence_included=1,
+        ocr_total=0,
+        ocr_considered=0,
+        ocr_included=0,
+        selected_evidence_sha256="0" * 64,
+    )
+    result = ReconstructionResult(
+        source_id="source",
+        source_image_name="source.png",
+        prompt_budget_notices=[notice],
+    )
+    result.prompt_budget_notices[0].prompt_chars = 100_000
+
+    with pytest.raises(ValueError):
+        _result_summary(result)
 
 
 @pytest.mark.integration

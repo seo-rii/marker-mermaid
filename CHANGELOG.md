@@ -76,10 +76,23 @@
 - Architecture, C4, Deployment, and Component candidates now retry one declared nested Flowchart fallback in the same candidate slot when `architecture-beta` runtime validation fails, preserving candidate budgets and requested/emitted/runtime fallback metadata.
 - SHA-256 validation receipts bind each automatically published Mermaid source to its inspected SVG and optional PNG, while a second authorization receipt binds policy/security/status/quality decisions; sealed immutable Markdown/Marker snapshots and atomic sidecar snapshots prevent check-then-reread races.
 - Validator-issued artifact certificates and canonical decimal quality digests prevent unchecked model flags and cross-runtime float formatting from manufacturing publication receipts.
+- Structured VLM requests now reserve Marker 1.10.2 response-schema text, validate bounded RGB view
+  sets through bounded independent provider snapshots, preflight aggregate and nested evidence/OCR
+  input, freeze trusted provenance ID sets, preserve structural evidence under OCR saturation, and
+  persist source-level prompt budget notices even when no candidate is produced.
+- Reconstruction source collections and source mappings are now normalized into bounded plain
+  snapshots before any engine sees them; every engine receives an independent full-coordinate source
+  context, invalid collections are isolated as a whole, aggregate provenance growth is capped, and
+  sidecar source maps are serialized only from a hook-free canonical JSON snapshot with mutation
+  checks.
 
 ### Changed
 
 - Candidate budgets are distributed round-robin across successful engines.
+- Fused direct Mermaid candidates retain only their selected owner's closed publication-evidence
+  authority instead of inheriting unrelated fusion input authority.
+- Internal fusion handling is identified by pipeline state rather than an engine-controlled display
+  name, so a custom engine cannot claim fused provenance privileges by reusing the built-in name.
 - Visual priors are refreshed as earlier engines add structural evidence.
 - Unlabeled geometry-only reconstructions are retained for review but cannot auto-publish.
 - Marker OCR provenance now uses the exact, unexpanded block crop transform.
@@ -115,6 +128,13 @@
 - Security scanning now treats unquoted semicolons as Mermaid statement boundaries, closing same-line `click` and strict-profile style bypasses without rejecting quoted labels or comments.
 - Automatic publication now prefers validator-sealed candidates within the same semantic eligibility class and downgrades missing/mismatched runtime type certificates to review instead of returning contradictory publish metadata.
 - Malformed Unicode scalar values in engine IR/code are isolated per candidate, while diagnostic warnings and failure messages are converted to bounded sink-safe UTF-8 text.
+- Marker VLM publication provenance is limited to collision-free evidence actually selected into that
+  request; prompt-omitted and same-response evidence remain reviewable but cannot authenticate original,
+  fused, or repaired candidates.
+- Structured VLM request notices now cross-check configured caps and omission counts, survive provider or
+  response-validation failure, and are canonically revalidated by Marker metadata and atomic sidecar sinks.
+- Marker 1.10.2 stock Ollama now receives a bounded, local-reference-inlined response schema instead of
+  unresolved `$defs`, while all returned payloads still pass the common canonical observation validator.
 
 ## 0.1.0
 

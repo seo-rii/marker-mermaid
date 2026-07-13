@@ -140,3 +140,32 @@ def test_grayscale_and_adaptive_threshold_are_available_as_explicit_priors():
     assert "grayscale" in views
     red, green, blue = views["grayscale"].getpixel((10, 10))
     assert red == green == blue
+
+
+def test_visual_priors_omit_optional_views_at_aggregate_pixel_budget(monkeypatch):
+    monkeypatch.setattr("marker_mermaid.views.MAX_VLM_TOTAL_VIEW_PIXELS", 20_000)
+    image = Image.new("RGB", (100, 100), "white")
+    config = MermaidConfig(use_tiled_images=False, max_views=8)
+
+    views, warnings = build_visual_priors(image, [], config)
+
+    assert list(views) == ["original", "global_thumbnail"]
+    assert sum(view.width * view.height for view in views.values()) == 20_000
+    assert warnings == ["visual prior pixel budget omitted one or more optional views"]
+
+
+def test_visual_priors_share_engine_view_dimension_and_pixel_boundaries():
+    image = Image.new("RGB", (4_100, 10), "white")
+    config = MermaidConfig(
+        max_image_dimension=4_096,
+        tile_size=4_096,
+        tile_overlap=128,
+        max_views=4,
+    )
+
+    views, _warnings = build_visual_priors(image, [], config)
+
+    assert len(views) <= config.max_views
+    assert all(view.width <= 4_096 and view.height <= 4_096 for view in views.values())
+    assert all(view.width * view.height <= 16_777_216 for view in views.values())
+    assert sum(view.width * view.height for view in views.values()) <= 33_554_432

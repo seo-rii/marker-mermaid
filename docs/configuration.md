@@ -61,9 +61,14 @@ endpoint·방향 변경, 새 branch와 Yes/No 의미 추론, parallel relation, 
 | `render_timeout_seconds` | `20` | candidate당 parse/render 제한 |
 | `max_mermaid_chars` | `50000` | browser 전달 전 source 문자 상한 |
 | `max_mermaid_lines` | `5000` | browser 전달 전 source line 상한 |
+| `max_vlm_prompt_chars` | `100000` | provider-visible prompt와 Marker 1.10.2 response-schema reserve의 합산 상한 (`32768`~`1000000`) |
+| `max_vlm_evidence_items` | `256` | prompt에 포함할 provenance evidence 상한 (`1`~`4096`) |
+| `max_vlm_ocr_items` | `512` | prompt 후보로 검사하는 OCR text 상한 (`0`~`4096`) |
+| `max_image_dimension` | `2048` | VLM original/overlay 한 변 상한 (`1`~`4096`) |
+| `tile_size` | `1280` | source-resolution tile 한 변 (`64`~`4096`) |
 | `max_virtual_source_dimension` | `32768` | panel/merge canvas 한 변 상한 |
 | `max_virtual_source_pixels` | `100000000` | panel/merge canvas pixel budget |
-| `max_views` | `8` | VLM에 전달할 view 상한 |
+| `max_views` | `8` | VLM에 전달할 view 상한 (`1`~`16`) |
 
 `write_ir`, `write_svg`, `write_png`, `write_alternatives`, `write_provenance`는 각 sidecar
 artifact 생성을 제어합니다. 선택된 `final.mmd`, `scores.json`, `review-history.json`, manifest는
@@ -105,6 +110,54 @@ node attribution을 계산할 수 없거나 80% 미만이면 자동 게시하지
 `tile_size`는 64 이상이고 `tile_overlap`은 0 이상 `tile_size` 미만이어야 합니다. View slot은 큰
 source의 tile 1~2개를 먼저 예약하고, 앞선 engine의 type top-k에 따라 유형별 priority를 적용합니다.
 빈 OCR/arrow/contour/Hough overlay는 slot을 사용하지 않습니다.
+
+Structured VLM의 provider-visible prompt는 system instruction, 활성 type 계약, view/selection manifest,
+prior evidence, OCR text와 Marker 1.10.2가 별도로 전달하는 canonical `EngineObservation` schema reserve를
+합쳐 `max_vlm_prompt_chars` 안에 있어야 합니다. 고정 영역만으로 상한을 넘으면 provider를 호출하지
+않습니다. 이 수치는 SDK 내부 wire encoding이나 임의 custom service가 덧붙이는 숨은 text까지 보장하지
+않습니다.
+
+Marker 1.10.2 stock Ollama service에는 `$defs`가 소실되지 않도록 bounded inline response schema를
+자동으로 사용합니다. 다른 Marker service에는 원래 Pydantic schema class를 전달하며, 모든 응답은 같은
+canonical `EngineObservation` 후검증을 거칩니다.
+
+Evidence 선택은 user edit와 trusted connector를 먼저 보존하고, 남은 slot의 최소 25%를 arrowhead,
+line, contour, vector text에 source 순서 round-robin으로 예약합니다. 남은 slot은 trusted label과 기존
+전역 우선순위로 결정적으로 backfill하므로 다수 OCR이 뒤쪽 구조 근거를 모두 밀어내지 않습니다. 큰
+record가 문자 예산에 맞지 않으면 JSON escape 길이를 allocation 없이 계산해 직렬화 전에 건너뛰고 다음
+작은 record로 backfill합니다. 각 record와 OCR string은 완전한 compact JSON item으로만 넣습니다.
+입력/검사/포함 수와 selection profile은 prompt manifest에 기록하고 candidate warning은 누락 개수를
+요약합니다. 구조화된 item/character omission 원인과 전체 수치는 결과 최상위
+`prompt_budget_notices`에 기록됩니다.
+
+Canonical copy 전 evidence 문자열 합계와 `max_vlm_ocr_items`로 자른 OCR prefix 문자열 합계에는 각각
+8,000,000자 hard cap이 있습니다. OCR은 exact plain string만 허용하며, 남은 prompt보다 raw JSON string
+lower bound가 큰 항목은 escape scan 전에 건너뜁니다. Evidence nested source-block ID list와 trusted
+label/connector ID set도 각 schema item 상한까지만 immutable snapshot으로 만들고, 그 snapshot만 canonical
+validation과 selection에 사용합니다.
+
+`max_image_dimension`과 `tile_size`의 상한은 4,096px입니다. View는 `original`이 첫 항목인 RGB Pillow
+image여야 합니다. 이름, 개수, 한 변 4,096px, view당
+16,777,216px, 전체 33,554,432px를 provider 호출 전에 검사합니다. 입력 dict는 `max_views + 1`개까지만
+읽고, manifest와 image list는 같은 검증된
+독립 plain-Pillow snapshot ordered list에서 만듭니다. 따라서 호출자 소유 image나 stateful Pillow
+subclass를 검증 뒤 provider에 그대로 전달하지 않습니다. Caller의 property/load/copy hook은 실행하지
+않으며 lazy ImageFile subclass는 호출 전에 load되어 있어야 합니다.
+
+다음 값은 설정으로 늘릴 수 없는 reconstruction source hard cap입니다.
+
+| 입력 | hard cap | 초과·비정규 입력 동작 |
+| --- | ---: | --- |
+| `source_block_ids`, `page_ids`, `source_blocks`, `vector_sources` | 각 256 items | 해당 collection 전체 격리 |
+| initial/engine/fused evidence | reconstruction 전체 20,000 items | initial/engine collection 격리 또는 이후 evidence authority 차단 |
+| source OCR | 50,000 items, 합계 1,000,000 chars | OCR collection 전체 격리 |
+| evidence ID/text/source-block text | 합계 8,000,000 chars | evidence collection 전체 격리 또는 이후 evidence authority 차단 |
+| `source_mapping` | depth 32, 25,000 items, string 50,000 chars, compact JSON 4,000,000 bytes | mapping만 `null`로 격리 |
+
+`source_mapping`은 exact `dict`/`list`/`tuple`과 JSON scalar만 허용합니다. Tuple은 JSON array로
+정규화되고 key는 정렬되며, finite number와 JavaScript safe-integer 범위를 요구합니다. 이 snapshot은
+engine, repair, 최종 result, sidecar에서 재사용·재검증되므로 container subclass의 iteration 또는
+`deepcopy` hook을 실행하지 않습니다.
 
 기본 `strict` security profile에서는 `enable_style_recovery=true`여도 style statement를 만들지
 않습니다. 실제 style code를 원하면 `portable-rich`/`style-rich` compatibility와 `style-only` 같은

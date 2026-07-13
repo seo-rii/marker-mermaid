@@ -38,7 +38,7 @@ flowchart TB
 | `fusion.py` | vector/geometry/OCR/VLM Scene IR 결정적 병합과 제한된 Flowchart/Generic Network node-ID 정합화 |
 | `mapping_validation.py` | node-ID mapping의 공용 bbox/text/contour provenance 정합성 gate |
 | `views.py` | type-aware thumbnail/edge/threshold/overlay와 source-resolution tile 생성 |
-| `engines.py` | Marker BaseService adapter와 offline fixture engine |
+| `engines.py` | bounded Marker BaseService adapter, stock Ollama inline-schema compatibility와 offline fixture engine |
 | `flowchart_structure.py` | node/group ID와 flat disjoint subgraph membership의 공용 emission plan |
 | `serializers*.py`, `serialization.py` | software/chart typed IR, requested/emitted type와 fallback 계약 |
 | `ast_repair.py` | 의미를 추가하지 않는 bounded lexical/structural repair와 AST adapter seam |
@@ -62,6 +62,8 @@ exact OCR/vector label과 내장 Geometry engine에서 온 동일 source block�
 방향 반전·무라벨 누락 edge만 다룹니다. Connector evidence ID가 충돌하거나 VLM이 새로 선언한 경우에는 구조
 수정 권한을 부여하지 않으며 fusion 전 engine 방향 충돌도 별도 pair set으로 보존해 repair를 막습니다. Label
 evidence도 초기 Marker OCR 또는 exact Vector engine만 trust하고 ID collision/source block/bbox를 확인합니다.
+각 repair 호출은 현재 후보의 닫힌 publication evidence authority로 label/connector/evidence를 먼저 제한한
+격리 `SourceContext`와 후보 복사본만 받으므로 prompt에서 빠진 근거를 뒤 repair가 다시 승격할 수 없습니다.
 기존 조건 분기 edge label은 trusted OCR/vector text와 unique built-in Geometry connector가 동시에 지지하고
 source/typed endpoint가 같은 방향으로 1:1 대응할 때만 label-only로 교정합니다. 이 경로는 topology, node,
 endpoint, 방향, layout을 바꾸지 않으며 새 branch나 Yes/No 의미를 추론하지 않고 parallel/reversed edge를
@@ -125,14 +127,28 @@ Fallback은 source security, parse/render, SVG와 terminal runtime type gate를 
 `runtime_portable_fallback` repair history를 갱신합니다. 같은 slot을 재사용하므로 candidate budget은
 늘어나지 않습니다.
 
-Marker 기본 구성에서는 PyMuPDF page provider를 연결한 VectorPrimitiveEngine과 GeometryEngine이 먼저 구조 evidence를 만들고
-Structured VLM이 그 evidence와 OCR token을 prompt에서 함께 봅니다. scene node에 읽을 수 있는
-label이 하나도 없으면 문법적으로 렌더 가능해도 `U`로 두어 자동 Markdown 게시를 막습니다.
+Marker 기본 구성에서는 PyMuPDF page provider를 연결한 VectorPrimitiveEngine과 GeometryEngine이 먼저
+구조 evidence를 만듭니다. Structured VLM은 bounded structural quota와 문자 예산이 선택한 evidence/OCR
+subset을 prompt에서 보고, overlay view는 별도의 검증된 image list로 받습니다. scene node에 읽을 수
+있는 label이 하나도 없으면 문법적으로 렌더 가능해도 `U`로 두어 자동 Markdown 게시를 막습니다.
 
-Structured VLM prompt는 `enabled_types`에 해당하는 typed root contract와 실제 view 순서/크기를
-포함합니다. 앞선 engine의 top-k type 또는 evidence가 바뀌면 view를 type profile에 맞춰 다시 만들며,
-큰 source의 tile은 축소 전 원본에서 잘라냅니다. 자세한 계약은 [typed extraction](typed-extraction.md)과
+Pipeline은 engine 호출 전에 source block/page ID, OCR, initial evidence, opaque block/vector source list를
+각 hard cap보다 하나 많은 항목까지만 읽어 plain snapshot으로 고정합니다. 타입·값·합계 상한을 벗어난
+컬렉션은 일부 prefix를 사용하지 않고 해당 컬렉션 전체를 안전한 기본값으로 격리하며
+`CandidateFailure(stage="source_context")`를 남깁니다. Engine이 추가한 evidence도 reconstruction 전체의
+단일 item cap을 공유하고, 상한 뒤 record는 평가·게시 authority를 얻지 못합니다.
+
+Structured VLM prompt는 `enabled_types`에 해당하는 typed root contract와 실제 view 순서/크기,
+selection manifest를 포함하고 Marker response-schema text 크기를 request budget에 예약합니다. 앞선
+engine의 top-k type 또는 evidence가 바뀌면 view를 type profile에 맞춰 다시 만들며, 큰 source의 tile은
+축소 전 원본에서 잘라냅니다. Provider에는 caller-owned view 대신 재검증한 독립 plain-Pillow snapshot을
+전달합니다. 자세한 계약은 [typed extraction](typed-extraction.md)과
 [visual priors](visual-priors.md)를 참고합니다.
+
+Fusion 후보 여부는 engine의 문자열 이름이 아니라 pipeline이 생성한 내부 boolean으로 전달합니다.
+따라서 custom engine이 `deterministic_fusion`이라는 이름을 사용해도 fused node mapping이나 fused
+evidence authority 경로를 사용할 수 없습니다. Semantic repair 전에는 engine에 노출하지 않은 image,
+view, evidence, source mapping snapshot으로 `SourceContext`를 복원합니다.
 
 ## 점수의 의미
 

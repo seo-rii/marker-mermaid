@@ -85,6 +85,7 @@ class FusionInput:
     name: str = ""
     prior_evidence_ids: frozenset[str] = frozenset()
     prior_evidence: tuple[VisualEvidence, ...] = ()
+    publication_evidence_ids: frozenset[str] | None = None
     excluded_evidence_ids: frozenset[str] = frozenset()
     trusted_canvas_size: tuple[float, float] | None = None
     trusted_source_block_ids: frozenset[str] = frozenset()
@@ -165,24 +166,44 @@ class FusionEngine:
         prediction = self._fuse_predictions(ordered)
         if scene_ir is not None:
             scene_ir.diagram_type_candidates = list(prediction.candidates)
-        typed_candidates, typed_mappings, typed_warnings = self._fuse_typed_candidates(
+        (
+            typed_candidates,
+            typed_mappings,
+            typed_evidence_authorities,
+            typed_warnings,
+        ) = self._fuse_typed_candidates(
             ordered,
             owners,
             scene_result,
         )
         warnings.extend(typed_warnings)
+        direct_candidates, direct_evidence_authorities = self._fuse_direct_candidates(ordered)
 
         result = EngineObservation(
             prediction=prediction,
             scene_ir=scene_ir,
             typed_candidates=typed_candidates,
-            direct_candidates=self._fuse_direct_candidates(ordered),
+            direct_candidates=direct_candidates,
             evidence=evidence,
             warnings=_unique(warnings),
         )
         result._set_fusion_metadata(
             typed_mappings,
             (scene_result.conflicted_connector_pairs if scene_result is not None else set()),
+            typed_evidence_authorities=typed_evidence_authorities,
+            scene_evidence_authority=(
+                frozenset.intersection(
+                    *[
+                        item.publication_evidence_ids
+                        for item in scene_inputs
+                        if item.publication_evidence_ids is not None
+                    ]
+                )
+                if scene_inputs
+                and all(item.publication_evidence_ids is not None for item in scene_inputs)
+                else None
+            ),
+            direct_evidence_authorities=direct_evidence_authorities,
         )
         return result
 
@@ -198,6 +219,8 @@ class FusionEngine:
                 item.source,
                 item.name,
                 tuple(sorted(item.prior_evidence_ids)),
+                item.publication_evidence_ids is None,
+                tuple(sorted(item.publication_evidence_ids or ())),
                 tuple(
                     sorted(
                         evidence.model_dump_json(exclude_none=True)
@@ -462,13 +485,22 @@ class FusionEngine:
                 evidence.id: evidence
                 for evidence in item.prior_evidence
                 if evidence.id in item.prior_evidence_ids
+                and (
+                    item.publication_evidence_ids is None
+                    or evidence.id in item.publication_evidence_ids
+                )
                 and prior_counts[evidence.id] == 1
                 and evidence.id not in collided_evidence_ids
             }
             authority_evidence_by_owner[owner] = {
                 evidence.id: evidence
                 for evidence in item.observation.evidence
-                if evidence.kind == "contour" and evidence.id not in collided_evidence_ids
+                if evidence.kind == "contour"
+                and (
+                    item.publication_evidence_ids is None
+                    or evidence.id in item.publication_evidence_ids
+                )
+                and evidence.id not in collided_evidence_ids
             }
 
         def usable_evidence(
@@ -912,9 +944,15 @@ class FusionEngine:
         inputs: Sequence[FusionInput],
         owners: dict[int, str],
         scene_result: _SceneFusionResult | None,
-    ) -> tuple[list[TypedIRCandidate], dict[str, list[NodeIdMapping]], list[str]]:
+    ) -> tuple[
+        list[TypedIRCandidate],
+        dict[str, list[NodeIdMapping]],
+        dict[str, frozenset[str]],
+        list[str],
+    ]:
         records: dict[str, tuple[FusionSource, str, TypedIRCandidate]] = {}
         mappings: dict[str, list[NodeIdMapping]] = {}
+        authorities: dict[str, frozenset[str]] = {}
         warnings: list[str] = []
         for item in inputs:
             for candidate in item.observation.typed_candidates:
@@ -954,6 +992,14 @@ class FusionEngine:
                     )
                 ):
                     records[key] = value
+                    if item.publication_evidence_ids is None:
+                        authorities.pop(key, None)
+                    else:
+                        authority_ids = set(item.publication_evidence_ids)
+                        for mapping in candidate_mappings:
+                            authority_ids.update(mapping.source_evidence_ids)
+                            authority_ids.update(mapping.authority_evidence_ids)
+                        authorities[key] = frozenset(authority_ids)
                     if candidate_mappings:
                         mappings[key] = candidate_mappings
                     else:
@@ -976,6 +1022,7 @@ class FusionEngine:
                 for key, _value in ordered_records
                 if key in mappings
             },
+            {key: authorities[key] for key, _value in ordered_records if key in authorities},
             warnings,
         )
 
@@ -1355,8 +1402,9 @@ class FusionEngine:
 
     def _fuse_direct_candidates(
         self, inputs: Sequence[FusionInput]
-    ) -> list[DirectMermaidCandidate]:
+    ) -> tuple[list[DirectMermaidCandidate], dict[str, frozenset[str]]]:
         records: dict[tuple[str, str], tuple[FusionSource, str, DirectMermaidCandidate]] = {}
+        authorities: dict[tuple[str, str], frozenset[str]] = {}
         for item in inputs:
             for candidate in item.observation.direct_candidates:
                 key = (candidate.diagram_type, candidate.code.strip())
@@ -1364,18 +1412,27 @@ class FusionEngine:
                 value = (item.source, item.name, candidate.model_copy(deep=True))
                 if old is None or _candidate_order(value) < _candidate_order(old):
                     records[key] = value
-        return [
-            value[2]
-            for _, value in sorted(
-                records.items(),
-                key=lambda item: (
-                    item[0][0],
-                    -item[1][2].confidence,
-                    -_SEMANTIC_RANK[item[1][0]],
-                    item[0][1],
-                ),
-            )
-        ]
+                    if item.publication_evidence_ids is None:
+                        authorities.pop(key, None)
+                    else:
+                        authorities[key] = frozenset(item.publication_evidence_ids)
+        ordered_records = sorted(
+            records.items(),
+            key=lambda item: (
+                item[0][0],
+                -item[1][2].confidence,
+                -_SEMANTIC_RANK[item[1][0]],
+                item[0][1],
+            ),
+        )
+        return (
+            [value[2] for _, value in ordered_records],
+            {
+                value[2].canonical_key(): authorities[key]
+                for key, value in ordered_records
+                if key in authorities
+            },
+        )
 
 
 def _owner(item: FusionInput, position: int) -> str:

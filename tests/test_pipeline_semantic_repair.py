@@ -103,9 +103,50 @@ class NodeSetChangingRepair:
         )
 
 
+class MutatingNoopRepair:
+    name = "mutating_noop_repair"
+
+    def repair(self, context, candidate):
+        context.evidence.clear()
+        context.trusted_label_evidence_ids.clear()
+        context.trusted_connector_evidence_ids.clear()
+        context.trusted_connector_relations.clear()
+        if context.source_mapping is not None:
+            context.source_mapping["nested"]["value"] = "Mutated"
+        candidate.typed_ir["nodes"][0]["label"] = "Mutated"
+        candidate.scene_ir.elements[0].text = "Mutated"
+        return None
+
+
+class NonCopyableSource:
+    def __deepcopy__(self, _memo):
+        raise AssertionError("opaque Marker source must not be deep-copied for semantic repair")
+
+
 class VlmFixtureEngine(JsonFixtureEngine):
     name = "vlm_fixture"
     fusion_source = "vlm"
+
+
+class PromptOmittingFixtureEngine(JsonFixtureEngine):
+    name = "prompt_omitting_fixture"
+    fusion_source = "vlm"
+    omitted_evidence_ids: frozenset[str] = frozenset()
+
+    def observe(self, context):
+        observation = super().observe(context)
+        observation._set_prompt_supplied_prior_evidence_ids(
+            {item.id for item in context.evidence if item.id not in self.omitted_evidence_ids}
+        )
+        return observation
+
+
+class LabelOmittingFixtureEngine(PromptOmittingFixtureEngine):
+    omitted_evidence_ids = frozenset({"text-a"})
+
+
+class ConnectorOmittingFixtureEngine(PromptOmittingFixtureEngine):
+    omitted_evidence_ids = frozenset({"geometry-line-001", "geometry-arrowhead-001"})
 
 
 class RecordingRepair:
@@ -437,8 +478,16 @@ def run_repair(
     fixture_engine_type=JsonFixtureEngine,
     repair_engine=None,
     trust_labels=True,
+    enable_fusion=True,
+    source_block=None,
+    vector_sources=None,
+    source_mapping=None,
 ):
-    config = MermaidConfig(candidate_count=1, enable_generic_scene_ir=False)
+    config = MermaidConfig(
+        candidate_count=1,
+        enable_fusion=enable_fusion,
+        enable_generic_scene_ir=False,
+    )
     geometry = GeometryObservation(
         canvas_size=(100, 50),
         contours=(
@@ -487,6 +536,9 @@ def run_repair(
         "source.png",
         Image.new("RGB", (100, 50), "white"),
         evidence=prior_evidence,
+        source_block=source_block,
+        vector_sources=vector_sources,
+        source_mapping=source_mapping,
     )
 
 
@@ -524,6 +576,41 @@ def test_semantic_repair_refuses_self_declared_vlm_label_evidence():
     assert result.selected.candidate_id == "candidate-1"
     assert result.selected.typed_ir["nodes"][0]["label"] == "Paymant"
     assert result.selected.repair_history == []
+
+
+def test_default_semantic_repair_cannot_reuse_prompt_omitted_label_evidence():
+    result = run_repair(
+        repair_observation(),
+        fixture_engine_type=LabelOmittingFixtureEngine,
+        enable_fusion=False,
+    )
+
+    assert result.selected is not None
+    assert result.selected.candidate_id == "candidate-1"
+    assert result.selected.typed_ir["nodes"][0]["label"] == "Paymant"
+    assert result.selected.repair_history == []
+    assert "text-a" not in result.selected.publication_evidence_authority_ids
+
+
+def test_semantic_repair_receives_isolated_context_and_candidate_snapshots():
+    opaque_source = NonCopyableSource()
+    source_mapping = {"nested": {"value": "Original"}}
+    result = run_repair(
+        repair_observation(correct_label=True),
+        repair_engine=MutatingNoopRepair(),
+        source_block=opaque_source,
+        vector_sources=[opaque_source],
+        source_mapping=source_mapping,
+    )
+
+    assert result.selected is not None
+    assert result.selected.typed_ir["nodes"][0]["label"] == "Payment"
+    assert result.selected.scene_ir.elements[0].text == "Payment"
+    assert {item.id for item in result.evidence}.issuperset(
+        {"text-a", "text-b", "geometry-line-001", "geometry-arrowhead-001"}
+    )
+    assert result.source_mapping == {"nested": {"value": "Original"}}
+    assert not any("repair engine failed" in warning for warning in result.selected.warnings)
 
 
 def test_semantic_repair_rejects_runtime_type_drift_without_corrupting_baseline():
@@ -576,6 +663,22 @@ def test_semantic_repair_accepts_an_evidence_backed_missing_edge():
     assert result.selected.scores["edge_agreement"] == 1
     assert result.selected.scores["path_consistency"] == 1
     assert result.selected.repair_history[-1].accepted
+
+
+def test_default_semantic_repair_cannot_reuse_prompt_omitted_connector_evidence():
+    result = run_repair(
+        repair_observation(correct_label=True, edge_mode="reversed"),
+        fixture_engine_type=ConnectorOmittingFixtureEngine,
+        enable_fusion=False,
+    )
+
+    assert result.selected is not None
+    assert result.selected.candidate_id == "candidate-1"
+    assert result.selected.typed_ir["edges"][0]["source"] == "geometry-node-002"
+    assert result.selected.repair_history == []
+    assert result.selected.publication_evidence_authority_ids.isdisjoint(
+        {"geometry-line-001", "geometry-arrowhead-001"}
+    )
 
 
 def test_semantic_repair_refuses_weak_connector_evidence():

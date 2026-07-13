@@ -46,13 +46,24 @@ Scene element가 별도 owner의 명시적 `vector` 또는 `geometry` input에�
 없을 때만 fused Scene ID를 authority로 인정합니다. label 일치, VLM bbox 단독, evidence kind 문자열의
 self-declaration은 authority가 아닙니다.
 
-source 쪽 evidence는 semantic engine 호출 전에 이미 pipeline context에 있던 ID와 payload여야 하고
+source 쪽 evidence는 semantic engine 호출 전에 이미 pipeline context에 있던 비충돌 ID와 payload여야
+합니다. Marker Structured VLM 입력은 그중 실제 bounded prompt에 선택된 private ID 집합에도 있어야 하며,
 same-owner Scene element와 typed node가 최소 하나를 공유해야 합니다. evidence bbox 중심은 node 안에
 있어야 하며 OCR/vector text는 NFKC·casefold·공백 정규화 뒤 node text와 일치하거나 포함 관계여야
 합니다. authority 쪽은 해당 vector/geometry observation이 직접 낸 `contour` evidence만 허용하고 contour
 bbox도 authority node와 최소 IoU 0.45로 대응해야 합니다. 다른 owner가 같은 ID를 뒤늦게 선언하거나
-어느 단계에서든 ID가 중복되면 mapping 권한을 잃습니다. 따라서 VLM이 evidence record와 ID를 함께
-만들어 `Prior evidence`인 것처럼 보이게 하거나 geometry reference를 대신 선언할 수 없습니다.
+어느 단계에서든 ID가 중복되면 mapping 권한을 잃습니다. 따라서 VLM이 prompt에서 빠진 예측 가능한 ID를
+인용하거나 evidence record와 ID를 같은 응답에 만들어 `Prior evidence`인 것처럼 보이게 하거나 geometry
+reference를 대신 선언할 수 없습니다. Fused typed candidate는 선택된 원 owner의 닫힌 게시 evidence
+집합에 독립 인증된 mapping source/authority ID만 더합니다.
+각 `FusionInput.publication_evidence_ids`가 `None`인 legacy input만 기존 unrestricted 의미를 가지며,
+명시적 빈 집합은 source prior와 authority contour 양쪽에서 완전히 닫힌 권한입니다. ID mapping 인증도
+두 input의 이 경계를 통과한 record만 사용할 수 있습니다.
+
+동일한 direct Mermaid code가 여러 input에서 중복되면 confidence/source 우선순위로 선택된 원 owner의
+publication evidence authority만 canonical candidate key에 연결합니다. 다른 input의 권한을 합집합으로
+넓히지 않으며, 선택 owner의 명시적 빈 집합도 그대로 보존합니다.
+
 Pixel Scene의 `canvas_size`는 engine self-claim으로 사용하지 않고 현재 reconstruction source image의
 trusted width/height와 정확히 같을 때만 mapping 좌표계로 사용합니다. source/authority evidence가
 공유하는 block ID도 pipeline의 현재 trusted source block 집합과 교차해야 합니다. 따라서 작은 가짜

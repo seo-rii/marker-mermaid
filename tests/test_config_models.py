@@ -11,6 +11,7 @@ from marker_mermaid.models import (
     DiagramTypePrediction,
     EngineObservation,
     MetricResult,
+    PromptBudgetNotice,
     SceneElement,
     SceneGroup,
     SceneRelation,
@@ -47,6 +48,69 @@ def test_original_image_cannot_be_disabled():
 def test_tile_geometry_budget_is_validated(values):
     with pytest.raises(ValidationError, match="tile_"):
         MermaidConfig(**values)
+
+
+def test_structured_vlm_prompt_budgets_are_bounded_and_marker_configurable():
+    config = MermaidConfig.from_marker_config(
+        {
+            "MermaidDiagramProcessor_max_vlm_prompt_chars": 32_768,
+            "MermaidDiagramProcessor_max_vlm_evidence_items": 32,
+            "MermaidDiagramProcessor_max_vlm_ocr_items": 64,
+        }
+    )
+
+    assert config.max_vlm_prompt_chars == 32_768
+    assert config.max_vlm_evidence_items == 32
+    assert config.max_vlm_ocr_items == 64
+    for values in (
+        {"max_vlm_prompt_chars": 32_767},
+        {"max_vlm_prompt_chars": 1_000_001},
+        {"max_views": 17},
+        {"max_image_dimension": 4_097},
+        {"tile_size": 4_097},
+        {"max_vlm_evidence_items": 0},
+        {"max_vlm_evidence_items": 4_097},
+        {"max_vlm_ocr_items": -1},
+        {"max_vlm_ocr_items": 4_097},
+    ):
+        with pytest.raises(ValidationError):
+            MermaidConfig(**values)
+
+
+def test_prompt_budget_notice_cross_checks_caps_counts_and_reasons():
+    valid = {
+        "engine": "marker_structured_vlm",
+        "selection_profile": "structural-quota-v1",
+        "prompt_chars": 10_000,
+        "max_prompt_chars": 100_000,
+        "schema_reserve_chars": 14_753,
+        "max_evidence_items": 1,
+        "max_ocr_items": 1,
+        "evidence_total": 2,
+        "evidence_considered": 2,
+        "evidence_included": 1,
+        "ocr_total": 2,
+        "ocr_considered": 1,
+        "ocr_included": 1,
+        "omission_reasons": ["evidence_item_limit", "evidence_char_limit", "ocr_item_limit"],
+        "selected_evidence_sha256": "0" * 64,
+    }
+    PromptBudgetNotice.model_validate(valid)
+
+    for changes in (
+        {"max_evidence_items": 2},
+        {"max_ocr_items": 2},
+        {"evidence_included": 2},
+        {"ocr_considered": 2},
+        {
+            "omission_reasons": [
+                "evidence_item_limit",
+                "ocr_item_limit",
+            ]
+        },
+    ):
+        with pytest.raises(ValidationError):
+            PromptBudgetNotice.model_validate({**valid, **changes})
 
 
 @pytest.mark.parametrize(
