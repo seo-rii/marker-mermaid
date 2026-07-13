@@ -19,7 +19,7 @@
 | color cluster/vector primitive | 구현 | PIL color map, Marker PyMuPDF/duck-typed provider와 page→canvas affine |
 | structured Marker VLM | 구현 | enabled-type root contract prompt/validation과 bounded response schema adapter |
 | Direct Mermaid | 구현 | extended/maximal, 동일 hard gate |
-| Fusion engine | 구현 | source-explicit precedence, spatial match, label/edge/type/provenance consensus |
+| Fusion engine | 구현 | source-explicit Scene consensus; prior payload의 bbox/text 정합 source evidence와 owner-local spatial contour, 최소 IoU 0.45, noncolliding provenance를 요구하는 flat Flowchart/Generic Network full/injective node-ID remap, atomic refusal, direction-conflict 전파와 hash-bound mapping/provenance sidecar. nested/non-flow remap은 후속 |
 | Flowchart | 구현 | typed serializer, validated flat/disjoint group→subgraph emission과 SceneGroup round-trip + real render fixture |
 | Architecture | 구현 | `architecture-beta` 우선 serializer, runtime 거부 시 동일 candidate slot의 nested Flowchart fallback, 양쪽 full-gate render fixture |
 | Sequence | 구현 | typed serializer + real render fixture |

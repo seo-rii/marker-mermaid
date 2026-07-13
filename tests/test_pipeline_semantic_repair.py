@@ -17,6 +17,7 @@ from marker_mermaid.models import (
     DiagramTypePrediction,
     EngineObservation,
     SceneElement,
+    SceneGroup,
     SceneRelation,
     TypedIRCandidate,
     VisualEvidence,
@@ -30,8 +31,10 @@ from marker_mermaid.validation import CandidateValidator
 class FlowRuntime:
     def __init__(self, *, drift_on_payment=False):
         self.drift_on_payment = drift_on_payment
+        self.calls = []
 
     def validate_and_render(self, code, timeout_seconds):
+        self.calls.append(code)
         diagram_type = (
             "sequence"
             if self.drift_on_payment and 'geometry_node_001["Payment"]' in code
@@ -76,6 +79,44 @@ class OversizedRepair:
             operation="oversized_repair",
             typed_ir=typed_ir,
         )
+
+
+class NodeSetChangingRepair:
+    name = "node_set_changing_repair"
+
+    def repair(self, context, candidate):
+        typed_ir = copy.deepcopy(candidate.typed_ir)
+        old_id = typed_ir["nodes"][1]["id"]
+        typed_ir["nodes"][1]["id"] = "invented-node"
+        for edge in typed_ir.get("edges", []):
+            if edge.get("target") == old_id:
+                edge["target"] = "invented-node"
+        for group in typed_ir.get("groups", []):
+            group["member_ids"] = [
+                "invented-node" if member_id == old_id else member_id
+                for member_id in group.get("member_ids", [])
+            ]
+        return RepairProposal(
+            code=f"{candidate.mermaid_code}\n",
+            operation="node_set_changing_repair",
+            typed_ir=typed_ir,
+        )
+
+
+class VlmFixtureEngine(JsonFixtureEngine):
+    name = "vlm_fixture"
+    fusion_source = "vlm"
+
+
+class RecordingRepair:
+    name = "recording_evidence_backed_flowchart_repair"
+
+    def __init__(self):
+        self.conflicted_connector_pairs = []
+
+    def repair(self, context, candidate):
+        self.conflicted_connector_pairs.append(set(context.conflicted_connector_pairs))
+        return EvidenceBackedFlowchartRepair().repair(context, candidate)
 
 
 def repair_observation(
@@ -124,12 +165,8 @@ def repair_observation(
             relations=[
                 SceneRelation(
                     id="E",
-                    source_id=(
-                        "geometry-node-002" if scene_reversed else "geometry-node-001"
-                    ),
-                    target_id=(
-                        "geometry-node-001" if scene_reversed else "geometry-node-002"
-                    ),
+                    source_id=("geometry-node-002" if scene_reversed else "geometry-node-001"),
+                    target_id=("geometry-node-001" if scene_reversed else "geometry-node-002"),
                     relation_type="edge",
                     confidence=0.95,
                     evidence_ids=["geometry-line-001", "geometry-arrowhead-001"],
@@ -253,11 +290,151 @@ def conditional_label_observation(
     return observation
 
 
+def namespaced_conditional_label_observation(*, scene_reversed=False):
+    source_id = "A"
+    target_id = "B"
+    scene_source = target_id if scene_reversed else source_id
+    scene_target = source_id if scene_reversed else target_id
+    return EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[0.9]),
+        scene_ir=DiagramSceneIR(
+            elements=[
+                SceneElement(
+                    id=source_id,
+                    role="decision",
+                    text="Approve?",
+                    bbox=(0, 0, 10, 10),
+                    shape="diamond",
+                    confidence=0.9,
+                    evidence_ids=["vlm-node-a"],
+                ),
+                SceneElement(
+                    id=target_id,
+                    role="process",
+                    text="Done",
+                    bbox=(40, 0, 50, 10),
+                    shape="rectangle",
+                    confidence=0.9,
+                    evidence_ids=["vlm-node-b"],
+                ),
+            ],
+            relations=[
+                SceneRelation(
+                    id="vlm-conditional-branch",
+                    source_id=scene_source,
+                    target_id=scene_target,
+                    relation_type="conditional_branch",
+                    semantic_relation="conditional",
+                    label="Yes",
+                    polyline=[(10, 5), (40, 5)],
+                    arrow_at_start=False,
+                    arrow_at_end=True,
+                    confidence=0.9,
+                    evidence_ids=["vlm-relation", "branch-label"],
+                )
+            ],
+            groups=[
+                SceneGroup(
+                    id="vlm-phase",
+                    role="subgraph",
+                    label="Approval",
+                    bbox=(0, 0, 50, 10),
+                    member_ids=[source_id, target_id],
+                )
+            ],
+            reading_direction="LR",
+            diagram_type_candidates=["flowchart"],
+            canvas_size=(100, 50),
+        ),
+        typed_candidates=[
+            TypedIRCandidate(
+                diagram_type="flowchart",
+                ir={
+                    "direction": "LR",
+                    "nodes": [
+                        {
+                            "id": source_id,
+                            "label": "Approve?",
+                            "role": "decision",
+                            "shape": "diamond",
+                            "bbox": [0, 0, 10, 10],
+                            "evidence_ids": ["vlm-node-a"],
+                        },
+                        {
+                            "id": target_id,
+                            "label": "Done",
+                            "role": "process",
+                            "shape": "rectangle",
+                            "bbox": [40, 0, 50, 10],
+                            "evidence_ids": ["vlm-node-b"],
+                        },
+                    ],
+                    "edges": [
+                        {
+                            "id": "typed-branch",
+                            "source": source_id,
+                            "target": target_id,
+                            "relation_type": "conditional_branch",
+                            "semantic_relation": "conditional",
+                            "arrow_at_start": False,
+                            "arrow_at_end": True,
+                            "style": "dashed",
+                            "evidence_ids": ["vlm-relation"],
+                        }
+                    ],
+                    "groups": [
+                        {
+                            "id": "typed-phase",
+                            "label": "Approval",
+                            "role": "subgraph",
+                            "bbox": [0, 0, 50, 10],
+                            "member_ids": [source_id, target_id],
+                            "evidence_ids": ["vlm-node-a", "vlm-node-b"],
+                        }
+                    ],
+                },
+            )
+        ],
+        evidence=[
+            VisualEvidence(
+                id="vlm-node-a",
+                kind="vlm_observation",
+                bbox=(0, 0, 10, 10),
+                score=0.9,
+                source_block_ids=["source"],
+            ),
+            VisualEvidence(
+                id="vlm-node-b",
+                kind="vlm_observation",
+                bbox=(40, 0, 50, 10),
+                score=0.9,
+                source_block_ids=["source"],
+            ),
+            VisualEvidence(
+                id="vlm-relation",
+                kind="vlm_observation",
+                bbox=(10, 5, 40, 5),
+                score=0.9,
+                source_block_ids=["source"],
+            ),
+            VisualEvidence(
+                id="branch-label",
+                kind="ocr_token",
+                text="Yes",
+                bbox=(20, 3, 30, 7),
+                score=0.95,
+                source_block_ids=["source"],
+            ),
+        ],
+    )
+
+
 def run_repair(
     observation,
     runtime=None,
     *,
     connector_score=0.95,
+    fixture_engine_type=JsonFixtureEngine,
     repair_engine=None,
     trust_labels=True,
 ):
@@ -268,9 +445,7 @@ def run_repair(
             ContourObservation(bbox=(0, 0, 10, 10), confidence=0.95),
             ContourObservation(bbox=(40, 0, 50, 10), confidence=0.95),
         ),
-        lines=(
-            LineObservation(start=(10, 5), end=(40, 5), confidence=connector_score),
-        ),
+        lines=(LineObservation(start=(10, 5), end=(40, 5), confidence=connector_score),),
         arrowheads=(
             ArrowheadObservation(
                 bbox=(38, 3, 40, 7),
@@ -280,23 +455,30 @@ def run_repair(
         ),
     )
     fixture_observation = observation.model_copy(deep=True)
-    trusted_label_evidence = []
+    prior_evidence = []
     if trust_labels:
-        trusted_label_evidence = [
+        prior_node_evidence_ids = (
+            {
+                evidence_id
+                for element in fixture_observation.scene_ir.elements
+                for evidence_id in element.evidence_ids
+            }
+            if fixture_engine_type is VlmFixtureEngine and fixture_observation.scene_ir is not None
+            else set()
+        )
+        prior_evidence = [
             item
             for item in fixture_observation.evidence
-            if item.kind in {"ocr_token", "vector_text"}
+            if item.kind in {"ocr_token", "vector_text"} or item.id in prior_node_evidence_ids
         ]
         fixture_observation.evidence = [
-            item
-            for item in fixture_observation.evidence
-            if item.kind not in {"ocr_token", "vector_text"}
+            item for item in fixture_observation.evidence if item not in prior_evidence
         ]
     return ReconstructionPipeline(
         config,
         [
             GeometryEngine(detector=lambda _image: geometry),
-            JsonFixtureEngine(fixture_observation),
+            fixture_engine_type(fixture_observation),
         ],
         CandidateValidator(runtime or FlowRuntime(), config.security_profile),
         repair_engine=repair_engine or EvidenceBackedFlowchartRepair(),
@@ -304,7 +486,7 @@ def run_repair(
         "source",
         "source.png",
         Image.new("RGB", (100, 50), "white"),
-        evidence=trusted_label_evidence,
+        evidence=prior_evidence,
     )
 
 
@@ -358,9 +540,7 @@ def test_semantic_repair_rejects_runtime_type_drift_without_corrupting_baseline(
 
 
 def test_semantic_repair_accepts_an_evidence_backed_direction_correction():
-    result = run_repair(
-        repair_observation(correct_label=True, edge_mode="reversed")
-    )
+    result = run_repair(repair_observation(correct_label=True, edge_mode="reversed"))
 
     assert result.selected is not None
     assert result.selected.candidate_id == "candidate-1-repair-1"
@@ -462,14 +642,8 @@ def test_semantic_repair_relabels_an_existing_conditional_edge_without_topology_
     assert baseline_edge.get("label") == typed_label
     assert repaired_edge["label"] == "Yes"
     baseline_connector = "-.->" if typed_label is None else f"-.->|{typed_label}|"
-    assert (
-        f"geometry_node_001 {baseline_connector} geometry_node_002"
-        in baseline.mermaid_code
-    )
-    assert (
-        "geometry_node_001 -.->|Yes| geometry_node_002"
-        in result.selected.mermaid_code
-    )
+    assert f"geometry_node_001 {baseline_connector} geometry_node_002" in baseline.mermaid_code
+    assert "geometry_node_001 -.->|Yes| geometry_node_002" in result.selected.mermaid_code
     for field in (
         "id",
         "source",
@@ -509,6 +683,243 @@ def test_semantic_repair_relabels_an_existing_conditional_edge_without_topology_
         "geometry-arrowhead-001",
     }
     assert baseline.repair_history == []
+
+
+def test_fused_node_id_remap_reaches_conditional_label_repair_without_structural_drift():
+    observation = namespaced_conditional_label_observation()
+    original_observation = observation.model_dump(mode="json")
+    runtime = FlowRuntime()
+
+    result = run_repair(
+        observation,
+        runtime,
+        fixture_engine_type=VlmFixtureEngine,
+    )
+
+    assert result.selected is not None
+    assert result.selected.candidate_id == "candidate-1-repair-1"
+    assert result.selected.generation_engine == "deterministic_fusion"
+    [baseline] = result.alternatives
+    assert baseline.candidate_id == "candidate-1"
+    assert baseline.generation_engine == "deterministic_fusion"
+    assert len(runtime.calls) == 2
+
+    geometry_ids = ["geometry-node-001", "geometry-node-002"]
+    assert [node["id"] for node in result.selected.typed_ir["nodes"]] == geometry_ids
+    assert result.selected.typed_ir["edges"][0]["source"] == geometry_ids[0]
+    assert result.selected.typed_ir["edges"][0]["target"] == geometry_ids[1]
+    assert result.selected.typed_ir["groups"][0]["member_ids"] == geometry_ids
+    assert [element.id for element in result.selected.scene_ir.elements] == geometry_ids
+    assert result.selected.scene_ir.relations[0].source_id == geometry_ids[0]
+    assert result.selected.scene_ir.relations[0].target_id == geometry_ids[1]
+    assert result.selected.scene_ir.groups[0].member_ids == geometry_ids
+
+    assert [mapping.source_id for mapping in result.selected.node_id_mappings] == ["A", "B"]
+    assert [mapping.fused_id for mapping in result.selected.node_id_mappings] == geometry_ids
+    assert all(
+        mapping.match_method == "unique_iou"
+        and mapping.iou == 1
+        and mapping.authority_source == "geometry"
+        for mapping in result.selected.node_id_mappings
+    )
+    assert result.selected.node_id_mappings == baseline.node_id_mappings
+    assert result.selected._has_valid_node_id_mapping_seal()
+    assert baseline._has_valid_node_id_mapping_seal()
+
+    baseline_edge = baseline.typed_ir["edges"][0]
+    repaired_edge = result.selected.typed_ir["edges"][0]
+    assert baseline_edge.get("label") is None
+    assert repaired_edge["label"] == "Yes"
+    for field in (
+        "id",
+        "source",
+        "target",
+        "relation_type",
+        "semantic_relation",
+        "arrow_at_start",
+        "arrow_at_end",
+        "style",
+    ):
+        assert repaired_edge[field] == baseline_edge[field]
+    assert result.selected.typed_ir["nodes"] == baseline.typed_ir["nodes"]
+    assert result.selected.typed_ir["groups"] == baseline.typed_ir["groups"]
+    assert result.selected.scene_ir.model_dump(mode="json") == baseline.scene_ir.model_dump(
+        mode="json"
+    )
+    assert result.selected.aggregate_score > baseline.aggregate_score
+    assert result.selected.scores["ocr_recall"] > baseline.scores["ocr_recall"]
+    for metric in ("edge_agreement", "arrow_agreement", "path_consistency"):
+        assert result.selected.scores[metric] == baseline.scores[metric] == 1
+
+    assert observation.model_dump(mode="json") == original_observation
+    assert [element.id for element in observation.scene_ir.elements] == ["A", "B"]
+    assert [node["id"] for node in observation.typed_candidates[0].ir["nodes"]] == [
+        "A",
+        "B",
+    ]
+
+
+def test_fused_node_id_remap_refuses_self_declared_source_evidence() -> None:
+    observation = namespaced_conditional_label_observation()
+    observation.evidence = [
+        item for item in observation.evidence if item.id not in {"vlm-node-a", "vlm-node-b"}
+    ]
+
+    result = run_repair(
+        observation,
+        fixture_engine_type=VlmFixtureEngine,
+    )
+
+    assert result.selected is not None
+    assert result.selected.node_id_mappings == []
+    assert {node["id"] for node in result.selected.typed_ir["nodes"]} == {"A", "B"}
+    assert {item.id for item in result.evidence}.isdisjoint({"vlm-node-a", "vlm-node-b"})
+    assert any("certification failed" in warning for warning in result.selected.warnings)
+
+
+def test_fused_mapping_budget_filters_non_predicted_typed_candidates_before_slicing() -> None:
+    observation = namespaced_conditional_label_observation()
+    observation.typed_candidates.insert(
+        0,
+        TypedIRCandidate(
+            diagram_type="architecture",
+            confidence=1,
+            ir={"services": [{"id": "ignored", "label": "Ignored"}]},
+        ),
+    )
+
+    result = run_repair(
+        observation,
+        fixture_engine_type=VlmFixtureEngine,
+    )
+
+    assert result.selected is not None
+    assert result.selected.diagram_type == "flowchart"
+    assert result.selected.generation_engine == "deterministic_fusion"
+    assert result.selected.node_id_mappings
+
+
+@pytest.mark.parametrize("mutation", ["nested_label", "set", "nan"])
+def test_pipeline_revalidates_mutated_typed_candidates_without_losing_valid_siblings(
+    mutation,
+) -> None:
+    observation = namespaced_conditional_label_observation()
+    valid = observation.typed_candidates[0].model_copy(deep=True)
+    invalid = observation.typed_candidates[0]
+    if mutation == "nested_label":
+        invalid.ir["nodes"][0]["label"] = {"parent_id": "A"}
+    elif mutation == "set":
+        invalid.ir["mutated"] = {"unordered"}
+    else:
+        invalid.ir["mutated"] = float("nan")
+    observation.typed_candidates = [invalid, valid]
+    config = MermaidConfig(
+        candidate_count=2,
+        enable_fusion=False,
+        enable_generic_scene_ir=False,
+        enable_direct_mermaid=False,
+    )
+
+    result = ReconstructionPipeline(
+        config,
+        [VlmFixtureEngine(observation)],
+        CandidateValidator(FlowRuntime(), config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+    )
+
+    assert result.selected is not None
+    assert result.selected.typed_ir["nodes"][0]["label"] == "Approve?"
+    assert any("invalid typed candidate was isolated" in item.message for item in result.failures)
+
+
+def test_pipeline_isolates_mutated_initial_evidence() -> None:
+    observation = namespaced_conditional_label_observation()
+    initial = VisualEvidence(
+        id="invalid-initial",
+        kind="ocr_token",
+        text="Invalid",
+        bbox=(0, 0, 5, 5),
+        source_block_ids=["source"],
+    )
+    initial.kind = "bogus"
+    config = MermaidConfig(
+        candidate_count=1,
+        enable_fusion=False,
+        enable_generic_scene_ir=False,
+    )
+
+    result = ReconstructionPipeline(
+        config,
+        [VlmFixtureEngine(observation)],
+        CandidateValidator(FlowRuntime(), config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        evidence=[initial],
+    )
+
+    assert result.selected is not None
+    assert "invalid-initial" not in {item.id for item in result.evidence}
+    assert any("invalid initial evidence was isolated" in item.message for item in result.failures)
+
+
+@pytest.mark.parametrize(
+    ("collection", "message"),
+    [
+        ("typed_candidates", "invalid typed candidate was isolated"),
+        ("direct_candidates", "invalid direct candidate was isolated"),
+        ("evidence", "invalid evidence was isolated"),
+    ],
+)
+def test_pipeline_isolates_non_model_engine_components(collection, message) -> None:
+    observation = namespaced_conditional_label_observation()
+    getattr(observation, collection).append({"malformed": True})
+    config = MermaidConfig(
+        candidate_count=1,
+        enable_fusion=False,
+        enable_generic_scene_ir=False,
+    )
+
+    result = ReconstructionPipeline(
+        config,
+        [VlmFixtureEngine(observation)],
+        CandidateValidator(FlowRuntime(), config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+    )
+
+    assert result.selected is not None
+    assert any(message in item.message for item in result.failures)
+
+
+def test_fused_reverse_vlm_relation_marks_remapped_conflict_and_refuses_repair():
+    observation = namespaced_conditional_label_observation(scene_reversed=True)
+    original_observation = observation.model_dump(mode="json")
+    repair = RecordingRepair()
+
+    result = run_repair(
+        observation,
+        fixture_engine_type=VlmFixtureEngine,
+        repair_engine=repair,
+    )
+
+    assert result.selected is not None
+    assert result.selected.candidate_id == "candidate-1"
+    assert result.selected.generation_engine == "deterministic_fusion"
+    assert result.selected.typed_ir["edges"][0].get("label") is None
+    assert result.selected.repair_history == []
+    assert repair.conflicted_connector_pairs == [
+        {frozenset({"geometry-node-001", "geometry-node-002"})}
+    ]
+    assert observation.model_dump(mode="json") == original_observation
+    assert observation.scene_ir.relations[0].source_id == "B"
+    assert observation.scene_ir.relations[0].target_id == "A"
 
 
 def test_semantic_repair_refuses_self_declared_conditional_edge_label_evidence():
@@ -569,3 +980,26 @@ def test_semantic_repair_revalidates_typed_ir_resource_budgets():
     assert "oversized" not in result.selected.typed_ir
     assert not result.selected.repair_history[-1].accepted
     assert any("could not be serialized" in warning for warning in result.selected.warnings)
+
+
+def test_semantic_repair_cannot_change_a_provenance_mapped_node_set():
+    result = run_repair(
+        namespaced_conditional_label_observation(),
+        fixture_engine_type=VlmFixtureEngine,
+        repair_engine=NodeSetChangingRepair(),
+    )
+
+    assert result.selected is not None
+    assert [node["id"] for node in result.selected.typed_ir["nodes"]] == [
+        "geometry-node-001",
+        "geometry-node-002",
+    ]
+    assert [mapping.fused_id for mapping in result.selected.node_id_mappings] == [
+        "geometry-node-001",
+        "geometry-node-002",
+    ]
+    assert not result.selected.repair_history[-1].accepted
+    assert any(
+        "cannot change a provenance-mapped node set" in warning
+        for warning in result.selected.warnings
+    )

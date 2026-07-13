@@ -121,6 +121,7 @@ output/document/
         ├── scene-ir.json
         ├── generated-scene-ir.json # 생성 후보 구조(평가 대상, 가용한 경우)
         ├── typed-ir.json
+        ├── node-id-map.json        # 안전한 typed→fused ID remap이 있는 경우
         ├── provenance.json
         ├── source-map.json
         ├── scores.json

@@ -13,6 +13,11 @@
 - `source-map.json` sidecars and multi-source Markdown rendering.
 - Duck-typed PDF vector extraction with page-to-canvas mapping.
 - Deterministic vector/geometry/OCR/VLM observation fusion.
+- Collision-safe Flowchart/Generic Network typed node-ID harmonization against independently
+  corroborated vector/geometry Scene nodes, with snapshotted spatial/text source evidence,
+  owner-local contour authority, atomic reference remapping, mapped direction-conflict propagation,
+  trusted canvas/block binding, component-level post-mutation revalidation, immutable sealed mapping
+  claims, and hash-bound `node-id-map.json` + provenance audit sidecars.
 - Conservative topology, arrow, relative-layout, and path quality metrics.
 - Vector, detected-arrow, and color-cluster visual priors.
 - Native State, Class, ER, Requirement, and Block typed serializers.

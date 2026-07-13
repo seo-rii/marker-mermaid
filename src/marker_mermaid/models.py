@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import math
+import secrets
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from marker_mermaid.config import QualityGrade
+from marker_mermaid.mapping_validation import bbox_iou
 from marker_mermaid.typed_contracts import validate_typed_ir_contract
 
 BBox = tuple[float, float, float, float]
@@ -23,6 +28,8 @@ MAX_ID_CHARS = 256
 MAX_TEXT_CHARS = 50_000
 MAX_WARNING_CHARS = 4_096
 MAX_EVIDENCE_REFS = 256
+NODE_ID_MAPPING_MIN_IOU = 0.45
+_NODE_ID_MAPPING_SEAL_KEY = secrets.token_bytes(32)
 MAX_SCENE_ELEMENTS = 5_000
 MAX_SCENE_RELATIONS = 10_000
 MAX_SCENE_GROUPS = 1_000
@@ -346,6 +353,106 @@ class DiagramTypePrediction(BaseModel):
         return value
 
 
+class NodeIdMapping(BaseModel):
+    """Auditable owner-Scene to fused-Scene identity mapping."""
+
+    model_config = ConfigDict(frozen=True)
+
+    source_owner: str = Field(min_length=1, max_length=512)
+    source_id: str = Field(min_length=1, max_length=MAX_ID_CHARS)
+    fused_id: str = Field(min_length=1, max_length=MAX_ID_CHARS)
+    authority_source: Literal["vector", "geometry"]
+    authority_owner: str = Field(min_length=1, max_length=512)
+    match_method: Literal["identity", "unique_iou"]
+    iou: float = Field(ge=NODE_ID_MAPPING_MIN_IOU, le=1)
+    source_bbox: BBox
+    authority_bbox: BBox
+    source_text: str | None = None
+    source_evidence_ids: tuple[str, ...] = Field(max_length=MAX_EVIDENCE_REFS)
+    authority_evidence_ids: tuple[str, ...] = Field(max_length=MAX_EVIDENCE_REFS)
+    claim_digest: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+    @field_validator("source_text")
+    @classmethod
+    def source_text_is_bounded(cls, value: str | None) -> str | None:
+        return _bounded_text(value, "node id mapping source_text")
+
+    @field_validator("source_bbox", "authority_bbox")
+    @classmethod
+    def normalized_bbox_is_valid(cls, value: BBox) -> BBox:
+        _finite_bbox(value, "node id mapping bbox")
+        if value[2] < value[0] or value[3] < value[1] or not all(0 <= item <= 1 for item in value):
+            raise ValueError("node id mapping bbox must be ordered and normalized")
+        return value
+
+    @field_validator("source_evidence_ids", "authority_evidence_ids")
+    @classmethod
+    def evidence_is_bounded(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value:
+            raise ValueError("node id mappings require source and authority evidence")
+        if len(value) != len(set(value)):
+            raise ValueError("node id mapping evidence must be unique")
+        _bounded_references(list(value), "node id mapping evidence_ids")
+        return value
+
+    @model_validator(mode="after")
+    def method_matches_identity(self) -> NodeIdMapping:
+        if (self.source_id == self.fused_id) != (self.match_method == "identity"):
+            raise ValueError("node id mapping method must match whether the id changed")
+        measured_iou = bbox_iou(self.source_bbox, self.authority_bbox)
+        if measured_iou < NODE_ID_MAPPING_MIN_IOU or not math.isclose(
+            self.iou,
+            measured_iou,
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        ):
+            raise ValueError("node id mapping IoU must match its normalized source/authority boxes")
+        claim_payload = {
+            "source_owner": self.source_owner,
+            "source_id": self.source_id,
+            "fused_id": self.fused_id,
+            "authority_source": self.authority_source,
+            "authority_owner": self.authority_owner,
+            "match_method": self.match_method,
+            "iou": self.iou,
+            "source_bbox": self.source_bbox,
+            "authority_bbox": self.authority_bbox,
+            "source_text": self.source_text,
+            "source_evidence_ids": self.source_evidence_ids,
+            "authority_evidence_ids": self.authority_evidence_ids,
+        }
+        expected_digest = hashlib.sha256(
+            json.dumps(
+                claim_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode()
+        ).hexdigest()
+        if self.claim_digest is None:
+            object.__setattr__(self, "claim_digest", expected_digest)
+        elif self.claim_digest != expected_digest:
+            raise ValueError("node id mapping claim digest does not match its fields")
+        return self
+
+
+def _node_id_mapping_seal(mappings: list[NodeIdMapping]) -> str:
+    payload = json.dumps(
+        [item.model_dump(mode="json") for item in mappings],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode()
+    return hmac.new(_NODE_ID_MAPPING_SEAL_KEY, payload, hashlib.sha256).hexdigest()
+
+
 class TypedIRCandidate(BaseModel):
     diagram_type: str = Field(max_length=MAX_ID_CHARS)
     ir: dict[str, Any]
@@ -366,16 +473,36 @@ class TypedIRCandidate(BaseModel):
             if isinstance(item, str) and len(item) > MAX_IR_TEXT_CHARS:
                 raise ValueError("typed IR text exceeds the field size budget")
             if isinstance(item, dict):
+                if any(not isinstance(key, str) for key in item):
+                    raise ValueError("typed IR object keys must be strings")
                 pending.extend((key, depth + 1) for key in item)
                 pending.extend((child, depth + 1) for child in item.values())
             elif isinstance(item, list | tuple):
                 pending.extend((child, depth + 1) for child in item)
+            elif isinstance(item, float) and not math.isfinite(item):
+                raise ValueError("typed IR numbers must be finite")
+            elif item is not None and not isinstance(item, str | int | float | bool):
+                raise ValueError("typed IR values must be JSON-compatible")
         return value
 
     @model_validator(mode="after")
     def matches_diagram_contract(self) -> TypedIRCandidate:
         validate_typed_ir_contract(self.diagram_type, self.ir)
         return self
+
+    def canonical_key(self) -> str:
+        # Repair workflows intentionally mutate typed IR in memory. Revalidate
+        # the current payload here so post-construction mutation cannot bypass
+        # the JSON/finite-number contract or destabilize fusion keys.
+        validated = type(self).model_validate(self.model_dump(mode="python"))
+        payload = json.dumps(
+            validated.model_dump(mode="json")["ir"],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        return f"{self.diagram_type}\0{payload}"
 
 
 class DirectMermaidCandidate(BaseModel):
@@ -397,6 +524,8 @@ class EngineObservation(BaseModel):
         default_factory=list, max_length=MAX_OBSERVATION_EVIDENCE
     )
     warnings: list[str] = Field(default_factory=list, max_length=MAX_OBSERVATION_WARNINGS)
+    _fusion_node_id_mappings: dict[str, list[NodeIdMapping]] = PrivateAttr(default_factory=dict)
+    _fusion_conflicted_connector_pairs: set[frozenset[str]] = PrivateAttr(default_factory=set)
 
     @field_validator("warnings")
     @classmethod
@@ -404,6 +533,30 @@ class EngineObservation(BaseModel):
         if any(len(item) > MAX_WARNING_CHARS for item in value):
             raise ValueError("engine warning exceeds the text size limit")
         return value
+
+    def _set_fusion_metadata(
+        self,
+        node_id_mappings: dict[str, list[NodeIdMapping]],
+        conflicted_connector_pairs: set[frozenset[str]],
+    ) -> None:
+        self._fusion_node_id_mappings = {
+            key: [item.model_copy(deep=True) for item in values]
+            for key, values in node_id_mappings.items()
+        }
+        self._fusion_conflicted_connector_pairs = set(conflicted_connector_pairs)
+
+    def fusion_node_id_mappings_for(
+        self,
+        candidate: TypedIRCandidate,
+    ) -> list[NodeIdMapping]:
+        return [
+            item.model_copy(deep=True)
+            for item in self._fusion_node_id_mappings.get(candidate.canonical_key(), [])
+        ]
+
+    @property
+    def fusion_conflicted_connector_pairs(self) -> set[frozenset[str]]:
+        return set(self._fusion_conflicted_connector_pairs)
 
 
 class RepairEvent(BaseModel):
@@ -447,6 +600,10 @@ class MermaidCandidate(BaseModel):
     generated_scene_ir: DiagramSceneIR | None = None
     typed_ir: dict[str, Any] | None = None
     raw_mermaid: str | None = None
+    node_id_mappings: list[NodeIdMapping] = Field(
+        default_factory=list,
+        max_length=MAX_SCENE_ELEMENTS,
+    )
     mermaid_code: str | None = None
     ast: dict[str, Any] | None = None
     svg: str | None = None
@@ -457,8 +614,24 @@ class MermaidCandidate(BaseModel):
     aggregate_score: float | None = None
     warnings: list[str] = Field(default_factory=list)
     repair_history: list[RepairEvent] = Field(default_factory=list)
+    _node_id_mapping_seal: str | None = PrivateAttr(default=None)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    def _seal_node_id_mappings(self) -> None:
+        """Mark current mappings as produced by the trusted reconstruction pipeline."""
+
+        self._node_id_mapping_seal = (
+            _node_id_mapping_seal(self.node_id_mappings) if self.node_id_mappings else None
+        )
+
+    def _has_valid_node_id_mapping_seal(self) -> bool:
+        if not self.node_id_mappings or self._node_id_mapping_seal is None:
+            return False
+        return hmac.compare_digest(
+            self._node_id_mapping_seal,
+            _node_id_mapping_seal(self.node_id_mappings),
+        )
 
     @field_validator("scores")
     @classmethod
@@ -466,6 +639,18 @@ class MermaidCandidate(BaseModel):
         invalid = {key: score for key, score in value.items() if not 0 <= score <= 1}
         if invalid:
             raise ValueError(f"candidate scores must be between 0 and 1: {invalid}")
+        return value
+
+    @field_validator("node_id_mappings")
+    @classmethod
+    def node_id_mapping_is_injective(
+        cls,
+        value: list[NodeIdMapping],
+    ) -> list[NodeIdMapping]:
+        source_ids = [item.source_id for item in value]
+        fused_ids = [item.fused_id for item in value]
+        if len(source_ids) != len(set(source_ids)) or len(fused_ids) != len(set(fused_ids)):
+            raise ValueError("candidate node id mappings must be one-to-one")
         return value
 
     @model_validator(mode="after")
@@ -482,6 +667,30 @@ class MermaidCandidate(BaseModel):
             raise ValueError("candidate fallback chain must end with emitted_diagram_type")
         if len(self.fallback_chain) != len(set(self.fallback_chain)):
             raise ValueError("candidate fallback chain cannot contain cycles")
+        if self.node_id_mappings:
+            if self.diagram_type not in {"flowchart", "generic_network"}:
+                raise ValueError(
+                    "node id mappings are limited to flowchart and generic_network candidates"
+                )
+            if self.scene_ir is None:
+                raise ValueError("node id mappings require a fused Scene IR")
+            nodes = self.typed_ir.get("nodes") if isinstance(self.typed_ir, dict) else None
+            if not isinstance(nodes, list) or not all(isinstance(node, dict) for node in nodes):
+                raise ValueError("node id mappings require typed IR nodes")
+            node_ids = [node.get("id") for node in nodes]
+            if (
+                not all(isinstance(node_id, str) and node_id for node_id in node_ids)
+                or len(node_ids) != len(set(node_ids))
+                or set(node_ids) != {item.fused_id for item in self.node_id_mappings}
+            ):
+                raise ValueError("node id mappings must cover the typed IR node set exactly")
+            if len({item.source_owner for item in self.node_id_mappings}) != 1:
+                raise ValueError("candidate node id mappings must have one source owner")
+            if not any(item.match_method == "unique_iou" for item in self.node_id_mappings):
+                raise ValueError("candidate node id mappings must record an actual id change")
+            scene_ids = {element.id for element in self.scene_ir.elements}
+            if not set(node_ids).issubset(scene_ids):
+                raise ValueError("node id mappings must reference fused Scene elements")
         return self
 
 

@@ -67,7 +67,9 @@ endpoint·방향 변경, 새 branch와 Yes/No 의미 추론, parallel relation, 
 
 `write_ir`, `write_svg`, `write_png`, `write_alternatives`, `write_provenance`는 각 sidecar
 artifact 생성을 제어합니다. 선택된 `final.mmd`, `scores.json`, `review-history.json`, manifest는
-bundle의 최소 감사 기록으로 항상 남습니다.
+bundle의 최소 감사 기록으로 항상 남습니다. 단, 선택 후보에 provenance-backed `node-id-map.json`이
+있으면 dangling reference를 만들지 않도록 `write_provenance=false`여도 `provenance.json`을 함께
+기록합니다.
 
 `include_original_image`와 `extract_images`는 타입 수준에서 `true`만 허용합니다. Marker 공통
 `--disable_image_extraction`과 함께 사용할 수 없습니다.

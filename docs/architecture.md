@@ -35,7 +35,8 @@ flowchart TB
 | `source_assembly.py` | panel/merged canvas 조립과 source/page affine mapping |
 | `geometry.py` | contour, Hough line, arrowhead의 보수적 Scene IR/provenance 변환 |
 | `vector.py` | duck-typed PDF vector/text primitive 추출과 canvas affine 변환 |
-| `fusion.py` | vector/geometry/OCR/VLM Scene IR와 후보의 결정적 병합 |
+| `fusion.py` | vector/geometry/OCR/VLM Scene IR 결정적 병합과 제한된 Flowchart/Generic Network node-ID 정합화 |
+| `mapping_validation.py` | node-ID mapping의 공용 bbox/text/contour provenance 정합성 gate |
 | `views.py` | type-aware thumbnail/edge/threshold/overlay와 source-resolution tile 생성 |
 | `engines.py` | Marker BaseService adapter와 offline fixture engine |
 | `flowchart_structure.py` | node/group ID와 flat disjoint subgraph membership의 공용 emission plan |
@@ -80,6 +81,12 @@ token에는 fragment offset을 적용합니다. 모든 evidence는 원 Marker bl
 Scene relation은 endpoint가 아직 불명확할 때 `None`을 허용하지만, 존재하지 않는 ID 참조는
 모델 validation에서 거부합니다.
 
+`NodeIdMapping`은 새 visual evidence가 아니라 owner Scene ID와 fused Scene ID 사이의 audit record입니다.
+source/authority owner, vector 또는 geometry authority, `match_method`(`identity`/`unique_iou`), 양쪽
+bbox와 기존 evidence ID, canonical claim digest를 기록합니다. record는 immutable이며 pipeline은
+selected candidate에 process-private certification seal을 붙입니다. mapping은 provenance를 만들거나 바꾸지 않으며
+`source-map.json`의 page/canvas 좌표 책임도 대신하지 않습니다.
+
 ## 후보와 budget
 
 engine observation 하나는 type distribution, Scene IR, typed candidates, direct candidates,
@@ -92,6 +99,23 @@ candidate budget까지만 직렬화합니다. type top-k와 code hash 중복 제
 parse/render hard gate 뒤 publish eligibility, aggregate score, OCR recall, generation priority,
 candidate ID 순서로 결정적입니다. `review_required`와 `sidecar_only`는 publish eligibility를 정렬에
 사용하지 않아 기존 aggregate 중심 검토 순서를 유지합니다.
+typed 후보는 prediction의 top-k type 순서로 먼저 filter/reorder한 뒤 candidate budget을 적용합니다.
+따라서 top-k에 없는 앞쪽 후보가 안전한 predicted-type 후보의 직렬화 slot을 소비하지 않습니다.
+
+fused observation의 `flowchart`와 `generic_network` typed 후보만 별도 ID 정합화 gate를 거칩니다. typed
+node가 같은 owner Scene element ID를 정확히 재사용하고, 그 element가 독립 vector/geometry node 하나와
+IoU 0.45 이상으로 유일하게 대응하며, source evidence가 engine 호출 전 payload snapshot에 있고 그 bbox
+중심과 정규화 text가 owner Scene node에 대응해야 합니다. authority contour도 같은 vector/geometry
+observation에서 직접 선언되고 bbox가 authority node와 겹치며 provenance ID가 충돌하지 않아야 합니다.
+Pixel Scene canvas와 shared evidence block도 현재 source image 크기 및 trusted source block 집합에
+결속합니다.
+모든 node가 매핑되고 fused target이 서로 다른 full/injective mapping일 때만 node ID, edge endpoint,
+group member를 한 transaction처럼
+재작성합니다. 하나라도 불안전하면 후보를 통째로 원래 ID 공간에 두며 partial remap은 하지 않습니다.
+mapped endpoint pair의 cross-engine direction conflict도 fused ID로 전파되어 뒤 semantic repair를
+차단합니다. nested Swimlane/BPMN과 non-flow typed IR, direct Mermaid, Scene fallback은 이 경로에서
+재작성하지 않습니다.
+
 Treemap/Venn/Packet/Ishikawa/TreeView native validation이 실패하면 serializer가 명시한 portable fallback을
 같은 candidate slot에서 한 번 재검증합니다. Architecture/C4/Deployment/Component도 `architecture-beta`
 runtime validation이 실패할 때 같은 typed IR의 nested Flowchart fallback을 이 경로로 한 번만 시도합니다.

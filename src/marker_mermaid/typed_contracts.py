@@ -140,6 +140,28 @@ def validate_typed_ir_contract(diagram_type: str, ir: dict[str, Any]) -> None:
             raise ValueError(f"{diagram_type} typed IR field {field!r} must be an object")
         if kind == "string" and not isinstance(value, str):
             raise ValueError(f"{diagram_type} typed IR field {field!r} must be a string")
+    if diagram_type in {"flowchart", "generic_network"}:
+        record_fields = (
+            ("nodes", ("id", "label", "text", "role", "shape")),
+            ("edges", ("id", "source", "target", "label", "relation_type")),
+            ("groups", ("id", "label", "role")),
+        )
+        for collection_name, text_fields in record_fields:
+            collection = ir.get(collection_name, [])
+            if not isinstance(collection, list) or any(
+                not isinstance(record, dict) for record in collection
+            ):
+                raise ValueError(
+                    f"{diagram_type} typed IR field {collection_name!r} must contain objects"
+                )
+            for index, record in enumerate(collection):
+                for field in text_fields:
+                    value = record.get(field)
+                    if value is not None and not isinstance(value, str):
+                        raise ValueError(
+                            f"{diagram_type} typed IR {collection_name}[{index}].{field} "
+                            "must be a string"
+                        )
 
 
 def typed_ir_contract_prompt(enabled_types: set[str]) -> str:

@@ -8,10 +8,22 @@ import os
 import re
 import shutil
 import tempfile
+from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from marker_mermaid.models import MermaidCandidate, ReconstructionResult
+from marker_mermaid.mapping_validation import (
+    authority_evidence_matches,
+    bbox_iou,
+    normalize_scene_bbox,
+    source_evidence_matches,
+)
+from marker_mermaid.models import (
+    NODE_ID_MAPPING_MIN_IOU,
+    MermaidCandidate,
+    ReconstructionResult,
+    VisualEvidence,
+)
 
 SCHEMA_VERSION = "mmx-sidecar-0.4"
 
@@ -76,9 +88,19 @@ class SidecarStore:
             raise FileExistsError(f"sidecar bundle already exists: {target}")
         temporary = Path(tempfile.mkdtemp(prefix=f".{name}-", dir=diagrams))
         hashes: dict[str, str] = {}
+        mapping_requires_provenance = False
         try:
             selected = result.selected
             if selected is not None:
+                if selected.node_id_mappings and not selected._has_valid_node_id_mapping_seal():
+                    raise ValueError(
+                        "node id mappings must retain their trusted pipeline certification seal"
+                    )
+                selected = MermaidCandidate.model_validate(selected.model_dump(mode="python"))
+                validated_evidence = [
+                    VisualEvidence.model_validate(item.model_dump(mode="python"))
+                    for item in result.evidence
+                ]
                 if selected.mermaid_code:
                     hashes["final.mmd"] = _write(temporary / "final.mmd", selected.mermaid_code)
                 if self.write_svg and selected.svg:
@@ -99,6 +121,115 @@ class SidecarStore:
                     hashes["typed-ir.json"] = _write(
                         temporary / "typed-ir.json", _json_bytes(selected.typed_ir)
                     )
+                if selected.node_id_mappings:
+                    mapping_requires_provenance = True
+                    evidence_counts = Counter(item.id for item in validated_evidence)
+                    evidence_by_id = {item.id: item for item in validated_evidence}
+                    mapping_evidence_references = [
+                        evidence_id
+                        for mapping in selected.node_id_mappings
+                        for evidence_id in (
+                            *mapping.source_evidence_ids,
+                            *mapping.authority_evidence_ids,
+                        )
+                    ]
+                    mapping_reference_counts = Counter(mapping_evidence_references)
+                    mapping_evidence_ids = set(mapping_evidence_references)
+                    invalid_evidence_ids = sorted(
+                        evidence_id
+                        for evidence_id in mapping_evidence_ids
+                        if evidence_counts[evidence_id] != 1
+                        or mapping_reference_counts[evidence_id] != 1
+                    )
+                    if invalid_evidence_ids:
+                        raise ValueError(
+                            "node id mapping evidence must occur exactly once in provenance: "
+                            f"{invalid_evidence_ids}"
+                        )
+                    assert selected.scene_ir is not None
+                    scene_elements = {element.id: element for element in selected.scene_ir.elements}
+                    for mapping in selected.node_id_mappings:
+                        source_evidence = [
+                            evidence_by_id[evidence_id]
+                            for evidence_id in mapping.source_evidence_ids
+                        ]
+                        authority_evidence = [
+                            evidence_by_id[evidence_id]
+                            for evidence_id in mapping.authority_evidence_ids
+                        ]
+                        has_source_text_evidence = any(
+                            item.kind in {"ocr_token", "vector_text"} for item in source_evidence
+                        )
+                        fused_bbox = normalize_scene_bbox(
+                            scene_elements[mapping.fused_id].bbox,
+                            selected.scene_ir,
+                        )
+                        fused_evidence_ids = set(scene_elements[mapping.fused_id].evidence_ids)
+                        if (
+                            (mapping.source_text is not None) != has_source_text_evidence
+                            or not all(
+                                source_evidence_matches(
+                                    item,
+                                    selected.scene_ir,
+                                    mapping.source_bbox,
+                                    mapping.source_text,
+                                )
+                                for item in source_evidence
+                            )
+                            or not all(
+                                authority_evidence_matches(
+                                    item,
+                                    selected.scene_ir,
+                                    mapping.authority_bbox,
+                                    NODE_ID_MAPPING_MIN_IOU,
+                                )
+                                for item in authority_evidence
+                            )
+                            or (
+                                fused_bbox is None
+                                or bbox_iou(fused_bbox, mapping.authority_bbox)
+                                < NODE_ID_MAPPING_MIN_IOU
+                            )
+                            or not set(
+                                (
+                                    *mapping.source_evidence_ids,
+                                    *mapping.authority_evidence_ids,
+                                )
+                            ).issubset(fused_evidence_ids)
+                        ):
+                            raise ValueError(
+                                "node id mapping evidence must remain spatially/text aligned "
+                                f"with source and authority boxes: {mapping.source_id!r}"
+                            )
+                        source_blocks = {
+                            block_id
+                            for item in source_evidence
+                            for block_id in item.source_block_ids
+                        }
+                        authority_blocks = {
+                            block_id
+                            for item in authority_evidence
+                            for block_id in item.source_block_ids
+                        }
+                        shared_blocks = source_blocks.intersection(authority_blocks)
+                        result_blocks = set(result.source_block_ids)
+                        if (
+                            not source_blocks
+                            or not authority_blocks
+                            or not shared_blocks
+                            or not result_blocks
+                            or shared_blocks.isdisjoint(result_blocks)
+                        ):
+                            raise ValueError(
+                                "node id mapping source and authority evidence must share "
+                                "a source block"
+                            )
+                    hashes["node-id-map.json"] = _write(
+                        temporary / "node-id-map.json",
+                        _json_bytes(
+                            [item.model_dump(mode="json") for item in selected.node_id_mappings]
+                        ),
+                    )
                 hashes["scores.json"] = _write(
                     temporary / "scores.json",
                     _json_bytes(
@@ -110,10 +241,15 @@ class SidecarStore:
                         }
                     ),
                 )
-            if self.write_provenance and result.evidence:
+            if selected is None:
+                validated_evidence = [
+                    VisualEvidence.model_validate(item.model_dump(mode="python"))
+                    for item in result.evidence
+                ]
+            if (self.write_provenance or mapping_requires_provenance) and validated_evidence:
                 hashes["provenance.json"] = _write(
                     temporary / "provenance.json",
-                    _json_bytes([item.model_dump(mode="json") for item in result.evidence]),
+                    _json_bytes([item.model_dump(mode="json") for item in validated_evidence]),
                 )
             if result.source_mapping is not None:
                 hashes["source-map.json"] = _write(

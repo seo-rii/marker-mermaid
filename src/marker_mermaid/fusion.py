@@ -15,17 +15,24 @@ rules above and recorded in the returned observation's warnings.
 
 from __future__ import annotations
 
-import json
+import math
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from marker_mermaid.mapping_validation import (
+    authority_evidence_matches,
+    normalize_scene_bbox,
+    source_evidence_matches,
+)
 from marker_mermaid.models import (
+    NODE_ID_MAPPING_MIN_IOU,
     DiagramSceneIR,
     DiagramTypePrediction,
     DirectMermaidCandidate,
     EngineObservation,
+    NodeIdMapping,
     SceneElement,
     SceneGroup,
     SceneRelation,
@@ -64,11 +71,23 @@ class FusionInput:
 
     ``name`` should be the engine instance name when available.  It is used
     only as a deterministic tie-breaker and in conflict diagnostics.
+    ``prior_evidence_ids`` is the collision-free evidence snapshot that
+    existed before this observation was produced; an observation cannot
+    authorize its own typed-to-Scene identity claims. ``prior_evidence``
+    carries the payload snapshot needed to verify that each referenced ID's
+    bbox and text belong to the claimed Scene element. Evidence collisions
+    known by the caller, including collisions with initial context, belong in
+    ``excluded_evidence_ids``.
     """
 
     source: FusionSource
     observation: EngineObservation
     name: str = ""
+    prior_evidence_ids: frozenset[str] = frozenset()
+    prior_evidence: tuple[VisualEvidence, ...] = ()
+    excluded_evidence_ids: frozenset[str] = frozenset()
+    trusted_canvas_size: tuple[float, float] | None = None
+    trusted_source_block_ids: frozenset[str] = frozenset()
 
 
 @dataclass(slots=True)
@@ -77,6 +96,8 @@ class _ElementRecord:
     source: FusionSource
     element: SceneElement
     scene: DiagramSceneIR
+    trusted_canvas_size: tuple[float, float] | None
+    trusted_source_block_ids: frozenset[str]
 
 
 @dataclass(slots=True)
@@ -88,14 +109,27 @@ class _RelationRecord:
     mapped_target: str | None
 
 
+@dataclass(slots=True)
+class _SceneFusionResult:
+    scene: DiagramSceneIR
+    warnings: list[str]
+    element_ids: dict[tuple[str, str], str]
+    certified_mappings: dict[tuple[str, str], NodeIdMapping]
+    certification_failures: dict[tuple[str, str], str]
+    conflicted_connector_pairs: set[frozenset[str]]
+
+
 class FusionEngine:
     """Merge independently produced observations into one observation."""
 
     name = "deterministic_fusion"
 
     def __init__(self, *, element_iou_threshold: float = 0.45):
-        if not 0 <= element_iou_threshold <= 1:
-            raise ValueError("element_iou_threshold must be between 0 and 1")
+        if not NODE_ID_MAPPING_MIN_IOU <= element_iou_threshold <= 1:
+            raise ValueError(
+                "element_iou_threshold must be at least "
+                f"{NODE_ID_MAPPING_MIN_IOU} and at most one"
+            )
         self.element_iou_threshold = element_iou_threshold
 
     def fuse(self, inputs: Iterable[FusionInput]) -> EngineObservation:
@@ -104,31 +138,53 @@ class FusionEngine:
         ordered = self._ordered_inputs(inputs)
         if not ordered:
             raise ValueError("at least one fusion input is required")
+        owners = {id(item): _owner(item, position) for position, item in enumerate(ordered)}
 
         warnings = _unique(
             warning for item in ordered for warning in item.observation.warnings if warning
         )
-        evidence, evidence_warnings = self._fuse_evidence(ordered)
+        evidence, evidence_warnings, collided_evidence_ids = self._fuse_evidence(ordered)
+        collided_evidence_ids.update(
+            evidence_id for item in ordered for evidence_id in item.excluded_evidence_ids
+        )
         warnings.extend(evidence_warnings)
 
         scene_inputs = [item for item in ordered if item.observation.scene_ir is not None]
         scene_ir: DiagramSceneIR | None = None
+        scene_result: _SceneFusionResult | None = None
         if scene_inputs:
-            scene_ir, scene_warnings = self._fuse_scenes(scene_inputs, evidence)
-            warnings.extend(scene_warnings)
+            scene_result = self._fuse_scenes(
+                scene_inputs,
+                evidence,
+                owners,
+                collided_evidence_ids,
+            )
+            scene_ir = scene_result.scene
+            warnings.extend(scene_result.warnings)
 
         prediction = self._fuse_predictions(ordered)
         if scene_ir is not None:
             scene_ir.diagram_type_candidates = list(prediction.candidates)
+        typed_candidates, typed_mappings, typed_warnings = self._fuse_typed_candidates(
+            ordered,
+            owners,
+            scene_result,
+        )
+        warnings.extend(typed_warnings)
 
-        return EngineObservation(
+        result = EngineObservation(
             prediction=prediction,
             scene_ir=scene_ir,
-            typed_candidates=self._fuse_typed_candidates(ordered),
+            typed_candidates=typed_candidates,
             direct_candidates=self._fuse_direct_candidates(ordered),
             evidence=evidence,
             warnings=_unique(warnings),
         )
+        result._set_fusion_metadata(
+            typed_mappings,
+            (scene_result.conflicted_connector_pairs if scene_result is not None else set()),
+        )
+        return result
 
     def _ordered_inputs(self, inputs: Iterable[FusionInput]) -> list[FusionInput]:
         values = list(inputs)
@@ -141,15 +197,26 @@ class FusionEngine:
                 -_GEOMETRY_RANK[item.source],
                 item.source,
                 item.name,
+                tuple(sorted(item.prior_evidence_ids)),
+                tuple(
+                    sorted(
+                        evidence.model_dump_json(exclude_none=True)
+                        for evidence in item.prior_evidence
+                    )
+                ),
+                tuple(sorted(item.excluded_evidence_ids)),
+                item.trusted_canvas_size or (),
+                tuple(sorted(item.trusted_source_block_ids)),
                 item.observation.model_dump_json(exclude_none=True),
             ),
         )
 
     def _fuse_evidence(
         self, inputs: Sequence[FusionInput]
-    ) -> tuple[list[VisualEvidence], list[str]]:
+    ) -> tuple[list[VisualEvidence], list[str], set[str]]:
         records: dict[str, tuple[FusionSource, str, VisualEvidence]] = {}
         warnings: list[str] = []
+        collided_ids: set[str] = set()
         for item in inputs:
             for candidate in item.observation.evidence:
                 existing = records.get(candidate.id)
@@ -160,6 +227,7 @@ class FusionEngine:
                         candidate.model_copy(deep=True),
                     )
                     continue
+                collided_ids.add(candidate.id)
                 old_source, old_name, old = existing
                 equivalent = old.model_dump(exclude={"score", "source_block_ids"}) == (
                     candidate.model_dump(exclude={"score", "source_block_ids"})
@@ -179,7 +247,7 @@ class FusionEngine:
                         "fusion evidence conflict for "
                         f"{candidate.id!r}; kept {winner_source} input {winner_name!r}"
                     )
-        return [records[key][2] for key in sorted(records)], warnings
+        return [records[key][2] for key in sorted(records)], warnings, collided_ids
 
     def _fuse_predictions(self, inputs: Sequence[FusionInput]) -> DiagramTypePrediction:
         totals: defaultdict[str, float] = defaultdict(float)
@@ -211,17 +279,26 @@ class FusionEngine:
         self,
         inputs: Sequence[FusionInput],
         evidence: Sequence[VisualEvidence],
-    ) -> tuple[DiagramSceneIR, list[str]]:
+        owners: dict[int, str],
+        collided_evidence_ids: set[str],
+    ) -> _SceneFusionResult:
         warnings: list[str] = []
         clusters: list[list[_ElementRecord]] = []
         element_map: dict[tuple[str, str], int] = {}
 
-        for position, item in enumerate(inputs):
+        for item in inputs:
             scene = item.observation.scene_ir
             assert scene is not None
-            owner = _owner(item, position)
+            owner = owners[id(item)]
             for element in sorted(scene.elements, key=lambda value: value.id):
-                record = _ElementRecord(owner, item.source, element, scene)
+                record = _ElementRecord(
+                    owner,
+                    item.source,
+                    element,
+                    scene,
+                    item.trusted_canvas_size,
+                    item.trusted_source_block_ids,
+                )
                 cluster_index = self._matching_element_cluster(record, clusters)
                 if cluster_index is None:
                     cluster_index = len(clusters)
@@ -242,10 +319,10 @@ class FusionEngine:
             warnings.extend(cluster_warnings)
 
         relation_clusters: list[list[_RelationRecord]] = []
-        for position, item in enumerate(inputs):
+        for item in inputs:
             scene = item.observation.scene_ir
             assert scene is not None
-            owner = _owner(item, position)
+            owner = owners[id(item)]
             for relation in sorted(scene.relations, key=lambda value: value.id):
                 source_index = element_map.get((owner, relation.source_id))
                 target_index = element_map.get((owner, relation.target_id))
@@ -266,45 +343,341 @@ class FusionEngine:
 
         fused_relations: list[SceneRelation] = []
         used_relation_ids: set[str] = set()
+        conflicted_connector_pairs: set[frozenset[str]] = set()
         for cluster in relation_clusters:
-            fused, cluster_warnings = self._fuse_relation_cluster(cluster)
+            fused, cluster_warnings, direction_conflict = self._fuse_relation_cluster(cluster)
             fused.id = _unique_id(fused.id, used_relation_ids)
             used_relation_ids.add(fused.id)
             fused_relations.append(fused)
             warnings.extend(cluster_warnings)
+            if (
+                direction_conflict
+                and fused.source_id is not None
+                and fused.target_id is not None
+                and fused.source_id != fused.target_id
+            ):
+                conflicted_connector_pairs.add(frozenset({fused.source_id, fused.target_id}))
 
-        fused_groups = self._fuse_groups(inputs, element_map, output_ids, warnings)
+        relation_pair_counts: defaultdict[frozenset[str], int] = defaultdict(int)
+        for relation in fused_relations:
+            if (
+                relation.source_id is None
+                or relation.target_id is None
+                or relation.source_id == relation.target_id
+            ):
+                continue
+            pair = frozenset({relation.source_id, relation.target_id})
+            relation_pair_counts[pair] += 1
+        conflicted_connector_pairs.update(
+            pair for pair, count in relation_pair_counts.items() if count > 1
+        )
+
+        fused_groups = self._fuse_groups(
+            inputs,
+            owners,
+            element_map,
+            output_ids,
+            warnings,
+        )
         primary = inputs[0].observation.scene_ir
         assert primary is not None
         direction = "unknown"
         direction_owner = ""
-        for position, item in enumerate(inputs):
+        for item in inputs:
             scene = item.observation.scene_ir
             assert scene is not None
             if scene.reading_direction == "unknown":
                 continue
             if direction == "unknown":
                 direction = scene.reading_direction
-                direction_owner = _owner(item, position)
+                direction_owner = owners[id(item)]
             elif scene.reading_direction != direction:
                 warnings.append(
                     "fusion reading-direction conflict; "
                     f"kept {direction!r} from {direction_owner!r} over "
-                    f"{scene.reading_direction!r} from {_owner(item, position)!r}"
+                    f"{scene.reading_direction!r} from {owners[id(item)]!r}"
                 )
 
-        return (
-            DiagramSceneIR(
-                elements=fused_elements,
-                relations=fused_relations,
-                groups=fused_groups,
-                reading_direction=direction,
-                diagram_type_candidates=[],
-                coordinate_space=primary.coordinate_space,
-                canvas_size=primary.canvas_size,
-            ),
-            warnings,
+        fused_scene = DiagramSceneIR(
+            elements=fused_elements,
+            relations=fused_relations,
+            groups=fused_groups,
+            reading_direction=direction,
+            diagram_type_candidates=[],
+            coordinate_space=primary.coordinate_space,
+            canvas_size=primary.canvas_size,
         )
+        element_ids = {key: output_ids[cluster_index] for key, cluster_index in element_map.items()}
+        certified_mappings, certification_failures = self._certify_element_mappings(
+            clusters,
+            output_ids,
+            inputs,
+            owners,
+            collided_evidence_ids,
+        )
+        return _SceneFusionResult(
+            scene=fused_scene,
+            warnings=warnings,
+            element_ids=element_ids,
+            certified_mappings=certified_mappings,
+            certification_failures=certification_failures,
+            conflicted_connector_pairs=conflicted_connector_pairs,
+        )
+
+    def _certify_element_mappings(
+        self,
+        clusters: Sequence[list[_ElementRecord]],
+        output_ids: Sequence[str],
+        inputs: Sequence[FusionInput],
+        owners: dict[int, str],
+        collided_evidence_ids: set[str],
+    ) -> tuple[
+        dict[tuple[str, str], NodeIdMapping],
+        dict[tuple[str, str], str],
+    ]:
+        """Certify aliases without trusting the best-effort cluster assignment alone."""
+
+        reference_counts: dict[str, defaultdict[str, int]] = {}
+        for item in inputs:
+            scene = item.observation.scene_ir
+            assert scene is not None
+            owner = owners[id(item)]
+            counts: defaultdict[str, int] = defaultdict(int)
+            for element in scene.elements:
+                for evidence_id in set(element.evidence_ids):
+                    counts[evidence_id] += 1
+            for relation in scene.relations:
+                for evidence_id in set(relation.evidence_ids):
+                    counts[evidence_id] += 1
+            reference_counts[owner] = counts
+
+        prior_evidence_by_owner: dict[str, dict[str, VisualEvidence]] = {}
+        authority_evidence_by_owner: dict[str, dict[str, VisualEvidence]] = {}
+        for item in inputs:
+            owner = owners[id(item)]
+            prior_counts: defaultdict[str, int] = defaultdict(int)
+            for evidence in item.prior_evidence:
+                prior_counts[evidence.id] += 1
+            prior_evidence_by_owner[owner] = {
+                evidence.id: evidence
+                for evidence in item.prior_evidence
+                if evidence.id in item.prior_evidence_ids
+                and prior_counts[evidence.id] == 1
+                and evidence.id not in collided_evidence_ids
+            }
+            authority_evidence_by_owner[owner] = {
+                evidence.id: evidence
+                for evidence in item.observation.evidence
+                if evidence.kind == "contour" and evidence.id not in collided_evidence_ids
+            }
+
+        def usable_evidence(
+            record: _ElementRecord,
+            *,
+            evidence_by_id: dict[str, VisualEvidence],
+            authority: bool,
+        ) -> list[str]:
+            if record.trusted_canvas_size is None or record.scene.coordinate_space != "pixels":
+                return []
+            record_bbox = normalize_scene_bbox(
+                record.element.bbox,
+                record.scene,
+                trusted_canvas_size=record.trusted_canvas_size,
+            )
+            if record_bbox is None:
+                return []
+            values: list[str] = []
+            for evidence_id in sorted(set(record.element.evidence_ids)):
+                evidence = evidence_by_id.get(evidence_id)
+                if (
+                    evidence is None
+                    or evidence_id in collided_evidence_ids
+                    or reference_counts[record.owner][evidence_id] != 1
+                    or evidence.bbox is None
+                    or not evidence.source_block_ids
+                ):
+                    continue
+                if authority:
+                    if not authority_evidence_matches(
+                        evidence,
+                        record.scene,
+                        record_bbox,
+                        self.element_iou_threshold,
+                        trusted_canvas_size=record.trusted_canvas_size,
+                    ):
+                        continue
+                elif not source_evidence_matches(
+                    evidence,
+                    record.scene,
+                    record_bbox,
+                    record.element.text,
+                    trusted_canvas_size=record.trusted_canvas_size,
+                ):
+                    continue
+                values.append(evidence_id)
+            return values
+
+        certified: dict[tuple[str, str], NodeIdMapping] = {}
+        failures: dict[tuple[str, str], str] = {}
+        all_records = [record for cluster in clusters for record in cluster]
+        for source_record in all_records:
+            source_key = (source_record.owner, source_record.element.id)
+            source_bbox = (
+                normalize_scene_bbox(
+                    source_record.element.bbox,
+                    source_record.scene,
+                    trusted_canvas_size=source_record.trusted_canvas_size,
+                )
+                if source_record.trusted_canvas_size is not None
+                and source_record.scene.coordinate_space == "pixels"
+                else None
+            )
+            source_evidence_ids = usable_evidence(
+                source_record,
+                evidence_by_id=prior_evidence_by_owner[source_record.owner],
+                authority=False,
+            )
+            if source_bbox is None:
+                failures[source_key] = "source Scene bbox is not safely normalizable"
+                continue
+            if not source_evidence_ids:
+                referenced_prior_ids = set(source_record.element.evidence_ids).intersection(
+                    prior_evidence_by_owner[source_record.owner]
+                )
+                failures[source_key] = (
+                    "source evidence is not spatially/text aligned with the owner Scene node"
+                    if referenced_prior_ids
+                    else "source evidence is not a unique collision-free prior payload"
+                )
+                continue
+
+            overlapping_clusters: list[
+                tuple[
+                    int,
+                    float,
+                    list[tuple[_ElementRecord, list[str]]],
+                    list[str],
+                ]
+            ] = []
+            for cluster_index, cluster in enumerate(clusters):
+                authorities: list[tuple[_ElementRecord, list[str]]] = []
+                authority_owners: list[str] = []
+                best_overlap = 0.0
+                has_overlapping_authority = False
+                for authority_record in cluster:
+                    if (
+                        authority_record.owner == source_record.owner
+                        or authority_record.source not in {"vector", "geometry"}
+                    ):
+                        continue
+                    authority_bbox = normalize_scene_bbox(
+                        authority_record.element.bbox,
+                        authority_record.scene,
+                        trusted_canvas_size=authority_record.trusted_canvas_size,
+                    )
+                    if authority_bbox is None:
+                        continue
+                    overlap = _bbox_iou(source_bbox, authority_bbox)
+                    if overlap < self.element_iou_threshold:
+                        continue
+                    has_overlapping_authority = True
+                    best_overlap = max(best_overlap, overlap)
+                    authority_owners.append(authority_record.owner)
+                    record_authority_evidence_ids = usable_evidence(
+                        authority_record,
+                        evidence_by_id=authority_evidence_by_owner[authority_record.owner],
+                        authority=True,
+                    )
+                    if record_authority_evidence_ids:
+                        authorities.append((authority_record, record_authority_evidence_ids))
+                if has_overlapping_authority:
+                    overlapping_clusters.append(
+                        (
+                            cluster_index,
+                            best_overlap,
+                            authorities,
+                            authority_owners,
+                        )
+                    )
+
+            if len(overlapping_clusters) != 1:
+                failures[source_key] = "independent geometry authority is absent or ambiguous"
+                continue
+            cluster_index, _best_overlap, authorities, authority_owners = overlapping_clusters[0]
+            if (
+                not authorities
+                or len(authority_owners) != len(set(authority_owners))
+                or source_record not in clusters[cluster_index]
+            ):
+                failures[source_key] = (
+                    "independent geometry authority evidence is absent or ambiguous"
+                )
+                continue
+            authority_record, authority_evidence_ids = min(
+                authorities,
+                key=lambda item: (
+                    -_GEOMETRY_RANK[item[0].source],
+                    item[0].owner,
+                    item[0].element.id,
+                ),
+            )
+            authority_bbox = normalize_scene_bbox(
+                authority_record.element.bbox,
+                authority_record.scene,
+                trusted_canvas_size=authority_record.trusted_canvas_size,
+            )
+            assert authority_bbox is not None
+            source_blocks = {
+                block_id
+                for evidence_id in source_evidence_ids
+                for block_id in prior_evidence_by_owner[source_record.owner][
+                    evidence_id
+                ].source_block_ids
+            }
+            authority_blocks = {
+                block_id
+                for evidence_id in authority_evidence_ids
+                for block_id in authority_evidence_by_owner[authority_record.owner][
+                    evidence_id
+                ].source_block_ids
+            }
+            trusted_blocks = source_record.trusted_source_block_ids.intersection(
+                authority_record.trusted_source_block_ids
+            )
+            if (
+                not trusted_blocks
+                or not source_blocks.intersection(authority_blocks, trusted_blocks)
+            ):
+                failures[source_key] = (
+                    "source and authority evidence do not share a trusted source block"
+                )
+                continue
+            overlap = _bbox_iou(source_bbox, authority_bbox)
+            fused_id = output_ids[cluster_index]
+            certified[source_key] = NodeIdMapping(
+                source_owner=source_record.owner,
+                source_id=source_record.element.id,
+                fused_id=fused_id,
+                authority_source=authority_record.source,
+                authority_owner=authority_record.owner,
+                match_method=("identity" if source_record.element.id == fused_id else "unique_iou"),
+                iou=overlap,
+                source_bbox=source_bbox,
+                authority_bbox=authority_bbox,
+                source_text=(
+                    source_record.element.text
+                    if any(
+                        prior_evidence_by_owner[source_record.owner][evidence_id].kind
+                        in {"ocr_token", "vector_text"}
+                        for evidence_id in source_evidence_ids
+                    )
+                    else None
+                ),
+                source_evidence_ids=source_evidence_ids,
+                authority_evidence_ids=authority_evidence_ids,
+            )
+            failures.pop(source_key, None)
+        return certified, failures
 
     def _matching_element_cluster(
         self,
@@ -420,7 +793,7 @@ class FusionEngine:
 
     def _fuse_relation_cluster(
         self, cluster: Sequence[_RelationRecord]
-    ) -> tuple[SceneRelation, list[str]]:
+    ) -> tuple[SceneRelation, list[str], bool]:
         geometry_order = sorted(
             cluster,
             key=lambda item: (
@@ -438,11 +811,20 @@ class FusionEngine:
         )
         result.confidence = max(item.relation.confidence for item in cluster)
         warnings: list[str] = []
+        direction_conflict = False
         for item in geometry_order[1:]:
-            if (item.mapped_source, item.mapped_target) == (
-                geometry.mapped_target,
+            if (
+                item.mapped_source,
+                item.mapped_target,
+                item.relation.arrow_at_start,
+                item.relation.arrow_at_end,
+            ) != (
                 geometry.mapped_source,
+                geometry.mapped_target,
+                geometry.relation.arrow_at_start,
+                geometry.relation.arrow_at_end,
             ):
+                direction_conflict = True
                 warnings.append(
                     "fusion relation direction conflict for "
                     f"{result.id!r}; kept {geometry.source} direction"
@@ -473,20 +855,21 @@ class FusionEngine:
         result.label, label_warning = _select_text_records(label_records)
         if label_warning:
             warnings.append(f"fusion relation {result.id!r} {label_warning}")
-        return result, warnings
+        return result, warnings, direction_conflict
 
     def _fuse_groups(
         self,
         inputs: Sequence[FusionInput],
+        owners: dict[int, str],
         element_map: dict[tuple[str, str], int],
         output_ids: Sequence[str],
         warnings: list[str],
     ) -> list[SceneGroup]:
         groups: dict[tuple[str, ...], list[tuple[FusionSource, str, SceneGroup, list[str]]]] = {}
-        for position, item in enumerate(inputs):
+        for item in inputs:
             scene = item.observation.scene_ir
             assert scene is not None
-            owner = _owner(item, position)
+            owner = owners[id(item)]
             for group in scene.groups:
                 member_ids = sorted(
                     output_ids[element_map[(owner, member_id)]]
@@ -524,33 +907,451 @@ class FusionEngine:
             fused.append(result)
         return fused
 
-    def _fuse_typed_candidates(self, inputs: Sequence[FusionInput]) -> list[TypedIRCandidate]:
-        records: dict[tuple[str, str], tuple[FusionSource, str, TypedIRCandidate]] = {}
+    def _fuse_typed_candidates(
+        self,
+        inputs: Sequence[FusionInput],
+        owners: dict[int, str],
+        scene_result: _SceneFusionResult | None,
+    ) -> tuple[list[TypedIRCandidate], dict[str, list[NodeIdMapping]], list[str]]:
+        records: dict[str, tuple[FusionSource, str, TypedIRCandidate]] = {}
+        mappings: dict[str, list[NodeIdMapping]] = {}
+        warnings: list[str] = []
         for item in inputs:
             for candidate in item.observation.typed_candidates:
-                payload = json.dumps(
-                    candidate.ir,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
-                key = (candidate.diagram_type, payload)
+                try:
+                    value_candidate = TypedIRCandidate.model_validate(
+                        candidate.model_dump(mode="python")
+                    )
+                except (TypeError, ValueError) as exc:
+                    warnings.append(
+                        "fusion skipped invalid typed candidate from "
+                        f"{owners[id(item)]!r}: {exc}"
+                    )
+                    continue
+                candidate_mappings: list[NodeIdMapping] = []
+                if (
+                    scene_result is not None
+                    and item.observation.scene_ir is not None
+                    and candidate.diagram_type in {"flowchart", "generic_network"}
+                ):
+                    value_candidate, candidate_mappings, warning = self._harmonize_typed_candidate(
+                        value_candidate,
+                        owners[id(item)],
+                        scene_result,
+                    )
+                    if warning:
+                        warnings.append(warning)
+                key = value_candidate.canonical_key()
                 old = records.get(key)
-                value = (item.source, item.name, candidate.model_copy(deep=True))
-                if old is None or _candidate_order(value) < _candidate_order(old):
+                value = (item.source, item.name, value_candidate)
+                old_has_mapping = key in mappings
+                if (
+                    old is None
+                    or (candidate_mappings and not old_has_mapping)
+                    or (
+                        bool(candidate_mappings) == old_has_mapping
+                        and _candidate_order(value) < _candidate_order(old)
+                    )
+                ):
                     records[key] = value
-        return [
-            value[2]
-            for _, value in sorted(
-                records.items(),
-                key=lambda item: (
-                    item[0][0],
-                    -item[1][2].confidence,
-                    -_SEMANTIC_RANK[item[1][0]],
-                    item[0][1],
-                ),
+                    if candidate_mappings:
+                        mappings[key] = candidate_mappings
+                    else:
+                        mappings.pop(key, None)
+
+        ordered_records = sorted(
+            records.items(),
+            key=lambda item: (
+                item[1][2].diagram_type,
+                -int(item[0] in mappings),
+                -item[1][2].confidence,
+                -_SEMANTIC_RANK[item[1][0]],
+                item[0],
+            ),
+        )
+        return (
+            [value[2] for _, value in ordered_records],
+            {
+                key: [mapping.model_copy(deep=True) for mapping in mappings[key]]
+                for key, _value in ordered_records
+                if key in mappings
+            },
+            warnings,
+        )
+
+    def _harmonize_typed_candidate(
+        self,
+        candidate: TypedIRCandidate,
+        owner: str,
+        scene_result: _SceneFusionResult,
+    ) -> tuple[TypedIRCandidate, list[NodeIdMapping], str | None]:
+        """Atomically rewrite flat graph references after full independent certification."""
+
+        reason_prefix = f"fusion typed node ID harmonization for {candidate.diagram_type!r}"
+        ir = candidate.ir
+        nodes = ir.get("nodes")
+        if not isinstance(nodes, list) or not nodes:
+            return candidate.model_copy(deep=True), [], f"{reason_prefix} skipped: invalid nodes"
+
+        source_ids: list[str] = []
+        for node in nodes:
+            if not isinstance(node, dict):
+                return (
+                    candidate.model_copy(deep=True),
+                    [],
+                    (f"{reason_prefix} skipped: nodes must be objects"),
+                )
+            source_id = node.get("id")
+            if not isinstance(source_id, str) or not source_id:
+                return (
+                    candidate.model_copy(deep=True),
+                    [],
+                    (f"{reason_prefix} skipped: every node needs an explicit string id"),
+                )
+            source_ids.append(source_id)
+        if len(source_ids) != len(set(source_ids)):
+            return (
+                candidate.model_copy(deep=True),
+                [],
+                (f"{reason_prefix} skipped: node ids are not unique"),
             )
+
+        target_ids: dict[str, str] = {}
+        for source_id in source_ids:
+            target_id = scene_result.element_ids.get((owner, source_id))
+            if target_id is None:
+                return (
+                    candidate.model_copy(deep=True),
+                    [],
+                    (f"{reason_prefix} skipped: node is absent from the owner Scene IR"),
+                )
+            target_ids[source_id] = target_id
+        if len(set(target_ids.values())) != len(target_ids):
+            return (
+                candidate.model_copy(deep=True),
+                [],
+                (f"{reason_prefix} skipped: fused node mapping is not one-to-one"),
+            )
+        if all(source_id == target_ids[source_id] for source_id in source_ids):
+            return candidate.model_copy(deep=True), [], None
+
+        typed_evidence: dict[str, set[str]] = {}
+        for node in nodes:
+            source_id = node["id"]
+            evidence_ids = node.get("evidence_ids")
+            if not isinstance(evidence_ids, list) or not all(
+                isinstance(value, str) and value for value in evidence_ids
+            ):
+                return (
+                    candidate.model_copy(deep=True),
+                    [],
+                    (f"{reason_prefix} skipped: every node needs evidence_ids"),
+                )
+            typed_evidence[source_id] = set(evidence_ids)
+
+        source_id_set = set(source_ids)
+        edges = ir.get("edges", [])
+        if not isinstance(edges, list):
+            return candidate.model_copy(deep=True), [], f"{reason_prefix} skipped: invalid edges"
+        for edge in edges:
+            if not isinstance(edge, dict):
+                return (
+                    candidate.model_copy(deep=True),
+                    [],
+                    (f"{reason_prefix} skipped: edges must be objects"),
+                )
+            source = edge.get("source")
+            target = edge.get("target")
+            if (
+                not isinstance(source, str)
+                or not isinstance(target, str)
+                or source not in source_id_set
+                or target not in source_id_set
+            ):
+                return (
+                    candidate.model_copy(deep=True),
+                    [],
+                    (f"{reason_prefix} skipped: edge endpoint is missing or dangling"),
+                )
+
+        groups = ir.get("groups", [])
+        if not isinstance(groups, list):
+            return candidate.model_copy(deep=True), [], f"{reason_prefix} skipped: invalid groups"
+        for group in groups:
+            if not isinstance(group, dict):
+                return (
+                    candidate.model_copy(deep=True),
+                    [],
+                    (f"{reason_prefix} skipped: groups must be objects"),
+                )
+            member_ids = group.get("member_ids", [])
+            if not isinstance(member_ids, list) or any(
+                not isinstance(member_id, str) or member_id not in source_id_set
+                for member_id in member_ids
+            ):
+                return (
+                    candidate.model_copy(deep=True),
+                    [],
+                    (f"{reason_prefix} skipped: group member is missing or dangling"),
+                )
+
+        unsupported_reference_keys = {
+            "children",
+            "member_ids",
+            "node_id",
+            "node_ids",
+            "parent",
+            "parent_id",
+            "source",
+            "source_id",
+            "target",
+            "target_id",
+        }
+        root_safe_keys = {
+            "acc_description",
+            "acc_title",
+            "description",
+            "direction",
+            "edges",
+            "groups",
+            "nodes",
+            "title",
+        }
+        node_safe_keys = {
+            "bbox",
+            "border_color",
+            "border_style",
+            "confidence",
+            "evidence_ids",
+            "fill_color",
+            "font_weight",
+            "id",
+            "label",
+            "polygon",
+            "role",
+            "shape",
+            "text",
+        }
+        edge_safe_keys = {
+            "arrow_at_end",
+            "arrow_at_start",
+            "bidirectional",
+            "confidence",
+            "evidence_ids",
+            "id",
+            "label",
+            "line_color",
+            "line_style",
+            "polyline",
+            "relation_type",
+            "semantic_relation",
+            "source",
+            "style",
+            "target",
+        }
+        group_safe_keys = {
+            "bbox",
+            "border_color",
+            "border_style",
+            "evidence_ids",
+            "fill_color",
+            "id",
+            "label",
+            "member_ids",
+            "role",
+        }
+        container_types = (dict, list, tuple, set, frozenset)
+        records_and_container_fields = [
+            (ir, {"nodes", "edges", "groups"}),
+            *((node, {"bbox", "evidence_ids", "polygon"}) for node in nodes),
+            *((edge, {"evidence_ids", "polyline"}) for edge in edges),
+            *((group, {"bbox", "evidence_ids", "member_ids"}) for group in groups),
         ]
+        if any(
+            isinstance(value, container_types) and key not in container_fields
+            for record, container_fields in records_and_container_fields
+            for key, value in record.items()
+        ):
+            return (
+                candidate.model_copy(deep=True),
+                [],
+                (f"{reason_prefix} skipped: known scalar field has a nested container"),
+            )
+
+        if any(
+            (
+                node.get("bbox") is not None
+                and not (
+                    isinstance(node.get("bbox"), list | tuple)
+                    and len(node["bbox"]) == 4
+                    and all(
+                        isinstance(item, int | float)
+                        and not isinstance(item, bool)
+                        and math.isfinite(item)
+                        for item in node["bbox"]
+                    )
+                )
+            )
+            or (
+                node.get("polygon") is not None
+                and not (
+                    isinstance(node.get("polygon"), list | tuple)
+                    and all(
+                        isinstance(point, list | tuple)
+                        and len(point) == 2
+                        and all(
+                            isinstance(item, int | float)
+                            and not isinstance(item, bool)
+                            and math.isfinite(item)
+                            for item in point
+                        )
+                        for point in node["polygon"]
+                    )
+                )
+            )
+            or (
+                not isinstance(node.get("evidence_ids"), list)
+                or not all(
+                    isinstance(item, str) and item for item in node["evidence_ids"]
+                )
+            )
+            for node in nodes
+        ) or any(
+            (
+                edge.get("polyline") is not None
+                and not (
+                    isinstance(edge.get("polyline"), list | tuple)
+                    and all(
+                        isinstance(point, list | tuple)
+                        and len(point) == 2
+                        and all(
+                            isinstance(item, int | float)
+                            and not isinstance(item, bool)
+                            and math.isfinite(item)
+                            for item in point
+                        )
+                        for point in edge["polyline"]
+                    )
+                )
+            )
+            or (
+                edge.get("evidence_ids") is not None
+                and not (
+                    isinstance(edge.get("evidence_ids"), list)
+                    and all(
+                        isinstance(item, str) and item for item in edge["evidence_ids"]
+                    )
+                )
+            )
+            for edge in edges
+        ) or any(
+            (
+                group.get("bbox") is not None
+                and not (
+                    isinstance(group.get("bbox"), list | tuple)
+                    and len(group["bbox"]) == 4
+                    and all(
+                        isinstance(item, int | float)
+                        and not isinstance(item, bool)
+                        and math.isfinite(item)
+                        for item in group["bbox"]
+                    )
+                )
+            )
+            or (
+                group.get("evidence_ids") is not None
+                and not (
+                    isinstance(group.get("evidence_ids"), list)
+                    and all(
+                        isinstance(item, str) and item for item in group["evidence_ids"]
+                    )
+                )
+            )
+            for group in groups
+        ):
+            return (
+                candidate.model_copy(deep=True),
+                [],
+                (f"{reason_prefix} skipped: known container field has an invalid shape"),
+            )
+
+        unknown_fields = [(key, value) for key, value in ir.items() if key not in root_safe_keys]
+        unknown_fields.extend(
+            (key, value)
+            for node in nodes
+            for key, value in node.items()
+            if key not in node_safe_keys
+        )
+        unknown_fields.extend(
+            (key, value)
+            for edge in edges
+            for key, value in edge.items()
+            if key not in edge_safe_keys
+        )
+        unknown_fields.extend(
+            (key, value)
+            for group in groups
+            for key, value in group.items()
+            if key not in group_safe_keys
+        )
+        unsupported_reference = any(
+            key in unsupported_reference_keys
+            or isinstance(value, dict | list | tuple | set | frozenset)
+            or (isinstance(value, str) and value in source_id_set)
+            for key, value in unknown_fields
+        )
+        if unsupported_reference:
+            return (
+                candidate.model_copy(deep=True),
+                [],
+                (f"{reason_prefix} skipped: unsupported nested node reference"),
+            )
+
+        certified: list[NodeIdMapping] = []
+        for source_id in source_ids:
+            mapping = scene_result.certified_mappings.get((owner, source_id))
+            if (
+                mapping is None
+                or mapping.fused_id != target_ids[source_id]
+                or not typed_evidence[source_id].intersection(mapping.source_evidence_ids)
+            ):
+                failure = scene_result.certification_failures.get((owner, source_id))
+                detail = f": {failure}" if mapping is None and failure else ""
+                return (
+                    candidate.model_copy(deep=True),
+                    [],
+                    (
+                        f"{reason_prefix} skipped: full provenance-backed certification failed"
+                        f"{detail}"
+                    ),
+                )
+            certified.append(mapping.model_copy(deep=True))
+
+        remapped_ir = candidate.model_copy(deep=True).ir
+        for node in remapped_ir["nodes"]:
+            node["id"] = target_ids[node["id"]]
+        for edge in remapped_ir.get("edges", []):
+            edge["source"] = target_ids[edge["source"]]
+            edge["target"] = target_ids[edge["target"]]
+        for group in remapped_ir.get("groups", []):
+            group["member_ids"] = [
+                target_ids[member_id] for member_id in group.get("member_ids", [])
+            ]
+        remapped = TypedIRCandidate.model_validate(
+            {
+                **candidate.model_dump(mode="python"),
+                "ir": remapped_ir,
+            }
+        )
+        certified.sort(key=lambda item: item.source_id)
+        return (
+            remapped,
+            certified,
+            (
+                f"{reason_prefix} applied to {len(certified)} nodes using independent "
+                "vector/geometry authority"
+            ),
+        )
 
     def _fuse_direct_candidates(
         self, inputs: Sequence[FusionInput]
@@ -610,6 +1411,29 @@ def _unit_bbox(
         width, height = scene.canvas_size
         return (bbox[0] / width, bbox[1] / height, bbox[2] / width, bbox[3] / height)
     return bbox
+
+
+def _strict_unit_bbox(
+    bbox: tuple[float, float, float, float],
+    scene: DiagramSceneIR,
+) -> tuple[float, float, float, float] | None:
+    """Normalize only when the Scene declares a comparable coordinate space."""
+
+    if scene.coordinate_space == "normalized":
+        normalized = bbox
+    elif scene.canvas_size is not None:
+        width, height = scene.canvas_size
+        normalized = (
+            bbox[0] / width,
+            bbox[1] / height,
+            bbox[2] / width,
+            bbox[3] / height,
+        )
+    else:
+        return None
+    if not all(0 <= value <= 1 for value in normalized):
+        return None
+    return normalized
 
 
 def _bbox_iou(

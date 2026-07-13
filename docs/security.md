@@ -58,6 +58,12 @@ kind/ID를 self-declare해도 style authority가 되지 않습니다. `strict` �
 순서를 정확히 mapping할 수 있을 때만 하나의 `linkStyle`로 출력합니다. 생성 style code도 동일한
 source scanner와 SVG 검사를 통과해야 합니다.
 
+Flowchart/Generic Network의 typed→fused node-ID mapping은 engine이 선언한 bbox/owner 문자열만으로
+권한을 얻지 않습니다. 호출 전 evidence payload, trusted source image canvas와 block 집합, owner-local
+geometry contour를 함께 검사하고 mapping record를 immutable하게 봉인합니다. Sidecar writer는 private
+pipeline certification seal, claim digest, 현재 evidence schema, fused-node reference와 source block을
+다시 확인합니다. 하나라도 어긋나면 임시 bundle을 지우고 `node-id-map.json`을 게시하지 않습니다.
+
 대화형 review workspace도 저장 전 strict scanner와 parse/render/SVG 검사를 동일하게 적용합니다.
 `trusted-local` callback 실행기는 제공하지 않으므로 `click`과 callback은 계속 거부됩니다.
 

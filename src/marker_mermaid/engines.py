@@ -15,6 +15,11 @@ SYSTEM_PROMPT = """You reconstruct diagrams from source images and structural ov
 Return only data matching the supplied schema. Do not invent unreadable labels or numbers.
 Every node and relation must cite evidence_ids. Rank diagram types rather than forcing one.
 Provide typed candidates when the type is supported and direct Mermaid only when necessary.
+For flowchart and generic_network typed candidates, reuse the exact IDs of matching
+scene_ir.elements from this same response; do not rename, normalize, or invent node IDs.
+Every semantic typed node must include evidence_ids copied from supplied Prior evidence;
+reuse at least one of the same Prior evidence IDs on its matching scene_ir element.
+Never self-declare or synthesize evidence IDs.
 Never emit click actions, URLs, directives, HTML, callbacks, CSS imports, or remote icons.
 """
 

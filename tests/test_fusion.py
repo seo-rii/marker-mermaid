@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import copy
+
+import pytest
+
 from marker_mermaid.fusion import FusionEngine, FusionInput
 from marker_mermaid.models import (
     DiagramSceneIR,
@@ -7,10 +11,783 @@ from marker_mermaid.models import (
     DirectMermaidCandidate,
     EngineObservation,
     SceneElement,
+    SceneGroup,
     SceneRelation,
     TypedIRCandidate,
     VisualEvidence,
 )
+
+
+def _harmonization_authority() -> FusionInput:
+    return FusionInput(
+        "geometry",
+        EngineObservation(
+            prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[0.8]),
+            scene_ir=DiagramSceneIR(
+                elements=[
+                    SceneElement(
+                        id="geometry-node-001",
+                        role="unknown",
+                        bbox=(10, 10, 40, 40),
+                        confidence=0.8,
+                        evidence_ids=["contour-a"],
+                    ),
+                    SceneElement(
+                        id="geometry-node-002",
+                        role="unknown",
+                        bbox=(60, 10, 90, 40),
+                        confidence=0.8,
+                        evidence_ids=["contour-b"],
+                    ),
+                ],
+                relations=[
+                    SceneRelation(
+                        id="geometry-edge",
+                        source_id="geometry-node-001",
+                        target_id="geometry-node-002",
+                        relation_type="directed_connector",
+                        polyline=[(40, 25), (60, 25)],
+                        confidence=0.8,
+                        evidence_ids=["line-a-b", "arrow-b"],
+                    )
+                ],
+                reading_direction="LR",
+                canvas_size=(100, 100),
+            ),
+            evidence=[
+                VisualEvidence(
+                    id="contour-a",
+                    kind="contour",
+                    bbox=(10, 10, 40, 40),
+                    score=0.8,
+                    source_block_ids=["source"],
+                ),
+                VisualEvidence(
+                    id="contour-b",
+                    kind="contour",
+                    bbox=(60, 10, 90, 40),
+                    score=0.8,
+                    source_block_ids=["source"],
+                ),
+                VisualEvidence(
+                    id="line-a-b",
+                    kind="line_segment",
+                    bbox=(40, 25, 60, 25),
+                    score=0.8,
+                    source_block_ids=["source"],
+                ),
+                VisualEvidence(
+                    id="arrow-b",
+                    kind="arrowhead",
+                    bbox=(58, 23, 60, 27),
+                    score=0.8,
+                    source_block_ids=["source"],
+                ),
+            ],
+        ),
+        "geometry",
+        trusted_canvas_size=(100, 100),
+        trusted_source_block_ids=frozenset({"source"}),
+    )
+
+
+def _harmonization_semantic(
+    *,
+    diagram_type="flowchart",
+    node_ids=("A", "B"),
+    name="vlm",
+    confidence=0.9,
+    include_evidence=True,
+) -> FusionInput:
+    first_id, second_id = node_ids
+    all_evidence = [
+        VisualEvidence(
+            id="text-a",
+            kind="ocr_token",
+            text="Approve?",
+            bbox=(15, 15, 35, 25),
+            score=0.95,
+            source_block_ids=["source"],
+        ),
+        VisualEvidence(
+            id="text-b",
+            kind="ocr_token",
+            text="Continue",
+            bbox=(65, 15, 85, 25),
+            score=0.95,
+            source_block_ids=["source"],
+        ),
+        VisualEvidence(
+            id="branch-yes",
+            kind="ocr_token",
+            text="Yes",
+            bbox=(45, 20, 55, 24),
+            score=0.95,
+            source_block_ids=["source"],
+        ),
+        VisualEvidence(
+            id="branch-no",
+            kind="ocr_token",
+            text="No",
+            bbox=(45, 27, 55, 31),
+            score=0.95,
+            source_block_ids=["source"],
+        ),
+    ]
+    evidence = all_evidence if include_evidence else []
+    return FusionInput(
+        "vlm",
+        EngineObservation(
+            prediction=DiagramTypePrediction(candidates=[diagram_type], scores=[0.9]),
+            scene_ir=DiagramSceneIR(
+                elements=[
+                    SceneElement(
+                        id=second_id,
+                        role="process",
+                        text="Continue",
+                        bbox=(60, 10, 90, 40),
+                        confidence=0.9,
+                        evidence_ids=["text-b"],
+                    ),
+                    SceneElement(
+                        id=first_id,
+                        role="decision",
+                        text="Approve?",
+                        bbox=(10, 10, 40, 40),
+                        shape="diamond",
+                        confidence=0.9,
+                        evidence_ids=["text-a"],
+                    ),
+                ],
+                relations=[
+                    SceneRelation(
+                        id="branch-no-edge",
+                        source_id=first_id,
+                        target_id=second_id,
+                        relation_type="conditional_branch",
+                        semantic_relation="conditional",
+                        label="No",
+                        evidence_ids=["branch-no"],
+                    ),
+                    SceneRelation(
+                        id="branch-yes-edge",
+                        source_id=first_id,
+                        target_id=second_id,
+                        relation_type="conditional_branch",
+                        semantic_relation="conditional",
+                        label="Yes",
+                        evidence_ids=["branch-yes"],
+                    ),
+                ],
+                groups=[
+                    SceneGroup(
+                        id="decision-lane",
+                        role="lane",
+                        label="Decision",
+                        bbox=(5, 5, 95, 45),
+                        member_ids=[second_id, first_id],
+                    )
+                ],
+                reading_direction="LR",
+                canvas_size=(100, 100),
+            ),
+            typed_candidates=[
+                TypedIRCandidate(
+                    diagram_type=diagram_type,
+                    confidence=confidence,
+                    ir={
+                        "direction": "LR",
+                        "nodes": [
+                            {
+                                "id": second_id,
+                                "label": "Continue",
+                                "bbox": (60, 10, 90, 40),
+                                "evidence_ids": ["text-b"],
+                            },
+                            {
+                                "id": first_id,
+                                "label": "Approve?",
+                                "shape": "diamond",
+                                "bbox": (10, 10, 40, 40),
+                                "evidence_ids": ["text-a"],
+                            },
+                        ],
+                        "edges": [
+                            {
+                                "id": "typed-yes",
+                                "source": first_id,
+                                "target": second_id,
+                                "label": "Yes",
+                                "evidence_ids": ["branch-yes"],
+                            },
+                            {
+                                "id": "typed-no",
+                                "source": first_id,
+                                "target": second_id,
+                                "label": "No",
+                                "evidence_ids": ["branch-no"],
+                            },
+                        ],
+                        "groups": [
+                            {
+                                "id": "decision-lane",
+                                "label": "Decision",
+                                "member_ids": [second_id, first_id],
+                            }
+                        ],
+                    },
+                )
+            ],
+            evidence=evidence,
+        ),
+        name,
+        prior_evidence_ids=frozenset({"text-a", "text-b"}),
+        prior_evidence=tuple(
+            item.model_copy(deep=True) for item in all_evidence if item.id in {"text-a", "text-b"}
+        ),
+        trusted_canvas_size=(100, 100),
+        trusted_source_block_ids=frozenset({"source"}),
+    )
+
+
+def _mapping_dump(item):
+    return item.model_dump(exclude={"claim_digest"}) if hasattr(item, "model_dump") else item
+
+
+def _assert_harmonization_refused(authority, semantic, original_ir):
+    fused = FusionEngine().fuse([authority, semantic])
+
+    [candidate] = fused.typed_candidates
+    assert candidate.ir == original_ir
+    assert fused.fusion_node_id_mappings_for(candidate) == []
+    assert any("harmon" in warning.casefold() for warning in fused.warnings)
+    return fused
+
+
+def _rename_semantic_node(semantic, old_id, new_id, *, bbox=None):
+    scene = semantic.observation.scene_ir
+    assert scene is not None
+    [candidate] = semantic.observation.typed_candidates
+
+    for element in scene.elements:
+        if element.id == old_id:
+            element.id = new_id
+            if bbox is not None:
+                element.bbox = bbox
+    for relation in scene.relations:
+        if relation.source_id == old_id:
+            relation.source_id = new_id
+        if relation.target_id == old_id:
+            relation.target_id = new_id
+    for group in scene.groups:
+        group.member_ids = [new_id if item == old_id else item for item in group.member_ids]
+
+    for node in candidate.ir["nodes"]:
+        if node["id"] == old_id:
+            node["id"] = new_id
+            if bbox is not None:
+                node["bbox"] = bbox
+    for edge in candidate.ir["edges"]:
+        if edge["source"] == old_id:
+            edge["source"] = new_id
+        if edge["target"] == old_id:
+            edge["target"] = new_id
+    for group in candidate.ir["groups"]:
+        group["member_ids"] = [new_id if item == old_id else item for item in group["member_ids"]]
+
+
+@pytest.mark.parametrize("diagram_type", ["flowchart", "generic_network"])
+def test_harmonizes_typed_graph_ids_to_unique_geometry_clusters(diagram_type) -> None:
+    authority = _harmonization_authority()
+    authority.observation.prediction = DiagramTypePrediction(
+        candidates=[diagram_type], scores=[0.8]
+    )
+    semantic = _harmonization_semantic(diagram_type=diagram_type)
+    authority_before = copy.deepcopy(authority.observation)
+    semantic_before = copy.deepcopy(semantic.observation)
+
+    fused = FusionEngine().fuse([authority, semantic])
+
+    assert fused.scene_ir is not None
+    assert [element.id for element in fused.scene_ir.elements] == [
+        "geometry-node-001",
+        "geometry-node-002",
+    ]
+    fused_elements = {element.id: element for element in fused.scene_ir.elements}
+    assert fused_elements["geometry-node-001"].bbox == (10, 10, 40, 40)
+    assert fused_elements["geometry-node-001"].text == "Approve?"
+    assert set(fused_elements["geometry-node-001"].evidence_ids) == {
+        "contour-a",
+        "text-a",
+    }
+    assert fused_elements["geometry-node-002"].bbox == (60, 10, 90, 40)
+    assert fused_elements["geometry-node-002"].text == "Continue"
+    assert set(fused_elements["geometry-node-002"].evidence_ids) == {
+        "contour-b",
+        "text-b",
+    }
+    assert set(fused.scene_ir.groups[0].member_ids) == {
+        "geometry-node-001",
+        "geometry-node-002",
+    }
+
+    [candidate] = fused.typed_candidates
+    assert [node["id"] for node in candidate.ir["nodes"]] == [
+        "geometry-node-002",
+        "geometry-node-001",
+    ]
+    assert [node["label"] for node in candidate.ir["nodes"]] == [
+        "Continue",
+        "Approve?",
+    ]
+    assert [node["bbox"] for node in candidate.ir["nodes"]] == [
+        (60, 10, 90, 40),
+        (10, 10, 40, 40),
+    ]
+    assert [edge["id"] for edge in candidate.ir["edges"]] == [
+        "typed-yes",
+        "typed-no",
+    ]
+    assert [edge["label"] for edge in candidate.ir["edges"]] == ["Yes", "No"]
+    assert [(edge["source"], edge["target"]) for edge in candidate.ir["edges"]] == [
+        ("geometry-node-001", "geometry-node-002"),
+        ("geometry-node-001", "geometry-node-002"),
+    ]
+    assert candidate.ir["groups"] == [
+        {
+            "id": "decision-lane",
+            "label": "Decision",
+            "member_ids": ["geometry-node-002", "geometry-node-001"],
+        }
+    ]
+
+    mappings = {
+        item["source_id"]: item
+        for item in map(_mapping_dump, fused.fusion_node_id_mappings_for(candidate))
+    }
+    assert mappings == {
+        "A": {
+            "source_owner": "vlm#001",
+            "source_id": "A",
+            "fused_id": "geometry-node-001",
+            "authority_source": "geometry",
+            "authority_owner": "geometry#000",
+            "match_method": "unique_iou",
+            "iou": 1.0,
+            "source_bbox": (0.1, 0.1, 0.4, 0.4),
+            "authority_bbox": (0.1, 0.1, 0.4, 0.4),
+            "source_text": "Approve?",
+            "source_evidence_ids": ("text-a",),
+            "authority_evidence_ids": ("contour-a",),
+        },
+        "B": {
+            "source_owner": "vlm#001",
+            "source_id": "B",
+            "fused_id": "geometry-node-002",
+            "authority_source": "geometry",
+            "authority_owner": "geometry#000",
+            "match_method": "unique_iou",
+            "iou": 1.0,
+            "source_bbox": (0.6, 0.1, 0.9, 0.4),
+            "authority_bbox": (0.6, 0.1, 0.9, 0.4),
+            "source_text": "Continue",
+            "source_evidence_ids": ("text-b",),
+            "authority_evidence_ids": ("contour-b",),
+        },
+    }
+    assert authority.observation == authority_before
+    assert semantic.observation == semantic_before
+
+
+def test_harmonization_records_certified_exact_id_as_identity() -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic()
+    _rename_semantic_node(semantic, "A", "geometry-node-001")
+
+    fused = FusionEngine().fuse([authority, semantic])
+
+    [candidate] = fused.typed_candidates
+    mappings = {item.source_id: item for item in fused.fusion_node_id_mappings_for(candidate)}
+    assert mappings["geometry-node-001"].fused_id == "geometry-node-001"
+    assert mappings["geometry-node-001"].match_method == "identity"
+    assert mappings["geometry-node-001"].iou == 1.0
+    assert mappings["B"].fused_id == "geometry-node-002"
+    assert mappings["B"].match_method == "unique_iou"
+
+
+def test_harmonization_refuses_equal_iou_authority_matches() -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic()
+    scene = authority.observation.scene_ir
+    assert scene is not None
+    scene.elements.append(
+        SceneElement(
+            id="geometry-node-003",
+            role="unknown",
+            bbox=(10, 10, 40, 40),
+            confidence=0.8,
+            evidence_ids=["contour-c"],
+        )
+    )
+    authority.observation.evidence.append(
+        VisualEvidence(
+            id="contour-c",
+            kind="contour",
+            bbox=(10, 10, 40, 40),
+            score=0.8,
+        )
+    )
+    original_ir = copy.deepcopy(semantic.observation.typed_candidates[0].ir)
+    authority_before = copy.deepcopy(authority.observation)
+    semantic_before = copy.deepcopy(semantic.observation)
+
+    _assert_harmonization_refused(authority, semantic, original_ir)
+
+    assert authority.observation == authority_before
+    assert semantic.observation == semantic_before
+
+
+def test_harmonization_refuses_many_source_nodes_for_one_authority_node() -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic()
+    scene = semantic.observation.scene_ir
+    assert scene is not None
+    next(element for element in scene.elements if element.id == "B").bbox = (10, 10, 40, 40)
+    original_ir = copy.deepcopy(semantic.observation.typed_candidates[0].ir)
+
+    _assert_harmonization_refused(authority, semantic, original_ir)
+
+
+def test_harmonization_refuses_partial_node_certification() -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic()
+    scene = semantic.observation.scene_ir
+    assert scene is not None
+    next(element for element in scene.elements if element.id == "B").bbox = (
+        200,
+        200,
+        230,
+        230,
+    )
+    original_ir = copy.deepcopy(semantic.observation.typed_candidates[0].ir)
+
+    _assert_harmonization_refused(authority, semantic, original_ir)
+
+
+@pytest.mark.parametrize("reference_kind", ["edge", "group"])
+def test_harmonization_refuses_dangling_typed_references(reference_kind) -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic()
+    [candidate] = semantic.observation.typed_candidates
+    if reference_kind == "edge":
+        candidate.ir["edges"][0]["target"] = "missing-node"
+    else:
+        candidate.ir["groups"][0]["member_ids"].append("missing-node")
+    original_ir = copy.deepcopy(candidate.ir)
+
+    _assert_harmonization_refused(authority, semantic, original_ir)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("metadata", {"depends_on": "A"}),
+        ("metadata", ({"parent_id": "A"},)),
+        ("lanes", [{"nodes": [{"id": "A"}]}]),
+    ],
+)
+def test_harmonization_refuses_unsupported_nested_node_reference(field, value) -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic()
+    [candidate] = semantic.observation.typed_candidates
+    candidate.ir[field] = value
+    original_ir = copy.deepcopy(candidate.ir)
+
+    _assert_harmonization_refused(authority, semantic, original_ir)
+
+
+@pytest.mark.parametrize("typed_evidence", [[], ["not-source-evidence"]])
+def test_harmonization_refuses_missing_typed_to_scene_evidence(typed_evidence) -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic()
+    [candidate] = semantic.observation.typed_candidates
+    next(node for node in candidate.ir["nodes"] if node["id"] == "A")["evidence_ids"] = (
+        typed_evidence
+    )
+    original_ir = copy.deepcopy(candidate.ir)
+
+    _assert_harmonization_refused(authority, semantic, original_ir)
+
+
+@pytest.mark.parametrize("conflicting", [False, True])
+def test_harmonization_refuses_duplicated_or_conflicting_evidence_ids(conflicting) -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic()
+    duplicate = next(item for item in semantic.observation.evidence if item.id == "text-a")
+    duplicate = duplicate.model_copy(deep=True)
+    if conflicting:
+        duplicate.text = "Conflicting label"
+        duplicate.bbox = (0, 0, 5, 5)
+    authority.observation.evidence.append(duplicate)
+    original_ir = copy.deepcopy(semantic.observation.typed_candidates[0].ir)
+
+    _assert_harmonization_refused(authority, semantic, original_ir)
+
+
+def test_harmonization_refuses_source_evidence_not_supplied_as_prior() -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic()
+    semantic = FusionInput(
+        semantic.source,
+        semantic.observation,
+        semantic.name,
+    )
+    original_ir = copy.deepcopy(semantic.observation.typed_candidates[0].ir)
+
+    _assert_harmonization_refused(authority, semantic, original_ir)
+
+
+@pytest.mark.parametrize("swapped_field", ["bbox", "text"])
+def test_harmonization_refuses_prior_evidence_attached_to_the_wrong_scene_node(
+    swapped_field,
+) -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic()
+    first, second = semantic.prior_evidence
+    first_value = getattr(first, swapped_field)
+    setattr(first, swapped_field, getattr(second, swapped_field))
+    setattr(second, swapped_field, first_value)
+    original_ir = copy.deepcopy(semantic.observation.typed_candidates[0].ir)
+
+    fused = _assert_harmonization_refused(authority, semantic, original_ir)
+
+    assert any("spatially/text aligned" in warning for warning in fused.warnings)
+
+
+@pytest.mark.parametrize("evidence_side", ["source", "authority"])
+def test_harmonization_refuses_mapping_evidence_without_source_blocks(evidence_side) -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic()
+    evidence = (
+        semantic.prior_evidence
+        if evidence_side == "source"
+        else tuple(item for item in authority.observation.evidence if item.kind == "contour")
+    )
+    for item in evidence:
+        item.source_block_ids = []
+    original_ir = copy.deepcopy(semantic.observation.typed_candidates[0].ir)
+
+    _assert_harmonization_refused(authority, semantic, original_ir)
+
+
+def test_harmonization_refuses_authority_evidence_declared_by_another_owner() -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic()
+    authority.observation.evidence = [
+        item for item in authority.observation.evidence if item.id not in {"contour-a", "contour-b"}
+    ]
+    semantic.observation.evidence.extend(
+        [
+            VisualEvidence(id="contour-a", kind="vlm_observation", score=0.9),
+            VisualEvidence(id="contour-b", kind="vlm_observation", score=0.9),
+        ]
+    )
+    original_ir = copy.deepcopy(semantic.observation.typed_candidates[0].ir)
+
+    _assert_harmonization_refused(authority, semantic, original_ir)
+
+
+def test_harmonization_refuses_authority_contour_attached_to_the_wrong_scene_node() -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic()
+    contours = {item.id: item for item in authority.observation.evidence if item.kind == "contour"}
+    contours["contour-a"].bbox, contours["contour-b"].bbox = (
+        contours["contour-b"].bbox,
+        contours["contour-a"].bbox,
+    )
+    original_ir = copy.deepcopy(semantic.observation.typed_candidates[0].ir)
+
+    _assert_harmonization_refused(authority, semantic, original_ir)
+
+
+def test_harmonization_refuses_far_exact_id_collision() -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic()
+    _rename_semantic_node(
+        semantic,
+        "A",
+        "geometry-node-001",
+        bbox=(200, 200, 230, 230),
+    )
+    original_ir = copy.deepcopy(semantic.observation.typed_candidates[0].ir)
+
+    _assert_harmonization_refused(authority, semantic, original_ir)
+
+
+def test_harmonization_refuses_out_of_canvas_boxes_without_failing_fusion() -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic()
+    authority_scene = authority.observation.scene_ir
+    semantic_scene = semantic.observation.scene_ir
+    assert authority_scene is not None
+    assert semantic_scene is not None
+    next(
+        element for element in authority_scene.elements if element.id == "geometry-node-001"
+    ).bbox = (110, 10, 140, 40)
+    next(element for element in semantic_scene.elements if element.id == "A").bbox = (
+        110,
+        10,
+        140,
+        40,
+    )
+    original_ir = copy.deepcopy(semantic.observation.typed_candidates[0].ir)
+
+    _assert_harmonization_refused(authority, semantic, original_ir)
+
+
+def test_harmonization_refuses_owner_declared_canvas_scale_spoof() -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic()
+    authority_scene = authority.observation.scene_ir
+    semantic_scene = semantic.observation.scene_ir
+    assert authority_scene is not None
+    assert semantic_scene is not None
+    authority_boxes = {
+        "geometry-node-001": (80, 80, 90, 90),
+        "geometry-node-002": (20, 20, 30, 30),
+    }
+    semantic_boxes = {"A": (8, 8, 9, 9), "B": (2, 2, 3, 3)}
+    for element in authority_scene.elements:
+        element.bbox = authority_boxes[element.id]
+    for evidence in authority.observation.evidence:
+        if evidence.id == "contour-a":
+            evidence.bbox = authority_boxes["geometry-node-001"]
+        elif evidence.id == "contour-b":
+            evidence.bbox = authority_boxes["geometry-node-002"]
+    semantic_scene.canvas_size = (10, 10)
+    for element in semantic_scene.elements:
+        element.bbox = semantic_boxes[element.id]
+    for evidence in semantic.prior_evidence:
+        evidence.bbox = semantic_boxes["A" if evidence.id == "text-a" else "B"]
+    original_ir = copy.deepcopy(semantic.observation.typed_candidates[0].ir)
+
+    _assert_harmonization_refused(authority, semantic, original_ir)
+
+
+def test_identity_only_typed_ids_keep_legacy_candidate_without_mapping_warning() -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic()
+    _rename_semantic_node(semantic, "A", "geometry-node-001")
+    _rename_semantic_node(semantic, "B", "geometry-node-002")
+    [source_candidate] = semantic.observation.typed_candidates
+    for node in source_candidate.ir["nodes"]:
+        node.pop("evidence_ids")
+
+    fused = FusionEngine().fuse([authority, semantic])
+
+    [candidate] = fused.typed_candidates
+    assert fused.fusion_node_id_mappings_for(candidate) == []
+    assert not any("harmonization" in warning for warning in fused.warnings)
+
+
+def test_harmonization_deduplicates_remapped_payload_independent_of_input_order() -> None:
+    authority = _harmonization_authority()
+    first = _harmonization_semantic(
+        node_ids=("A", "B"),
+        name="vlm-a",
+        confidence=0.7,
+    )
+    second = _harmonization_semantic(
+        node_ids=("X", "Y"),
+        name="vlm-x",
+        confidence=0.9,
+        include_evidence=False,
+    )
+    authority_before = copy.deepcopy(authority.observation)
+    first_before = copy.deepcopy(first.observation)
+    second_before = copy.deepcopy(second.observation)
+
+    forward = FusionEngine().fuse([authority, first, second])
+    backward = FusionEngine().fuse([second, first, authority])
+
+    assert forward == backward
+    [candidate] = forward.typed_candidates
+    assert candidate.confidence == 0.9
+    assert [node["id"] for node in candidate.ir["nodes"]] == [
+        "geometry-node-002",
+        "geometry-node-001",
+    ]
+    mappings = forward.fusion_node_id_mappings_for(candidate)
+    assert {item.source_id: item.fused_id for item in mappings} == {
+        "X": "geometry-node-001",
+        "Y": "geometry-node-002",
+    }
+    assert {item.source_owner for item in mappings} == {"vlm-x#002"}
+    assert authority.observation == authority_before
+    assert first.observation == first_before
+    assert second.observation == second_before
+
+
+def test_harmonization_prefers_audited_candidate_over_code_equivalent_identity_input() -> None:
+    authority = _harmonization_authority()
+    mapped = _harmonization_semantic(
+        name="vlm-mapped",
+        confidence=0.7,
+    )
+    identity = _harmonization_semantic(
+        node_ids=("geometry-node-001", "geometry-node-002"),
+        name="vlm-identity",
+        confidence=0.9,
+        include_evidence=False,
+    )
+    identity.observation.typed_candidates[0].ir["ignored_metadata"] = "higher confidence"
+
+    fused = FusionEngine().fuse([authority, identity, mapped])
+
+    assert len(fused.typed_candidates) == 2
+    preferred = fused.typed_candidates[0]
+    assert preferred.confidence == 0.7
+    assert fused.fusion_node_id_mappings_for(preferred)
+    assert fused.fusion_node_id_mappings_for(fused.typed_candidates[1]) == []
+
+
+def test_harmonization_does_not_rewrite_other_typed_diagram_families() -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic(diagram_type="deployment")
+    original_ir = copy.deepcopy(semantic.observation.typed_candidates[0].ir)
+
+    fused = FusionEngine().fuse([authority, semantic])
+
+    [candidate] = fused.typed_candidates
+    assert candidate.ir == original_ir
+    assert fused.fusion_node_id_mappings_for(candidate) == []
+
+
+def test_harmonization_refuses_nested_container_in_known_scalar_field() -> None:
+    authority = _harmonization_authority()
+    semantic = _harmonization_semantic()
+    [candidate] = semantic.observation.typed_candidates
+    candidate.ir["nodes"][0]["label"] = {"parent_id": "A"}
+
+    fused = FusionEngine().fuse([authority, semantic])
+
+    assert fused.typed_candidates == []
+    assert any("skipped invalid typed candidate" in warning for warning in fused.warnings)
+
+
+@pytest.mark.parametrize("invalid_value", [{"unstable"}, float("nan")])
+def test_fusion_revalidates_typed_ir_after_construction_mutation(invalid_value) -> None:
+    semantic = _harmonization_semantic()
+    [candidate] = semantic.observation.typed_candidates
+    candidate.ir["mutated"] = invalid_value
+
+    with pytest.raises(ValueError):
+        candidate.canonical_key()
+
+    fused = FusionEngine().fuse([semantic])
+
+    assert fused.typed_candidates == []
+    assert any("skipped invalid typed candidate" in warning for warning in fused.warnings)
 
 
 def _observation(
@@ -447,3 +1224,18 @@ def test_rejects_empty_or_untyped_inputs() -> None:
         assert "FusionInput" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("untyped fusion input should fail")
+
+
+@pytest.mark.parametrize("invalid_value", [{"unordered"}, float("nan")])
+def test_typed_ir_rejects_non_json_or_non_finite_values(invalid_value) -> None:
+    with pytest.raises(ValueError, match="JSON-compatible|finite"):
+        TypedIRCandidate(
+            diagram_type="flowchart",
+            ir={"nodes": [], "invalid": invalid_value},
+        )
+
+
+@pytest.mark.parametrize("threshold", [0, 0.44])
+def test_fusion_rejects_element_iou_threshold_below_mapping_contract(threshold) -> None:
+    with pytest.raises(ValueError, match="at least 0.45"):
+        FusionEngine(element_iou_threshold=threshold)

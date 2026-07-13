@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -15,6 +16,7 @@ from marker_mermaid.models import (
     DirectMermaidCandidate,
     EngineObservation,
     MermaidCandidate,
+    NodeIdMapping,
     ReconstructionResult,
     SceneElement,
     SceneRelation,
@@ -1611,6 +1613,270 @@ def test_sidecar_tree_and_markdown(tmp_path, fake_runtime):
     ]
     markdown = standalone_document_markdown(result, image_path="images/source.png")
     assert markdown.index("images/source.png") < markdown.index("```mermaid")
+
+
+def test_sidecar_hash_binds_selected_node_id_map_without_changing_provenance(tmp_path):
+    mappings = [
+        NodeIdMapping(
+            source_owner="vlm_fixture#001",
+            source_id="A",
+            fused_id="geometry-node-001",
+            authority_source="geometry",
+            authority_owner="geometry#000",
+            match_method="unique_iou",
+            iou=1,
+            source_bbox=(0, 0, 0.1, 0.2),
+            authority_bbox=(0, 0, 0.1, 0.2),
+            source_text="Approve?",
+            source_evidence_ids=["vlm-node-a"],
+            authority_evidence_ids=["geometry-contour-001"],
+        ),
+        NodeIdMapping(
+            source_owner="vlm_fixture#001",
+            source_id="B",
+            fused_id="geometry-node-002",
+            authority_source="geometry",
+            authority_owner="geometry#000",
+            match_method="unique_iou",
+            iou=1,
+            source_bbox=(0.4, 0, 0.5, 0.2),
+            authority_bbox=(0.4, 0, 0.5, 0.2),
+            source_text="Done",
+            source_evidence_ids=["vlm-node-b"],
+            authority_evidence_ids=["geometry-contour-002"],
+        ),
+    ]
+    evidence = [
+        VisualEvidence(
+            id="vlm-node-a",
+            kind="ocr_token",
+            text="Approve?",
+            bbox=(0, 0, 10, 10),
+            score=0.9,
+            source_block_ids=["source"],
+        ),
+        VisualEvidence(
+            id="vlm-node-b",
+            kind="ocr_token",
+            text="Done",
+            bbox=(40, 0, 50, 10),
+            score=0.9,
+            source_block_ids=["source"],
+        ),
+        VisualEvidence(
+            id="geometry-contour-001",
+            kind="contour",
+            bbox=(0, 0, 10, 10),
+            score=0.95,
+            source_block_ids=["source"],
+        ),
+        VisualEvidence(
+            id="geometry-contour-002",
+            kind="contour",
+            bbox=(40, 0, 50, 10),
+            score=0.95,
+            source_block_ids=["source"],
+        ),
+    ]
+    selected = MermaidCandidate(
+        candidate_id="candidate-1-repair-1",
+        generation_method="typed_ir",
+        generation_engine="deterministic_fusion",
+        diagram_type="flowchart",
+        scene_ir=DiagramSceneIR(
+            elements=[
+                SceneElement(
+                    id="geometry-node-001",
+                    role="decision",
+                    text="Approve?",
+                    bbox=(0, 0, 10, 10),
+                    evidence_ids=["geometry-contour-001", "vlm-node-a"],
+                ),
+                SceneElement(
+                    id="geometry-node-002",
+                    role="process",
+                    text="Done",
+                    bbox=(40, 0, 50, 10),
+                    evidence_ids=["geometry-contour-002", "vlm-node-b"],
+                ),
+            ],
+            canvas_size=(100, 50),
+        ),
+        typed_ir={
+            "nodes": [
+                {"id": "geometry-node-001", "label": "Approve?"},
+                {"id": "geometry-node-002", "label": "Done"},
+            ],
+            "edges": [
+                {
+                    "source": "geometry-node-001",
+                    "target": "geometry-node-002",
+                    "label": "Yes",
+                }
+            ],
+        },
+        node_id_mappings=mappings,
+        mermaid_code=(
+            'flowchart LR\n    geometry_node_001{"Approve?"} -->|Yes| geometry_node_002["Done"]\n'
+        ),
+        syntax_valid=True,
+        render_valid=True,
+    )
+    selected._seal_node_id_mappings()
+    result = ReconstructionResult(
+        source_id="mapped-flowchart",
+        source_image_name="source.png",
+        selected=selected,
+        evidence=evidence,
+        source_block_ids=["source"],
+    )
+    expected_provenance = [item.model_dump(mode="json") for item in evidence]
+    expected_mapping = [item.model_dump(mode="json") for item in mappings]
+    assert all(len(item.claim_digest or "") == 64 for item in mappings)
+
+    relative = SidecarStore(tmp_path).write(result)
+    bundle = tmp_path / relative
+    mapping_path = bundle / "node-id-map.json"
+    provenance_path = bundle / "provenance.json"
+    manifest = json.loads((bundle / "manifest.json").read_text())
+
+    assert json.loads(mapping_path.read_text()) == expected_mapping
+    assert (
+        manifest["files"]["node-id-map.json"]
+        == hashlib.sha256(mapping_path.read_bytes()).hexdigest()
+    )
+    assert json.loads(provenance_path.read_text()) == expected_provenance
+    assert "node_id_mappings" not in provenance_path.read_text()
+
+    invalid_result = result.model_copy(deep=True)
+    invalid_result.source_id = "mapped-flowchart-missing-provenance"
+    invalid_result.evidence = evidence[:-1]
+    invalid_root = tmp_path / "invalid"
+    with pytest.raises(ValueError, match="occur exactly once in provenance"):
+        SidecarStore(invalid_root).write(invalid_result)
+    assert not (invalid_root / "diagrams" / invalid_result.source_id).exists()
+
+    aliased_payload = result.model_dump(mode="python")
+    aliased_payload["source_id"] = "mapped-flowchart-aliased-provenance"
+    aliased_mappings = aliased_payload["selected"]["node_id_mappings"]
+    aliased_mappings[1]["source_evidence_ids"] = aliased_mappings[0]["source_evidence_ids"]
+    aliased_mappings[1]["claim_digest"] = None
+    aliased_result = ReconstructionResult.model_validate(aliased_payload)
+    aliased_result.selected._seal_node_id_mappings()
+    aliased_root = tmp_path / "aliased"
+    with pytest.raises(ValueError, match="occur exactly once in provenance"):
+        SidecarStore(aliased_root).write(aliased_result)
+    assert not (aliased_root / "diagrams" / aliased_result.source_id).exists()
+
+    with pytest.raises(ValueError, match="frozen"):
+        result.selected.node_id_mappings[0].source_id = "B"
+
+    digest_tampered_result = result.model_copy(deep=True)
+    digest_tampered_result.source_id = "mapped-flowchart-digest-tampered"
+    first_mapping, second_mapping = digest_tampered_result.selected.node_id_mappings
+    digest_tampered_result.selected.node_id_mappings = [
+        first_mapping.model_copy(update={"source_id": second_mapping.source_id}),
+        second_mapping.model_copy(update={"source_id": first_mapping.source_id}),
+    ]
+    digest_tampered_root = tmp_path / "digest-tampered"
+    with pytest.raises(ValueError, match="certification seal"):
+        SidecarStore(digest_tampered_root).write(digest_tampered_result)
+    assert not (digest_tampered_root / "diagrams" / digest_tampered_result.source_id).exists()
+
+    text_swapped_result = result.model_copy(deep=True)
+    text_swapped_result.source_id = "mapped-flowchart-text-swapped-provenance"
+    first_evidence, second_evidence = text_swapped_result.evidence[:2]
+    first_evidence.text, second_evidence.text = second_evidence.text, first_evidence.text
+    text_swapped_root = tmp_path / "text-swapped"
+    with pytest.raises(ValueError, match="spatially/text aligned"):
+        SidecarStore(text_swapped_root).write(text_swapped_result)
+    assert not (text_swapped_root / "diagrams" / text_swapped_result.source_id).exists()
+
+    displaced_scene_result = result.model_copy(deep=True)
+    displaced_scene_result.source_id = "mapped-flowchart-displaced-fused-node"
+    displaced_scene_result.selected.scene_ir.elements[0].bbox = (70, 30, 80, 40)
+    displaced_scene_root = tmp_path / "displaced-scene"
+    with pytest.raises(ValueError, match="spatially/text aligned"):
+        SidecarStore(displaced_scene_root).write(displaced_scene_result)
+    assert not (displaced_scene_root / "diagrams" / displaced_scene_result.source_id).exists()
+
+    blockless_result = result.model_copy(deep=True)
+    blockless_result.source_id = "mapped-flowchart-blockless-provenance"
+    for item in blockless_result.evidence:
+        item.source_block_ids = []
+    blockless_root = tmp_path / "blockless"
+    with pytest.raises(ValueError, match="share a source block"):
+        SidecarStore(blockless_root).write(blockless_result)
+    assert not (blockless_root / "diagrams" / blockless_result.source_id).exists()
+
+    rebound_result = result.model_copy(deep=True)
+    rebound_result.source_id = "mapped-flowchart-rebound-provenance"
+    for item in rebound_result.evidence:
+        item.source_block_ids = ["fake-block"]
+    rebound_root = tmp_path / "rebound"
+    with pytest.raises(ValueError, match="share a source block"):
+        SidecarStore(rebound_root).write(rebound_result)
+    assert not (rebound_root / "diagrams" / rebound_result.source_id).exists()
+
+    invalid_evidence_result = result.model_copy(deep=True)
+    invalid_evidence_result.source_id = "mapped-flowchart-invalid-evidence"
+    invalid_evidence_result.evidence[0].kind = "bogus"
+    invalid_evidence_root = tmp_path / "invalid-evidence"
+    with pytest.raises(ValueError):
+        SidecarStore(invalid_evidence_root).write(invalid_evidence_result)
+    assert not (invalid_evidence_root / "diagrams" / invalid_evidence_result.source_id).exists()
+
+    unreferenced_result = result.model_copy(deep=True)
+    unreferenced_result.source_id = "mapped-flowchart-unreferenced-evidence"
+    unreferenced_result.selected.scene_ir.elements[0].evidence_ids = []
+    unreferenced_root = tmp_path / "unreferenced"
+    with pytest.raises(ValueError, match="spatially/text aligned"):
+        SidecarStore(unreferenced_root).write(unreferenced_result)
+    assert not (unreferenced_root / "diagrams" / unreferenced_result.source_id).exists()
+
+    no_provenance_result = result.model_copy(deep=True)
+    no_provenance_result.source_id = "mapped-flowchart-no-provenance"
+    no_provenance_root = tmp_path / "no-provenance"
+    relative = SidecarStore(no_provenance_root, write_provenance=False).write(no_provenance_result)
+    no_provenance_bundle = no_provenance_root / relative
+    assert (no_provenance_bundle / "node-id-map.json").is_file()
+    assert (no_provenance_bundle / "provenance.json").is_file()
+
+
+def test_node_id_mapping_rejects_iou_below_shared_sidecar_contract() -> None:
+    with pytest.raises(ValueError, match="greater than or equal to 0.45"):
+        NodeIdMapping(
+            source_owner="vlm#001",
+            source_id="A",
+            fused_id="geometry-node-001",
+            authority_source="geometry",
+            authority_owner="geometry#000",
+            match_method="unique_iou",
+            iou=0.44,
+            source_bbox=(0, 0, 0.1, 0.2),
+            authority_bbox=(0, 0, 0.1, 0.2),
+            source_text="Approve?",
+            source_evidence_ids=["ocr-a"],
+            authority_evidence_ids=["contour-a"],
+        )
+
+
+def test_node_id_mapping_rejects_iou_inconsistent_with_recorded_boxes() -> None:
+    with pytest.raises(ValueError, match="must match its normalized"):
+        NodeIdMapping(
+            source_owner="vlm#001",
+            source_id="A",
+            fused_id="geometry-node-001",
+            authority_source="geometry",
+            authority_owner="geometry#000",
+            match_method="unique_iou",
+            iou=1,
+            source_bbox=(0, 0, 0.2, 0.2),
+            authority_bbox=(0.05, 0, 0.25, 0.2),
+            source_text="Approve?",
+            source_evidence_ids=["ocr-a"],
+            authority_evidence_ids=["contour-a"],
+        )
 
 
 def test_sidecar_rejects_empty_traversal_component(tmp_path):

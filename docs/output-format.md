@@ -52,6 +52,35 @@ OCR/CV/VLM 추출 근거이며 후자는 품질 평가 대상입니다. Direct M
 
 `files`의 값은 content SHA-256입니다. `final.*`은 hard gate를 통과해 selected가 된 candidate에만
 생성됩니다. 실패하거나 선택되지 않은 후보는 `alternatives/`에 JSON과 가능한 `.mmd`로 남습니다.
+
+선택된 `flowchart` 또는 `generic_network` typed 후보가 full/injective node-ID remap을 안전하게 완료한
+경우에만 `node-id-map.json`을 추가하고 `manifest.json.files`에 content hash를 기록합니다. 파일은 각
+mapping의 `source_owner`, 원래 `source_id`, `fused_id`, 독립 `vector`/`geometry` authority owner,
+`match_method`(`identity`/`unique_iou`), 최소 0.45의 IoU, 원래 `source_text`와 양쪽 bbox/evidence ID를
+보존합니다. immutable mapping의 `claim_digest`는 이 필드들의 canonical SHA-256 consistency digest입니다.
+이는 ID 변경의 audit 자료이며 `provenance.json`을 대체하거나 새 evidence를 선언하지 않습니다.
+
+파일의 top-level은 mapping object의 JSON array입니다. `source_bbox`와 `authority_bbox`는 source별 pixel
+좌표가 아니라 `[0, 1]` 범위로 정규화된 `[x1, y1, x2, y2]`입니다. `source_owner`와
+`authority_owner`는 해당 fusion 실행 안에서 입력을 구분하는 결정적 식별자이며 문서 재실행 사이의 영구
+ID로 사용하지 않습니다. 모든 source/authority evidence ID는 같은 bundle의 reconstruction provenance에
+정확히 한 번 존재해야 하며, 누락·중복 reference가 있으면 atomic writer가 bundle 생성을 거부합니다.
+writer는 evidence payload를 현재 Pydantic schema로 다시 검증하고, source evidence bbox/text, authority
+contour bbox, mapping evidence가 fused Scene node에 실제로 연결됐는지, 양쪽 block 교집합이
+reconstruction의 `source_block_ids`와 겹치는지도 다시 검사합니다. 각 evidence ID는 mapping 전체에서도
+한 번만 참조할 수 있습니다. generation pipeline은 mapping list에 process-private HMAC certification
+seal을 붙이고 writer는 이를 요구하므로, model copy나 직접 구성한 mapping을 자동 추출 결과로 재인증할
+수 없습니다. 이 seal은 sidecar 필드가 아니며 같은 reconstruction process 안의 trust boundary입니다.
+mapping이 있으면 `write_provenance=false` 설정보다 이 참조 무결성 계약이 우선하므로
+`provenance.json`을 강제로 함께 기록합니다.
+이 파일은 generation-time audit artifact입니다. 이후 Review 편집은 revision history와 user evidence를
+추가하지만 기존 자동 mapping을 새로운 추출 결과인 것처럼 다시 계산하지 않습니다.
+
+지원하지 않는 nested/non-flow 유형, direct Mermaid, Scene fallback 또는 mapping이 모호·부분적·충돌한
+후보에는 이 파일을 만들지 않습니다. 이 경우 typed candidate는 원래 ID 공간 전체를 유지하며 일부
+reference만 바뀐 sidecar는 생성되지 않습니다. 따라서 파일 부재는 remap을 수행하지 않았다는 뜻이지
+그 자체로 candidate parse/render 실패를 뜻하지 않습니다.
+
 `review-history.json`은 빈 배열로 시작하며 review edit, candidate 선택, 자연어 patch, 승인·거절,
 undo/redo를 append-only `ReviewHistoryEntry`로 기록합니다. 첫 mutation은 `review-state.json`과
 `versions/r000000.*` 초기 snapshot을 만들고 이후 revision을 immutable하게 추가합니다. Mermaid,

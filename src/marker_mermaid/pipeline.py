@@ -29,8 +29,11 @@ from marker_mermaid.geometry import GeometryEngine
 from marker_mermaid.models import (
     CandidateFailure,
     DiagramSceneIR,
+    DiagramTypePrediction,
+    DirectMermaidCandidate,
     EngineObservation,
     MermaidCandidate,
+    NodeIdMapping,
     ReconstructionResult,
     RepairEvent,
     SceneElement,
@@ -86,6 +89,7 @@ class _Draft:
     fallback_chain: list[str] | None = None
     serialization_stability: str = "stable"
     typed_ir: dict | None = None
+    node_id_mappings: list[NodeIdMapping] | None = None
     raw_mermaid: str | None = None
     warnings: list[str] | None = None
 
@@ -402,7 +406,19 @@ class ReconstructionPipeline:
         vector_sources: list[object] | None = None,
     ) -> ReconstructionResult:
         failures: list[CandidateFailure] = []
-        all_evidence = list(evidence or [])
+        all_evidence: list[VisualEvidence] = []
+        for item in evidence or []:
+            try:
+                all_evidence.append(VisualEvidence.model_validate(item.model_dump(mode="python")))
+            except Exception as exc:
+                failures.append(
+                    CandidateFailure(
+                        stage="generation",
+                        engine="source_context",
+                        error_type=type(exc).__name__,
+                        message=f"invalid initial evidence was isolated: {exc}",
+                    )
+                )
         resolved_source_block_ids = source_block_ids or [source_id]
         source_block_id_set = set(resolved_source_block_ids)
         initial_evidence_ids: set[str] = set()
@@ -420,6 +436,7 @@ class ReconstructionPipeline:
             and bool(source_block_id_set.intersection(item.source_block_ids))
         }
         known_evidence_ids = {item.id for item in all_evidence}
+        collided_evidence_ids = set(duplicate_initial_evidence_ids)
         trusted_bold_evidence: dict[str, VisualEvidence] = {}
         trusted_vector_style_evidence: dict[str, SceneElement] = {}
         trusted_edge_style_evidence: dict[str, TrustedEdgeStyleEvidence] = {}
@@ -449,11 +466,17 @@ class ReconstructionPipeline:
         )
 
         successful_observations: list[tuple[str, str, EngineObservation]] = []
+        prior_evidence_by_observation: dict[int, dict[str, VisualEvidence]] = {}
         observed_relation_directions: dict[frozenset[str], set[tuple[str, str, bool, bool]]] = {}
         view_type_hints: list[str] = []
         for engine in self.engines:
+            prior_evidence = tuple(
+                item.model_copy(deep=True)
+                for item in all_evidence
+                if item.id not in collided_evidence_ids
+            )
             try:
-                observation = engine.observe(context)
+                raw_observation = engine.observe(context)
             except Exception as exc:  # Candidate failures never fail the document.
                 failures.append(
                     CandidateFailure(
@@ -464,6 +487,115 @@ class ReconstructionPipeline:
                     )
                 )
                 continue
+            if not isinstance(raw_observation, EngineObservation):
+                failures.append(
+                    CandidateFailure(
+                        stage="generation",
+                        engine=engine.name,
+                        error_type="TypeError",
+                        message="engine returned a non-EngineObservation payload",
+                    )
+                )
+                continue
+            try:
+                prediction = DiagramTypePrediction.model_validate(
+                    raw_observation.prediction.model_dump(mode="python")
+                )
+            except Exception as exc:
+                failures.append(
+                    CandidateFailure(
+                        stage="generation",
+                        engine=engine.name,
+                        error_type=type(exc).__name__,
+                        message=f"invalid diagram type prediction: {exc}",
+                    )
+                )
+                continue
+            scene_ir = None
+            if raw_observation.scene_ir is not None:
+                try:
+                    scene_ir = DiagramSceneIR.model_validate(
+                        raw_observation.scene_ir.model_dump(mode="python")
+                    )
+                except Exception as exc:
+                    failures.append(
+                        CandidateFailure(
+                            stage="generation",
+                            engine=engine.name,
+                            error_type=type(exc).__name__,
+                            message=f"invalid Scene IR was isolated: {exc}",
+                        )
+                    )
+            typed_candidates: list[TypedIRCandidate] = []
+            for candidate in raw_observation.typed_candidates:
+                try:
+                    typed_candidates.append(
+                        TypedIRCandidate.model_validate(candidate.model_dump(mode="python"))
+                    )
+                except Exception as exc:
+                    failures.append(
+                        CandidateFailure(
+                            stage="generation",
+                            engine=engine.name,
+                            error_type=type(exc).__name__,
+                            message=f"invalid typed candidate was isolated: {exc}",
+                        )
+                    )
+            direct_candidates = []
+            for candidate in raw_observation.direct_candidates:
+                try:
+                    direct_candidates.append(
+                        DirectMermaidCandidate.model_validate(candidate.model_dump(mode="python"))
+                    )
+                except Exception as exc:
+                    failures.append(
+                        CandidateFailure(
+                            stage="generation",
+                            engine=engine.name,
+                            error_type=type(exc).__name__,
+                            message=f"invalid direct candidate was isolated: {exc}",
+                        )
+                    )
+            observation_evidence: list[VisualEvidence] = []
+            for item in raw_observation.evidence:
+                try:
+                    observation_evidence.append(
+                        VisualEvidence.model_validate(item.model_dump(mode="python"))
+                    )
+                except Exception as exc:
+                    failures.append(
+                        CandidateFailure(
+                            stage="generation",
+                            engine=engine.name,
+                            error_type=type(exc).__name__,
+                            message=f"invalid evidence was isolated: {exc}",
+                        )
+                    )
+            try:
+                observation = EngineObservation(
+                    prediction=prediction,
+                    scene_ir=scene_ir,
+                    typed_candidates=typed_candidates,
+                    direct_candidates=direct_candidates,
+                    evidence=observation_evidence,
+                    warnings=list(raw_observation.warnings),
+                )
+            except Exception as exc:
+                failures.append(
+                    CandidateFailure(
+                        stage="generation",
+                        engine=engine.name,
+                        error_type=type(exc).__name__,
+                        message=f"invalid engine warnings were dropped: {exc}",
+                    )
+                )
+                observation = EngineObservation(
+                    prediction=prediction,
+                    scene_ir=scene_ir,
+                    typed_candidates=typed_candidates,
+                    direct_candidates=direct_candidates,
+                    evidence=observation_evidence,
+                )
             fusion_source = getattr(engine, "fusion_source", "other")
             if fusion_source not in {"vector", "geometry", "ocr", "vlm", "other"}:
                 fusion_source = "other"
@@ -504,6 +636,18 @@ class ReconstructionPipeline:
             )
             if has_payload:
                 successful_observations.append((engine.name, fusion_source, observation))
+                current_prior = {item.id: item for item in prior_evidence}
+                existing_prior = prior_evidence_by_observation.get(id(observation))
+                if existing_prior is None:
+                    prior_evidence_by_observation[id(observation)] = current_prior
+                else:
+                    prior_evidence_by_observation[id(observation)] = {
+                        evidence_id: existing
+                        for evidence_id, existing in existing_prior.items()
+                        if evidence_id in current_prior
+                        and existing.model_dump(mode="json")
+                        == current_prior[evidence_id].model_dump(mode="json")
+                    }
             hints_changed = False
             for diagram_type in observation.prediction.candidates[
                 : self.config.type_candidate_count
@@ -554,6 +698,7 @@ class ReconstructionPipeline:
                 else:
                     # A provenance ID collision cannot authorize style even
                     # when the duplicate payload happens to be identical.
+                    collided_evidence_ids.add(item.id)
                     trusted_bold_evidence.pop(item.id, None)
                     trusted_vector_style_evidence.pop(item.id, None)
                     trusted_edge_style_evidence.pop(item.id, None)
@@ -654,16 +799,31 @@ class ReconstructionPipeline:
         ]
         if self.config.enable_fusion and len(successful_observations) >= 2:
             try:
-                fused = FusionEngine().fuse(
-                    [
-                        FusionInput(source=source, observation=observation, name=name)
-                        for name, source, observation in successful_observations
-                    ]
-                )
+                fusion_inputs: list[FusionInput] = []
+                for name, source, observation in successful_observations:
+                    prior_snapshot = prior_evidence_by_observation.get(id(observation), {})
+                    allowed_prior_ids = set(prior_snapshot) - collided_evidence_ids
+                    fusion_inputs.append(
+                        FusionInput(
+                            source=source,
+                            observation=observation,
+                            name=name,
+                            prior_evidence_ids=frozenset(allowed_prior_ids),
+                            prior_evidence=tuple(
+                                prior_snapshot[evidence_id]
+                                for evidence_id in sorted(allowed_prior_ids)
+                            ),
+                            excluded_evidence_ids=frozenset(collided_evidence_ids),
+                            trusted_canvas_size=(float(image.width), float(image.height)),
+                            trusted_source_block_ids=frozenset(source_block_id_set),
+                        )
+                    )
+                fused = FusionEngine().fuse(fusion_inputs)
                 generation_observations = [
                     (FusionEngine.name, fused),
                     *generation_observations,
                 ]
+                context.conflicted_connector_pairs.update(fused.fusion_conflicted_connector_pairs)
                 for item in fused.evidence:
                     if item.id not in known_evidence_ids:
                         all_evidence.append(item)
@@ -688,9 +848,13 @@ class ReconstructionPipeline:
             ]
             generated: list[_Draft] = []
             if self.config.enable_typed_ir:
-                for typed in observation.typed_candidates[:candidate_budget]:
-                    if typed.diagram_type not in top_types:
-                        continue
+                eligible_typed_candidates = [
+                    typed
+                    for diagram_type in top_types
+                    for typed in observation.typed_candidates
+                    if typed.diagram_type == diagram_type
+                ]
+                for typed in eligible_typed_candidates[:candidate_budget]:
                     try:
                         enriched_ir = enrich_accessibility_ir(
                             typed.ir,
@@ -723,6 +887,11 @@ class ReconstructionPipeline:
                             fallback_chain=list(serialized.fallback_chain),
                             serialization_stability=serialized.stability,
                             typed_ir=enriched_ir,
+                            node_id_mappings=(
+                                observation.fusion_node_id_mappings_for(typed)
+                                if engine_name == FusionEngine.name
+                                else []
+                            ),
                             warnings=list(serialized.warnings),
                         )
                     )
@@ -929,6 +1098,7 @@ class ReconstructionPipeline:
                 scene_ir=draft.observation.scene_ir,
                 typed_ir=draft.typed_ir,
                 raw_mermaid=draft.raw_mermaid,
+                node_id_mappings=list(draft.node_id_mappings or []),
                 mermaid_code=candidate_code,
                 warnings=[
                     *view_warnings,
@@ -940,6 +1110,8 @@ class ReconstructionPipeline:
                 ],
                 repair_history=[*style_repair_history, *source_repair_history],
             )
+            if candidate.node_id_mappings:
+                candidate._seal_node_id_mappings()
             try:
                 outcome = self.validator.validate(
                     candidate_code, self.config.render_timeout_seconds
@@ -1426,6 +1598,25 @@ class ReconstructionPipeline:
                     diagram_type=current.diagram_type,
                     ir=proposal.typed_ir,
                 ).ir
+                if current.node_id_mappings:
+                    proposed_nodes = validated_ir.get("nodes")
+                    proposed_node_ids = (
+                        [node.get("id") for node in proposed_nodes]
+                        if isinstance(proposed_nodes, list)
+                        and all(isinstance(node, dict) for node in proposed_nodes)
+                        else []
+                    )
+                    if (
+                        not all(
+                            isinstance(node_id, str) and node_id for node_id in proposed_node_ids
+                        )
+                        or len(proposed_node_ids) != len(set(proposed_node_ids))
+                        or set(proposed_node_ids)
+                        != {item.fused_id for item in current.node_id_mappings}
+                    ):
+                        raise ValueError(
+                            "semantic repair cannot change a provenance-mapped node set"
+                        )
                 canonical = serialize_typed_ir_result(
                     current.diagram_type,
                     validated_ir,
