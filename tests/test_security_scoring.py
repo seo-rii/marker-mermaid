@@ -15,7 +15,7 @@ from marker_mermaid.scoring import (
     semantic_score,
 )
 from marker_mermaid.security import MermaidSecurityScanner
-from marker_mermaid.validation import CandidateValidator, inspect_svg
+from marker_mermaid.validation import CandidateValidator, NodeMermaidRuntime, inspect_svg
 
 
 @pytest.mark.parametrize(
@@ -38,7 +38,72 @@ def test_strict_scanner_rejects_active_or_external_syntax(code):
 def test_style_only_allows_local_style_but_not_remote_css():
     scanner = MermaidSecurityScanner(SecurityProfile.STYLE_ONLY)
     assert scanner.scan("flowchart LR\nA-->B\nstyle A fill:#fff").safe
+    assert scanner.scan("flowchart LR\nA-->B; style A fill:#fff").safe
+    assert scanner.scan("flowchart LR\nA-->B; classDef local fill:#fff").safe
+    assert scanner.scan("flowchart LR\nA-->B; linkStyle 0 stroke:#fff").safe
     assert not scanner.scan("flowchart LR\nA-->B\nstyle A fill:url(http://x)").safe
+    assert not scanner.scan('flowchart LR\nA-->B; click A "#local"').safe
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        SecurityProfile.STYLE_ONLY,
+        SecurityProfile.TRUSTED_LOCAL,
+        SecurityProfile.SANDBOX_EXPERIMENTAL,
+    ],
+)
+def test_non_strict_profiles_preserve_semicolon_local_style_support(profile):
+    scanner = MermaidSecurityScanner(profile)
+
+    assert scanner.scan("flowchart LR\nA-->B; style A fill:#fff").safe
+
+
+@pytest.mark.parametrize("profile", list(SecurityProfile))
+def test_all_profiles_reject_semicolon_click_statements(profile):
+    report = MermaidSecurityScanner(profile).scan('flowchart LR\nA-->B; click A "#local"')
+
+    assert not report.safe
+    assert [finding.rule for finding in report.findings] == ["click"]
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        'click A "#local"',
+        "style A fill:#fff",
+        "classDef local fill:#fff",
+        "linkStyle 0 stroke:#fff",
+    ],
+)
+def test_strict_scanner_rejects_forbidden_semicolon_statements(statement):
+    report = MermaidSecurityScanner(SecurityProfile.STRICT).scan(
+        f"flowchart LR\nA-->B; {statement}"
+    )
+
+    assert not report.safe
+
+
+def test_statement_boundaries_ignore_semicolons_inside_quoted_labels_and_comments():
+    scanner = MermaidSecurityScanner(SecurityProfile.STRICT)
+
+    assert scanner.scan('flowchart LR\nA["label; style is text; click is text"] --> B').safe
+    assert scanner.scan('flowchart LR\nA --> B["label; click is text"]').safe
+    assert scanner.scan("flowchart LR\n  %% ; style is a comment\nA --> B").safe
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_multiline_double_quoted_labels_do_not_create_statement_boundaries(newline):
+    code = newline.join(
+        [
+            "flowchart LR",
+            'A["first line',
+            "; style is label text",
+            '; click is also label text"] --> B',
+        ]
+    )
+
+    assert MermaidSecurityScanner(SecurityProfile.STRICT).scan(code).safe
 
 
 def test_reference_free_text_scores_do_not_invent_numbers():
@@ -216,6 +281,156 @@ def test_security_failure_does_not_call_runtime(fake_runtime):
     )
     assert not outcome.runtime.syntax_valid
     assert fake_runtime.calls == []
+
+
+def test_semicolon_security_failure_does_not_call_runtime(fake_runtime):
+    outcome = CandidateValidator(fake_runtime, SecurityProfile.STRICT).validate(
+        "flowchart LR\nA --> B; style A fill:#fff", 1
+    )
+
+    assert not outcome.runtime.syntax_valid
+    assert outcome.warnings == ["security:style_syntax:line 2"]
+    assert fake_runtime.calls == []
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        'flowchart LR\nA[don\'t]; click A "#local"',
+        'flowchart LR\nA[foo`bar]; click A "#local"',
+        'flowchart LR\nA["foo\\"]; click A "#local"',
+        'flowchart LR\nA[100%%]; click A "#local"',
+    ],
+)
+def test_semicolon_click_bypasses_are_blocked_before_runtime(fake_runtime, code):
+    outcome = CandidateValidator(fake_runtime, SecurityProfile.STRICT).validate(code, 1)
+
+    assert not outcome.runtime.syntax_valid
+    assert outcome.warnings == ["security:click:line 2"]
+    assert fake_runtime.calls == []
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_valid_multiline_quoted_labels_reach_runtime(fake_runtime, newline):
+    code = newline.join(
+        [
+            "flowchart LR",
+            'A["first line',
+            "; style is label text",
+            '; click is also label text"] --> B',
+        ]
+    )
+
+    outcome = CandidateValidator(fake_runtime, SecurityProfile.STRICT).validate(code, 1)
+
+    assert outcome.runtime.render_valid
+    assert fake_runtime.calls == [code]
+
+
+@pytest.mark.parametrize(
+    ("code", "click_line"),
+    [
+        ('flowchart LR\nA --> B\naccTitle: Diagram " quote\nclick A "#local"', 4),
+        ('flowchart LR\nA --> B\naccDescr: Diagram " quote\nclick A "#local"', 4),
+        (
+            'flowchart LR\nA --> B\naccDescr {\nDiagram " quote\n}\nclick A "#local"',
+            6,
+        ),
+        ('flowchart LR\nA --> B\naccDescr { Diagram " quote }; click A "#local"', 3),
+        ('flowchart LR\nA --> B; accTitle: Diagram " quote\nclick A "#local"', 3),
+        ('flowchart LR\nA --> B; accDescr: Diagram " quote\nclick A "#local"', 3),
+        (
+            'flowchart LR\nA --> B; accDescr {\nDiagram " quote\n}\nclick A "#local"',
+            5,
+        ),
+    ],
+)
+def test_accessibility_quotes_cannot_hide_later_click_statements(fake_runtime, code, click_line):
+    outcome = CandidateValidator(fake_runtime, SecurityProfile.STRICT).validate(code, 1)
+
+    assert not outcome.runtime.syntax_valid
+    assert outcome.warnings == [f"security:click:line {click_line}"]
+    assert fake_runtime.calls == []
+
+
+def test_accessibility_quotes_remain_plain_text_without_false_statement_boundaries():
+    code = (
+        'flowchart LR\nA --> B\naccTitle: Diagram " quote; click is title text\n'
+        'accDescr {\nDiagram " quote; style is description text\n}\n'
+    )
+
+    assert MermaidSecurityScanner(SecurityProfile.STRICT).scan(code).safe
+
+
+def test_non_flowchart_quotes_cannot_hide_later_click_statements(fake_runtime):
+    code = (
+        'gantt\ntitle Plan " quote\ndateFormat YYYY-MM-DD\nsection Work\n'
+        'Task :a, 2024-01-01, 1d\nclick a href "#local"'
+    )
+
+    outcome = CandidateValidator(fake_runtime, SecurityProfile.STRICT).validate(code, 1)
+
+    assert not outcome.runtime.syntax_valid
+    assert outcome.warnings == ["security:click:line 6"]
+    assert fake_runtime.calls == []
+
+
+@pytest.mark.parametrize(
+    ("code", "click_line"),
+    [
+        (
+            'flowchart LR\nsubgraph X\ndirection LR " quote\nA --> B\nend\nclick A "#local"',
+            6,
+        ),
+        ('flowchart LR\nA --> B\nclass A foo"bar\nclick A "#local"', 4),
+    ],
+)
+def test_non_label_flowchart_quotes_cannot_hide_later_click_statements(
+    fake_runtime, code, click_line
+):
+    outcome = CandidateValidator(fake_runtime, SecurityProfile.STRICT).validate(code, 1)
+
+    assert not outcome.runtime.syntax_valid
+    assert outcome.warnings == [f"security:click:line {click_line}"]
+    assert fake_runtime.calls == []
+
+
+def test_arbitrary_flowchart_quotes_do_not_rescan_the_whole_statement(monkeypatch):
+    class RejectingQuotedLabelPrefix:
+        def __init__(self):
+            self.calls = 0
+
+        def fullmatch(self, _value):
+            self.calls += 1
+            return None
+
+    prefix = RejectingQuotedLabelPrefix()
+    monkeypatch.setattr(MermaidSecurityScanner, "_quoted_flowchart_label_prefix", prefix)
+    code = "flowchart LR\nA" + ('text"' * 5_000) + '\nclick A "#local"'
+
+    report = MermaidSecurityScanner(SecurityProfile.STRICT).scan(code)
+
+    assert not report.safe
+    assert any(finding.rule == "click" for finding in report.findings)
+    assert prefix.calls == 0
+
+
+@pytest.mark.integration
+def test_non_label_flowchart_quote_regressions_are_active_in_mermaid_11_16():
+    codes = [
+        ('flowchart LR\nsubgraph X\ndirection LR " quote\nA --> B\nend\nclick A "#local"'),
+        'flowchart LR\nA --> B\nclass A foo"bar\nclick A "#local"',
+    ]
+    runtime = NodeMermaidRuntime()
+    try:
+        results = [runtime.validate_and_render(code, 20) for code in codes]
+    finally:
+        runtime.close()
+
+    for code, result in zip(codes, results, strict=True):
+        assert result.render_valid, (code, result.error)
+        assert "#local" in (result.svg or "")
+        assert not MermaidSecurityScanner(SecurityProfile.STRICT).scan(code).safe
 
 
 def test_resource_limit_does_not_call_runtime(fake_runtime):

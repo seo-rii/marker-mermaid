@@ -34,6 +34,14 @@ history에 기록되고 후보 budget이나 보안 allowlist를 늘리지 않습
 `style-only`은 마지막 세 Mermaid style statement만 허용하고 외부 URL/CSS는 계속 거부합니다.
 `trusted-local`은 자동 Markdown에 게시할 수 없습니다.
 
+Source scanner는 줄 시작뿐 아니라 세미콜론 뒤도 Mermaid statement 시작으로 해석합니다. `flowchart`와
+`graph`에서는 실제 node 또는 bracketed subgraph label opener 바로 뒤의 큰따옴표만 LF/CRLF를 가로지르는
+quoted-label 상태를 시작합니다. `class`, `direction`, Gantt title과 접근성 text에 나타난 임의 큰따옴표는
+다음 statement를 숨기지 않습니다. apostrophe, backtick, backslash도 quote delimiter나 escape로 취급하지
+않으므로 같은 줄에 이어 쓴 `click`, `style`, `classDef`, `linkStyle`은 각 profile의 동일한 규칙을
+적용받습니다. 큰따옴표로 감싼 node label, `accTitle`/`accDescr` text, 줄 시작의 optional whitespace 뒤
+`%%` comment 안의 세미콜론·keyword만 statement로 오인하지 않습니다.
+
 Specialized typed serializer의 label에 위 token이 관찰돼도 active statement로 방출하지 않습니다.
 keyword와 URL-like token 내부의 zero-width separator는 scanner와 parser 양쪽에서 동작을 비활성화하고,
 Flowchart label의 source `&`도 entity로 재해석되지 않도록 같은 방식으로 분리합니다. Event Modeling edge의
