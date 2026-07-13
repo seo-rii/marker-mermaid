@@ -14,8 +14,12 @@ prefix 없는 이름을 직접 전달할 수 있습니다. prefix 설정이 conc
 명시한 `candidate_count`, `type_candidate_count`, `max_repair_iterations`는 모드 기본값보다
 우선합니다. 각각 12, 3, 10을 넘길 수 없습니다.
 repair 횟수는 structured `RepairEngine` proposal 상한입니다. Marker 기본 processor와 fixture CLI는
-exact OCR/vector 근거가 있는 Flowchart label만 교정하는 기본 engine을 구성합니다. Edge/방향/layout
-repair는 아직 기본 연결하지 않습니다.
+evidence-backed Flowchart repair engine을 구성합니다. Label은 trusted Marker OCR 또는 exact built-in Vector
+text가 source block/bbox와 일치할 때만 교정합니다. Marker processor에서는 built-in Geometry relation이
+단독으로 지지하고 engine 간 방향 충돌이 없는 reversed edge와 무라벨 missing edge도 교정할 수 있습니다.
+Fixture CLI는 JSON이 trust를 스스로 선언하지 못하도록 connector topology repair를 활성화하지 않으며 label
+fixture도 trusted Marker/Vector provenance가 없으면 자동 교정하지 않습니다. Node/conditional/layout repair는
+아직 기본 연결하지 않습니다.
 
 ## 게시 정책
 

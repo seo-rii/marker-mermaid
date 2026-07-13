@@ -41,7 +41,16 @@ score에는 참여하지만 0인 의미 점수를 게시 가능 등급으로 희
 
 Semantic repair 후보도 초기 후보와 같은 reference text 집합과 평가 함수를 사용합니다. OCR/vector,
 provenance, edge, arrow, layout, path, numeric gate를 새 typed IR에서 다시 계산하며 aggregate 엄격 개선과
-semantic score 비감소를 동시에 요구합니다. Held aggregate를 repair가 임의로 해제하지 않습니다.
+semantic score 비감소를 동시에 요구합니다. Held aggregate를 repair가 임의로 해제하지 않습니다. 방향
+반전과 무라벨 누락 edge proposal은 source relation confidence 0.6, 내장 Geometry engine이 생성한 exact
+endpoint/relation ownership, ID 충돌이 없는 bbox/score 0.6 이상의 line/arrow evidence, 동일 source block
+attribution을 모두 요구합니다. 이 threshold는 기본 detector의 line 0.6/arrow 0.65 범위를 포함하되 engine
+identity와 geometry relation 일치를 별도 gate로 둡니다. VLM이 새로 선언한 connector evidence와 약한 것을
+포함한 engine 간 방향 충돌, 상충·병렬·라벨·conditional relation과 decision/gateway/diamond source의
+outgoing edge는 자동 topology repair에서 제외됩니다.
+Label repair도 trusted Marker OCR/built-in Vector origin, source block, bbox containment, ID collision gate를
+통과해야 합니다. Proposal typed IR은 입력과 같은 resource budget을 다시 통과하고 code가 deterministic
+재직렬화 결과와 정확히 일치해야 평가 단계로 진입합니다.
 
 Gantt/Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn/Packet 후보는 OCR/vector numeric evidence가 하나도
 없거나 numeric consistency가 게시 threshold보다 낮으면 aggregate를 `None`으로 두어 자동 게시하지 않습니다.

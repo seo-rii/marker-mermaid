@@ -25,7 +25,7 @@ from marker_mermaid.markdown import standalone_document_markdown
 from marker_mermaid.output import save_document_output
 from marker_mermaid.pipeline import ReconstructionPipeline
 from marker_mermaid.review import serve_review
-from marker_mermaid.semantic_repair import EvidenceBackedLabelRepair
+from marker_mermaid.semantic_repair import EvidenceBackedFlowchartRepair
 from marker_mermaid.validation import CandidateValidator, NodeMermaidRuntime, default_runtime_dir
 
 
@@ -81,7 +81,7 @@ def command_reconstruct(args) -> int:
             config,
             [engine],
             _validator(runtime, config),
-            repair_engine=EvidenceBackedLabelRepair(),
+            repair_engine=EvidenceBackedFlowchartRepair(),
         )
         source_id = args.source_id or Path(args.image).stem
         image_name = Path(args.image).name

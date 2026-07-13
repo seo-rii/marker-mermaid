@@ -18,6 +18,12 @@ class SourceContext:
     image: Image.Image
     views: dict[str, Image.Image] = field(default_factory=dict)
     evidence: list[VisualEvidence] = field(default_factory=list)
+    trusted_label_evidence_ids: set[str] = field(default_factory=set)
+    trusted_connector_evidence_ids: set[str] = field(default_factory=set)
+    trusted_connector_relations: set[tuple[str, str, frozenset[str]]] = field(
+        default_factory=set
+    )
+    conflicted_connector_pairs: set[frozenset[str]] = field(default_factory=set)
     ocr_texts: list[str] = field(default_factory=list)
     source_block: Any = None
     source_blocks: list[Any] = field(default_factory=list)

@@ -48,6 +48,7 @@
 - Validated Review node grouping with canonical IDs and exact Scene-to-subgraph membership checks.
 - Provenance-backed Review edge creation and exact-mapped deletion with global topology preflight.
 - Exact-mapped Review group deletion that preserves member nodes, edges, provenance, and layout.
+- Trusted-geometry-backed typed Flowchart direction reversal and unlabeled missing-edge repair with shared source-block attribution and collision revocation.
 
 ### Changed
 

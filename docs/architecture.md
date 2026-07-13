@@ -40,7 +40,7 @@ flowchart TB
 | `engines.py` | Marker BaseService adapter와 offline fixture engine |
 | `serializers*.py`, `serialization.py` | software/chart typed IR, requested/emitted type와 fallback 계약 |
 | `ast_repair.py` | 의미를 추가하지 않는 bounded lexical/structural repair와 AST adapter seam |
-| `semantic_repair.py` | exact OCR/vector 근거가 있는 typed flowchart label 교정 |
+| `semantic_repair.py` | exact text와 고신뢰 line/arrow 근거가 있는 typed flowchart label·directed-edge 교정 |
 | `style_recovery.py` | evidence/profile-gated flowchart node fill/border/bold와 exact-mapped edge color/style allowlist |
 | `security.py` | active/external Mermaid syntax의 fail-closed 검사 |
 | `validation.py` | bounded nonblocking Chromium protocol, parse/render, SVG 재검사, process-group 정리 |
@@ -55,7 +55,12 @@ flowchart TB
 | `review_layout.py`, `review_store.py` | source geometry와 분리된 bounded layout hint와 review revision |
 
 `CandidateEngine`, `RepairEngine`, `MermaidRuntime`은 Protocol로 주입됩니다. 기본 Marker/fixture CLI는
-evidence-backed label repair를 연결하며 다른 repair engine도 구조화 proposal 계약으로 주입할 수 있습니다. 테스트와 offline
+evidence-backed flowchart repair를 연결하며 다른 repair engine도 구조화 proposal 계약으로 주입할 수 있습니다. 기본 repair는
+exact OCR/vector label과 내장 Geometry engine에서 온 동일 source block의 고신뢰 line/arrow가 지지하는
+방향 반전·무라벨 누락 edge만 다룹니다. Connector evidence ID가 충돌하거나 VLM이 새로 선언한 경우에는 구조
+수정 권한을 부여하지 않으며 fusion 전 engine 방향 충돌도 별도 pair set으로 보존해 repair를 막습니다. Label
+evidence도 초기 Marker OCR 또는 exact Vector engine만 trust하고 ID collision/source block/bbox를 확인합니다.
+Repair typed IR은 입력 resource budget과 deterministic code 동기화를 다시 검증합니다. 테스트와 offline
 재현은 Marker/LLM/Chromium을 각각 fake로 대체할 수 있습니다.
 
 page proposal에 Figure/Picture/ComplexRegion anchor가 없으면 PageGroup 내부 metadata queue가 processor

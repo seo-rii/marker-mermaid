@@ -311,7 +311,7 @@ def test_marker_processor_uses_vector_and_geometry_without_an_llm(fake_runtime):
         "vector_primitives",
         "geometry",
     ]
-    assert processor.pipeline.repair_engine.name == "evidence_backed_label_repair"
+    assert processor.pipeline.repair_engine.name == "evidence_backed_flowchart_repair"
 
 
 @pytest.mark.integration

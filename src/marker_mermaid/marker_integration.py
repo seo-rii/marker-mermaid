@@ -28,7 +28,7 @@ from marker_mermaid.marker_discovery import (
 )
 from marker_mermaid.models import ReconstructionResult, VisualEvidence
 from marker_mermaid.pipeline import ReconstructionPipeline
-from marker_mermaid.semantic_repair import EvidenceBackedLabelRepair
+from marker_mermaid.semantic_repair import EvidenceBackedFlowchartRepair
 from marker_mermaid.sidecars import safe_artifact_component
 from marker_mermaid.source_assembly import SourceAssemblyMetadata, assemble_discovered_source
 from marker_mermaid.validation import CandidateValidator, NodeMermaidRuntime
@@ -246,7 +246,7 @@ class MermaidDiagramProcessor(BaseProcessor):
                 max_chars=self.mermaid_config.max_mermaid_chars,
                 max_lines=self.mermaid_config.max_mermaid_lines,
             ),
-            repair_engine=EvidenceBackedLabelRepair(),
+            repair_engine=EvidenceBackedFlowchartRepair(),
         )
 
     def __call__(self, document: Document, *args, **kwargs):

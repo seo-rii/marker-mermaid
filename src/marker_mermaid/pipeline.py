@@ -19,6 +19,7 @@ from marker_mermaid.ast_repair import DeterministicMermaidRepair
 from marker_mermaid.candidate_scene import typed_ir_to_scene
 from marker_mermaid.config import MermaidConfig, Mode
 from marker_mermaid.fusion import FusionEngine, FusionInput
+from marker_mermaid.geometry import GeometryEngine
 from marker_mermaid.models import (
     CandidateFailure,
     DiagramSceneIR,
@@ -26,6 +27,7 @@ from marker_mermaid.models import (
     MermaidCandidate,
     ReconstructionResult,
     RepairEvent,
+    TypedIRCandidate,
     VisualEvidence,
 )
 from marker_mermaid.protocols import (
@@ -314,6 +316,22 @@ class ReconstructionPipeline:
     ) -> ReconstructionResult:
         failures: list[CandidateFailure] = []
         all_evidence = list(evidence or [])
+        resolved_source_block_ids = source_block_ids or [source_id]
+        source_block_id_set = set(resolved_source_block_ids)
+        initial_evidence_ids: set[str] = set()
+        duplicate_initial_evidence_ids: set[str] = set()
+        for item in all_evidence:
+            if item.id in initial_evidence_ids:
+                duplicate_initial_evidence_ids.add(item.id)
+            initial_evidence_ids.add(item.id)
+        trusted_label_evidence_ids = {
+            item.id
+            for item in all_evidence
+            if item.id not in duplicate_initial_evidence_ids
+            and item.kind in {"ocr_token", "vector_text"}
+            and item.bbox is not None
+            and bool(source_block_id_set.intersection(item.source_block_ids))
+        }
         known_evidence_ids = {item.id for item in all_evidence}
         trusted_bold_evidence: dict[str, VisualEvidence] = {}
         try:
@@ -323,11 +341,15 @@ class ReconstructionPipeline:
             view_warnings = [f"visual prior generation failed: {exc}"]
         context = SourceContext(
             source_id=source_id,
-            source_block_ids=source_block_ids or [source_id],
+            source_block_ids=resolved_source_block_ids,
             source_image_name=source_image_name,
             image=image,
             views=views,
             evidence=all_evidence,
+            trusted_label_evidence_ids=trusted_label_evidence_ids,
+            trusted_connector_evidence_ids=set(),
+            trusted_connector_relations=set(),
+            conflicted_connector_pairs=set(),
             ocr_texts=list(ocr_texts or []),
             source_block=source_block,
             source_blocks=list(
@@ -338,6 +360,9 @@ class ReconstructionPipeline:
         )
 
         successful_observations: list[tuple[str, str, EngineObservation]] = []
+        observed_relation_directions: dict[
+            frozenset[str], set[tuple[str, str, bool, bool]]
+        ] = {}
         view_type_hints: list[str] = []
         for engine in self.engines:
             try:
@@ -356,6 +381,32 @@ class ReconstructionPipeline:
             if fusion_source not in {"vector", "geometry", "ocr", "vlm", "other"}:
                 fusion_source = "other"
             trusted_vector_engine = type(engine) is VectorPrimitiveEngine
+            trusted_geometry_engine = type(engine) is GeometryEngine
+            relation_counts: dict[frozenset[str], int] = {}
+            if observation.scene_ir is not None:
+                for relation in observation.scene_ir.relations:
+                    if (
+                        relation.source_id is None
+                        or relation.target_id is None
+                        or relation.source_id == relation.target_id
+                    ):
+                        continue
+                    pair = frozenset({relation.source_id, relation.target_id})
+                    relation_counts[pair] = relation_counts.get(pair, 0) + 1
+                    directions = observed_relation_directions.setdefault(pair, set())
+                    directions.add(
+                        (
+                            relation.source_id,
+                            relation.target_id,
+                            relation.arrow_at_start,
+                            relation.arrow_at_end,
+                        )
+                    )
+                    if len(directions) > 1:
+                        context.conflicted_connector_pairs.add(pair)
+                context.conflicted_connector_pairs.update(
+                    pair for pair, count in relation_counts.items() if count > 1
+                )
             has_payload = bool(
                 observation.scene_ir is not None
                 or observation.typed_candidates
@@ -380,6 +431,15 @@ class ReconstructionPipeline:
                     all_evidence.append(item)
                     known_evidence_ids.add(item.id)
                     evidence_changed = True
+                    if trusted_geometry_engine and item.kind in {"line_segment", "arrowhead"}:
+                        context.trusted_connector_evidence_ids.add(item.id)
+                    if (
+                        trusted_vector_engine
+                        and item.kind == "vector_text"
+                        and item.bbox is not None
+                        and source_block_id_set.intersection(item.source_block_ids)
+                    ):
+                        context.trusted_label_evidence_ids.add(item.id)
                     if (
                         trusted_vector_engine
                         and item.kind == "vector_text"
@@ -390,6 +450,30 @@ class ReconstructionPipeline:
                     # A provenance ID collision cannot authorize style even
                     # when the duplicate payload happens to be identical.
                     trusted_bold_evidence.pop(item.id, None)
+                    context.trusted_label_evidence_ids.discard(item.id)
+                    context.trusted_connector_evidence_ids.discard(item.id)
+                    context.trusted_connector_relations = {
+                        relation
+                        for relation in context.trusted_connector_relations
+                        if item.id not in relation[2]
+                    }
+            if trusted_geometry_engine and observation.scene_ir is not None:
+                for relation in observation.scene_ir.relations:
+                    if (
+                        relation.source_id is not None
+                        and relation.target_id is not None
+                        and relation.evidence_ids
+                        and set(relation.evidence_ids).issubset(
+                            context.trusted_connector_evidence_ids
+                        )
+                    ):
+                        context.trusted_connector_relations.add(
+                            (
+                                relation.source_id,
+                                relation.target_id,
+                                frozenset(relation.evidence_ids),
+                            )
+                        )
             if evidence_changed or hints_changed:
                 try:
                     context.views, new_warnings = build_visual_priors(
@@ -1024,6 +1108,45 @@ class ReconstructionPipeline:
             attempted = current.model_copy(deep=True)
             attempted.candidate_id = f"{selected.candidate_id}-repair-{iteration}"
             try:
+                validated_ir = TypedIRCandidate(
+                    diagram_type=current.diagram_type,
+                    ir=proposal.typed_ir,
+                ).ir
+                canonical = serialize_typed_ir_result(
+                    current.diagram_type,
+                    validated_ir,
+                    experimental=self.config.mode != Mode.STRICT,
+                )
+            except Exception as exc:
+                attempted.warnings.append(f"semantic repair IR could not be serialized: {exc}")
+                attempted.repair_history.append(
+                    RepairEvent(
+                        iteration=iteration,
+                        operation=proposal.operation,
+                        before_score=current.aggregate_score,
+                        accepted=False,
+                        details=proposal.details,
+                    )
+                )
+                return attempted
+            if (
+                canonical.code != proposal.code
+                or canonical.emitted_type != current.emitted_diagram_type
+            ):
+                attempted.warnings.append(
+                    "semantic repair was discarded because code and typed IR diverged"
+                )
+                attempted.repair_history.append(
+                    RepairEvent(
+                        iteration=iteration,
+                        operation=proposal.operation,
+                        before_score=current.aggregate_score,
+                        accepted=False,
+                        details=proposal.details,
+                    )
+                )
+                return attempted
+            try:
                 outcome = self.validator.validate(
                     proposal.code,
                     self.config.render_timeout_seconds,
@@ -1074,7 +1197,7 @@ class ReconstructionPipeline:
                 render_valid=outcome.runtime.render_valid,
                 diagram_type=current.diagram_type,
                 method=current.generation_method,
-                typed_ir=proposal.typed_ir,
+                typed_ir=validated_ir,
                 source_scene=current.scene_ir,
                 evidence=context.evidence,
                 reference_texts=reference_texts,
@@ -1103,7 +1226,7 @@ class ReconstructionPipeline:
             if not improved:
                 return attempted
             attempted.mermaid_code = proposal.code
-            attempted.typed_ir = proposal.typed_ir
+            attempted.typed_ir = validated_ir
             attempted.syntax_valid = outcome.runtime.syntax_valid
             attempted.render_valid = outcome.runtime.render_valid
             attempted.runtime_diagram_type = outcome.runtime.diagram_type
