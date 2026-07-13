@@ -152,12 +152,20 @@ subclass를 검증 뒤 provider에 그대로 전달하지 않습니다. Caller�
 | initial/engine/fused evidence | reconstruction 전체 20,000 items | initial/engine collection 격리 또는 이후 evidence authority 차단 |
 | source OCR | 50,000 items, 합계 1,000,000 chars | OCR collection 전체 격리 |
 | evidence ID/text/source-block text | 합계 8,000,000 chars | evidence collection 전체 격리 또는 이후 evidence authority 차단 |
+| typed IR candidate | envelope 3 fields, depth 64, 100,000 items, field 50,000 chars, UTF-8 text 1,000,000 bytes, compact JSON 4,000,000 bytes | 해당 candidate 격리 |
+| observation/fused typed IR | 최대 64 candidates, compact JSON 합계 8,000,000 bytes | provider/fixture observation 거부 또는 fusion의 bounded prefix 유지 |
 | `source_mapping` | depth 32, 25,000 items, string 50,000 chars, compact JSON 4,000,000 bytes | mapping만 `null`로 격리 |
 
 `source_mapping`은 exact `dict`/`list`/`tuple`과 JSON scalar만 허용합니다. Tuple은 JSON array로
 정규화되고 key는 정렬되며, finite number와 JavaScript safe-integer 범위를 요구합니다. 이 snapshot은
 engine, repair, 최종 result, sidecar에서 재사용·재검증되므로 container subclass의 iteration 또는
 `deepcopy` hook을 실행하지 않습니다.
+
+Typed IR hard cap도 설정으로 확장할 수 없습니다. Dict key와 string value를 출현 횟수대로 세며 tuple은
+JSON array로 정규화합니다. 숫자는 finite JavaScript safe range여야 하고 cycle 또는 container/scalar
+subclass는 거부합니다. Candidate의 `diagram_type`, `ir`, `confidence` 외 extra field는 unbounded copy 전에
+거부합니다. Accessibility가 추가한 title/description과 semantic repair proposal도 같은 상한을 다시
+통과해야 serializer와 sidecar로 이동합니다.
 
 기본 `strict` security profile에서는 `enable_style_recovery=true`여도 style statement를 만들지
 않습니다. 실제 style code를 원하면 `portable-rich`/`style-rich` compatibility와 `style-only` 같은

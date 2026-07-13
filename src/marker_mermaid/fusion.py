@@ -15,10 +15,12 @@ rules above and recorded in the returned observation's warnings.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from marker_mermaid.mapping_validation import (
@@ -27,6 +29,9 @@ from marker_mermaid.mapping_validation import (
     source_evidence_matches,
 )
 from marker_mermaid.models import (
+    MAX_OBSERVATION_CANDIDATES,
+    MAX_OBSERVATION_TYPED_IR_JSON_BYTES,
+    MAX_WARNING_CHARS,
     NODE_ID_MAPPING_MIN_IOU,
     DiagramSceneIR,
     DiagramTypePrediction,
@@ -38,6 +43,8 @@ from marker_mermaid.models import (
     SceneRelation,
     TypedIRCandidate,
     VisualEvidence,
+    _canonical_typed_candidate_fields,
+    canonical_typed_ir_snapshot,
 )
 
 FusionSource = Literal["vector", "geometry", "ocr", "vlm", "other"]
@@ -63,6 +70,65 @@ _TYPE_WEIGHT: dict[FusionSource, float] = {
     "vlm": 1.0,
     "other": 0.75,
 }
+
+
+def _canonical_typed_candidates(
+    value: object,
+) -> tuple[list[TypedIRCandidate], list[str]]:
+    """Return a bounded detached typed-candidate projection for fusion."""
+
+    warnings: list[str] = []
+    if type(value) is not list:
+        candidates: list[object] = []
+        warnings.append("fusion skipped a non-canonical typed candidate collection")
+    else:
+        candidates = list.__getitem__(value, slice(0, MAX_OBSERVATION_CANDIDATES + 1))
+        if len(candidates) > MAX_OBSERVATION_CANDIDATES:
+            warnings.append(
+                "fusion truncated typed candidates to the bounded observation item limit"
+            )
+            candidates = candidates[:MAX_OBSERVATION_CANDIDATES]
+
+    canonical: list[TypedIRCandidate] = []
+    aggregate_json_bytes = 0
+    for position, candidate in enumerate(candidates):
+        try:
+            if type(candidate) is not TypedIRCandidate:
+                raise TypeError("candidate must be an exact TypedIRCandidate record")
+            is_model, diagram_type, ir_snapshot, confidence = (
+                _canonical_typed_candidate_fields(candidate)
+            )
+            if not is_model:  # pragma: no cover - exact type guard above
+                raise TypeError("typed candidate must remain a canonical model")
+            ir_json = json.dumps(
+                ir_snapshot,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            ir_json_bytes = len(ir_json.encode("utf-8"))
+            next_aggregate_json_bytes = aggregate_json_bytes + ir_json_bytes
+            if next_aggregate_json_bytes > MAX_OBSERVATION_TYPED_IR_JSON_BYTES:
+                warnings.append(
+                    "fusion stopped typed candidate capture at the aggregate JSON byte budget"
+                )
+                break
+            aggregate_json_bytes = next_aggregate_json_bytes
+            snapshot = TypedIRCandidate.model_validate(
+                {
+                    "diagram_type": diagram_type,
+                    "ir": ir_snapshot,
+                    "confidence": confidence,
+                }
+            )
+            canonical.append(snapshot)
+        except Exception as exc:
+            warning = (
+                f"fusion skipped invalid typed candidate at index {position}: {type(exc).__name__}"
+            )
+            warnings.append(warning[:MAX_WARNING_CHARS])
+    return canonical, warnings
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,8 +278,37 @@ class FusionEngine:
         for value in values:
             if not isinstance(value, FusionInput):
                 raise TypeError("fusion inputs must be FusionInput instances")
+        canonical_values: list[FusionInput] = []
+        observation_projection_digests: dict[int, str] = {}
+        for value in values:
+            typed_candidates, typed_warnings = _canonical_typed_candidates(
+                value.observation.typed_candidates
+            )
+            observation = value.observation.model_copy(deep=False)
+            observation.typed_candidates = typed_candidates
+            observation.warnings = list(
+                dict.fromkeys([*list(observation.warnings), *typed_warnings])
+            )
+            canonical_value = replace(value, observation=observation)
+            canonical_values.append(canonical_value)
+            projection = EngineObservation.__pydantic_serializer__.to_python(
+                observation,
+                mode="json",
+                exclude_none=True,
+                warnings=False,
+            )
+            projection_json = json.dumps(
+                projection,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+            observation_projection_digests[id(canonical_value)] = hashlib.sha256(
+                projection_json
+            ).hexdigest()
         return sorted(
-            values,
+            canonical_values,
             key=lambda item: (
                 -_GEOMETRY_RANK[item.source],
                 item.source,
@@ -230,7 +325,7 @@ class FusionEngine:
                 tuple(sorted(item.excluded_evidence_ids)),
                 item.trusted_canvas_size or (),
                 tuple(sorted(item.trusted_source_block_ids)),
-                item.observation.model_dump_json(exclude_none=True),
+                observation_projection_digests[id(item)],
             ),
         )
 
@@ -954,23 +1049,21 @@ class FusionEngine:
         mappings: dict[str, list[NodeIdMapping]] = {}
         authorities: dict[str, frozenset[str]] = {}
         warnings: list[str] = []
+        fused_typed_ir_json_bytes = 0
+        fused_typed_budget_exhausted = False
         for item in inputs:
-            for candidate in item.observation.typed_candidates:
-                try:
-                    value_candidate = TypedIRCandidate.model_validate(
-                        candidate.model_dump(mode="python")
-                    )
-                except (TypeError, ValueError) as exc:
-                    warnings.append(
-                        "fusion skipped invalid typed candidate from "
-                        f"{owners[id(item)]!r}: {exc}"
-                    )
-                    continue
+            value_candidates, candidate_warnings = _canonical_typed_candidates(
+                item.observation.typed_candidates
+            )
+            warnings.extend(
+                f"{warning} from {owners[id(item)]!r}" for warning in candidate_warnings
+            )
+            for value_candidate in value_candidates:
                 candidate_mappings: list[NodeIdMapping] = []
                 if (
                     scene_result is not None
                     and item.observation.scene_ir is not None
-                    and candidate.diagram_type in {"flowchart", "generic_network"}
+                    and value_candidate.diagram_type in {"flowchart", "generic_network"}
                 ):
                     value_candidate, candidate_mappings, warning = self._harmonize_typed_candidate(
                         value_candidate,
@@ -981,6 +1074,34 @@ class FusionEngine:
                         warnings.append(warning)
                 key = value_candidate.canonical_key()
                 old = records.get(key)
+                if old is None:
+                    ir_snapshot = canonical_typed_ir_snapshot(value_candidate.ir)
+                    if ir_snapshot is None:  # pragma: no cover - canonical candidate guard
+                        warnings.append(
+                            "fusion skipped a typed candidate with a non-canonical IR snapshot"
+                        )
+                        continue
+                    candidate_ir_json_bytes = len(
+                        json.dumps(
+                            ir_snapshot,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            allow_nan=False,
+                        ).encode("utf-8")
+                    )
+                    if (
+                        len(records) >= MAX_OBSERVATION_CANDIDATES
+                        or fused_typed_ir_json_bytes + candidate_ir_json_bytes
+                        > MAX_OBSERVATION_TYPED_IR_JSON_BYTES
+                    ):
+                        warnings.append(
+                            "fusion stopped typed candidate accumulation at the global "
+                            "item or JSON byte budget"
+                        )
+                        fused_typed_budget_exhausted = True
+                        break
+                    fused_typed_ir_json_bytes += candidate_ir_json_bytes
                 value = (item.source, item.name, value_candidate)
                 old_has_mapping = key in mappings
                 if (
@@ -1004,6 +1125,8 @@ class FusionEngine:
                         mappings[key] = candidate_mappings
                     else:
                         mappings.pop(key, None)
+            if fused_typed_budget_exhausted:
+                break
 
         ordered_records = sorted(
             records.items(),
@@ -1386,8 +1509,9 @@ class FusionEngine:
             ]
         remapped = TypedIRCandidate.model_validate(
             {
-                **candidate.model_dump(mode="python"),
+                "diagram_type": candidate.diagram_type,
                 "ir": remapped_ir,
+                "confidence": candidate.confidence,
             }
         )
         certified.sort(key=lambda item: item.source_id)

@@ -105,22 +105,33 @@ unique IoU 대응, authority observation이 직접 선언한 spatially aligned c
 
 ## 입력 budget
 
-VLM/fixture 입력은 신뢰하지 않습니다. typed IR은 깊이 64, 전체 item 100,000개, 문자열 필드
-50,000자로 제한합니다. observation candidate, evidence, warning 수와 Scene IR element/relation/group,
-polygon/polyline, ID, bbox도 별도 상한과 finite-number 검사를 거칩니다. `NaN`/무한 좌표와 범위를
-벗어난 confidence는 sidecar에 도달하기 전에 거부됩니다. JSON sidecar는 `allow_nan=false`로
-직렬화합니다.
-Canonical candidate key는 string-key object, list/tuple, finite number, boolean, string, null만
-받습니다. set, bytes 같은 비결정적·비 JSON 값도 dedup이나 private mapping lookup에 들어가기 전에
-거부하며 tuple은 canonical JSON array로 정규화합니다.
+VLM/fixture 입력은 신뢰하지 않습니다. typed IR은 hook-free iterative walker가 exact built-in
+`dict`/`list`/`tuple`/`str`/number/boolean/null만 읽어 detached snapshot으로 바꿉니다. 깊이 64, 전체 item
+100,000개, 문자열 필드 50,000자뿐 아니라 모든 key와 반복 alias occurrence를 포함한 누적 UTF-8 text
+1,000,000 bytes, compact escaped JSON 4,000,000 bytes를 동시에 제한합니다. 한 observation의 모든 typed
+candidate JSON 합계도 8,000,000 bytes를 넘을 수 없습니다. Tuple은 list로 정규화하고 cycle, container
+subclass, non-finite number와 JavaScript safe integer 범위 밖 숫자는 직렬화 전에 거부합니다.
+Candidate envelope는 `diagram_type`, `ir`, `confidence` 세 공개 field만 허용하며 field count를 확인한 뒤에만
+exact-string field name을 검사하고 bounded copy합니다. Validation error는 원본 input 표현을 포함하지
+않습니다. Fusion도 모든 observation에서 선택한 unique candidate에 64개/8,000,000 bytes 전역 상한을
+다시 적용하고 deterministic bounded prefix를 유지합니다.
+Observation candidate, evidence, warning 수와 Scene IR element/relation/group, polygon/polyline, ID, bbox도
+별도 상한과 finite-number 검사를 거칩니다. `NaN`/무한 좌표와 범위를 벗어난 confidence는 sidecar에
+도달하기 전에 거부됩니다. JSON sidecar는 `allow_nan=false`로 직렬화합니다.
+Canonical candidate key는 이 bounded snapshot의 SHA-256 digest를 사용하므로 multi-megabyte IR을 key로
+보유하지 않습니다. set, bytes 같은 비결정적·비 JSON 값도 dedup이나 private mapping lookup에 들어가기
+전에 거부합니다.
 Flowchart/Generic Network record의 ID·label·endpoint 같은 알려진 scalar field에는 object/list를 넣을 수
 없습니다. 또한 repair나 plugin이 모델 생성 뒤 mutable IR를 바꿀 수 있으므로 canonical key 계산과 fusion
-입력 경계에서 현재 payload를 다시 Pydantic/typed-contract validation합니다. 변조된 후보 하나는 fusion
-warning과 함께 제외되며 다른 후보나 문서를 실패시키지 않습니다.
+입력 경계에서 현재 payload를 다시 snapshot 및 Pydantic/typed-contract validation합니다. Accessibility
+enrichment와 semantic repair의 current/proposal IR도 같은 경계를 다시 통과합니다. 변조된 후보 하나는
+fusion warning과 함께 제외되며 다른 후보나 문서를 실패시키지 않습니다.
 이 재검증은 fusion 후보에만 한정되지 않습니다. Pipeline은 initial evidence와 각 engine 응답을 받은
 직후 Scene IR, typed/direct candidate, evidence를 현재 payload로 각각 다시 모델 검증하고, invalid component만
 `CandidateFailure`로 격리한 sanitized observation을 이후 original/fusion 경로 모두에서 사용합니다.
-따라서 validation 뒤 mutation된 original observation이 fusion fallback을 우회해 게시되지 않습니다.
+Sidecar는 selected/alternative candidate의 live IR을 안전한 snapshot으로 교체한 shallow copy를 만든 뒤에만
+model dump, JSON encoding, 전체 result deep-copy를 수행합니다. 따라서 validation 뒤 mutation된 original
+observation이 fusion fallback이나 serialization sink를 우회해 게시되지 않습니다.
 
 ## 평가 Scene adapter
 

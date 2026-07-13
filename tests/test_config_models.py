@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
 from pydantic import ValidationError
 
+import marker_mermaid.models as models
 from marker_mermaid.config import MermaidConfig, Mode, quality_grade
 from marker_mermaid.models import (
     DiagramSceneIR,
     DiagramTypePrediction,
     EngineObservation,
+    MermaidCandidate,
     MetricResult,
     PromptBudgetNotice,
     SceneElement,
@@ -17,6 +20,7 @@ from marker_mermaid.models import (
     SceneRelation,
     TypedIRCandidate,
     VisualEvidence,
+    canonical_typed_ir_snapshot,
 )
 
 
@@ -159,6 +163,383 @@ def test_engine_observation_and_typed_ir_are_resource_bounded():
         cursor = child
     with pytest.raises(ValidationError, match="nesting depth"):
         TypedIRCandidate(diagram_type="mindmap", ir=deeply_nested)
+
+
+def test_typed_ir_snapshot_is_canonical_detached_and_normalizes_tuples() -> None:
+    shared = {"label": "Node"}
+    source = {
+        "z": (shared, 1),
+        "a": [shared, True, None],
+    }
+
+    snapshot = canonical_typed_ir_snapshot(source)
+
+    assert snapshot == {
+        "a": [{"label": "Node"}, True, None],
+        "z": [{"label": "Node"}, 1],
+    }
+    assert snapshot is not source
+    assert list(snapshot) == ["a", "z"]
+    assert snapshot["a"] is not source["a"]
+    assert snapshot["a"][0] is not snapshot["z"][0]
+    shared["label"] = "Changed"
+    source["a"].append("later")
+    assert snapshot["a"] == [{"label": "Node"}, True, None]
+    assert snapshot["z"] == [{"label": "Node"}, 1]
+
+
+def test_typed_ir_snapshot_rejects_subclasses_without_running_hooks() -> None:
+    calls: list[str] = []
+
+    class HookedDict(dict):
+        def __iter__(self):
+            calls.append("dict-iter")
+            return super().__iter__()
+
+        def __deepcopy__(self, memo):
+            calls.append("dict-deepcopy")
+            return dict(self)
+
+    class HookedList(list):
+        def __iter__(self):
+            calls.append("list-iter")
+            return super().__iter__()
+
+    class HookedString(str):
+        def encode(self, *args, **kwargs):
+            calls.append("string-encode")
+            return super().encode(*args, **kwargs)
+
+    with pytest.raises(ValueError, match="exact plain dictionary"):
+        canonical_typed_ir_snapshot(HookedDict(nodes=[]))
+    with pytest.raises(ValueError, match="exact JSON-compatible"):
+        canonical_typed_ir_snapshot({"nodes": HookedList()})
+    with pytest.raises(ValueError, match="exact JSON-compatible"):
+        canonical_typed_ir_snapshot({"label": HookedString("Node")})
+
+    assert calls == []
+
+
+def test_typed_ir_snapshot_enforces_exact_depth_and_item_limits(monkeypatch) -> None:
+    depth_payload = {"x": [1]}
+    monkeypatch.setattr(models, "MAX_IR_DEPTH", 2)
+    assert canonical_typed_ir_snapshot(depth_payload) == depth_payload
+    monkeypatch.setattr(models, "MAX_IR_DEPTH", 1)
+    with pytest.raises(ValueError, match="nesting depth"):
+        canonical_typed_ir_snapshot(depth_payload)
+
+    item_payload = {"x": [1, 2]}
+    monkeypatch.setattr(models, "MAX_IR_DEPTH", 64)
+    monkeypatch.setattr(models, "MAX_IR_ITEMS", 5)
+    assert canonical_typed_ir_snapshot(item_payload) == item_payload
+    monkeypatch.setattr(models, "MAX_IR_ITEMS", 4)
+    with pytest.raises(ValueError, match="item budget"):
+        canonical_typed_ir_snapshot(item_payload)
+
+
+def test_typed_ir_snapshot_enforces_key_value_and_aggregate_text_limits(monkeypatch) -> None:
+    monkeypatch.setattr(models, "MAX_IR_TEXT_CHARS", 3)
+    assert canonical_typed_ir_snapshot({"key": "val"}) == {"key": "val"}
+    with pytest.raises(ValueError, match="field size"):
+        canonical_typed_ir_snapshot({"long": "x"})
+    with pytest.raises(ValueError, match="field size"):
+        canonical_typed_ir_snapshot({"key": "long"})
+
+    multibyte = {"é": "한"}
+    monkeypatch.setattr(models, "MAX_IR_TEXT_CHARS", 50_000)
+    monkeypatch.setattr(models, "MAX_IR_UTF8_TEXT_BYTES", 5)
+    assert canonical_typed_ir_snapshot(multibyte) == multibyte
+    monkeypatch.setattr(models, "MAX_IR_UTF8_TEXT_BYTES", 4)
+    with pytest.raises(ValueError, match="UTF-8 text byte budget"):
+        canonical_typed_ir_snapshot(multibyte)
+
+
+def test_typed_ir_snapshot_counts_repeated_alias_text_and_escaped_json_bytes(
+    monkeypatch,
+) -> None:
+    shared = ["é"]
+    repeated = {"a": shared, "b": shared}
+    monkeypatch.setattr(models, "MAX_IR_UTF8_TEXT_BYTES", 6)
+    assert canonical_typed_ir_snapshot(repeated) == {"a": ["é"], "b": ["é"]}
+    monkeypatch.setattr(models, "MAX_IR_UTF8_TEXT_BYTES", 5)
+    with pytest.raises(ValueError, match="UTF-8 text byte budget"):
+        canonical_typed_ir_snapshot(repeated)
+
+    escaped = {"x": "\\" * 8}
+    compact_size = len(
+        json.dumps(
+            escaped,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    )
+    monkeypatch.setattr(models, "MAX_IR_UTF8_TEXT_BYTES", 1_000_000)
+    monkeypatch.setattr(models, "MAX_IR_JSON_BYTES", compact_size)
+    assert canonical_typed_ir_snapshot(escaped) == escaped
+    monkeypatch.setattr(models, "MAX_IR_JSON_BYTES", compact_size - 1)
+    with pytest.raises(ValueError, match="escaped JSON byte budget"):
+        canonical_typed_ir_snapshot(escaped)
+
+
+def test_typed_ir_snapshot_rejects_cycles_and_unbounded_numbers() -> None:
+    recursive: dict[str, object] = {}
+    recursive["self"] = recursive
+    with pytest.raises(ValueError, match="reference cycles"):
+        canonical_typed_ir_snapshot(recursive)
+
+    assert canonical_typed_ir_snapshot(
+        {
+            "minimum": -models.MAX_IR_ABS_NUMBER,
+            "maximum": models.MAX_IR_ABS_NUMBER,
+            "float": float(models.MAX_IR_ABS_NUMBER),
+        }
+    )
+    for value in (
+        models.MAX_IR_ABS_NUMBER + 1,
+        -(models.MAX_IR_ABS_NUMBER + 1),
+        float(models.MAX_IR_ABS_NUMBER * 2),
+        math.inf,
+        -math.inf,
+        math.nan,
+    ):
+        with pytest.raises(ValueError, match="(numeric budget|finite and bounded)"):
+            canonical_typed_ir_snapshot({"value": value})
+
+
+def test_typed_candidate_owns_a_canonical_snapshot_of_input_ir() -> None:
+    source = {"nodes": [{"id": "A"}], "future": ("kept",)}
+
+    candidate = TypedIRCandidate(diagram_type="flowchart", ir=source)
+
+    assert candidate.ir == {"future": ["kept"], "nodes": [{"id": "A"}]}
+    assert candidate.ir is not source
+    assert candidate.ir["nodes"] is not source["nodes"]
+    source["nodes"][0]["id"] = "changed"
+    assert candidate.ir["nodes"][0]["id"] == "A"
+
+
+def test_engine_observation_enforces_aggregate_typed_ir_budget(monkeypatch) -> None:
+    prediction = DiagramTypePrediction(candidates=["flowchart"], scores=[1.0])
+    candidate = TypedIRCandidate(diagram_type="flowchart", ir={"nodes": []})
+    one_ir_size = len(
+        json.dumps(
+            candidate.ir,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    )
+    monkeypatch.setattr(models, "MAX_OBSERVATION_TYPED_IR_JSON_BYTES", one_ir_size * 2)
+
+    observation = EngineObservation(
+        prediction=prediction,
+        typed_candidates=[candidate, candidate],
+    )
+
+    assert observation.typed_candidates[0] is not candidate
+    assert observation.typed_candidates[0].ir is not candidate.ir
+    assert observation.typed_candidates[0].ir is not observation.typed_candidates[1].ir
+
+    monkeypatch.setattr(models, "MAX_OBSERVATION_TYPED_IR_JSON_BYTES", one_ir_size * 2 - 1)
+    with pytest.raises(ValidationError, match="aggregate JSON byte budget"):
+        EngineObservation(
+            prediction=prediction,
+            typed_candidates=[candidate, candidate],
+        )
+
+
+def test_engine_observation_rejects_candidate_count_before_inspecting_items() -> None:
+    calls: list[str] = []
+
+    class HookedCandidate:
+        def __getattribute__(self, name):
+            calls.append(name)
+            return super().__getattribute__(name)
+
+    with pytest.raises(ValidationError, match="too_long"):
+        EngineObservation(
+            prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+            typed_candidates=[HookedCandidate()] * 65,
+        )
+
+    assert calls == []
+
+
+def test_engine_observation_validates_raw_typed_candidate_metadata_without_hooks() -> None:
+    calls: list[str] = []
+
+    class HookedString(str):
+        def encode(self, *args, **kwargs):
+            calls.append("encode")
+            return super().encode(*args, **kwargs)
+
+    class HookedNumber:
+        def __float__(self):
+            calls.append("float")
+            return 0.5
+
+    prediction = DiagramTypePrediction(candidates=["flowchart"], scores=[1.0])
+    observation = EngineObservation(
+        prediction=prediction,
+        typed_candidates=[
+            {
+                "diagram_type": "flowchart",
+                "ir": {"nodes": []},
+                "confidence": 1,
+            }
+        ],
+    )
+    assert observation.typed_candidates[0].confidence == 1
+
+    with pytest.raises(ValidationError, match="plain string"):
+        EngineObservation(
+            prediction=prediction,
+            typed_candidates=[{"diagram_type": HookedString("flowchart"), "ir": {"nodes": []}}],
+        )
+    with pytest.raises(ValidationError, match="exact number"):
+        EngineObservation(
+            prediction=prediction,
+            typed_candidates=[
+                {
+                    "diagram_type": "flowchart",
+                    "ir": {"nodes": []},
+                    "confidence": HookedNumber(),
+                }
+            ],
+        )
+    with pytest.raises(ValidationError, match="label must be a string"):
+        EngineObservation(
+            prediction=prediction,
+            typed_candidates=[
+                {
+                    "diagram_type": "flowchart",
+                    "ir": {"nodes": [{"label": {"invalid": True}}]},
+                }
+            ],
+        )
+
+    assert calls == []
+
+
+def test_engine_observation_detaches_mutated_typed_candidate_for_sibling_isolation() -> None:
+    candidate = TypedIRCandidate(
+        diagram_type="flowchart",
+        ir={"nodes": [{"id": "A", "label": "Start"}]},
+    )
+    candidate.ir["nodes"][0]["label"] = {"invalid": "nested label"}
+
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+        typed_candidates=[candidate],
+    )
+
+    assert observation.typed_candidates[0] is not candidate
+    candidate.ir["nodes"][0]["label"] = "mutated again"
+    assert observation.typed_candidates[0].ir["nodes"][0]["label"] == {"invalid": "nested label"}
+    with pytest.raises(ValidationError, match="label must be a string"):
+        observation.typed_candidates[0].canonical_key()
+
+
+def test_typed_candidate_field_count_fails_before_copy_or_ir_scan(monkeypatch) -> None:
+    candidate = TypedIRCandidate(diagram_type="flowchart", ir={"nodes": []})
+    candidate.__dict__["extra"] = "rejected"
+    monkeypatch.setattr(
+        models,
+        "canonical_typed_ir_snapshot",
+        lambda _value: pytest.fail("over-field candidate must fail before IR scan"),
+    )
+
+    with pytest.raises(ValueError, match="field-count"):
+        candidate.canonical_key()
+    with pytest.raises(ValidationError, match="field-count"):
+        EngineObservation(
+            prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+            typed_candidates=[candidate],
+        )
+    with pytest.raises(ValidationError, match="field-count"):
+        EngineObservation(
+            prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+            typed_candidates=[
+                {
+                    "diagram_type": "flowchart",
+                    "ir": {"nodes": []},
+                    "confidence": 0.5,
+                    "extra": "rejected",
+                }
+            ],
+        )
+    with pytest.raises(ValidationError, match="unknown public field"):
+        EngineObservation(
+            prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+            typed_candidates=[
+                {
+                    "diagram_type": "flowchart",
+                    "ir": {"nodes": []},
+                    "extra": "rejected",
+                }
+            ],
+        )
+
+
+def test_candidate_envelopes_reject_hostile_keys_without_equality_hooks() -> None:
+    calls: list[str] = []
+
+    class HostileKey(str):
+        __hash__ = str.__hash__
+
+        def __eq__(self, other):
+            calls.append(str(other))
+            raise AssertionError("candidate key equality hook must not run")
+
+    typed = TypedIRCandidate(diagram_type="flowchart", ir={"nodes": []})
+    typed.__dict__.pop("diagram_type")
+    typed.__dict__[HostileKey("diagram_type")] = "flowchart"
+
+    with pytest.raises(ValueError, match="unknown public field"):
+        typed.canonical_key()
+    with pytest.raises(ValidationError, match="unknown public field"):
+        EngineObservation(
+            prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+            typed_candidates=[typed],
+        )
+    with pytest.raises(ValidationError, match="field names must be plain strings"):
+        MermaidCandidate.model_validate(
+            {
+                "candidate_id": "candidate-1",
+                "generation_method": "typed_ir",
+                HostileKey("diagram_type"): "flowchart",
+                "typed_ir": {"nodes": []},
+            }
+        )
+
+    assert calls == []
+
+
+def test_mutated_diagram_type_fails_before_utf8_or_ir_allocation(monkeypatch) -> None:
+    candidate = TypedIRCandidate(diagram_type="flowchart", ir={"nodes": []})
+    candidate.diagram_type = "x" * (models.MAX_ID_CHARS + 1)
+    prediction = DiagramTypePrediction(candidates=["flowchart"], scores=[1.0])
+    monkeypatch.setattr(
+        models,
+        "_require_utf8_text",
+        lambda *_args, **_kwargs: pytest.fail(
+            "oversized diagram type must fail before UTF-8 encoding"
+        ),
+    )
+    monkeypatch.setattr(
+        models,
+        "canonical_typed_ir_snapshot",
+        lambda _value: pytest.fail("oversized diagram type must fail before IR scan"),
+    )
+
+    with pytest.raises(ValueError, match="text size"):
+        candidate.canonical_key()
+    with pytest.raises(ValidationError, match="text size"):
+        EngineObservation(
+            prediction=prediction,
+            typed_candidates=[candidate],
+        )
 
 
 def test_typed_candidate_rejects_another_diagram_familys_root_shape():
@@ -305,6 +686,113 @@ def test_canonical_key_revalidates_mutated_nested_contracts() -> None:
 
     with pytest.raises(ValidationError, match=r"events\[0\]\.events"):
         candidate.canonical_key()
+
+
+def test_canonical_key_uses_a_bounded_digest_without_model_dump(
+    monkeypatch,
+) -> None:
+    payload = "private-label-" * 100
+    candidate = TypedIRCandidate(
+        diagram_type="flowchart",
+        ir={"nodes": [{"id": "A", "label": payload}]},
+    )
+
+    def unexpected_model_dump(*args, **kwargs):
+        pytest.fail("canonical_key must not model_dump a live typed candidate")
+
+    monkeypatch.setattr(TypedIRCandidate, "model_dump", unexpected_model_dump)
+    before = candidate.canonical_key()
+    candidate.ir["nodes"][0]["label"] = "changed"
+    after = candidate.canonical_key()
+
+    assert before != after
+    assert payload not in before
+    assert len(before) <= 330
+    assert before.startswith("flowchart\0sha256:")
+
+
+def test_canonical_key_rejects_mutated_confidence_without_numeric_hooks() -> None:
+    calls: list[str] = []
+
+    class HookedNumber:
+        def __float__(self):
+            calls.append("float")
+            return 0.5
+
+    candidate = TypedIRCandidate(diagram_type="flowchart", ir={"nodes": []})
+    candidate.confidence = HookedNumber()
+
+    with pytest.raises(ValueError, match="exact number"):
+        candidate.canonical_key()
+
+    assert calls == []
+
+
+def test_mermaid_candidate_canonicalizes_and_contract_validates_typed_ir() -> None:
+    source = {"nodes": [{"id": "A"}], "future": ("kept",)}
+
+    candidate = MermaidCandidate(
+        candidate_id="candidate-1",
+        generation_method="typed_ir",
+        diagram_type="flowchart",
+        typed_ir=source,
+    )
+
+    assert candidate.typed_ir == {"future": ["kept"], "nodes": [{"id": "A"}]}
+    assert candidate.typed_ir is not source
+    source["nodes"][0]["id"] = "changed"
+    assert candidate.typed_ir["nodes"][0]["id"] == "A"
+
+    with pytest.raises(ValidationError, match="requires root field 'nodes'"):
+        MermaidCandidate(
+            candidate_id="candidate-2",
+            generation_method="typed_ir",
+            diagram_type="flowchart",
+            typed_ir={"participants": []},
+        )
+
+
+def test_mermaid_candidate_rejects_typed_ir_subclass_without_hooks() -> None:
+    calls: list[str] = []
+
+    class HookedIR(dict):
+        def __iter__(self):
+            calls.append("iter")
+            return super().__iter__()
+
+        def __deepcopy__(self, memo):
+            calls.append("deepcopy")
+            return dict(self)
+
+    with pytest.raises(ValidationError, match="exact plain dictionary"):
+        MermaidCandidate(
+            candidate_id="candidate-1",
+            generation_method="typed_ir",
+            diagram_type="flowchart",
+            typed_ir=HookedIR(nodes=[]),
+        )
+
+    assert calls == []
+
+
+@pytest.mark.parametrize("diagram_type", ["x" * (models.MAX_ID_CHARS + 1), "\ud800"])
+def test_mermaid_candidate_rejects_invalid_diagram_type_before_typed_ir_scan(
+    monkeypatch,
+    diagram_type,
+) -> None:
+    monkeypatch.setattr(
+        models,
+        "canonical_typed_ir_snapshot",
+        lambda _value: pytest.fail("invalid diagram type must fail before typed IR scan"),
+    )
+
+    with pytest.raises(ValidationError, match="candidate diagram type"):
+        MermaidCandidate(
+            candidate_id="candidate-1",
+            generation_method="typed_ir",
+            diagram_type=diagram_type,
+            typed_ir={"nodes": []},
+        )
 
 
 def test_candidate_confidence_is_a_probability():

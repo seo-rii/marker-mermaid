@@ -85,6 +85,12 @@
   context, invalid collections are isolated as a whole, aggregate provenance growth is capped, and
   sidecar source maps are serialized only from a hook-free canonical JSON snapshot with mutation
   checks.
+- Typed IR now uses detached exact-built-in snapshots with a 1,000,000-byte UTF-8 text budget, a
+  4,000,000-byte compact JSON budget, and an 8,000,000-byte observation budget; pipeline, fusion,
+  accessibility, repair, canonical-key, and sidecar paths revalidate live IR before copying or
+  serializing it. The three-field candidate envelope is bounded before copying, and fusion applies
+  the same item/JSON limits globally across all input observations. Exact field-name checks and
+  input-hidden validation errors prevent hostile dictionary-key or error-formatting hooks.
 
 ### Changed
 

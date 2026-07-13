@@ -3,6 +3,7 @@ import copy
 import pytest
 from PIL import Image
 
+import marker_mermaid.pipeline as pipeline_module
 from marker_mermaid.config import MermaidConfig
 from marker_mermaid.engines import JsonFixtureEngine
 from marker_mermaid.geometry import (
@@ -611,6 +612,54 @@ def test_semantic_repair_receives_isolated_context_and_candidate_snapshots():
     )
     assert result.source_mapping == {"nested": {"value": "Original"}}
     assert not any("repair engine failed" in warning for warning in result.selected.warnings)
+
+
+def test_semantic_repair_revalidates_current_typed_ir_before_copy_or_exposure(
+    monkeypatch,
+):
+    class ExplosiveDict(dict):
+        def __deepcopy__(self, _memo):
+            raise AssertionError("unvalidated typed IR must not be deep-copied")
+
+    class NeverCalledRepair:
+        name = "never_called"
+
+        def __init__(self):
+            self.called = False
+
+        def repair(self, _context, _candidate):
+            self.called = True
+            raise AssertionError("invalid current typed IR must not reach semantic repair")
+
+    repair = NeverCalledRepair()
+    original_select = ReconstructionPipeline._select
+
+    def inject_noncanonical_ir(self, candidates):
+        selected = original_select(self, candidates)
+        assert selected is not None
+        selected.typed_ir = ExplosiveDict(selected.typed_ir)
+        return selected
+
+    monkeypatch.setattr(ReconstructionPipeline, "_select", inject_noncanonical_ir)
+    monkeypatch.setattr(
+        pipeline_module,
+        "certify_publication_result",
+        lambda _result, _config: False,
+    )
+
+    result = run_repair(
+        repair_observation(correct_label=True),
+        repair_engine=repair,
+        enable_fusion=False,
+    )
+
+    assert not repair.called
+    assert result.selected is not None
+    assert result.selected.typed_ir is None
+    assert any(
+        "repair candidate typed IR validation failed" in warning
+        for warning in result.selected.warnings
+    )
 
 
 def test_semantic_repair_rejects_runtime_type_drift_without_corrupting_baseline():

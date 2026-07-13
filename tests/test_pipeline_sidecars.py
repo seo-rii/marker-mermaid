@@ -1183,6 +1183,37 @@ def test_direct_accessibility_augmentation_is_discarded_on_runtime_type_drift():
     assert any("augmentation was discarded" in warning for warning in result.selected.warnings)
 
 
+def test_typed_accessibility_enrichment_is_revalidated_before_serialization(
+    monkeypatch,
+    fake_runtime,
+):
+    def invalid_enrichment(ir, *_args, **_kwargs):
+        enriched = json.loads(json.dumps(ir))
+        enriched["nodes"][0]["label"] = {"invalid": "nested label"}
+        return enriched
+
+    def forbidden_serializer(*_args, **_kwargs):
+        raise AssertionError("invalid accessibility IR must not reach the serializer")
+
+    monkeypatch.setattr(pipeline_module, "enrich_accessibility_ir", invalid_enrichment)
+    monkeypatch.setattr(pipeline_module, "serialize_typed_ir_result", forbidden_serializer)
+    config = MermaidConfig(
+        candidate_count=1,
+        enable_fusion=False,
+        enable_generic_scene_ir=False,
+        enable_direct_mermaid=False,
+    )
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation())],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is None
+    assert any(item.stage == "serialization" for item in result.failures)
+
+
 def test_pipeline_preserves_requested_type_when_serializer_falls_back(fake_runtime):
     fallback_observation = EngineObservation(
         prediction=DiagramTypePrediction(candidates=["bpmn"], scores=[0.9]),
@@ -3166,6 +3197,185 @@ def test_pipeline_caps_reconstruction_global_evidence_characters(
     limit_failures = [item for item in result.failures if item.error_type == "EvidenceLimitError"]
     assert len(limit_failures) == 1
     assert "character limit" in limit_failures[0].message
+
+
+def test_pipeline_canonicalizes_typed_candidates_without_live_model_dump(
+    monkeypatch,
+    fake_runtime,
+):
+    source = observation()
+    valid = source.typed_candidates[0].model_copy(deep=True)
+    invalid = source.typed_candidates[0]
+    invalid.ir["nodes"][0]["label"] = {"invalid": "nested label"}
+    source.typed_candidates = [invalid, valid]
+
+    def forbidden_model_dump(*_args, **_kwargs):
+        raise AssertionError("live typed candidate model_dump must not be used")
+
+    monkeypatch.setattr(TypedIRCandidate, "model_dump", forbidden_model_dump)
+    config = MermaidConfig(
+        candidate_count=2,
+        enable_fusion=False,
+        enable_generic_scene_ir=False,
+        enable_direct_mermaid=False,
+    )
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(source)],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (20, 20), "white"))
+
+    assert result.selected is not None
+    assert result.selected.typed_ir["nodes"][0]["label"] == "Start"
+    assert any("invalid typed candidate was isolated" in item.message for item in result.failures)
+
+
+def test_pipeline_rejects_non_plain_typed_candidate_collection_without_hooks(
+    fake_runtime,
+):
+    source = observation()
+    source.typed_candidates = _ExplosiveList(source.typed_candidates)
+
+    class RawEngine:
+        name = "raw"
+
+        def observe(self, _context):
+            return source
+
+    config = MermaidConfig(
+        candidate_count=1,
+        enable_fusion=False,
+        enable_generic_scene_ir=False,
+        enable_direct_mermaid=False,
+    )
+    result = ReconstructionPipeline(
+        config,
+        [RawEngine()],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (20, 20), "white"))
+
+    assert result.selected is None
+    assert any("exact plain list" in item.message for item in result.failures)
+
+
+def test_pipeline_rejects_hostile_typed_candidate_keys_without_hooks(fake_runtime):
+    calls: list[str] = []
+
+    class HostileKey(str):
+        __hash__ = str.__hash__
+
+        def __eq__(self, other):
+            calls.append(str(other))
+            raise AssertionError("typed candidate key equality hook must not run")
+
+    source = observation()
+    candidate = source.typed_candidates[0]
+    candidate.__dict__.pop("diagram_type")
+    candidate.__dict__[HostileKey("diagram_type")] = "flowchart"
+
+    class RawEngine:
+        name = "raw"
+
+        def observe(self, _context):
+            return source
+
+    config = MermaidConfig(
+        candidate_count=1,
+        enable_fusion=False,
+        enable_generic_scene_ir=False,
+        enable_direct_mermaid=False,
+    )
+    result = ReconstructionPipeline(
+        config,
+        [RawEngine()],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (20, 20), "white"))
+
+    assert result.selected is None
+    assert calls == []
+    assert any(
+        item.error_type == "ValueError" and "invalid typed candidate was isolated" in item.message
+        for item in result.failures
+    )
+
+
+def test_pipeline_charges_invalid_typed_ir_against_the_aggregate_budget(
+    monkeypatch,
+    fake_runtime,
+):
+    source = observation()
+    valid = source.typed_candidates[0].model_copy(deep=True)
+    source.typed_candidates = [valid.model_copy(deep=True), valid]
+    source.typed_candidates[0].ir["nodes"][0]["label"] = {"invalid": "nested label"}
+    invalid_size = len(
+        json.dumps(
+            source.typed_candidates[0].ir,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    valid_size = len(
+        json.dumps(
+            source.typed_candidates[1].ir,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "MAX_OBSERVATION_TYPED_IR_JSON_BYTES",
+        invalid_size + valid_size - 1,
+    )
+    config = MermaidConfig(
+        candidate_count=2,
+        enable_fusion=False,
+        enable_generic_scene_ir=False,
+        enable_direct_mermaid=False,
+    )
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(source)],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (20, 20), "white"))
+
+    assert result.selected is None
+    assert any("aggregate observation IR budget" in item.message for item in result.failures)
+
+
+def test_pipeline_rejects_mutated_diagram_type_before_typed_ir_scan(
+    monkeypatch,
+    fake_runtime,
+):
+    source = observation()
+    source.typed_candidates[0].__dict__["diagram_type"] = "bad\ud800type"
+    calls = 0
+    original_snapshot = pipeline_module.canonical_typed_ir_snapshot
+
+    def recording_snapshot(value):
+        nonlocal calls
+        calls += 1
+        return original_snapshot(value)
+
+    monkeypatch.setattr(pipeline_module, "canonical_typed_ir_snapshot", recording_snapshot)
+    config = MermaidConfig(
+        candidate_count=1,
+        enable_fusion=False,
+        enable_generic_scene_ir=False,
+        enable_direct_mermaid=False,
+    )
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(source)],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (20, 20), "white"))
+
+    assert calls == 0
+    assert result.selected is None
+    assert any("invalid typed candidate was isolated" in item.message for item in result.failures)
 
 
 def test_large_source_keeps_full_coordinate_canvas_across_engines_and_fusion(

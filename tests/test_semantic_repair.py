@@ -18,18 +18,23 @@ from marker_mermaid.semantic_repair import (
 
 
 def _candidate(diagram_type="flowchart"):
-    return MermaidCandidate(
-        candidate_id="candidate-1",
-        generation_method="typed_ir",
-        diagram_type=diagram_type,
-        emitted_diagram_type="flowchart",
-        typed_ir={
+    typed_ir = (
+        {
             "nodes": [
                 {"id": "A", "label": "Paymant"},
                 {"id": "B", "label": "Done"},
             ],
             "edges": [{"source": "A", "target": "B"}],
-        },
+        }
+        if diagram_type == "flowchart"
+        else {"states": [], "transitions": []}
+    )
+    return MermaidCandidate(
+        candidate_id="candidate-1",
+        generation_method="typed_ir",
+        diagram_type=diagram_type,
+        emitted_diagram_type="flowchart",
+        typed_ir=typed_ir,
         scene_ir=DiagramSceneIR(
             elements=[
                 SceneElement(

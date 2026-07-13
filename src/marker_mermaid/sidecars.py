@@ -24,12 +24,17 @@ from marker_mermaid.mapping_validation import (
     source_evidence_matches,
 )
 from marker_mermaid.models import (
+    MAX_ID_CHARS,
+    MAX_OBSERVATION_CANDIDATES,
+    MAX_OBSERVATION_TYPED_IR_JSON_BYTES,
     NODE_ID_MAPPING_MIN_IOU,
     MermaidCandidate,
     ReconstructionResult,
+    TypedIRCandidate,
     VisualEvidence,
     canonical_prompt_budget_notice_json,
     canonical_source_mapping_snapshot,
+    canonical_typed_ir_snapshot,
 )
 from marker_mermaid.render_artifacts import MAX_RENDER_BYTES, png_inspection_error
 
@@ -57,7 +62,28 @@ def _json_bytes(value: Any) -> bytes:
     ).encode()
 
 
+def _canonical_candidate_fields(candidate: MermaidCandidate) -> dict[str, Any]:
+    """Return a bounded exact-field view without invoking hostile key hooks."""
+
+    if type(candidate) is not MermaidCandidate:
+        raise ValueError("sidecar candidate must be canonical")
+    fields = object.__getattribute__(candidate, "__dict__")
+    if type(fields) is not dict:
+        raise ValueError("sidecar candidate fields must be canonical")
+    field_count = dict.__len__(fields)
+    if field_count > len(MermaidCandidate.model_fields):
+        raise ValueError("sidecar candidate exceeds the public field-count limit")
+    snapshot = dict.copy(fields)
+    if dict.__len__(snapshot) != field_count or dict.__len__(fields) != field_count:
+        raise ValueError("sidecar candidate changed while it was captured")
+    for field_name in list(dict.keys(snapshot)):
+        if type(field_name) is not str or field_name not in MermaidCandidate.model_fields:
+            raise ValueError("sidecar candidate contains an unknown public field")
+    return snapshot
+
+
 def _candidate_json(candidate: MermaidCandidate) -> dict[str, Any]:
+    _canonical_candidate_fields(candidate)
     return candidate.model_dump(mode="json", exclude={"svg", "png"})
 
 
@@ -189,12 +215,93 @@ class SidecarStore:
     def write(self, result: ReconstructionResult) -> str:
         if type(result) is not ReconstructionResult:
             raise TypeError("sidecar writes require a ReconstructionResult")
+        live_result = result
+        live_before_selected = result.selected
+        try:
+            if type(result.alternatives) is not list:
+                raise ValueError("sidecar alternatives must be an exact plain list")
+            before_alternative_count = list.__len__(result.alternatives)
+            if before_alternative_count > MAX_OBSERVATION_CANDIDATES:
+                raise ValueError("sidecar alternatives exceed the candidate count limit")
+            live_before_alternatives = list.copy(result.alternatives)
+            if (
+                list.__len__(live_before_alternatives) != before_alternative_count
+                or list.__len__(result.alternatives) != before_alternative_count
+            ):
+                raise ValueError("sidecar alternatives changed while they were captured")
+
+            before_selected = None
+            before_typed_ir_bytes = 0
+            if live_before_selected is not None:
+                before_fields = _canonical_candidate_fields(live_before_selected)
+                before_diagram_type = dict.get(before_fields, "diagram_type")
+                if type(before_diagram_type) is not str:
+                    raise ValueError("sidecar selected diagram type must be a plain string")
+                if not before_diagram_type or len(before_diagram_type) > MAX_ID_CHARS:
+                    raise ValueError("sidecar selected diagram type exceeds its size limit")
+                _ = before_diagram_type.encode("utf-8")
+                before_typed_ir = canonical_typed_ir_snapshot(dict.get(before_fields, "typed_ir"))
+                if before_typed_ir is not None:
+                    before_typed_ir = TypedIRCandidate(
+                        diagram_type=before_diagram_type,
+                        ir=before_typed_ir,
+                        confidence=1.0,
+                    ).ir
+                    before_typed_ir_bytes += len(
+                        json.dumps(
+                            before_typed_ir,
+                            allow_nan=False,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ).encode("utf-8")
+                    )
+                    if before_typed_ir_bytes > MAX_OBSERVATION_TYPED_IR_JSON_BYTES:
+                        raise ValueError("sidecar typed IR exceeds the aggregate JSON byte limit")
+                before_selected = MermaidCandidate.model_copy(
+                    live_before_selected,
+                    deep=False,
+                )
+                before_selected.typed_ir = before_typed_ir
+
+            before_alternatives: list[MermaidCandidate] = []
+            for live_candidate in live_before_alternatives:
+                before_fields = _canonical_candidate_fields(live_candidate)
+                before_diagram_type = dict.get(before_fields, "diagram_type")
+                if type(before_diagram_type) is not str:
+                    raise ValueError("sidecar alternative diagram type must be a plain string")
+                if not before_diagram_type or len(before_diagram_type) > MAX_ID_CHARS:
+                    raise ValueError("sidecar alternative diagram type exceeds its size limit")
+                _ = before_diagram_type.encode("utf-8")
+                before_typed_ir = canonical_typed_ir_snapshot(dict.get(before_fields, "typed_ir"))
+                if before_typed_ir is not None:
+                    before_typed_ir = TypedIRCandidate(
+                        diagram_type=before_diagram_type,
+                        ir=before_typed_ir,
+                        confidence=1.0,
+                    ).ir
+                    before_typed_ir_bytes += len(
+                        json.dumps(
+                            before_typed_ir,
+                            allow_nan=False,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ).encode("utf-8")
+                    )
+                    if before_typed_ir_bytes > MAX_OBSERVATION_TYPED_IR_JSON_BYTES:
+                        raise ValueError("sidecar typed IR exceeds the aggregate JSON byte limit")
+                before_candidate = MermaidCandidate.model_copy(live_candidate, deep=False)
+                before_candidate.typed_ir = before_typed_ir
+                before_alternatives.append(before_candidate)
+        except (AttributeError, TypeError, UnicodeEncodeError, ValueError) as exc:
+            raise ValueError(
+                "sidecar source changed while its snapshot was captured: invalid typed IR"
+            ) from exc
         if result.publish and not result.has_authorized_publication():
             raise ValueError(
                 "published results must retain their trusted publication authorization"
             )
-        live_result = result
-        before_selected = result.selected
         try:
             before_source_mapping = canonical_source_mapping_snapshot(result.source_mapping)
         except (AttributeError, TypeError, UnicodeEncodeError, ValueError) as exc:
@@ -210,7 +317,7 @@ class SidecarStore:
                         else None
                     ),
                     "alternatives": [
-                        _candidate_json(candidate) for candidate in result.alternatives
+                        _candidate_json(candidate) for candidate in before_alternatives
                     ],
                     "evidence": [item.model_dump(mode="json") for item in result.evidence],
                     "source_mapping": before_source_mapping,
@@ -286,12 +393,177 @@ class SidecarStore:
         # from one snapshot so authorization cannot race later field reads.
         try:
             shallow_result = ReconstructionResult.model_copy(result, deep=False)
+            shallow_result.selected = before_selected
+            shallow_result.alternatives = before_alternatives
             shallow_result.source_mapping = before_source_mapping
             result = ReconstructionResult.model_copy(shallow_result, deep=True)
         except Exception as exc:
             raise ValueError("sidecar snapshot failed publication authorization") from exc
-        after_selected = live_result.selected
-        snapshot_selected = result.selected
+        live_after_selected = live_result.selected
+        try:
+            if type(live_result.alternatives) is not list:
+                raise ValueError("sidecar alternatives must be an exact plain list")
+            after_alternative_count = list.__len__(live_result.alternatives)
+            if after_alternative_count > MAX_OBSERVATION_CANDIDATES:
+                raise ValueError("sidecar alternatives exceed the candidate count limit")
+            live_after_alternatives = list.copy(live_result.alternatives)
+            if (
+                list.__len__(live_after_alternatives) != after_alternative_count
+                or list.__len__(live_result.alternatives) != after_alternative_count
+            ):
+                raise ValueError("sidecar alternatives changed while they were captured")
+
+            after_selected = None
+            after_typed_ir_bytes = 0
+            if live_after_selected is not None:
+                after_fields = _canonical_candidate_fields(live_after_selected)
+                after_diagram_type = dict.get(after_fields, "diagram_type")
+                if type(after_diagram_type) is not str:
+                    raise ValueError("sidecar selected diagram type must be a plain string")
+                if not after_diagram_type or len(after_diagram_type) > MAX_ID_CHARS:
+                    raise ValueError("sidecar selected diagram type exceeds its size limit")
+                _ = after_diagram_type.encode("utf-8")
+                after_typed_ir = canonical_typed_ir_snapshot(dict.get(after_fields, "typed_ir"))
+                if after_typed_ir is not None:
+                    after_typed_ir = TypedIRCandidate(
+                        diagram_type=after_diagram_type,
+                        ir=after_typed_ir,
+                        confidence=1.0,
+                    ).ir
+                    after_typed_ir_bytes += len(
+                        json.dumps(
+                            after_typed_ir,
+                            allow_nan=False,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ).encode("utf-8")
+                    )
+                    if after_typed_ir_bytes > MAX_OBSERVATION_TYPED_IR_JSON_BYTES:
+                        raise ValueError("sidecar typed IR exceeds the aggregate JSON byte limit")
+                after_selected = MermaidCandidate.model_copy(live_after_selected, deep=False)
+                after_selected.typed_ir = after_typed_ir
+
+            after_alternatives: list[MermaidCandidate] = []
+            for live_candidate in live_after_alternatives:
+                after_fields = _canonical_candidate_fields(live_candidate)
+                after_diagram_type = dict.get(after_fields, "diagram_type")
+                if type(after_diagram_type) is not str:
+                    raise ValueError("sidecar alternative diagram type must be a plain string")
+                if not after_diagram_type or len(after_diagram_type) > MAX_ID_CHARS:
+                    raise ValueError("sidecar alternative diagram type exceeds its size limit")
+                _ = after_diagram_type.encode("utf-8")
+                after_typed_ir = canonical_typed_ir_snapshot(dict.get(after_fields, "typed_ir"))
+                if after_typed_ir is not None:
+                    after_typed_ir = TypedIRCandidate(
+                        diagram_type=after_diagram_type,
+                        ir=after_typed_ir,
+                        confidence=1.0,
+                    ).ir
+                    after_typed_ir_bytes += len(
+                        json.dumps(
+                            after_typed_ir,
+                            allow_nan=False,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ).encode("utf-8")
+                    )
+                    if after_typed_ir_bytes > MAX_OBSERVATION_TYPED_IR_JSON_BYTES:
+                        raise ValueError("sidecar typed IR exceeds the aggregate JSON byte limit")
+                after_candidate = MermaidCandidate.model_copy(live_candidate, deep=False)
+                after_candidate.typed_ir = after_typed_ir
+                after_alternatives.append(after_candidate)
+
+            snapshot_selected = result.selected
+            snapshot_typed_ir_bytes = 0
+            if snapshot_selected is not None:
+                snapshot_fields = _canonical_candidate_fields(snapshot_selected)
+                snapshot_diagram_type = dict.get(snapshot_fields, "diagram_type")
+                if type(snapshot_diagram_type) is not str:
+                    raise ValueError("sidecar snapshot diagram type must be a plain string")
+                if not snapshot_diagram_type or len(snapshot_diagram_type) > MAX_ID_CHARS:
+                    raise ValueError("sidecar snapshot diagram type exceeds its size limit")
+                _ = snapshot_diagram_type.encode("utf-8")
+                snapshot_typed_ir = canonical_typed_ir_snapshot(
+                    dict.get(snapshot_fields, "typed_ir")
+                )
+                if snapshot_typed_ir is not None:
+                    snapshot_typed_ir = TypedIRCandidate(
+                        diagram_type=snapshot_diagram_type,
+                        ir=snapshot_typed_ir,
+                        confidence=1.0,
+                    ).ir
+                    snapshot_typed_ir_bytes += len(
+                        json.dumps(
+                            snapshot_typed_ir,
+                            allow_nan=False,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ).encode("utf-8")
+                    )
+                    if snapshot_typed_ir_bytes > MAX_OBSERVATION_TYPED_IR_JSON_BYTES:
+                        raise ValueError("sidecar typed IR exceeds the aggregate JSON byte limit")
+                canonical_snapshot_selected = MermaidCandidate.model_copy(
+                    snapshot_selected,
+                    deep=False,
+                )
+                canonical_snapshot_selected.typed_ir = snapshot_typed_ir
+                snapshot_selected = canonical_snapshot_selected
+
+            if type(result.alternatives) is not list:
+                raise ValueError("sidecar snapshot alternatives must be an exact plain list")
+            snapshot_alternative_count = list.__len__(result.alternatives)
+            if snapshot_alternative_count > MAX_OBSERVATION_CANDIDATES:
+                raise ValueError("sidecar snapshot alternatives exceed the candidate count limit")
+            live_snapshot_alternatives = list.copy(result.alternatives)
+            if (
+                list.__len__(live_snapshot_alternatives) != snapshot_alternative_count
+                or list.__len__(result.alternatives) != snapshot_alternative_count
+            ):
+                raise ValueError("sidecar snapshot alternatives changed while they were captured")
+            snapshot_alternatives: list[MermaidCandidate] = []
+            for snapshot_candidate in live_snapshot_alternatives:
+                snapshot_fields = _canonical_candidate_fields(snapshot_candidate)
+                snapshot_diagram_type = dict.get(snapshot_fields, "diagram_type")
+                if type(snapshot_diagram_type) is not str:
+                    raise ValueError("sidecar snapshot diagram type must be a plain string")
+                if not snapshot_diagram_type or len(snapshot_diagram_type) > MAX_ID_CHARS:
+                    raise ValueError("sidecar snapshot diagram type exceeds its size limit")
+                _ = snapshot_diagram_type.encode("utf-8")
+                snapshot_typed_ir = canonical_typed_ir_snapshot(
+                    dict.get(snapshot_fields, "typed_ir")
+                )
+                if snapshot_typed_ir is not None:
+                    snapshot_typed_ir = TypedIRCandidate(
+                        diagram_type=snapshot_diagram_type,
+                        ir=snapshot_typed_ir,
+                        confidence=1.0,
+                    ).ir
+                    snapshot_typed_ir_bytes += len(
+                        json.dumps(
+                            snapshot_typed_ir,
+                            allow_nan=False,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ).encode("utf-8")
+                    )
+                    if snapshot_typed_ir_bytes > MAX_OBSERVATION_TYPED_IR_JSON_BYTES:
+                        raise ValueError("sidecar typed IR exceeds the aggregate JSON byte limit")
+                canonical_snapshot_candidate = MermaidCandidate.model_copy(
+                    snapshot_candidate,
+                    deep=False,
+                )
+                canonical_snapshot_candidate.typed_ir = snapshot_typed_ir
+                snapshot_alternatives.append(canonical_snapshot_candidate)
+            result.selected = snapshot_selected
+            result.alternatives = snapshot_alternatives
+        except (AttributeError, TypeError, UnicodeEncodeError, ValueError) as exc:
+            raise ValueError(
+                "sidecar source changed while its snapshot was captured: invalid typed IR"
+            ) from exc
         try:
             after_source_mapping = canonical_source_mapping_snapshot(live_result.source_mapping)
             snapshot_source_mapping = canonical_source_mapping_snapshot(result.source_mapping)
@@ -309,7 +581,7 @@ class SidecarStore:
                         else None
                     ),
                     "alternatives": [
-                        _candidate_json(candidate) for candidate in live_result.alternatives
+                        _candidate_json(candidate) for candidate in after_alternatives
                     ],
                     "evidence": [item.model_dump(mode="json") for item in live_result.evidence],
                     "source_mapping": after_source_mapping,
@@ -327,7 +599,7 @@ class SidecarStore:
                         else None
                     ),
                     "alternatives": [
-                        _candidate_json(candidate) for candidate in result.alternatives
+                        _candidate_json(candidate) for candidate in snapshot_alternatives
                     ],
                     "evidence": [item.model_dump(mode="json") for item in result.evidence],
                     "source_mapping": snapshot_source_mapping,

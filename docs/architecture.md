@@ -29,7 +29,7 @@ flowchart TB
 
 | 모듈 | 책임 |
 | --- | --- |
-| `models.py`, `typed_contracts.py` | bounded scene/evidence/candidate 모델과 유형별 extraction root 계약 |
+| `models.py`, `typed_contracts.py` | hook-free canonical scene/evidence/candidate snapshot, aggregate typed-IR budget과 유형별 extraction root 계약 |
 | `discovery.py`, `page_detector.py` | panel/full-page/fragment와 missed page region proposal |
 | `marker_discovery.py` | Marker block/current_children adapter, source registry와 dedupe |
 | `source_assembly.py` | panel/merged canvas 조립과 source/page affine mapping |
@@ -137,6 +137,13 @@ Pipeline은 engine 호출 전에 source block/page ID, OCR, initial evidence, op
 컬렉션은 일부 prefix를 사용하지 않고 해당 컬렉션 전체를 안전한 기본값으로 격리하며
 `CandidateFailure(stage="source_context")`를 남깁니다. Engine이 추가한 evidence도 reconstruction 전체의
 단일 item cap을 공유하고, 상한 뒤 record는 평가·게시 authority를 얻지 못합니다.
+
+Typed IR은 engine response, fusion ordering, accessibility enrichment, repair, candidate key, sidecar sink에서
+같은 canonical boundary를 사용합니다. Exact built-in JSON container/scalar만 iterative snapshot으로
+복사하고 depth/item/field 외에 누적 UTF-8 text 1MB와 compact escaped JSON 4MB를 적용합니다. Observation
+하나와 fused output의 typed candidate 합계도 각각 8MB/64개로 제한합니다. Candidate envelope는 공개 필드
+3개를 넘기면 전체 dict를 복사하기 전에 거부합니다. Live candidate를 `model_dump`, JSON encode 또는 deep
+copy하기 전에 이 snapshot을 만들므로 plugin이 생성 후 바꾼 IR도 oversized sibling 하나만 격리됩니다.
 
 Structured VLM prompt는 `enabled_types`에 해당하는 typed root contract와 실제 view 순서/크기,
 selection manifest를 포함하고 Marker response-schema text 크기를 request budget에 예약합니다. 앞선

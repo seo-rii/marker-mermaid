@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import unicodedata
 from collections import Counter
@@ -40,7 +41,9 @@ from marker_mermaid.geometry import GeometryEngine
 from marker_mermaid.models import (
     MAX_EVIDENCE_REFS,
     MAX_ID_CHARS,
+    MAX_OBSERVATION_CANDIDATES,
     MAX_OBSERVATION_EVIDENCE,
+    MAX_OBSERVATION_TYPED_IR_JSON_BYTES,
     MAX_OBSERVATION_WARNINGS,
     MAX_TEXT_CHARS,
     MAX_WARNING_CHARS,
@@ -57,9 +60,11 @@ from marker_mermaid.models import (
     SceneElement,
     TypedIRCandidate,
     VisualEvidence,
+    _canonical_typed_candidate_fields,
     _publication_authorization_seal,
     _sink_safe_diagnostic_text,
     canonical_source_mapping_snapshot,
+    canonical_typed_ir_snapshot,
 )
 from marker_mermaid.models import (
     _canonical_runtime_diagram_type as _canonical_runtime_type,
@@ -1184,20 +1189,87 @@ class ReconstructionPipeline:
                         )
                     )
             typed_candidates: list[TypedIRCandidate] = []
-            for candidate in raw_observation.typed_candidates:
-                try:
-                    typed_candidates.append(
-                        TypedIRCandidate.model_validate(candidate.model_dump(mode="python"))
+            typed_candidate_json_bytes = 0
+            if type(raw_observation.typed_candidates) is not list:
+                raw_typed_candidates: list[object] = []
+                failures.append(
+                    CandidateFailure(
+                        stage="generation",
+                        engine=engine.name,
+                        error_type="TypeError",
+                        message="typed candidates must be an exact plain list",
                     )
+                )
+            else:
+                raw_typed_candidates = list.__getitem__(
+                    raw_observation.typed_candidates,
+                    slice(0, MAX_OBSERVATION_CANDIDATES + 1),
+                )
+                if len(raw_typed_candidates) > MAX_OBSERVATION_CANDIDATES:
+                    failures.append(
+                        CandidateFailure(
+                            stage="generation",
+                            engine=engine.name,
+                            error_type="TypedCandidateLimitError",
+                            message=(
+                                "typed candidate collection exceeded its item limit; "
+                                "the bounded prefix was retained"
+                            ),
+                        )
+                    )
+                    raw_typed_candidates = raw_typed_candidates[:MAX_OBSERVATION_CANDIDATES]
+            for candidate in raw_typed_candidates:
+                typed_candidate_budget_exhausted = False
+                try:
+                    if type(candidate) is not TypedIRCandidate:
+                        raise TypeError(
+                            "typed candidate must be an exact canonical TypedIRCandidate record"
+                        )
+                    is_model, diagram_type, ir_snapshot, confidence = (
+                        _canonical_typed_candidate_fields(candidate)
+                    )
+                    if not is_model:  # pragma: no cover - exact type guard above
+                        raise TypeError("typed candidate must remain a canonical model")
+                    ir_json_bytes = len(
+                        json.dumps(
+                            ir_snapshot,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            allow_nan=False,
+                        ).encode("utf-8")
+                    )
+                    next_typed_candidate_json_bytes = typed_candidate_json_bytes + ir_json_bytes
+                    if next_typed_candidate_json_bytes > MAX_OBSERVATION_TYPED_IR_JSON_BYTES:
+                        typed_candidate_budget_exhausted = True
+                        raise ValueError(
+                            "typed candidate exceeds the aggregate observation IR budget"
+                        )
+                    typed_candidate_json_bytes = next_typed_candidate_json_bytes
+                    value_candidate = TypedIRCandidate.model_validate(
+                        {
+                            "diagram_type": diagram_type,
+                            "ir": ir_snapshot,
+                            "confidence": confidence,
+                        }
+                    )
+                    typed_candidates.append(value_candidate)
                 except Exception as exc:
+                    failure_detail = (
+                        "typed candidate exceeds the aggregate observation IR budget"
+                        if typed_candidate_budget_exhausted
+                        else type(exc).__name__
+                    )
                     failures.append(
                         CandidateFailure(
                             stage="generation",
                             engine=engine.name,
                             error_type=type(exc).__name__,
-                            message=f"invalid typed candidate was isolated: {exc}",
+                            message=f"invalid typed candidate was isolated: {failure_detail}",
                         )
                     )
+                    if typed_candidate_budget_exhausted:
+                        break
             direct_candidates = []
             for candidate in raw_observation.direct_candidates:
                 try:
@@ -1780,18 +1852,41 @@ class ReconstructionPipeline:
                             typed.diagram_type,
                             experimental=self.config.mode != Mode.STRICT,
                         )
+                        enriched_snapshot = canonical_typed_ir_snapshot(enriched_ir)
+                        if enriched_snapshot is None:
+                            raise TypeError("accessibility-enriched typed IR must be an object")
+                        enriched_candidate = TypedIRCandidate.model_validate(
+                            {
+                                "diagram_type": typed.diagram_type,
+                                "ir": enriched_snapshot,
+                                "confidence": typed.confidence,
+                            }
+                        )
+                        enriched_ir = canonical_typed_ir_snapshot(enriched_candidate.ir)
+                        if enriched_ir is None:  # pragma: no cover - model contract guard
+                            raise TypeError("validated accessibility typed IR must be an object")
                         serialized = serialize_typed_ir_result(
                             typed.diagram_type,
                             enriched_ir,
                             experimental=self.config.mode != Mode.STRICT,
                         )
-                    except (SerializationError, SerializationContractError) as exc:
+                    except (
+                        SerializationError,
+                        SerializationContractError,
+                        TypeError,
+                        ValueError,
+                    ) as exc:
+                        serialization_message = (
+                            str(exc)
+                            if isinstance(exc, SerializationError | SerializationContractError)
+                            else type(exc).__name__
+                        )
                         failures.append(
                             CandidateFailure(
                                 stage="serialization",
                                 engine=engine_name,
                                 error_type=type(exc).__name__,
-                                message=str(exc),
+                                message=serialization_message,
                             )
                         )
                         continue
@@ -2582,6 +2677,30 @@ class ReconstructionPipeline:
         references = _reference_text_sets(context.ocr_texts, context.evidence)
         for iteration in range(1, int(self.config.max_repair_iterations or 0) + 1):
             try:
+                canonical_current_ir = canonical_typed_ir_snapshot(current.typed_ir)
+                if current.typed_ir is not None:
+                    if canonical_current_ir is None:
+                        raise TypeError("repair candidate typed IR must be a JSON object")
+                    current_ir_candidate = TypedIRCandidate.model_validate(
+                        {
+                            "diagram_type": current.diagram_type,
+                            "ir": canonical_current_ir,
+                            "confidence": 0.5,
+                        }
+                    )
+                    canonical_current_ir = canonical_typed_ir_snapshot(current_ir_candidate.ir)
+                current_snapshot = current.model_copy(deep=False)
+                current_snapshot.typed_ir = canonical_current_ir
+                current = current_snapshot.model_copy(deep=True)
+            except Exception as exc:
+                failed = current.model_copy(deep=False)
+                failed.typed_ir = None
+                failed.warnings = [
+                    *list(current.warnings),
+                    f"repair candidate typed IR validation failed: {type(exc).__name__}",
+                ]
+                return failed
+            try:
                 evidence_authority = current.publication_evidence_authority_ids
                 scoped_evidence = (
                     context.evidence
@@ -2671,10 +2790,19 @@ class ReconstructionPipeline:
             attempted = current.model_copy(deep=True)
             attempted.candidate_id = f"{selected.candidate_id}-repair-{iteration}"
             try:
-                validated_ir = TypedIRCandidate(
-                    diagram_type=current.diagram_type,
-                    ir=proposal.typed_ir,
-                ).ir
+                proposal_ir_snapshot = canonical_typed_ir_snapshot(proposal.typed_ir)
+                if proposal_ir_snapshot is None:
+                    raise TypeError("semantic repair typed IR must be a JSON object")
+                proposal_candidate = TypedIRCandidate.model_validate(
+                    {
+                        "diagram_type": current.diagram_type,
+                        "ir": proposal_ir_snapshot,
+                        "confidence": 0.5,
+                    }
+                )
+                validated_ir = canonical_typed_ir_snapshot(proposal_candidate.ir)
+                if validated_ir is None:  # pragma: no cover - model contract guard
+                    raise TypeError("validated semantic repair typed IR must be an object")
                 if current.node_id_mappings:
                     proposed_nodes = validated_ir.get("nodes")
                     proposed_node_ids = (
@@ -2700,7 +2828,15 @@ class ReconstructionPipeline:
                     experimental=self.config.mode != Mode.STRICT,
                 )
             except Exception as exc:
-                attempted.warnings.append(f"semantic repair IR could not be serialized: {exc}")
+                repair_ir_detail = (
+                    "semantic repair cannot change a provenance-mapped node set"
+                    if type(exc) is ValueError
+                    and exc.args == ("semantic repair cannot change a provenance-mapped node set",)
+                    else type(exc).__name__
+                )
+                attempted.warnings.append(
+                    f"semantic repair IR could not be serialized: {repair_ir_detail}"
+                )
                 attempted.repair_history.append(
                     RepairEvent(
                         iteration=iteration,

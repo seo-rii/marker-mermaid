@@ -27,6 +27,11 @@ MAX_OBSERVATION_WARNINGS = 256
 MAX_IR_DEPTH = 64
 MAX_IR_ITEMS = 100_000
 MAX_IR_TEXT_CHARS = 50_000
+MAX_IR_UTF8_TEXT_BYTES = 1_000_000
+MAX_IR_JSON_BYTES = 4_000_000
+MAX_IR_ABS_NUMBER = 9_007_199_254_740_991
+MAX_OBSERVATION_TYPED_IR_JSON_BYTES = 8_000_000
+MAX_TYPED_IR_CANDIDATE_FIELDS = 3
 MAX_ID_CHARS = 256
 MAX_TEXT_CHARS = 50_000
 MAX_WARNING_CHARS = 4_096
@@ -546,39 +551,20 @@ class TypedIRCandidate(BaseModel):
     ir: dict[str, Any]
     confidence: float = Field(default=0.5, ge=0, le=1)
 
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     @field_validator("diagram_type")
     @classmethod
     def diagram_type_is_utf8(cls, value: str) -> str:
         return _require_utf8_text(value, "typed IR diagram type")  # type: ignore[return-value]
 
-    @field_validator("ir")
+    @field_validator("ir", mode="before")
     @classmethod
-    def ir_is_bounded(cls, value: dict[str, Any]) -> dict[str, Any]:
-        pending: list[tuple[Any, int]] = [(value, 0)]
-        item_count = 0
-        while pending:
-            item, depth = pending.pop()
-            item_count += 1
-            if item_count > MAX_IR_ITEMS:
-                raise ValueError("typed IR exceeds the item budget")
-            if depth > MAX_IR_DEPTH:
-                raise ValueError("typed IR exceeds the nesting depth budget")
-            if isinstance(item, str):
-                _require_utf8_text(item, "typed IR text")
-                if len(item) > MAX_IR_TEXT_CHARS:
-                    raise ValueError("typed IR text exceeds the field size budget")
-            if isinstance(item, dict):
-                if any(not isinstance(key, str) for key in item):
-                    raise ValueError("typed IR object keys must be strings")
-                pending.extend((key, depth + 1) for key in item)
-                pending.extend((child, depth + 1) for child in item.values())
-            elif isinstance(item, list | tuple):
-                pending.extend((child, depth + 1) for child in item)
-            elif isinstance(item, float) and not math.isfinite(item):
-                raise ValueError("typed IR numbers must be finite")
-            elif item is not None and not isinstance(item, str | int | float | bool):
-                raise ValueError("typed IR values must be JSON-compatible")
-        return value
+    def ir_is_bounded(cls, value: Any) -> dict[str, Any]:
+        snapshot = canonical_typed_ir_snapshot(value)
+        if snapshot is None:
+            raise ValueError("typed IR must be an exact plain dictionary")
+        return snapshot
 
     @model_validator(mode="after")
     def matches_diagram_contract(self) -> TypedIRCandidate:
@@ -589,15 +575,86 @@ class TypedIRCandidate(BaseModel):
         # Repair workflows intentionally mutate typed IR in memory. Revalidate
         # the current payload here so post-construction mutation cannot bypass
         # the JSON/finite-number contract or destabilize fusion keys.
-        validated = type(self).model_validate(self.model_dump(mode="python"))
-        payload = json.dumps(
-            validated.model_dump(mode="json")["ir"],
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
+        _is_model, diagram_type, snapshot, confidence = _canonical_typed_candidate_fields(self)
+        validated = TypedIRCandidate.model_validate(
+            {
+                "diagram_type": diagram_type,
+                "ir": snapshot,
+                "confidence": confidence,
+            }
         )
-        return f"{self.diagram_type}\0{payload}"
+        digest = hashlib.sha256(_canonical_json_bytes(validated.ir)).hexdigest()
+        return f"{validated.diagram_type}\0sha256:{digest}"
+
+
+def _canonical_typed_candidate_fields(
+    value: object,
+) -> tuple[bool, str, dict[str, Any], int | float]:
+    """Capture the three public typed-candidate fields without unbounded copies."""
+
+    is_model = type(value) is TypedIRCandidate
+    if is_model:
+        live_fields = object.__getattribute__(value, "__dict__")
+    elif type(value) is dict:
+        live_fields = value
+    else:
+        raise ValueError("engine typed candidates must be canonical records")
+    if type(live_fields) is not dict:
+        raise ValueError("typed IR candidate fields must be canonical")
+    field_count = dict.__len__(live_fields)
+    if field_count > MAX_TYPED_IR_CANDIDATE_FIELDS:
+        raise ValueError("typed IR candidate exceeds the public field-count limit")
+    fields = dict.copy(live_fields)
+    if dict.__len__(fields) != field_count or dict.__len__(live_fields) != field_count:
+        raise ValueError("typed IR candidate changed while it was captured")
+    for field_name in list(dict.keys(fields)):
+        if type(field_name) is not str or field_name not in {
+            "diagram_type",
+            "ir",
+            "confidence",
+        }:
+            raise ValueError("typed IR candidate contains an unknown public field")
+
+    missing = object()
+    diagram_type = dict.get(fields, "diagram_type", missing)
+    ir = dict.get(fields, "ir", missing)
+    raw_confidence = dict.get(fields, "confidence", missing)
+    if type(diagram_type) is not str:
+        raise ValueError("typed IR diagram type must be a plain string")
+    if not diagram_type or len(diagram_type) > MAX_ID_CHARS:
+        raise ValueError("typed IR diagram type exceeds the text size limit")
+    _require_utf8_text(diagram_type, "typed IR diagram type")
+    snapshot = canonical_typed_ir_snapshot(ir)
+    if snapshot is None:
+        raise ValueError("typed IR must be an exact plain dictionary")
+    if raw_confidence is missing:
+        confidence: int | float = 0.5
+    else:
+        confidence = raw_confidence
+    if type(confidence) not in {int, float}:
+        raise ValueError("typed IR confidence must be an exact number")
+    if (type(confidence) is float and not math.isfinite(confidence)) or not (0 <= confidence <= 1):
+        raise ValueError("typed IR confidence must be a finite probability")
+
+    if dict.__len__(live_fields) != field_count:
+        raise ValueError("typed IR candidate changed while it was captured")
+    after_fields = dict.copy(live_fields)
+    if dict.__len__(after_fields) != field_count or dict.__len__(live_fields) != field_count:
+        raise ValueError("typed IR candidate changed while it was captured")
+    for field_name in list(dict.keys(after_fields)):
+        if type(field_name) is not str or field_name not in {
+            "diagram_type",
+            "ir",
+            "confidence",
+        }:
+            raise ValueError("typed IR candidate contains an unknown public field")
+    if (
+        dict.get(after_fields, "diagram_type", missing) is not diagram_type
+        or dict.get(after_fields, "ir", missing) is not ir
+        or dict.get(after_fields, "confidence", missing) is not raw_confidence
+    ):
+        raise ValueError("typed IR candidate changed while it was captured")
+    return is_model, diagram_type, snapshot, confidence
 
 
 class DirectMermaidCandidate(BaseModel):
@@ -733,6 +790,54 @@ class EngineObservation(BaseModel):
         default_factory=dict
     )
     _fusion_scene_evidence_authority: frozenset[str] | None = PrivateAttr(default=None)
+
+    model_config = ConfigDict(hide_input_in_errors=True)
+
+    @field_validator("typed_candidates", mode="wrap")
+    @classmethod
+    def typed_candidate_ir_is_prevalidated(
+        cls,
+        value: Any,
+        _handler: Any,
+    ) -> list[TypedIRCandidate]:
+        if type(value) is not list:
+            raise ValueError("engine typed candidates must be an exact plain list")
+        candidate_count = list.__len__(value)
+        if candidate_count > MAX_OBSERVATION_CANDIDATES:
+            raise ValueError("too_long: engine typed candidates exceed the candidate count limit")
+        candidates = list.__getitem__(value, slice(0, candidate_count))
+        if list.__len__(value) != candidate_count:
+            raise ValueError("engine typed candidates changed while they were captured")
+
+        aggregate_bytes = 0
+        snapshots: list[TypedIRCandidate] = []
+        for index in range(candidate_count):
+            candidate = list.__getitem__(candidates, index)
+            is_model, diagram_type, ir_snapshot, confidence = _canonical_typed_candidate_fields(
+                candidate
+            )
+            aggregate_bytes += len(_canonical_json_bytes(ir_snapshot))
+            if aggregate_bytes > MAX_OBSERVATION_TYPED_IR_JSON_BYTES:
+                raise ValueError("engine typed candidates exceed the aggregate JSON byte budget")
+            if is_model:
+                snapshots.append(
+                    TypedIRCandidate.model_construct(
+                        diagram_type=diagram_type,
+                        ir=ir_snapshot,
+                        confidence=confidence,
+                    )
+                )
+            else:
+                snapshots.append(
+                    TypedIRCandidate.model_validate(
+                        {
+                            "diagram_type": diagram_type,
+                            "ir": ir_snapshot,
+                            "confidence": confidence,
+                        }
+                    )
+                )
+        return snapshots
 
     @field_validator("warnings")
     @classmethod
@@ -1028,28 +1133,29 @@ def _canonical_json_bytes(value: Any) -> bytes:
     ).encode("utf-8")
 
 
-def canonical_source_mapping_snapshot(
+def _canonical_json_mapping_snapshot(
     value: dict[str, Any] | None,
+    *,
+    boundary_name: str,
+    max_depth: int,
+    max_items: int,
+    max_string_chars: int,
+    max_utf8_text_bytes: int | None,
+    max_json_bytes: int,
+    max_abs_number: int,
+    count_object_keys_as_items: bool,
 ) -> dict[str, Any] | None:
-    """Return a bounded, hook-free JSON snapshot of source mapping metadata.
-
-    Source mappings cross engine, repair, and sidecar trust boundaries.  Accept
-    only exact built-in JSON containers/scalars, normalize exact tuples to JSON
-    arrays, and construct the copy iteratively so hostile subclasses cannot run
-    iteration or ``deepcopy`` hooks.  The aggregate limit measures the compact
-    canonical JSON representation after string escaping.
-    """
-
     if value is None:
         return None
     if type(value) is not dict:
-        raise ValueError("source mapping must be an exact plain dictionary")
+        raise ValueError(f"{boundary_name} must be an exact plain dictionary")
 
     holder: list[Any] = [None]
     # Visit records contain source, destination container, destination slot, and depth.
     pending: list[tuple[str, Any, Any, Any, int]] = [("visit", value, holder, 0, 0)]
     active_container_ids: set[int] = set()
     item_count = 1
+    utf8_text_bytes = 0
     encoded_size = 0
 
     while pending:
@@ -1057,36 +1163,40 @@ def canonical_source_mapping_snapshot(
         if operation == "exit":
             active_container_ids.remove(source)
             continue
-        if depth > MAX_SOURCE_MAPPING_DEPTH:
-            raise ValueError("source mapping exceeds the nesting depth budget")
+        if depth > max_depth:
+            raise ValueError(f"{boundary_name} exceeds the nesting depth budget")
 
         source_type = type(source)
         if source_type is dict:
             source_id = id(source)
             if source_id in active_container_ids:
-                raise ValueError("source mapping must not contain reference cycles")
+                raise ValueError(f"{boundary_name} must not contain reference cycles")
             source_length = dict.__len__(source)
-            if item_count + source_length > MAX_SOURCE_MAPPING_ITEMS:
-                raise ValueError("source mapping exceeds the item budget")
+            additional_items = source_length * (2 if count_object_keys_as_items else 1)
+            if item_count + additional_items > max_items:
+                raise ValueError(f"{boundary_name} exceeds the item budget")
             shallow_source = dict.copy(source)
             if dict.__len__(shallow_source) != source_length:
-                raise ValueError("source mapping changed while it was captured")
+                raise ValueError(f"{boundary_name} changed while it was captured")
             keys = list(dict.keys(shallow_source))
             for key in keys:
                 if type(key) is not str:
-                    raise ValueError("source mapping object keys must be plain strings")
-                if len(key) > MAX_SOURCE_MAPPING_STRING_CHARS:
-                    raise ValueError("source mapping string exceeds the field size budget")
-                _require_utf8_text(key, "source mapping string")
+                    raise ValueError(f"{boundary_name} object keys must be plain strings")
+                if len(key) > max_string_chars:
+                    raise ValueError(f"{boundary_name} string exceeds the field size budget")
+                _require_utf8_text(key, f"{boundary_name} string")
+                utf8_text_bytes += len(key.encode("utf-8"))
+                if max_utf8_text_bytes is not None and utf8_text_bytes > max_utf8_text_bytes:
+                    raise ValueError(f"{boundary_name} exceeds the UTF-8 text byte budget")
             keys.sort()
-            item_count += source_length
+            item_count += additional_items
             encoded_size += 2 + source_length + max(0, source_length - 1)
-            if encoded_size > MAX_SOURCE_MAPPING_JSON_BYTES:
-                raise ValueError("source mapping exceeds the escaped JSON byte budget")
+            if encoded_size > max_json_bytes:
+                raise ValueError(f"{boundary_name} exceeds the escaped JSON byte budget")
             for key in keys:
                 encoded_size += len(_canonical_json_bytes(key))
-                if encoded_size > MAX_SOURCE_MAPPING_JSON_BYTES:
-                    raise ValueError("source mapping exceeds the escaped JSON byte budget")
+                if encoded_size > max_json_bytes:
+                    raise ValueError(f"{boundary_name} exceeds the escaped JSON byte budget")
 
             copied: dict[str, Any] = {}
             destination[slot] = copied
@@ -1107,17 +1217,17 @@ def canonical_source_mapping_snapshot(
         if source_type in {list, tuple}:
             source_id = id(source)
             if source_id in active_container_ids:
-                raise ValueError("source mapping must not contain reference cycles")
+                raise ValueError(f"{boundary_name} must not contain reference cycles")
             source_length = list.__len__(source) if source_type is list else tuple.__len__(source)
-            if item_count + source_length > MAX_SOURCE_MAPPING_ITEMS:
-                raise ValueError("source mapping exceeds the item budget")
+            if item_count + source_length > max_items:
+                raise ValueError(f"{boundary_name} exceeds the item budget")
             shallow_source = list.copy(source) if source_type is list else source
             if len(shallow_source) != source_length:
-                raise ValueError("source mapping changed while it was captured")
+                raise ValueError(f"{boundary_name} changed while it was captured")
             item_count += source_length
             encoded_size += 2 + max(0, source_length - 1)
-            if encoded_size > MAX_SOURCE_MAPPING_JSON_BYTES:
-                raise ValueError("source mapping exceeds the escaped JSON byte budget")
+            if encoded_size > max_json_bytes:
+                raise ValueError(f"{boundary_name} exceeds the escaped JSON byte budget")
 
             copied = [None] * source_length
             destination[slot] = copied
@@ -1137,28 +1247,67 @@ def canonical_source_mapping_snapshot(
             continue
 
         if source_type is str:
-            if len(source) > MAX_SOURCE_MAPPING_STRING_CHARS:
-                raise ValueError("source mapping string exceeds the field size budget")
-            _require_utf8_text(source, "source mapping string")
+            if len(source) > max_string_chars:
+                raise ValueError(f"{boundary_name} string exceeds the field size budget")
+            _require_utf8_text(source, f"{boundary_name} string")
+            utf8_text_bytes += len(source.encode("utf-8"))
+            if max_utf8_text_bytes is not None and utf8_text_bytes > max_utf8_text_bytes:
+                raise ValueError(f"{boundary_name} exceeds the UTF-8 text byte budget")
         elif source_type is int:
-            if not -MAX_SOURCE_MAPPING_ABS_NUMBER <= source <= MAX_SOURCE_MAPPING_ABS_NUMBER:
-                raise ValueError("source mapping integer exceeds the numeric budget")
+            if not -max_abs_number <= source <= max_abs_number:
+                raise ValueError(f"{boundary_name} integer exceeds the numeric budget")
         elif source_type is float:
-            if not math.isfinite(source) or abs(source) > MAX_SOURCE_MAPPING_ABS_NUMBER:
-                raise ValueError("source mapping number must be finite and bounded")
+            if not math.isfinite(source) or abs(source) > max_abs_number:
+                raise ValueError(f"{boundary_name} number must be finite and bounded")
         elif source_type not in {bool, type(None)}:
-            raise ValueError("source mapping values must be exact JSON-compatible built-ins")
+            raise ValueError(f"{boundary_name} values must be exact JSON-compatible built-ins")
         encoded_size += len(_canonical_json_bytes(source))
-        if encoded_size > MAX_SOURCE_MAPPING_JSON_BYTES:
-            raise ValueError("source mapping exceeds the escaped JSON byte budget")
+        if encoded_size > max_json_bytes:
+            raise ValueError(f"{boundary_name} exceeds the escaped JSON byte budget")
         destination[slot] = source
 
     snapshot = holder[0]
     if type(snapshot) is not dict:
-        raise ValueError("source mapping snapshot did not retain a dictionary root")
+        raise ValueError(f"{boundary_name} snapshot did not retain a dictionary root")
     if len(_canonical_json_bytes(snapshot)) != encoded_size:
-        raise ValueError("source mapping escaped JSON accounting was inconsistent")
+        raise ValueError(f"{boundary_name} escaped JSON accounting was inconsistent")
     return snapshot
+
+
+def canonical_source_mapping_snapshot(
+    value: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return a bounded, hook-free JSON snapshot of source mapping metadata."""
+
+    return _canonical_json_mapping_snapshot(
+        value,
+        boundary_name="source mapping",
+        max_depth=MAX_SOURCE_MAPPING_DEPTH,
+        max_items=MAX_SOURCE_MAPPING_ITEMS,
+        max_string_chars=MAX_SOURCE_MAPPING_STRING_CHARS,
+        max_utf8_text_bytes=None,
+        max_json_bytes=MAX_SOURCE_MAPPING_JSON_BYTES,
+        max_abs_number=MAX_SOURCE_MAPPING_ABS_NUMBER,
+        count_object_keys_as_items=False,
+    )
+
+
+def canonical_typed_ir_snapshot(
+    value: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return a bounded detached typed-IR snapshot using exact JSON built-ins."""
+
+    return _canonical_json_mapping_snapshot(
+        value,
+        boundary_name="typed IR",
+        max_depth=MAX_IR_DEPTH,
+        max_items=MAX_IR_ITEMS,
+        max_string_chars=MAX_IR_TEXT_CHARS,
+        max_utf8_text_bytes=MAX_IR_UTF8_TEXT_BYTES,
+        max_json_bytes=MAX_IR_JSON_BYTES,
+        max_abs_number=MAX_IR_ABS_NUMBER,
+        count_object_keys_as_items=True,
+    )
 
 
 def _canonical_model_bytes(value: BaseModel) -> bytes:
@@ -1300,7 +1449,7 @@ class MermaidCandidate(BaseModel):
     candidate_id: str
     generation_method: str
     generation_engine: str | None = None
-    diagram_type: str
+    diagram_type: str = Field(max_length=MAX_ID_CHARS)
     emitted_diagram_type: str | None = None
     runtime_diagram_type: str | None = None
     fallback_chain: list[str] = Field(default_factory=list)
@@ -1331,7 +1480,29 @@ class MermaidCandidate(BaseModel):
     _validation_receipt_seal: str | None = PrivateAttr(default=None)
     _publication_evidence_authority_ids: frozenset[str] | None = PrivateAttr(default=None)
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    model_config = ConfigDict(arbitrary_types_allowed=True, hide_input_in_errors=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def diagram_type_is_bounded_plain_utf8(cls, value: Any) -> Any:
+        if type(value) is not dict:
+            raise ValueError("candidate input must be an exact plain dictionary")
+        field_count = dict.__len__(value)
+        if field_count > len(cls.model_fields):
+            raise ValueError("candidate input exceeds the public field-count limit")
+        fields = dict.copy(value)
+        if dict.__len__(fields) != field_count or dict.__len__(value) != field_count:
+            raise ValueError("candidate input changed while it was captured")
+        for field_name in list(dict.keys(fields)):
+            if type(field_name) is not str:
+                raise ValueError("candidate input field names must be plain strings")
+        diagram_type = dict.get(fields, "diagram_type")
+        if type(diagram_type) is not str:
+            raise ValueError("candidate diagram type must be a plain string")
+        if not diagram_type or len(diagram_type) > MAX_ID_CHARS:
+            raise ValueError("candidate diagram type exceeds the text size limit")
+        _require_utf8_text(diagram_type, "candidate diagram type")
+        return fields
 
     def _seal_node_id_mappings(self) -> None:
         """Mark current mappings as produced by the trusted reconstruction pipeline."""
@@ -1467,6 +1638,11 @@ class MermaidCandidate(BaseModel):
         except (TypeError, ValueError):
             return False
 
+    @field_validator("typed_ir", mode="before")
+    @classmethod
+    def typed_ir_is_canonical(cls, value: Any) -> dict[str, Any] | None:
+        return canonical_typed_ir_snapshot(value)
+
     @field_validator("scores")
     @classmethod
     def scores_are_probabilities(cls, value: dict[str, float]) -> dict[str, float]:
@@ -1489,6 +1665,8 @@ class MermaidCandidate(BaseModel):
 
     @model_validator(mode="after")
     def serialization_metadata_is_consistent(self) -> MermaidCandidate:
+        if self.typed_ir is not None:
+            validate_typed_ir_contract(self.diagram_type, self.typed_ir)
         if self.emitted_diagram_type is None:
             self.emitted_diagram_type = self.diagram_type
         if not self.fallback_chain:

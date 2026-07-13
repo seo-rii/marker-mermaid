@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import copy
+import json
 from dataclasses import replace
 
 import pytest
 
+import marker_mermaid.fusion as fusion_module
 from marker_mermaid.fusion import FusionEngine, FusionInput
 from marker_mermaid.models import (
     DiagramSceneIR,
@@ -16,6 +18,7 @@ from marker_mermaid.models import (
     SceneRelation,
     TypedIRCandidate,
     VisualEvidence,
+    canonical_typed_ir_snapshot,
 )
 
 
@@ -261,7 +264,7 @@ def _assert_harmonization_refused(authority, semantic, original_ir):
     fused = FusionEngine().fuse([authority, semantic])
 
     [candidate] = fused.typed_candidates
-    assert candidate.ir == original_ir
+    assert candidate.ir == canonical_typed_ir_snapshot(original_ir)
     assert fused.fusion_node_id_mappings_for(candidate) == []
     assert any("harmon" in warning.casefold() for warning in fused.warnings)
     return fused
@@ -344,8 +347,8 @@ def test_harmonizes_typed_graph_ids_to_unique_geometry_clusters(diagram_type) ->
         "Approve?",
     ]
     assert [node["bbox"] for node in candidate.ir["nodes"]] == [
-        (60, 10, 90, 40),
-        (10, 10, 40, 40),
+        [60, 10, 90, 40],
+        [10, 10, 40, 40],
     ]
     assert [edge["id"] for edge in candidate.ir["edges"]] == [
         "typed-yes",
@@ -1290,6 +1293,250 @@ def test_rejects_empty_or_untyped_inputs() -> None:
         assert "FusionInput" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("untyped fusion input should fail")
+
+
+def test_fusion_isolates_invalid_typed_ir_without_live_model_dump(
+    monkeypatch,
+) -> None:
+    valid = TypedIRCandidate(
+        diagram_type="flowchart",
+        ir={"nodes": [{"id": "A", "label": "Start"}], "edges": []},
+    )
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+        typed_candidates=[valid.model_copy(deep=True), valid],
+    )
+    observation.typed_candidates[0].ir["nodes"][0]["label"] = {"invalid": "nested label"}
+
+    def forbidden_model_dump(*_args, **_kwargs):
+        raise AssertionError("live typed candidate model_dump must not be used")
+
+    monkeypatch.setattr(TypedIRCandidate, "model_dump", forbidden_model_dump)
+    fused = FusionEngine().fuse([FusionInput("vlm", observation, "vlm")])
+
+    assert len(fused.typed_candidates) == 1
+    assert fused.typed_candidates[0].ir["nodes"][0]["label"] == "Start"
+    assert any("invalid typed candidate" in warning for warning in fused.warnings)
+
+
+def test_fusion_rejects_hostile_typed_candidate_keys_without_hooks() -> None:
+    calls: list[str] = []
+
+    class HostileKey(str):
+        __hash__ = str.__hash__
+
+        def __eq__(self, other):
+            calls.append(str(other))
+            raise AssertionError("typed candidate key equality hook must not run")
+
+    candidate = TypedIRCandidate(
+        diagram_type="flowchart",
+        ir={"nodes": [{"id": "A", "label": "Start"}], "edges": []},
+    )
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+        typed_candidates=[candidate],
+    )
+    value = observation.typed_candidates[0]
+    value.__dict__.pop("diagram_type")
+    value.__dict__[HostileKey("diagram_type")] = "flowchart"
+
+    fused = FusionEngine().fuse([FusionInput("vlm", observation, "vlm")])
+
+    assert fused.typed_candidates == []
+    assert calls == []
+    assert any("invalid typed candidate" in warning for warning in fused.warnings)
+
+
+def test_fusion_uses_bounded_typed_projection_instead_of_observation_dump(
+    monkeypatch,
+) -> None:
+    def same_owner_input(label):
+        return FusionInput(
+            "vlm",
+            EngineObservation(
+                prediction=DiagramTypePrediction(
+                    candidates=["flowchart"],
+                    scores=[1.0],
+                ),
+                typed_candidates=[
+                    TypedIRCandidate(
+                        diagram_type="flowchart",
+                        ir={"nodes": [{"id": "A", "label": "Node"}], "edges": []},
+                    )
+                ],
+                evidence=[
+                    VisualEvidence(
+                        id="shared",
+                        kind="ocr_token",
+                        text=label,
+                    )
+                ],
+            ),
+            "same-owner",
+        )
+
+    left = same_owner_input("Left")
+    right = same_owner_input("Right")
+
+    def forbidden_observation_dump(*_args, **_kwargs):
+        raise AssertionError("fusion ordering must not dump a live observation")
+
+    monkeypatch.setattr(EngineObservation, "model_dump_json", forbidden_observation_dump)
+    forward = FusionEngine().fuse([left, right])
+    backward = FusionEngine().fuse([right, left])
+
+    assert forward == backward
+    assert len(forward.typed_candidates) == 1
+    assert forward.evidence[0].text in {"Left", "Right"}
+
+
+def test_fusion_charges_invalid_typed_ir_against_the_aggregate_budget(
+    monkeypatch,
+) -> None:
+    valid = TypedIRCandidate(
+        diagram_type="flowchart",
+        ir={"nodes": [{"id": "A", "label": "Start"}], "edges": []},
+    )
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+        typed_candidates=[valid.model_copy(deep=True), valid],
+    )
+    observation.typed_candidates[0].ir["nodes"][0]["label"] = {"invalid": "nested label"}
+    invalid_size = len(
+        json.dumps(
+            observation.typed_candidates[0].ir,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    valid_size = len(
+        json.dumps(
+            observation.typed_candidates[1].ir,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    monkeypatch.setattr(
+        fusion_module,
+        "MAX_OBSERVATION_TYPED_IR_JSON_BYTES",
+        invalid_size + valid_size - 1,
+    )
+
+    fused = FusionEngine().fuse([FusionInput("vlm", observation, "vlm")])
+
+    assert fused.typed_candidates == []
+    assert any("aggregate JSON byte budget" in warning for warning in fused.warnings)
+
+
+def test_fusion_applies_candidate_count_budget_across_all_inputs(monkeypatch) -> None:
+    inputs = []
+    for name in ("a", "b", "c"):
+        inputs.append(
+            FusionInput(
+                "vlm",
+                EngineObservation(
+                    prediction=DiagramTypePrediction(
+                        candidates=["flowchart"],
+                        scores=[1.0],
+                    ),
+                    typed_candidates=[
+                        TypedIRCandidate(
+                            diagram_type="flowchart",
+                            ir={
+                                "nodes": [{"id": name, "label": name.upper()}],
+                                "edges": [],
+                            },
+                        )
+                    ],
+                ),
+                name,
+            )
+        )
+    monkeypatch.setattr(fusion_module, "MAX_OBSERVATION_CANDIDATES", 2)
+
+    forward = FusionEngine().fuse(inputs)
+    backward = FusionEngine().fuse(reversed(inputs))
+
+    assert forward == backward
+    assert len(forward.typed_candidates) == 2
+    assert any("global item or JSON byte budget" in warning for warning in forward.warnings)
+
+
+def test_fusion_applies_typed_ir_json_budget_across_all_inputs(monkeypatch) -> None:
+    inputs = []
+    ir_sizes = []
+    for name in ("a", "b", "c"):
+        ir = {
+            "nodes": [{"id": name, "label": name.upper()}],
+            "edges": [],
+        }
+        ir_sizes.append(
+            len(
+                json.dumps(
+                    ir,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+        )
+        inputs.append(
+            FusionInput(
+                "vlm",
+                EngineObservation(
+                    prediction=DiagramTypePrediction(
+                        candidates=["flowchart"],
+                        scores=[1.0],
+                    ),
+                    typed_candidates=[TypedIRCandidate(diagram_type="flowchart", ir=ir)],
+                ),
+                name,
+            )
+        )
+    monkeypatch.setattr(
+        fusion_module,
+        "MAX_OBSERVATION_TYPED_IR_JSON_BYTES",
+        ir_sizes[0] + ir_sizes[1],
+    )
+
+    forward = FusionEngine().fuse(inputs)
+    backward = FusionEngine().fuse(reversed(inputs))
+
+    assert forward == backward
+    assert len(forward.typed_candidates) == 2
+    assert any("global item or JSON byte budget" in warning for warning in forward.warnings)
+
+
+def test_fusion_rejects_mutated_diagram_type_before_typed_ir_scan(
+    monkeypatch,
+) -> None:
+    candidate = TypedIRCandidate(
+        diagram_type="flowchart",
+        ir={"nodes": [{"id": "A", "label": "Start"}], "edges": []},
+    )
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+        typed_candidates=[candidate],
+    )
+    observation.typed_candidates[0].__dict__["diagram_type"] = "bad\ud800type"
+    calls = 0
+    original_snapshot = fusion_module.canonical_typed_ir_snapshot
+
+    def recording_snapshot(value):
+        nonlocal calls
+        calls += 1
+        return original_snapshot(value)
+
+    monkeypatch.setattr(fusion_module, "canonical_typed_ir_snapshot", recording_snapshot)
+
+    fused = FusionEngine().fuse([FusionInput("vlm", observation, "vlm")])
+
+    assert calls == 0
+    assert fused.typed_candidates == []
+    assert any("invalid typed candidate" in warning for warning in fused.warnings)
 
 
 @pytest.mark.parametrize("invalid_value", [{"unordered"}, float("nan")])

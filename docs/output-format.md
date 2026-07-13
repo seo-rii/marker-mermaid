@@ -229,6 +229,13 @@ characters, compact escaped JSON 4,000,000 bytes로 제한되며 non-finite 또�
 hook-free walker로 mapping을 다시 고정하고, snapshot 도중 live mapping이 바뀌면 bundle을 publish하지
 않습니다. Pipeline에서 격리된 mapping은 `source-map.json`을 만들지 않으며 원인은 `failures`에 남습니다.
 
+`typed-ir.json`과 alternative candidate JSON에는 sink 직전에 다시 canonicalized된 typed IR만 기록합니다.
+각 IR은 UTF-8 text 1,000,000 bytes와 compact escaped JSON 4,000,000 bytes 이하이며 exact plain JSON
+container/scalar, depth/item/field/numeric/cycle 계약을 통과해야 합니다. Writer는 selected와 alternatives를
+`model_dump`, JSON serialization 또는 deep copy하기 전에 안전한 shallow candidate에 이 snapshot을
+교체합니다. Live candidate가 생성 뒤 바뀌었거나 snapshot 도중 다시 바뀌면 임시 bundle을 publish하지
+않습니다.
+
 `include_rendered_preview`를 켠 Marker Markdown 출력은 validation receipt의 PNG SHA-256과 exact bytes가
 일치하는 runtime PNG만 `images/`에 추가합니다.
 원본 image는 계속 먼저 유지되며 preview는 Mermaid code의 게시 결정을 우회하지 않습니다.

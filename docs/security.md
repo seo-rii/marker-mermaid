@@ -244,6 +244,18 @@ subclass iteration/lookup/`deepcopy` hook을 실행하지 않으며 reference cy
 engine과 repair에 이 snapshot만 전달하고, sidecar writer는 JSON 직렬화·deep copy 전에 재검증한 뒤
 before/live/snapshot canonical digest가 같을 때만 bundle을 publish합니다.
 
+Typed IR도 같은 hook-free exact-built-in walker를 사용하되 depth 64, 100,000 items, field 50,000
+characters, 누적 UTF-8 text 1,000,000 bytes, compact escaped JSON 4,000,000 bytes를 적용합니다. 하나의
+observation은 모든 typed candidate를 합쳐 8,000,000 JSON bytes를 넘을 수 없습니다. Dict key, 반복 alias,
+JSON escape와 structural separator를 모두 세고 tuple은 list로 정규화하며 cycle, subclass, non-finite 또는
+safe range 밖 숫자를 직렬화 전에 거부합니다. Pipeline과 fusion은 mutated model을 dump하기 전 명시 field로
+snapshot하고, accessibility/repair 결과도 재검증합니다. Sidecar는 selected와 alternative의 live IR을
+안전한 shallow candidate에 교체한 뒤에만 전체 result를 deep-copy합니다. Candidate envelope는 3개 공개
+field를 넘기면 `dict.copy` 전에 거부하며, fusion은 여러 observation을 합친 최종 후보에도 64개/8MB 전역
+상한을 다시 적용해 한 입력 초과가 전체 fusion 실패로 번지지 않게 합니다. Envelope field name은 exact
+built-in string인지 bounded copy에서 먼저 확인하며 Pydantic validation error는 원본 hostile input을 숨겨
+오류 문자열 생성도 equality/repr hook을 실행하지 않습니다.
+
 ## SVG 검사
 
 runtime의 `render_valid` 보고만 신뢰하지 않으며 비어 있지 않은 문자열 SVG artifact를 함께 요구합니다.
