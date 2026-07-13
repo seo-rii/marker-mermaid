@@ -57,6 +57,9 @@ same-origin `Origin` 검사, JSON content type, 1 MB body limit, optimistic vers
 HTML은 inline script/style 없이 제공하며 CSP는 `script-src 'self'`, `connect-src 'self'`,
 `frame-ancestors 'none'`을 적용합니다. artifact server는 원본 image와 `final.svg/png`만 공개하고
 revision/state 파일은 HTTP로 노출하지 않습니다.
+source overlay는 이 same-origin allowlist URL을 새 image element에만 설정하고 pixel readback, object URL,
+추가 canvas/fetch 경로를 만들지 않습니다. URL 변경 시 이전 element와 focusable bbox를 폐기하며 현재
+request identity와 일치한 load만 Scene-coordinate overlay를 다시 표시할 수 있습니다.
 허용된 static 경로는 `openat`-style directory descriptor와 `O_NOFOLLOW`로 모든 path component를 열고
 검사한 descriptor를 직접 stream하므로 symlink 및 check/use 교체를 거부합니다. validator가 만든 SVG/PNG는 저장 전에
 각 16 MB로 제한하고, undo/redo는 optional IR/SVG/PNG의 생성과 삭제를 같은 rollback 경계에서 처리합니다.

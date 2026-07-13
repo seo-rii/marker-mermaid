@@ -91,8 +91,11 @@ def build_review_workspace_assets(
         <figure>
           <figcaption>Source image and provenance</figcaption>
           <div id="source-stage" class="image-stage">
-            <img id="source-image" alt="Source diagram">
-            <svg id="provenance-overlay" aria-label="Source evidence overlay"></svg>
+            <div id="source-canvas" class="source-canvas" hidden>
+              <img id="source-image" alt="Source diagram">
+              <svg id="provenance-overlay" preserveAspectRatio="none"
+                aria-label="Source evidence overlay"></svg>
+            </div>
           </div>
         </figure>
         <figure>
@@ -272,6 +275,12 @@ figcaption, label { font-weight: 650; }
 .image-stage { position: relative; display: grid; place-items: center; min-height: 18rem;
   border: 1px solid GrayText; overflow: auto; background: #fff; }
 .image-stage img { display: block; max-width: 100%; max-height: 65vh; }
+.source-canvas {
+  position: relative; display: inline-block; width: max-content; max-width: 100%;
+  max-height: 65vh; line-height: 0;
+}
+.source-canvas[hidden] { display: none; }
+.source-canvas #source-image { width: auto; height: auto; }
 #diff-layers {
   position: absolute; inset: 0; display: grid; background: #fff; pointer-events: none;
 }
@@ -393,11 +402,14 @@ REVIEW_JAVASCRIPT = r"""
     busy: false,
     diffFailure: null,
     diffLoad: null,
+    sourceLoad: null,
+    sourceRequest: null,
   };
   const byId = (id) => document.getElementById(id);
   const controls = {
     diagram: byId("diagram-select"), source: byId("source-image"), render: byId("render-image"),
-    overlay: byId("provenance-overlay"), mermaid: byId("mermaid-editor"), ir: byId("ir-editor"),
+    overlay: byId("provenance-overlay"), sourceCanvas: byId("source-canvas"),
+    mermaid: byId("mermaid-editor"), ir: byId("ir-editor"),
     layout: byId("layout-overlay"), renderStage: byId("render-stage"),
     diffLayers: byId("diff-layers"), diffEnabled: byId("diff-enabled"),
     diffOpacity: byId("diff-opacity"), diffNote: byId("diff-note"),
@@ -472,6 +484,49 @@ REVIEW_JAVASCRIPT = r"""
     if (!value) return "";
     const parsed = new URL(String(value), window.location.origin);
     return parsed.origin === window.location.origin ? parsed.pathname + parsed.search : "";
+  }
+
+  function sourceUrl(diagram) {
+    return imageUrl(diagram?.source_url || diagram?.source_image);
+  }
+
+  function resetSourceCanvas() {
+    state.sourceLoad = null;
+    state.sourceRequest = null;
+    controls.sourceCanvas.hidden = true;
+    controls.overlay.replaceChildren();
+  }
+
+  function updateSourceImage(diagram) {
+    const expected = sourceUrl(diagram);
+    if (!expected) {
+      resetSourceCanvas(); controls.source.removeAttribute("src"); return;
+    }
+    if (state.sourceLoad?.url === expected) {
+      controls.sourceCanvas.hidden = false; return;
+    }
+    if (state.sourceRequest === expected) return;
+    resetSourceCanvas(); state.sourceRequest = expected;
+    const requested = expected;
+    const sourceImage = controls.source.cloneNode(false);
+    controls.source.replaceWith(sourceImage); controls.source = sourceImage;
+    sourceImage.addEventListener("load", () => {
+      const loaded = imageUrl(sourceImage.currentSrc || sourceImage.src);
+      const width = sourceImage.naturalWidth; const height = sourceImage.naturalHeight;
+      if (sourceImage !== controls.source || state.sourceRequest !== requested
+        || sourceUrl(state.current || {}) !== requested
+        || loaded !== requested || !Number.isFinite(width) || !Number.isFinite(height)
+        || width <= 0 || height <= 0) return;
+      state.sourceLoad = { url: requested, width, height };
+      controls.sourceCanvas.hidden = false; renderOverlay(state.current || {});
+    }, { once: true });
+    sourceImage.addEventListener("error", () => {
+      if (sourceImage === controls.source && state.sourceRequest === requested
+        && sourceUrl(state.current || {}) === requested) {
+        resetSourceCanvas();
+      }
+    }, { once: true });
+    sourceImage.src = requested;
   }
 
   function renderDifference(diagram) {
@@ -567,15 +622,32 @@ REVIEW_JAVASCRIPT = r"""
 
   function renderOverlay(diagram) {
     controls.overlay.replaceChildren();
+    const expectedSource = sourceUrl(diagram);
+    if (!expectedSource || state.sourceLoad?.url !== expectedSource) {
+      controls.sourceCanvas.hidden = true; return;
+    }
     const evidence = Array.isArray(diagram.provenance)
       ? diagram.provenance : Object.values(diagram.provenance?.evidence || {});
-    const width = Number(diagram.source_width || controls.source.naturalWidth || 1);
-    const height = Number(diagram.source_height || controls.source.naturalHeight || 1);
+    const scene = diagram.scene_ir && typeof diagram.scene_ir === "object"
+      ? diagram.scene_ir : {};
+    const coordinateSpace = text(scene.coordinate_space || "pixels");
+    const canvasSize = Array.isArray(scene.canvas_size) ? scene.canvas_size : [];
+    const canvasValid = canvasSize.length === 2 && canvasSize.every(
+      (value) => typeof value === "number" && Number.isFinite(value) && value > 0,
+    );
+    const width = coordinateSpace === "normalized"
+      ? 1 : (canvasValid ? canvasSize[0] : state.sourceLoad.width);
+    const height = coordinateSpace === "normalized"
+      ? 1 : (canvasValid ? canvasSize[1] : state.sourceLoad.height);
+    if (![width, height].every((value) => Number.isFinite(value) && value > 0)) {
+      controls.sourceCanvas.hidden = true; return;
+    }
     controls.overlay.setAttribute("viewBox", `0 0 ${width} ${height}`);
     for (const item of evidence) {
       if (!Array.isArray(item?.bbox) || item.bbox.length !== 4) continue;
       const [x0, y0, x1, y1] = item.bbox.map(Number);
-      if (![x0, y0, x1, y1].every(Number.isFinite) || x1 <= x0 || y1 <= y0) continue;
+      if (![x0, y0, x1, y1].every(Number.isFinite) || x1 <= x0 || y1 <= y0
+        || x0 < 0 || y0 < 0 || x1 > width || y1 > height) continue;
       const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
       rect.setAttribute("x", String(x0)); rect.setAttribute("y", String(y0));
       rect.setAttribute("width", String(x1 - x0)); rect.setAttribute("height", String(y1 - y0));
@@ -586,12 +658,12 @@ REVIEW_JAVASCRIPT = r"""
       rect.dataset.evidenceId = text(item.id);
       controls.overlay.append(rect);
     }
-    const elements = Array.isArray(diagram.scene_ir?.elements)
-      ? diagram.scene_ir.elements : [];
+    const elements = Array.isArray(scene.elements) ? scene.elements : [];
     for (const item of elements) {
       if (!Array.isArray(item?.bbox) || item.bbox.length !== 4) continue;
       const [x0, y0, x1, y1] = item.bbox.map(Number);
-      if (![x0, y0, x1, y1].every(Number.isFinite) || x1 <= x0 || y1 <= y0) continue;
+      if (![x0, y0, x1, y1].every(Number.isFinite) || x1 <= x0 || y1 <= y0
+        || x0 < 0 || y0 < 0 || x1 > width || y1 > height) continue;
       const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
       rect.setAttribute("x", String(x0)); rect.setAttribute("y", String(y0));
       rect.setAttribute("width", String(x1 - x0)); rect.setAttribute("height", String(y1 - y0));
@@ -601,6 +673,7 @@ REVIEW_JAVASCRIPT = r"""
       if (text(item.id) === controls.node.value) rect.classList.add("selected");
       controls.overlay.append(rect);
     }
+    controls.sourceCanvas.hidden = false;
   }
 
   function layoutPositions(diagram) {
@@ -832,7 +905,7 @@ REVIEW_JAVASCRIPT = r"""
     const diagram = state.current;
     if (!diagram) return;
     controls.diagram.value = text(diagram.id);
-    controls.source.src = imageUrl(diagram.source_url || diagram.source_image);
+    updateSourceImage(diagram);
     const regularRenderUrl = imageUrl(
       diagram.rendered_url || diagram.render_url || diagram.final_svg,
     );
@@ -904,7 +977,6 @@ REVIEW_JAVASCRIPT = r"""
 
   controls.diagram.addEventListener("change", loadSelectedDiagram);
 
-  controls.source.addEventListener("load", () => renderOverlay(state.current || {}));
   controls.render.addEventListener("load", () => renderLayout(state.current || {}));
   controls.diffEnabled.addEventListener("change", () => renderDifference(state.current || {}));
   controls.diffOpacity.addEventListener("input", () => renderDifference(state.current || {}));

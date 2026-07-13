@@ -62,6 +62,15 @@ workspace의 `Validated structure operations`는 자유 형식 JSON 편집보다
 제공합니다. 원본 overlay에서 node bbox를 클릭하거나 ID select를 사용해 entity를 선택할 수 있습니다.
 현재 지원 연산은 다음 여덟 가지입니다.
 
+원본 image와 provenance SVG는 stage 전체가 아니라 image가 실제로 차지하는 shrink-to-fit canvas를
+공유합니다. normalized Scene은 `0 0 1 1`, pixel Scene은 유효한 `canvas_size`, 크기가 없는 pixel
+Scene만 현재 source URL과 일치하는 decoded image의 natural size를 viewBox로 사용합니다. SVG는 이
+Scene canvas 전체를 source crop 전체에 affine mapping하며 별도 aspect-ratio letterbox를 만들지
+않습니다. Evidence와 node bbox는 같은 Scene coordinate 계약을 따르고 canvas 밖 bbox는 클릭 가능한
+대상으로 만들지 않습니다. source URL이 바뀌면 기존 image/overlay를 즉시 숨기고 새 image element와
+request identity를 사용하므로 늦게 도착한 이전 load가 현재 bbox를 다시 표시할 수 없습니다. load
+실패나 빈 source에서는 focus 가능한 overlay element도 제거합니다.
+
 - `add_node`: safe ID/label, Scene canvas 안의 positive source bbox, evidence note를 요구합니다. 서버가
   revision 기반 `user_edit` evidence ID를 생성하고 node `evidence_ids`, provenance snapshot, quoted
   rectangle Mermaid declaration을 한 transaction으로 추가합니다. UI의 네 bbox field는 Mermaid render
@@ -176,7 +185,8 @@ review server는 인증 시스템이 아닙니다. 기본 loopback bind를 권�
 
 ## 현재 제한
 
-provenance/node overlay와 bounds-normalized read-only difference blend, active timeline revision restore,
-JSON editor, source-anchored node 추가, advisory node drag-and-drop, ID 기반 edge 재연결/node 삭제는 제공합니다. Mermaid render의 실제 좌표 강제와 edge endpoint를
-canvas에서 직접 끌어 놓는 조작은 아직 구현하지 않았습니다. version history는 undo/redo timeline으로 제공하며
+source-sized provenance/node overlay와 bounds-normalized read-only difference blend, active timeline
+revision restore, JSON editor, source-anchored node 추가, advisory node drag-and-drop, ID 기반 edge
+재연결/node 삭제, canvas endpoint drag는 제공합니다. Mermaid render의 실제 좌표 강제는 아직
+구현하지 않았습니다. version history는 undo/redo timeline으로 제공하며
 분기 탈락 snapshot preview와 VLM 기반 자유 형식 명령은 후속 범위입니다.
