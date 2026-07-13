@@ -41,6 +41,10 @@ data-lineage, Venn까지 포함하며 typed record의 evidence ID를 보존합�
   semantic evaluation을 unavailable로 표시하여 자동 게시를 막습니다. Token occurrence는 `Counter`로
   유지하며 반복 횟수만큼 list를 확장하지 않습니다. Parse/render에 실패한 후보는 구조 변환과 OCR 같은
   고비용 semantic scoring을 건너뛰고, typed Scene 변환 오류는 후보 단위 warning으로 격리합니다.
+- 구조 Scene은 topology를 위해 class member나 ER attribute를 node로 만들지 않습니다. 별도의 지연형
+  typed semantic projection이 실제 serializer가 표시하는 Class field/method/parameter/cardinality,
+  ER attribute type/name/key/comment, Timeline period/title/모든 event label을 OCR 비교에 추가합니다.
+  이 projection도 생성 label 예산 안에서 소비되므로 큰 typed IR이 제한을 우회하지 못합니다.
 - numeric consistency는 source/generated 숫자 multiset의 precision·recall F1입니다. source에 실제
   숫자가 있을 때만 사용하며 추가 생성한 숫자도 precision을 낮춥니다. `accTitle`/`accDescr`/title
   metadata 안의 숫자는 chart data multiset에서 제외합니다.

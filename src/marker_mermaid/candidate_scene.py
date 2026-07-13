@@ -9,6 +9,7 @@ nodes use a shared origin so layout scoring remains unavailable.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 from marker_mermaid.flowchart_structure import (
@@ -390,6 +391,121 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
         diagram_type_candidates=[diagram_type],
         coordinate_space="pixels",
     )
+
+
+def typed_ir_semantic_texts(
+    diagram_type: str,
+    ir: dict[str, Any],
+    scene: DiagramSceneIR,
+) -> Iterator[str]:
+    """Project serializer-visible typed IR text without Mermaid identifiers.
+
+    Structural scenes deliberately omit record details such as class members and ER
+    attributes. OCR scoring needs those rendered labels while topology and textual
+    projection remain separate concerns.
+    """
+
+    if diagram_type == "timeline":
+        if ir.get("title"):
+            yield str(ir["title"])
+        for event in ir.get("events") or []:
+            if not isinstance(event, dict):
+                continue
+            period = event.get("time") or event.get("period") or "[unreadable time]"
+            yield str(period)
+            labels = event.get("events") or [event.get("label") or "[unreadable]"]
+            if isinstance(labels, list):
+                for label in labels:
+                    if label is not None and label != "":
+                        yield str(label)
+        return
+
+    if diagram_type == "class":
+        for class_item in ir.get("classes") or []:
+            if not isinstance(class_item, dict):
+                continue
+            source_id = class_item.get("id")
+            label = class_item.get("label") or source_id
+            if label is not None and label != "":
+                yield str(label)
+            for member in class_item.get("members") or []:
+                if not isinstance(member, dict):
+                    continue
+                name = member.get("name")
+                if name is not None and name != "":
+                    yield str(name)
+                if member.get("kind", "field") == "method":
+                    parameters = member.get("parameters")
+                    if isinstance(parameters, list):
+                        for value in parameters:
+                            if value is not None and value != "":
+                                yield str(value)
+                    return_type = member.get("return_type") or member.get("type")
+                    if return_type is not None and return_type != "":
+                        yield str(return_type)
+                else:
+                    type_name = member.get("type")
+                    if type_name is not None and type_name != "":
+                        yield str(type_name)
+        for relation in ir.get("relations") or []:
+            if not isinstance(relation, dict):
+                continue
+            label = relation.get("label")
+            if label is not None and label != "":
+                yield str(label)
+            for field in ("source_cardinality", "target_cardinality"):
+                value = relation.get(field)
+                if value is not None and value != "":
+                    yield str(value)
+        return
+    if diagram_type == "er":
+        for entity in ir.get("entities") or []:
+            if not isinstance(entity, dict):
+                continue
+            source_id = entity.get("id")
+            label = entity.get("label") or source_id
+            if label is not None and label != "":
+                yield str(label)
+            for attribute in entity.get("attributes") or []:
+                if not isinstance(attribute, dict):
+                    continue
+                for field in ("type", "name", "comment"):
+                    value = attribute.get(field)
+                    if value is not None and value != "":
+                        yield str(value)
+                keys = attribute.get("keys")
+                if isinstance(keys, list):
+                    for value in keys:
+                        if value is not None and value != "":
+                            yield str(value)
+        for relationship in ir.get("relationships") or []:
+            if not isinstance(relationship, dict):
+                continue
+            label = relationship.get("label")
+            if label is not None and label != "":
+                yield str(label)
+        return
+    if diagram_type == "gantt":
+        if ir.get("title"):
+            yield str(ir["title"])
+        for section in ir.get("sections") or []:
+            if not isinstance(section, dict):
+                continue
+            yield str(section.get("title") or "Tasks")
+            for task_index, task in enumerate(section.get("tasks") or [], start=1):
+                if isinstance(task, dict):
+                    yield str(task.get("label") or f"Task {task_index}")
+        return
+
+    for element in scene.elements:
+        if element.text:
+            yield element.text
+    for relation in scene.relations:
+        if relation.label:
+            yield relation.label
+    for group in scene.groups:
+        if group.label:
+            yield group.label
 
 
 def _bbox(value: Any) -> tuple[float, float, float, float]:

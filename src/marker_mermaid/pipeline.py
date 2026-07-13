@@ -18,7 +18,7 @@ from marker_mermaid.accessibility import (
     supports_accessibility_directives,
 )
 from marker_mermaid.ast_repair import DeterministicMermaidRepair
-from marker_mermaid.candidate_scene import typed_ir_to_scene
+from marker_mermaid.candidate_scene import typed_ir_semantic_texts, typed_ir_to_scene
 from marker_mermaid.config import MermaidConfig, Mode, PublishPolicy
 from marker_mermaid.flowchart_structure import (
     ambiguous_portable_ids,
@@ -1208,11 +1208,14 @@ class ReconstructionPipeline:
         generated_texts = None
         generated_texts_over_budget = False
         if generated_scene is not None:
-            semantic_labels = chain(
-                (element.text for element in generated_scene.elements if element.text),
-                (relation.label for relation in generated_scene.relations if relation.label),
-                (group.label for group in generated_scene.groups if group.label),
-            )
+            if typed_ir is not None:
+                semantic_labels = typed_ir_semantic_texts(diagram_type, typed_ir, generated_scene)
+            else:
+                semantic_labels = chain(
+                    (element.text for element in generated_scene.elements if element.text),
+                    (relation.label for relation in generated_scene.relations if relation.label),
+                    (group.label for group in generated_scene.groups if group.label),
+                )
             generated_texts = bounded_ocr_token_multiset(
                 semantic_labels,
                 max_texts=_MAX_OCR_REFERENCE_TEXTS,

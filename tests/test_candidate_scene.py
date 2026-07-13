@@ -1,4 +1,5 @@
-from marker_mermaid.candidate_scene import typed_ir_to_scene
+from marker_mermaid.candidate_scene import typed_ir_semantic_texts, typed_ir_to_scene
+from marker_mermaid.scoring import ocr_recall
 
 
 def test_flowchart_typed_ir_preserves_explicit_direction_and_arrows():
@@ -79,6 +80,114 @@ def test_gantt_scene_preserves_task_and_section_labels_without_schedule_metadata
     assert [(group.id, group.label, group.member_ids) for group in scene.groups] == [
         ("review", "Review phase", ["t1"])
     ]
+
+
+def test_class_semantic_texts_include_members_parameters_and_cardinalities():
+    ir = {
+        "classes": [
+            {
+                "id": "service",
+                "label": "Payment Service",
+                "members": [
+                    {"name": "status", "type": "String"},
+                    {
+                        "name": "authorize",
+                        "kind": "method",
+                        "parameters": ["amount"],
+                        "return_type": "bool",
+                    },
+                ],
+            },
+            {"id": "gateway", "label": "Gateway"},
+        ],
+        "relations": [
+            {
+                "source": "service",
+                "target": "gateway",
+                "label": "authorizes",
+                "source_cardinality": "one",
+                "target_cardinality": "many",
+            }
+        ],
+    }
+    scene = typed_ir_to_scene("class", ir)
+
+    assert scene is not None
+    texts = typed_ir_semantic_texts("class", ir, scene)
+    assert (
+        ocr_recall(
+            ["Payment Service Gateway authorizes String status authorize amount bool one many"],
+            "",
+            generated_texts=texts,
+        )
+        == 1
+    )
+
+
+def test_er_semantic_texts_include_rendered_attribute_fields():
+    ir = {
+        "entities": [
+            {
+                "id": "customer",
+                "label": "Customer Account",
+                "attributes": [
+                    {
+                        "type": "uuid",
+                        "name": "customer_id",
+                        "keys": ["PK"],
+                        "comment": "stable identifier",
+                    }
+                ],
+            },
+            {"id": "order", "label": "Order"},
+        ],
+        "relationships": [{"source": "customer", "target": "order", "label": "places"}],
+    }
+    scene = typed_ir_to_scene("er", ir)
+
+    assert scene is not None
+    texts = typed_ir_semantic_texts("er", ir, scene)
+    assert (
+        ocr_recall(
+            ["Customer Account Order places uuid customer_id PK stable identifier"],
+            "",
+            generated_texts=texts,
+        )
+        == 1
+    )
+
+
+def test_serializer_aware_texts_exclude_hidden_generic_text_and_task_ids():
+    class_ir = {"classes": [{"id": "A", "text": "Hidden class text"}], "relations": []}
+    er_ir = {"entities": [{"id": "B", "text": "Hidden entity text"}], "relationships": []}
+    gantt_ir = {
+        "sections": [
+            {
+                "tasks": [
+                    {
+                        "id": "internal-task-id",
+                        "text": "Secret payload",
+                        "start": "2026-01-01",
+                        "end": "2026-01-02",
+                    }
+                ]
+            }
+        ]
+    }
+    class_scene = typed_ir_to_scene("class", class_ir)
+    er_scene = typed_ir_to_scene("er", er_ir)
+    gantt_scene = typed_ir_to_scene("gantt", gantt_ir)
+
+    assert class_scene is not None and er_scene is not None and gantt_scene is not None
+    class_texts = list(typed_ir_semantic_texts("class", class_ir, class_scene))
+    er_texts = list(typed_ir_semantic_texts("er", er_ir, er_scene))
+    gantt_texts = list(typed_ir_semantic_texts("gantt", gantt_ir, gantt_scene))
+    assert class_texts == ["A"]
+    assert er_texts == ["B"]
+    assert gantt_texts == ["Tasks", "Task 1"]
+    assert ocr_recall(["Hidden class text"], "", generated_texts=class_texts) == 0
+    assert ocr_recall(["Hidden entity text"], "", generated_texts=er_texts) == 0
+    assert ocr_recall(["Secret payload internal-id"], "", generated_texts=gantt_texts) == 0
 
 
 def test_planning_and_event_modeling_scenes_preserve_emitted_elements_and_evidence():

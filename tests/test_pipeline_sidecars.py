@@ -481,7 +481,7 @@ def test_attributed_timeline_typed_candidate_can_pass_extended_provenance_gate()
                         {
                             "id": "launch",
                             "time": "Q1",
-                            "label": "Launch",
+                            "events": ["Launch", "Beta"],
                             "evidence_ids": ["ocr-launch"],
                         }
                     ]
@@ -492,7 +492,7 @@ def test_attributed_timeline_typed_candidate_can_pass_extended_provenance_gate()
             VisualEvidence(
                 id="ocr-launch",
                 kind="ocr_token",
-                text="Launch",
+                text="Q1 Launch Beta",
                 bbox=(0, 0, 20, 10),
             )
         ],
@@ -506,6 +506,7 @@ def test_attributed_timeline_typed_candidate_can_pass_extended_provenance_gate()
     ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
 
     assert result.selected is not None
+    assert result.selected.scores["ocr_recall"] == 1
     assert result.selected.scores["visual_entailment_precision"] == 1
     assert result.selected.aggregate_score is not None
     assert result.publish
