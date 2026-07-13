@@ -40,7 +40,7 @@
 | arrow/layout/path score | 구현 | explicit-arrow/path F1, relative layout; 근거 부족 시 unavailable |
 | render-and-compare repair | 기반 | trusted text label과 conflict-free built-in Geometry reversed·unlabeled-missing edge repair, IR/code/resource 재검증과 공통 재평가; node/conditional/layout patch 후속 |
 | atomic sidecars | 구현 | preflight, manifest/hash/alternatives/provenance/source affine map |
-| Review Workspace | 구현 | source-sized Scene-coordinate provenance/node overlay, bounds-normalized difference blend, 실패 bundle bootstrap, 대안 선택, 승인/거절, 이력 API |
+| Review Workspace | 구현 | source-sized Scene-coordinate provenance/node overlay, bounds-normalized difference blend, 실패 bundle bootstrap, summary mutation lock, guarded draft/conflict reload, dirty-discard·stale-response 방어, 대안 선택, 승인/거절, 이력 API |
 | code/IR/provenance revision | 구현 | strict code/Scene/evidence schema, content-addressed provenance, 0.3 lazy migration, rollback/undo/redo와 active timeline restore |
 | NL patch | 구현 | 품질 invalidation, 명시 ID 기반 patch와 구조화 audit history |
 | structured operations | 구현 | provenance-backed edge 추가, exact-ID edge 재연결·삭제, node 삭제, group 생성·삭제, screen-space endpoint drag와 accessible forms, global IR↔Mermaid node/edge/group 1:1 gate, pre-interpretation optimistic lock |

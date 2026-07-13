@@ -84,6 +84,7 @@ def build_review_workspace_assets(
       <section class="selection-bar" aria-label="Diagram selection">
         <label for="diagram-select">Diagram</label>
         <select id="diagram-select"></select>
+        <button id="reload-latest" type="button" hidden>Reload latest</button>
         <span id="save-state" class="muted" role="status" aria-live="polite"></span>
       </section>
 
@@ -404,6 +405,11 @@ REVIEW_JAVASCRIPT = r"""
     diffLoad: null,
     sourceLoad: null,
     sourceRequest: null,
+    diagramRequest: 0,
+    diagramLoading: false,
+    detailReady: false,
+    editorBaseline: null,
+    editorConflict: false,
   };
   const byId = (id) => document.getElementById(id);
   const controls = {
@@ -414,7 +420,8 @@ REVIEW_JAVASCRIPT = r"""
     diffLayers: byId("diff-layers"), diffEnabled: byId("diff-enabled"),
     diffOpacity: byId("diff-opacity"), diffNote: byId("diff-note"),
     issues: byId("issue-list"), alternatives: byId("alternative-list"), message: byId("message"),
-    saveState: byId("save-state"), undo: byId("undo"), redo: byId("redo"),
+    saveState: byId("save-state"), reloadLatest: byId("reload-latest"),
+    saveEditors: byId("save-editors"), undo: byId("undo"), redo: byId("redo"),
     revision: byId("revision-select"), checkoutRevision: byId("checkout-revision"),
     node: byId("node-select"), edge: byId("edge-select"),
     edgeSource: byId("edge-source"), edgeTarget: byId("edge-target"),
@@ -428,6 +435,9 @@ REVIEW_JAVASCRIPT = r"""
     addNode: byId("add-node"), addNodeId: byId("add-node-id"),
     addNodeLabel: byId("add-node-label"), addNodeReason: byId("add-node-reason"),
     canvasSize: byId("canvas-size"),
+    commandInput: byId("command-input"),
+    commandSubmit: byId("command-form").querySelector("button"),
+    decisionReason: byId("decision-reason"), approve: byId("approve"), reject: byId("reject"),
     bbox: [byId("bbox-x0"), byId("bbox-y0"), byId("bbox-x1"), byId("bbox-y1")],
   };
 
@@ -451,7 +461,9 @@ REVIEW_JAVASCRIPT = r"""
     if (!response.ok) {
       let detail = `${response.status} ${response.statusText}`;
       try { detail = (await response.json()).error || detail; } catch (_) { /* non-JSON error */ }
-      throw new Error(detail);
+      const failure = new Error(detail);
+      failure.status = response.status;
+      throw failure;
     }
     return response.status === 204 ? {} : response.json();
   }
@@ -465,9 +477,17 @@ REVIEW_JAVASCRIPT = r"""
     return payload.diagram && typeof payload.diagram === "object" ? payload.diagram : payload;
   }
 
-  function replaceCurrent(payload) {
+  function replaceCurrent(payload, { preserveDraft = false } = {}) {
     const next = normalizeDiagram(payload);
-    if (!next || typeof next !== "object") return;
+    if (!next || typeof next !== "object"
+      || typeof next.mermaid_code !== "string"
+      || !next.scene_ir || typeof next.scene_ir !== "object" || Array.isArray(next.scene_ir)
+      || !Number.isInteger(Number(next.version)) || Number(next.version) < 0
+      || !text(next.digest)) {
+      throw new Error("Diagram response did not contain editable detail");
+    }
+    const keepDraft = preserveDraft && editorDraftDirty()
+      && text(state.editorBaseline?.diagramId) === text(next.id);
     const changedRevision = String(next.id) !== String(state.current?.id)
       || Number(next.version) !== Number(state.current?.version)
       || text(next.digest) !== text(state.current?.digest);
@@ -475,10 +495,90 @@ REVIEW_JAVASCRIPT = r"""
     const index = state.diagrams.findIndex((item) => String(item.id) === String(next.id));
     if (index >= 0) state.diagrams[index] = next;
     state.current = next;
+    state.detailReady = true;
+    syncEditors(next, { preserveDraft: keepDraft });
     renderCurrent();
   }
 
   function text(value) { return value === null || value === undefined ? "" : String(value); }
+
+  function editorSnapshot(diagram) {
+    return {
+      diagramId: text(diagram?.id),
+      version: Number(diagram?.version),
+      digest: text(diagram?.digest),
+      mermaid: text(diagram?.mermaid_code),
+      ir: JSON.stringify(diagram?.scene_ir || {}, null, 2),
+    };
+  }
+
+  function editorDraftDirty() {
+    const baseline = state.editorBaseline;
+    if (!baseline) return false;
+    return controls.mermaid.value !== baseline.mermaid || controls.ir.value !== baseline.ir;
+  }
+
+  function mutationLocked() {
+    return state.busy || state.diagramLoading || !state.detailReady;
+  }
+
+  function resetEditors(diagram) {
+    state.editorBaseline = {
+      diagramId: text(diagram?.id),
+      version: Number(diagram?.version),
+      digest: text(diagram?.digest),
+      mermaid: "",
+      ir: "",
+    };
+    controls.mermaid.value = "";
+    controls.ir.value = "";
+    state.editorConflict = false;
+  }
+
+  function syncEditors(diagram, { preserveDraft = false } = {}) {
+    const snapshot = editorSnapshot(diagram);
+    const keepDraft = preserveDraft && editorDraftDirty()
+      && text(state.editorBaseline?.diagramId) === snapshot.diagramId;
+    state.editorBaseline = snapshot;
+    if (keepDraft) {
+      state.editorConflict = true;
+      return;
+    }
+    controls.mermaid.value = snapshot.mermaid;
+    controls.ir.value = snapshot.ir;
+    state.editorConflict = false;
+  }
+
+  function renderEditorState(diagram) {
+    const dirty = editorDraftDirty();
+    if (!dirty) state.editorConflict = false;
+    const editorStatus = state.diagramLoading
+      ? "loading diagram detail"
+      : (!state.detailReady
+        ? (state.editorConflict ? "conflict refresh required" : "diagram detail unavailable")
+        : (state.editorConflict && dirty
+          ? "conflicting editor draft preserved" : (dirty ? "unsaved editor draft" : "")));
+    controls.saveState.textContent = [
+      text(diagram.status || "review"),
+      `grade ${text(diagram.grade || "U")}`,
+      editorStatus,
+    ].filter(Boolean).join(" · ");
+    const recoveryLabel = !state.detailReady
+      ? (state.editorConflict ? "Reload latest" : "Retry load")
+      : (state.editorConflict && dirty ? "Reload latest" : (dirty ? "Discard draft" : ""));
+    controls.reloadLatest.textContent = recoveryLabel;
+    controls.reloadLatest.hidden = !recoveryLabel;
+    const editorLocked = mutationLocked();
+    controls.reloadLatest.disabled = state.busy || state.diagramLoading;
+    controls.saveEditors.disabled = editorLocked || (state.editorConflict && dirty);
+    controls.mermaid.readOnly = editorLocked;
+    controls.ir.readOnly = editorLocked;
+    controls.commandInput.disabled = editorLocked;
+    controls.commandSubmit.disabled = editorLocked;
+    controls.decisionReason.disabled = editorLocked;
+    controls.approve.disabled = editorLocked;
+    controls.reject.disabled = editorLocked;
+  }
 
   function imageUrl(value) {
     if (!value) return "";
@@ -835,29 +935,30 @@ REVIEW_JAVASCRIPT = r"""
     ).length;
     controls.edgeCount.textContent = controls.node.value
       ? `${incident} incident relation(s) will also be deleted.` : "No selectable explicit node.";
-    const unavailable = state.busy || !nodes.length;
+    const locked = mutationLocked();
+    const unavailable = locked || !nodes.length;
     controls.node.disabled = unavailable; controls.deleteNode.disabled = unavailable;
-    controls.edge.disabled = state.busy || !relations.length;
+    controls.edge.disabled = locked || !relations.length;
     controls.edgeSource.disabled = unavailable; controls.edgeTarget.disabled = unavailable;
-    controls.reconnect.disabled = state.busy || !relations.length || !nodes.length;
-    controls.deleteEdge.disabled = state.busy || !relations.length;
-    const edgeAdditionUnavailable = state.busy || nodes.length < 2;
+    controls.reconnect.disabled = locked || !relations.length || !nodes.length;
+    controls.deleteEdge.disabled = locked || !relations.length;
+    const edgeAdditionUnavailable = locked || nodes.length < 2;
     controls.addEdgeSource.disabled = edgeAdditionUnavailable;
     controls.addEdgeTarget.disabled = edgeAdditionUnavailable;
     controls.addEdgeReason.disabled = edgeAdditionUnavailable;
     controls.addEdge.disabled = edgeAdditionUnavailable;
-    controls.groupNodeSelect.disabled = state.busy || nodes.length < 2;
-    controls.groupLabel.disabled = state.busy || nodes.length < 2;
+    controls.groupNodeSelect.disabled = locked || nodes.length < 2;
+    controls.groupLabel.disabled = locked || nodes.length < 2;
     updateGroupSelectionState();
-    controls.deleteGroupSelect.disabled = state.busy || !groups.length;
-    controls.deleteGroup.disabled = state.busy || !groups.length;
+    controls.deleteGroupSelect.disabled = locked || !groups.length;
+    controls.deleteGroup.disabled = locked || !groups.length;
     const canvas = ir.coordinate_space === "normalized"
       ? [1, 1] : (Array.isArray(ir.canvas_size) ? ir.canvas_size.map(Number) : []);
     const sourceAnchoringAvailable = canvas.length === 2 && canvas.every(Number.isFinite);
     controls.canvasSize.textContent = sourceAnchoringAvailable
       ? `Scene canvas: ${canvas[0]} × ${canvas[1]}`
       : "Scene canvas size is unavailable; source-anchored addition is disabled.";
-    controls.addNode.disabled = state.busy || !sourceAnchoringAvailable;
+    controls.addNode.disabled = locked || !sourceAnchoringAvailable;
   }
 
   function renderIssues(diagram) {
@@ -895,7 +996,7 @@ REVIEW_JAVASCRIPT = r"""
       button.type = "button";
       button.textContent = "Select";
       button.dataset.candidateId = candidateId;
-      button.disabled = candidateId === text(diagram.selected_candidate_id);
+      button.disabled = mutationLocked() || candidateId === text(diagram.selected_candidate_id);
       row.append(description, button); controls.alternatives.append(row);
     }
     if (!alternatives.length) controls.alternatives.textContent = "No alternative candidates.";
@@ -905,6 +1006,12 @@ REVIEW_JAVASCRIPT = r"""
     const diagram = state.current;
     if (!diagram) return;
     controls.diagram.value = text(diagram.id);
+    controls.diagram.disabled = state.busy;
+    if (!state.editorBaseline
+      || text(state.editorBaseline.diagramId) !== text(diagram.id)) {
+      if (state.detailReady) syncEditors(diagram);
+      else resetEditors(diagram);
+    }
     updateSourceImage(diagram);
     const regularRenderUrl = imageUrl(
       diagram.rendered_url || diagram.render_url || diagram.final_svg,
@@ -912,10 +1019,8 @@ REVIEW_JAVASCRIPT = r"""
     if (regularRenderUrl) controls.render.setAttribute("src", regularRenderUrl);
     else controls.render.removeAttribute("src");
     renderDifference(diagram);
-    controls.mermaid.value = text(diagram.mermaid_code);
-    controls.ir.value = JSON.stringify(diagram.scene_ir || {}, null, 2);
-    controls.undo.disabled = !diagram.can_undo || state.busy;
-    controls.redo.disabled = !diagram.can_redo || state.busy;
+    controls.undo.disabled = !diagram.can_undo || mutationLocked();
+    controls.redo.disabled = !diagram.can_redo || mutationLocked();
     const navigation = diagram.revision_navigation
       && typeof diagram.revision_navigation === "object" ? diagram.revision_navigation : {};
     const timeline = Array.isArray(navigation.timeline)
@@ -933,49 +1038,164 @@ REVIEW_JAVASCRIPT = r"""
     controls.revision.value = timeline.some(
       (revision) => revision === selectedRevision,
     ) ? selectedRevision : currentRevision;
-    controls.revision.disabled = state.busy || !timeline.length;
-    controls.checkoutRevision.disabled = state.busy || !timeline.length
+    controls.revision.disabled = mutationLocked() || !timeline.length;
+    controls.checkoutRevision.disabled = mutationLocked() || !timeline.length
       || controls.revision.value === currentRevision;
-    controls.saveState.textContent = [
-      text(diagram.status || "review"), `grade ${text(diagram.grade || "U")}`,
-    ].join(" · ");
+    renderEditorState(diagram);
     renderStructure(diagram); renderOverlay(diagram); renderLayout(diagram);
     renderIssues(diagram); renderAlternatives(diagram);
   }
 
-  async function perform(path, body, successMessage) {
-    if (state.busy || !state.current) return;
+  function errorText(error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  async function perform(path, body, successMessage, { keepEditorDraft = false } = {}) {
+    if (mutationLocked() || !state.current) return false;
+    if (editorDraftDirty() && !keepEditorDraft
+      && !window.confirm("Discard unsaved editor draft and continue?")) return false;
+    const requestDiagramId = text(state.current.id);
+    const expectedVersion = Number(state.current.version);
+    const expectedDigest = text(state.current.digest);
+    state.diagramRequest += 1;
     state.busy = true; showMessage(""); renderCurrent();
+    let succeeded = false;
     try {
       const request = {
         ...body,
-        expected_version: Number(state.current.version),
-        expected_digest: text(state.current.digest),
+        expected_version: expectedVersion,
+        expected_digest: expectedDigest,
       };
       const payload = await sameOriginFetch(
         path, { method: "POST", body: JSON.stringify(request) },
       );
+      const next = normalizeDiagram(payload);
+      if (text(next?.id) !== requestDiagramId || text(state.current?.id) !== requestDiagramId) {
+        throw new Error("Mutation response did not match the active diagram");
+      }
       replaceCurrent(payload); showMessage(successMessage);
+      succeeded = true;
     } catch (error) {
-      showMessage(error instanceof Error ? error.message : String(error), true);
+      if (error?.status === 409 && text(state.current?.id) === requestDiagramId) {
+        const originalError = errorText(error);
+        const preserveDraft = editorDraftDirty();
+        if (preserveDraft) state.editorConflict = true;
+        state.detailReady = false;
+        renderCurrent();
+        try {
+          const latest = await sameOriginFetch(
+            `/api/diagrams/${encodeURIComponent(requestDiagramId)}`,
+          );
+          const latestDiagram = normalizeDiagram(latest);
+          if (text(latestDiagram?.id) !== requestDiagramId
+            || text(state.current?.id) !== requestDiagramId) {
+            throw new Error("Latest revision response did not match the active diagram");
+          }
+          replaceCurrent(latest, { preserveDraft });
+          showMessage(
+            preserveDraft
+              ? "Revision conflict: latest server revision loaded; editor draft preserved. "
+                + "Reload latest before saving."
+              : "Revision conflict: latest server revision loaded; retry the action.",
+            true,
+          );
+        } catch (refreshError) {
+          showMessage(
+            `${originalError}. Latest revision refresh failed: ${errorText(refreshError)}`,
+            true,
+          );
+        }
+      } else {
+        showMessage(errorText(error), true);
+      }
     } finally {
       state.busy = false; renderCurrent();
     }
+    return succeeded;
   }
 
   async function loadSelectedDiagram() {
     const selected = state.diagrams.find((item) => String(item.id) === controls.diagram.value);
     if (!selected) return;
+    if (state.busy) {
+      controls.diagram.value = text(state.current?.id);
+      return;
+    }
+    const selectedId = text(selected.id);
+    const switching = selectedId !== text(state.current?.id);
+    if (switching && editorDraftDirty()
+      && !window.confirm("Discard unsaved editor draft and switch diagrams?")) {
+      controls.diagram.value = text(state.current?.id);
+      return;
+    }
+    const request = ++state.diagramRequest;
+    state.diagramLoading = true;
+    state.detailReady = false;
     clearGroupSelection();
-    state.current = selected; renderCurrent();
+    if (switching) {
+      state.current = selected;
+      resetEditors(selected);
+    }
+    renderCurrent();
     try {
-      const id = encodeURIComponent(String(selected.id));
+      const id = encodeURIComponent(selectedId);
       const payload = await sameOriginFetch(`/api/diagrams/${id}`);
-      replaceCurrent(payload);
-    } catch (error) { showMessage(error instanceof Error ? error.message : String(error), true); }
+      if (request !== state.diagramRequest || controls.diagram.value !== selectedId) return;
+      const next = normalizeDiagram(payload);
+      if (text(next?.id) !== selectedId) {
+        throw new Error("Diagram response did not match the requested diagram");
+      }
+      state.diagramLoading = false;
+      replaceCurrent(payload, { preserveDraft: editorDraftDirty() });
+    } catch (error) {
+      if (request === state.diagramRequest) {
+        state.diagramLoading = false; renderCurrent(); showMessage(errorText(error), true);
+      }
+    }
   }
 
   controls.diagram.addEventListener("change", loadSelectedDiagram);
+  for (const editor of [controls.mermaid, controls.ir]) {
+    editor.addEventListener("input", () => renderEditorState(state.current || {}));
+  }
+  controls.reloadLatest.addEventListener("click", async () => {
+    if (state.busy || state.diagramLoading || !state.current) return;
+    const dirty = editorDraftDirty();
+    const requiresFetch = !state.detailReady || state.editorConflict;
+    if (!requiresFetch) {
+      if (!dirty
+        || !window.confirm("Discard editor draft and restore the loaded revision?")) return;
+      syncEditors(state.current); renderCurrent();
+      showMessage("Editor draft discarded.");
+      return;
+    }
+    if (dirty && !window.confirm("Discard editor draft and reload the latest revision?")) return;
+    const requestedId = text(state.current.id);
+    const request = ++state.diagramRequest;
+    state.diagramLoading = true; renderCurrent();
+    try {
+      const payload = await sameOriginFetch(
+        `/api/diagrams/${encodeURIComponent(requestedId)}`,
+      );
+      if (request !== state.diagramRequest || text(state.current?.id) !== requestedId) return;
+      const next = normalizeDiagram(payload);
+      if (text(next?.id) !== requestedId) {
+        throw new Error("Latest revision response did not match the active diagram");
+      }
+      state.diagramLoading = false;
+      replaceCurrent(payload);
+      showMessage(dirty
+        ? "Latest revision loaded; editor draft discarded." : "Diagram detail loaded.");
+    } catch (error) {
+      if (request === state.diagramRequest) {
+        state.diagramLoading = false; renderCurrent(); showMessage(errorText(error), true);
+      }
+    }
+  });
+  window.addEventListener("beforeunload", (event) => {
+    if (!editorDraftDirty()) return;
+    event.preventDefault(); event.returnValue = "";
+  });
 
   controls.render.addEventListener("load", () => renderLayout(state.current || {}));
   controls.diffEnabled.addEventListener("change", () => renderDifference(state.current || {}));
@@ -1010,7 +1230,7 @@ REVIEW_JAVASCRIPT = r"""
   function updateGroupSelectionState() {
     const count = controls.groupNodeSelect.selectedOptions.length;
     controls.groupStatus.textContent = `${count} node(s) selected.`;
-    controls.groupNodes.disabled = state.busy || count < 2
+    controls.groupNodes.disabled = mutationLocked() || count < 2
       || controls.groupLabel.value.trim().length === 0;
   }
   controls.groupNodeSelect.addEventListener("change", updateGroupSelectionState);
@@ -1026,7 +1246,7 @@ REVIEW_JAVASCRIPT = r"""
   }
   controls.layout.addEventListener("pointerdown", (event) => {
     const node = event.target.closest(".layout-node[data-node-id]");
-    if (!node || layoutDrag || edgeDrag || state.busy
+    if (!node || layoutDrag || edgeDrag || mutationLocked()
       || event.button !== 0 || event.isPrimary === false) return;
     event.preventDefault(); controls.layout.setPointerCapture(event.pointerId);
     layoutDrag = {
@@ -1047,11 +1267,12 @@ REVIEW_JAVASCRIPT = r"""
     layoutDrag.node.setAttribute("transform", `translate(${position[0]} ${position[1]})`);
   });
   async function saveLayoutPosition(nodeId, position) {
-    await perform(
+    const saved = await perform(
       route("/operations"),
       { operation: { operation: "move_node", node_id: nodeId, position } },
       "Advisory layout hint saved.",
     );
+    if (!saved) { renderLayout(state.current || {}); return; }
     const node = [...controls.layout.querySelectorAll(".layout-node[data-node-id]")]
       .find((item) => item.dataset.nodeId === nodeId);
     if (node) node.focus();
@@ -1076,7 +1297,7 @@ REVIEW_JAVASCRIPT = r"""
     const node = event.target.closest(".layout-node[data-node-id]");
     const delta = { ArrowLeft: [-.025, 0], ArrowRight: [.025, 0],
       ArrowUp: [0, -.025], ArrowDown: [0, .025] }[event.key];
-    if (!node || !delta || state.busy) return;
+    if (!node || !delta || mutationLocked()) return;
     event.preventDefault();
     const position = [
       Math.min(1, Math.max(0, Number(node.dataset.x) + delta[0])),
@@ -1121,7 +1342,7 @@ REVIEW_JAVASCRIPT = r"""
   }
   controls.layout.addEventListener("pointerdown", (event) => {
     const handle = event.target.closest(".edge-handle[data-edge-id][data-endpoint]");
-    if (!handle || edgeDrag || layoutDrag || state.busy
+    if (!handle || edgeDrag || layoutDrag || mutationLocked()
       || event.button !== 0 || event.isPrimary === false) return;
     const relations = Array.isArray(state.current?.scene_ir?.relations)
       ? state.current.scene_ir.relations : [];
@@ -1158,12 +1379,13 @@ REVIEW_JAVASCRIPT = r"""
     });
   });
   async function saveEdgeReconnect(edgeId, sourceId, targetId, focusEndpoint = "") {
-    await perform(
+    const saved = await perform(
       route("/operations"),
       { operation: { operation: "reconnect_edge", edge_id: edgeId, source_id: sourceId,
         target_id: targetId } },
       "Edge reconnected.",
     );
+    if (!saved) { renderLayout(state.current || {}); return; }
     const handle = [...controls.layout.querySelectorAll(".edge-handle[data-endpoint]")]
       .find((item) => item.dataset.edgeId === edgeId && item.dataset.endpoint === focusEndpoint);
     if (handle) handle.focus();
@@ -1210,7 +1432,11 @@ REVIEW_JAVASCRIPT = r"""
       event.preventDefault(); selectOverlayEdge(edge.dataset.edgeId);
     }
   });
-  byId("save-editors").addEventListener("click", async () => {
+  controls.saveEditors.addEventListener("click", async () => {
+    if (state.editorConflict && editorDraftDirty()) {
+      showMessage("Reload the latest revision before saving this conflicting draft.", true);
+      return;
+    }
     let sceneIr;
     try { sceneIr = JSON.parse(controls.ir.value); }
     catch (_) { showMessage("Scene IR must be valid JSON.", true); return; }
@@ -1218,6 +1444,7 @@ REVIEW_JAVASCRIPT = r"""
       route("/edits"),
       { mermaid_code: controls.mermaid.value, scene_ir: sceneIr },
       "Edits saved.",
+      { keepEditorDraft: true },
     );
   });
   controls.undo.addEventListener("click", () => {
@@ -1228,7 +1455,7 @@ REVIEW_JAVASCRIPT = r"""
   });
   controls.revision.addEventListener("change", () => {
     const navigation = state.current?.revision_navigation || {};
-    controls.checkoutRevision.disabled = state.busy
+    controls.checkoutRevision.disabled = mutationLocked()
       || controls.revision.value === text(navigation.current_revision);
   });
   controls.checkoutRevision.addEventListener("click", () => {
@@ -1256,9 +1483,10 @@ REVIEW_JAVASCRIPT = r"""
   });
   byId("command-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const input = byId("command-input"); const command = input.value.trim();
+    const input = controls.commandInput; const command = input.value.trim();
     if (!command) return;
-    await perform(route("/commands"), { command }, "Command applied."); input.value = "";
+    if (await perform(route("/commands"), { command }, "Command applied.")
+      && input.value.trim() === command) input.value = "";
   });
   byId("reconnect-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1356,7 +1584,7 @@ REVIEW_JAVASCRIPT = r"""
   });
   for (const decision of ["approve", "reject"]) {
     byId(decision).addEventListener("click", () => perform(
-      route("/decision"), { decision, reason: byId("decision-reason").value.trim() },
+      route("/decision"), { decision, reason: controls.decisionReason.value.trim() },
       decision === "approve" ? "Reconstruction approved." : "Reconstruction rejected.",
     ));
   }

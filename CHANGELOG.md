@@ -96,6 +96,7 @@
 - Initial and repaired candidates share OCR/vector, provenance, structural, numeric, and publication-gate evaluation.
 - Structured review operations reject stale revisions before interpretation and require exact Scene-to-Mermaid mappings.
 - Review undo/redo now restores provenance presence and content in the same boundary as code, IR, and renders.
+- Review editors preserve local drafts across validation errors and conflict refreshes, lock summary-only or stale states until guarded detail reload succeeds, reject stale responses, and confirm before dirty edits are discarded.
 
 ## 0.1.0
 

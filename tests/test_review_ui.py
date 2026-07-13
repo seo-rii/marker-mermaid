@@ -64,6 +64,7 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
         "provenance-overlay",
         "mermaid-editor",
         "ir-editor",
+        "reload-latest",
         "issue-list",
         "alternative-list",
         "approve",
@@ -122,6 +123,18 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert 'redirect: "error"' in assets.javascript
     assert "expected_version" in assets.javascript
     assert "expected_digest" in assets.javascript
+    assert "editorBaseline" in assets.javascript
+    assert "editorDraftDirty" in assets.javascript
+    assert "detailReady" in assets.javascript
+    assert "mutationLocked" in assets.javascript
+    assert "preserveDraft" in assets.javascript
+    assert "failure.status = response.status" in assets.javascript
+    assert "Discard unsaved editor draft and continue?" in assets.javascript
+    assert "Discard unsaved editor draft and switch diagrams?" in assets.javascript
+    assert "Reload latest before saving." in assets.javascript
+    assert 'state.editorConflict ? "Reload latest" : "Retry load"' in assets.javascript
+    assert 'dirty ? "Discard draft"' in assets.javascript
+    assert 'addEventListener("beforeunload"' in assets.javascript
     assert "eval(" not in assets.javascript
     assert "innerHTML" not in assets.javascript
     assert 'operation: "reconnect_edge"' in assets.javascript
@@ -199,6 +212,525 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert 'preserveAspectRatio="none"' in assets.html
     assert 'id="source-canvas" class="source-canvas" hidden' in assets.html
     assert ".source-canvas" in assets.css
+
+
+def test_review_workspace_preserves_drafts_and_recovers_revision_conflicts():
+    base_scene = {
+        "coordinate_space": "normalized",
+        "elements": [{"id": "A", "text": "Server zero", "bbox": [0.1, 0.1, 0.4, 0.3]}],
+        "relations": [],
+        "groups": [],
+    }
+    latest_scene = {
+        "coordinate_space": "normalized",
+        "elements": [{"id": "A", "text": "Server one", "bbox": [0.1, 0.1, 0.4, 0.3]}],
+        "relations": [],
+        "groups": [],
+    }
+    draft_scene = {
+        "coordinate_space": "normalized",
+        "elements": [{"id": "A", "text": "Local draft", "bbox": [0.1, 0.1, 0.4, 0.3]}],
+        "relations": [],
+        "groups": [],
+    }
+    retry_scene = {
+        "coordinate_space": "normalized",
+        "elements": [{"id": "A", "text": "Resolved edit", "bbox": [0.1, 0.1, 0.4, 0.3]}],
+        "relations": [],
+        "groups": [],
+    }
+    common = {
+        "id": "diagram-a",
+        "label": "Diagram A",
+        "status": "review",
+        "grade": "U",
+        "issues": [],
+        "alternatives": [],
+        "provenance": [],
+        "can_undo": False,
+        "can_redo": False,
+    }
+    bootstrap_diagram = {
+        **common,
+        "version": 0,
+        "digest": "bootstrap-digest",
+        "mermaid_code": "bootstrap-code",
+        "scene_ir": {},
+        "revision_navigation": {"current_revision": "r0", "timeline": ["r0"]},
+    }
+    version_zero = {
+        **common,
+        "version": 0,
+        "digest": "digest-0",
+        "mermaid_code": "flowchart LR\n  A[Server zero]",
+        "scene_ir": base_scene,
+        "revision_navigation": {"current_revision": "r0", "timeline": ["r0"]},
+    }
+    version_one = {
+        **common,
+        "version": 1,
+        "digest": "digest-1",
+        "mermaid_code": "flowchart LR\n  A[Server one]",
+        "scene_ir": latest_scene,
+        "revision_navigation": {"current_revision": "r1", "timeline": ["r0", "r1"]},
+    }
+    version_two = {
+        **common,
+        "version": 2,
+        "digest": "digest-2",
+        "mermaid_code": "flowchart LR\n  A[Resolved edit]",
+        "scene_ir": retry_scene,
+        "revision_navigation": {
+            "current_revision": "r2",
+            "timeline": ["r0", "r1", "r2"],
+        },
+    }
+    assets = build_review_workspace_assets(
+        {"diagrams": [bootstrap_diagram], "csrf_token": "review-token"}
+    )
+    node_script = r"""
+import fs from "node:fs";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const { chromium } = require(process.env.MMX_PLAYWRIGHT);
+const payload = JSON.parse(fs.readFileSync(0, "utf8"));
+const browser = await chromium.launch({ headless: true });
+try {
+  const page = await browser.newPage({ viewport: { width: 900, height: 700 } });
+  let getCount = 0;
+  let postCount = 0;
+  let discardedActionPosts = 0;
+  const postBodies = [];
+  await page.route("http://review.test/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/") {
+      return route.fulfill({ contentType: "text/html", body: payload.html });
+    }
+    if (path === "/assets/review.css") {
+      return route.fulfill({ contentType: "text/css", body: payload.css });
+    }
+    if (path === "/assets/review.js") {
+      return route.fulfill({ contentType: "text/javascript", body: payload.javascript });
+    }
+    if (path === "/api/diagrams/diagram-a" && request.method() === "GET") {
+      getCount += 1;
+      if (getCount === 3) {
+        return route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            diagram: { ...payload.versionOne, id: "wrong-diagram" },
+          }),
+        });
+      }
+      if (getCount === 5) {
+        return route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "latest revision unavailable" }),
+        });
+      }
+      const diagram = getCount === 1 ? payload.versionZero : payload.versionOne;
+      return route.fulfill({
+        contentType: "application/json", body: JSON.stringify({ diagram }),
+      });
+    }
+    if (path === "/api/diagrams/diagram-a/edits" && request.method() === "POST") {
+      postCount += 1;
+      postBodies.push(JSON.parse(request.postData() || "{}"));
+      if (postCount === 1) {
+        return route.fulfill({
+          status: 422,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "invalid edit" }),
+        });
+      }
+      if (postCount === 2) {
+        return route.fulfill({
+          status: 409,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "stale revision" }),
+        });
+      }
+      if (postCount === 4) {
+        return route.fulfill({
+          status: 409,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "new stale revision" }),
+        });
+      }
+      return route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ diagram: payload.versionTwo }),
+      });
+    }
+    if (path === "/api/diagrams/diagram-a/decision" && request.method() === "POST") {
+      discardedActionPosts += 1;
+      return route.fulfill({ status: 500, body: "unexpected decision request" });
+    }
+    return route.abort("blockedbyclient");
+  });
+  await page.goto("http://review.test/", { waitUntil: "domcontentloaded" });
+  await page.waitForFunction((expected) => {
+    return document.getElementById("mermaid-editor").value === expected;
+  }, payload.versionZero.mermaid_code);
+
+  const draftIr = JSON.stringify(payload.draftScene, null, 2);
+  await page.fill("#mermaid-editor", payload.draftCode);
+  await page.fill("#ir-editor", draftIr);
+  let discardPrompt = "";
+  page.once("dialog", async (dialog) => {
+    discardPrompt = dialog.message();
+    await dialog.dismiss();
+  });
+  await page.click("#approve");
+  const afterCancelledAction = await page.evaluate(() => ({
+    mermaid: document.getElementById("mermaid-editor").value,
+    ir: document.getElementById("ir-editor").value,
+  }));
+  const invalidResponse = page.waitForResponse((response) => {
+    return new URL(response.url()).pathname === "/api/diagrams/diagram-a/edits"
+      && response.status() === 422;
+  });
+  await page.click("#save-editors");
+  await invalidResponse;
+  await page.waitForFunction(() => {
+    return document.getElementById("message").textContent.includes("invalid edit")
+      && !document.getElementById("mermaid-editor").readOnly;
+  });
+  const afterValidation = await page.evaluate(() => ({
+    mermaid: document.getElementById("mermaid-editor").value,
+    ir: document.getElementById("ir-editor").value,
+  }));
+
+  const conflictResponse = page.waitForResponse((response) => {
+    return new URL(response.url()).pathname === "/api/diagrams/diagram-a/edits"
+      && response.status() === 409;
+  });
+  const latestResponse = page.waitForResponse((response) => {
+    return new URL(response.url()).pathname === "/api/diagrams/diagram-a"
+      && response.request().method() === "GET";
+  });
+  await page.click("#save-editors");
+  await Promise.all([conflictResponse, latestResponse]);
+  await page.waitForFunction(() => {
+    const reload = document.getElementById("reload-latest");
+    return document.getElementById("message").textContent.includes("editor draft preserved")
+      && !reload.hidden && !reload.disabled;
+  });
+  const afterConflict = await page.evaluate(() => ({
+    mermaid: document.getElementById("mermaid-editor").value,
+    ir: document.getElementById("ir-editor").value,
+    saveDisabled: document.getElementById("save-editors").disabled,
+    status: document.getElementById("save-state").textContent,
+  }));
+
+  let reloadPrompt = "";
+  page.once("dialog", async (dialog) => {
+    reloadPrompt = dialog.message();
+    await dialog.accept();
+  });
+  const mismatchedReload = page.waitForResponse((response) => {
+    return new URL(response.url()).pathname === "/api/diagrams/diagram-a"
+      && response.status() === 200;
+  });
+  await page.click("#reload-latest");
+  await mismatchedReload;
+  await page.waitForFunction(() => {
+    return document.getElementById("message").textContent.includes(
+      "Latest revision response did not match the active diagram"
+    ) && !document.getElementById("reload-latest").disabled;
+  });
+  const afterMismatchedReload = await page.evaluate(() => ({
+    mermaid: document.getElementById("mermaid-editor").value,
+    ir: document.getElementById("ir-editor").value,
+    saveDisabled: document.getElementById("save-editors").disabled,
+    status: document.getElementById("save-state").textContent,
+  }));
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.click("#reload-latest");
+  await page.waitForFunction((expected) => {
+    return document.getElementById("mermaid-editor").value === expected
+      && document.getElementById("reload-latest").hidden;
+  }, payload.versionOne.mermaid_code);
+  const afterReload = await page.evaluate(() => ({
+    mermaid: document.getElementById("mermaid-editor").value,
+    ir: document.getElementById("ir-editor").value,
+  }));
+
+  const retryIr = JSON.stringify(payload.retryScene, null, 2);
+  await page.fill("#mermaid-editor", payload.retryCode);
+  await page.fill("#ir-editor", retryIr);
+  const savedResponse = page.waitForResponse((response) => {
+    return new URL(response.url()).pathname === "/api/diagrams/diagram-a/edits"
+      && response.status() === 200;
+  });
+  await page.click("#save-editors");
+  await savedResponse;
+  await page.waitForFunction(() => {
+    return document.getElementById("message").textContent === "Edits saved."
+      && !document.getElementById("mermaid-editor").readOnly;
+  });
+  const finalEditors = await page.evaluate(() => ({
+    mermaid: document.getElementById("mermaid-editor").value,
+    ir: document.getElementById("ir-editor").value,
+  }));
+
+  const failedRefreshIr = JSON.stringify(payload.failedRefreshScene, null, 2);
+  await page.fill("#mermaid-editor", payload.failedRefreshCode);
+  await page.fill("#ir-editor", failedRefreshIr);
+  const secondConflict = page.waitForResponse((response) => {
+    return new URL(response.url()).pathname === "/api/diagrams/diagram-a/edits"
+      && response.status() === 409;
+  });
+  const failedRefresh = page.waitForResponse((response) => {
+    return new URL(response.url()).pathname === "/api/diagrams/diagram-a"
+      && response.status() === 503;
+  });
+  await page.click("#save-editors");
+  await Promise.all([secondConflict, failedRefresh]);
+  await page.waitForFunction(() => {
+    const reload = document.getElementById("reload-latest");
+    return document.getElementById("message").textContent.includes("refresh failed")
+      && reload.textContent === "Reload latest" && !reload.disabled;
+  });
+  const afterRefreshFailure = await page.evaluate(() => ({
+    mermaid: document.getElementById("mermaid-editor").value,
+    ir: document.getElementById("ir-editor").value,
+    saveDisabled: document.getElementById("save-editors").disabled,
+    status: document.getElementById("save-state").textContent,
+  }));
+  process.stdout.write(JSON.stringify({
+    afterValidation,
+    afterCancelledAction,
+    afterConflict,
+    afterMismatchedReload,
+    afterReload,
+    finalEditors,
+    afterRefreshFailure,
+    postBodies,
+    getCount,
+    postCount,
+    discardedActionPosts,
+    discardPrompt,
+    reloadPrompt,
+  }));
+} finally {
+  await browser.close();
+}
+"""
+
+    draft_code = "flowchart LR\n  A[Local draft]"
+    retry_code = "flowchart LR\n  A[Resolved edit]"
+    failed_refresh_code = "flowchart LR\n  A[Second local draft]"
+    failed_refresh_scene = {
+        "coordinate_space": "normalized",
+        "elements": [{"id": "A", "text": "Second local draft", "bbox": [0.1, 0.1, 0.4, 0.3]}],
+        "relations": [],
+        "groups": [],
+    }
+    result = _run_review_browser(
+        node_script,
+        {
+            "html": assets.html,
+            "css": assets.css,
+            "javascript": assets.javascript,
+            "versionZero": version_zero,
+            "versionOne": version_one,
+            "versionTwo": version_two,
+            "draftScene": draft_scene,
+            "retryScene": retry_scene,
+            "draftCode": draft_code,
+            "retryCode": retry_code,
+            "failedRefreshCode": failed_refresh_code,
+            "failedRefreshScene": failed_refresh_scene,
+        },
+    )
+
+    draft_ir = json.dumps(draft_scene, indent=2)
+    latest_ir = json.dumps(latest_scene, indent=2)
+    retry_ir = json.dumps(retry_scene, indent=2)
+    assert result["afterValidation"] == {"mermaid": draft_code, "ir": draft_ir}
+    assert result["afterCancelledAction"] == {"mermaid": draft_code, "ir": draft_ir}
+    assert result["discardedActionPosts"] == 0
+    assert result["discardPrompt"] == "Discard unsaved editor draft and continue?"
+    assert result["reloadPrompt"] == "Discard editor draft and reload the latest revision?"
+    assert result["afterConflict"] == {
+        "mermaid": draft_code,
+        "ir": draft_ir,
+        "saveDisabled": True,
+        "status": "review · grade U · conflicting editor draft preserved",
+    }
+    assert result["afterMismatchedReload"] == {
+        "mermaid": draft_code,
+        "ir": draft_ir,
+        "saveDisabled": True,
+        "status": "review · grade U · conflicting editor draft preserved",
+    }
+    assert result["afterReload"] == {
+        "mermaid": version_one["mermaid_code"],
+        "ir": latest_ir,
+    }
+    assert result["finalEditors"] == {"mermaid": retry_code, "ir": retry_ir}
+    assert result["afterRefreshFailure"] == {
+        "mermaid": failed_refresh_code,
+        "ir": json.dumps(failed_refresh_scene, indent=2),
+        "saveDisabled": True,
+        "status": "review · grade U · conflict refresh required",
+    }
+    assert result["getCount"] == 5
+    assert result["postCount"] == 4
+    assert [body["expected_version"] for body in result["postBodies"]] == [0, 0, 1, 2]
+    assert [body["expected_digest"] for body in result["postBodies"]] == [
+        "digest-0",
+        "digest-0",
+        "digest-1",
+        "digest-2",
+    ]
+    assert result["postBodies"][2]["mermaid_code"] == retry_code
+    assert result["postBodies"][2]["scene_ir"] == retry_scene
+    assert result["postBodies"][3]["mermaid_code"] == failed_refresh_code
+    assert result["postBodies"][3]["scene_ir"] == failed_refresh_scene
+    for body in result["postBodies"][:2]:
+        assert body["mermaid_code"] == draft_code
+        assert body["scene_ir"] == draft_scene
+
+
+def test_review_workspace_locks_failed_summary_load_until_explicit_retry():
+    summary = {
+        "id": "diagram-a",
+        "source_id": "page-1-figure-1",
+        "label": "page-1-figure-1",
+        "status": "review",
+        "grade": "U",
+        "decision": None,
+        "version": 4,
+        "digest": "digest-4",
+    }
+    detail = {
+        **summary,
+        "mermaid_code": "flowchart LR\n  A[Loaded]",
+        "scene_ir": {
+            "coordinate_space": "normalized",
+            "elements": [{"id": "A", "text": "Loaded", "bbox": [0.1, 0.1, 0.4, 0.3]}],
+            "relations": [],
+            "groups": [],
+        },
+        "issues": [],
+        "alternatives": [],
+        "provenance": [],
+        "can_undo": False,
+        "can_redo": False,
+        "revision_navigation": {"current_revision": "r4", "timeline": ["r0", "r4"]},
+    }
+    assets = build_review_workspace_assets({"diagrams": [summary]})
+    node_script = r"""
+import fs from "node:fs";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const { chromium } = require(process.env.MMX_PLAYWRIGHT);
+const payload = JSON.parse(fs.readFileSync(0, "utf8"));
+const browser = await chromium.launch({ headless: true });
+try {
+  const page = await browser.newPage({ viewport: { width: 900, height: 700 } });
+  let getCount = 0;
+  await page.route("http://review.test/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/") return route.fulfill({ contentType: "text/html", body: payload.html });
+    if (path === "/assets/review.css") {
+      return route.fulfill({ contentType: "text/css", body: payload.css });
+    }
+    if (path === "/assets/review.js") {
+      return route.fulfill({ contentType: "text/javascript", body: payload.javascript });
+    }
+    if (path === "/api/diagrams/diagram-a") {
+      getCount += 1;
+      if (getCount === 1) {
+        return route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "detail unavailable" }),
+        });
+      }
+      return route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ diagram: payload.detail }),
+      });
+    }
+    return route.abort("blockedbyclient");
+  });
+  await page.goto("http://review.test/", { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => {
+    return document.getElementById("message").textContent.includes("detail unavailable")
+      && document.getElementById("reload-latest").textContent === "Retry load";
+  });
+  const locked = await page.evaluate(() => ({
+    mermaid: document.getElementById("mermaid-editor").value,
+    ir: document.getElementById("ir-editor").value,
+    mermaidReadOnly: document.getElementById("mermaid-editor").readOnly,
+    irReadOnly: document.getElementById("ir-editor").readOnly,
+    saveDisabled: document.getElementById("save-editors").disabled,
+    approveDisabled: document.getElementById("approve").disabled,
+    rejectDisabled: document.getElementById("reject").disabled,
+    commandDisabled: document.getElementById("command-input").disabled,
+    retryHidden: document.getElementById("reload-latest").hidden,
+  }));
+  const retryResponse = page.waitForResponse((response) => {
+    return new URL(response.url()).pathname === "/api/diagrams/diagram-a"
+      && response.status() === 200;
+  });
+  await page.click("#reload-latest");
+  await retryResponse;
+  await page.waitForFunction((expected) => {
+    return document.getElementById("mermaid-editor").value === expected
+      && !document.getElementById("mermaid-editor").readOnly;
+  }, payload.detail.mermaid_code);
+  const ready = await page.evaluate(() => ({
+    mermaid: document.getElementById("mermaid-editor").value,
+    ir: document.getElementById("ir-editor").value,
+    saveDisabled: document.getElementById("save-editors").disabled,
+    approveDisabled: document.getElementById("approve").disabled,
+    commandDisabled: document.getElementById("command-input").disabled,
+    recoveryHidden: document.getElementById("reload-latest").hidden,
+    message: document.getElementById("message").textContent,
+  }));
+  process.stdout.write(JSON.stringify({ locked, ready, getCount }));
+} finally {
+  await browser.close();
+}
+"""
+
+    result = _run_review_browser(
+        node_script,
+        {
+            "html": assets.html,
+            "css": assets.css,
+            "javascript": assets.javascript,
+            "detail": detail,
+        },
+    )
+
+    assert result["locked"] == {
+        "mermaid": "",
+        "ir": "",
+        "mermaidReadOnly": True,
+        "irReadOnly": True,
+        "saveDisabled": True,
+        "approveDisabled": True,
+        "rejectDisabled": True,
+        "commandDisabled": True,
+        "retryHidden": False,
+    }
+    assert result["ready"] == {
+        "mermaid": detail["mermaid_code"],
+        "ir": json.dumps(detail["scene_ir"], indent=2),
+        "saveDisabled": False,
+        "approveDisabled": False,
+        "commandDisabled": False,
+        "recoveryHidden": True,
+        "message": "Diagram detail loaded.",
+    }
+    assert result["getCount"] == 2
 
 
 def test_source_overlay_matches_centered_image_and_scene_coordinate_spaces():
@@ -279,6 +811,7 @@ try {
             "id": f"diagram-{coordinate_space}",
             "version": 0,
             "digest": "digest",
+            "mermaid_code": "flowchart LR\n  A[A]",
             "source_url": "/images/source.svg",
             "scene_ir": scene_ir,
             "provenance": [
@@ -320,6 +853,7 @@ def test_source_overlay_rejects_stale_failed_and_empty_images_and_keeps_selectio
             "id": "old",
             "version": 0,
             "digest": "old-digest",
+            "mermaid_code": "flowchart LR\n  OLD[Old]",
             "source_url": "/images/old.svg",
             "scene_ir": {
                 "coordinate_space": "normalized",
@@ -332,6 +866,7 @@ def test_source_overlay_rejects_stale_failed_and_empty_images_and_keeps_selectio
             "id": "new",
             "version": 0,
             "digest": "new-digest",
+            "mermaid_code": "flowchart LR\n  N1[One] --> N2[Two]",
             "source_url": "/images/new.svg",
             "scene_ir": {
                 "coordinate_space": "normalized",
@@ -347,6 +882,7 @@ def test_source_overlay_rejects_stale_failed_and_empty_images_and_keeps_selectio
             "id": "missing",
             "version": 0,
             "digest": "missing-digest",
+            "mermaid_code": "flowchart LR\n  MISSING[Missing]",
             "source_url": "/images/missing.svg",
             "scene_ir": {
                 "coordinate_space": "normalized",
@@ -359,6 +895,7 @@ def test_source_overlay_rejects_stale_failed_and_empty_images_and_keeps_selectio
             "id": "empty",
             "version": 0,
             "digest": "empty-digest",
+            "mermaid_code": "flowchart LR\n  EMPTY[Empty]",
             "source_url": None,
             "scene_ir": {
                 "coordinate_space": "normalized",
@@ -378,6 +915,18 @@ const payload = JSON.parse(fs.readFileSync(0, "utf8"));
 const browser = await chromium.launch({ headless: true });
 try {
   const page = await browser.newPage({ viewport: { width: 900, height: 700 } });
+  let resolveOldDetailStarted;
+  let resolveOldImageStarted;
+  let releaseOldDetail;
+  let releaseOldImage;
+  let resolveOldDetail;
+  let resolveOldImage;
+  const oldDetailStarted = new Promise((resolve) => { resolveOldDetailStarted = resolve; });
+  const oldImageStarted = new Promise((resolve) => { resolveOldImageStarted = resolve; });
+  const oldDetailGate = new Promise((resolve) => { releaseOldDetail = resolve; });
+  const oldImageGate = new Promise((resolve) => { releaseOldImage = resolve; });
+  const oldDetailCompleted = new Promise((resolve) => { resolveOldDetail = resolve; });
+  const oldImageCompleted = new Promise((resolve) => { resolveOldImage = resolve; });
   await page.route("http://review.test/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/") return route.fulfill({ contentType: "text/html", body: payload.html });
@@ -390,16 +939,28 @@ try {
     if (path.startsWith("/api/diagrams/")) {
       const id = decodeURIComponent(path.split("/").at(-1));
       const diagram = payload.diagrams.find((item) => item.id === id);
+      if (id === "old") {
+        resolveOldDetailStarted();
+        await oldDetailGate;
+        await route.fulfill({
+          contentType: "application/json", body: JSON.stringify({ diagram }),
+        });
+        resolveOldDetail();
+        return;
+      }
       return route.fulfill({
         contentType: "application/json", body: JSON.stringify({ diagram }),
       });
     }
     if (path === "/images/old.svg") {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      return route.fulfill({
+      resolveOldImageStarted();
+      await oldImageGate;
+      await route.fulfill({
         contentType: "image/svg+xml",
         body: "<svg xmlns='http://www.w3.org/2000/svg' width='100' height='50'/>",
       });
+      resolveOldImage();
+      return;
     }
     if (path === "/images/new.svg") {
       return route.fulfill({
@@ -412,6 +973,7 @@ try {
   });
   await page.goto("http://review.test/", { waitUntil: "domcontentloaded" });
   await page.addStyleTag({ content: "#source-stage{width:600px;height:300px}" });
+  await Promise.all([oldDetailStarted, oldImageStarted]);
   await page.selectOption("#diagram-select", "new");
   await page.waitForFunction(() => {
     const image = document.getElementById("source-image");
@@ -419,13 +981,22 @@ try {
       && document.querySelectorAll("#provenance-overlay .node-box").length === 2
       && !document.getElementById("source-canvas").hidden;
   });
-  await page.waitForTimeout(650);
-  const staleSafe = await page.evaluate(() => {
+  releaseOldDetail();
+  releaseOldImage();
+  await Promise.all([oldDetailCompleted, oldImageCompleted]);
+  await page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
+  const staleSafe = await page.evaluate((expected) => {
     const image = document.getElementById("source-image");
     return image.naturalWidth === 240
       && image.getAttribute("src") === "/images/new.svg"
+      && document.getElementById("diagram-select").value === "new"
+      && document.getElementById("mermaid-editor").value === expected.mermaid
+      && JSON.stringify(JSON.parse(document.getElementById("ir-editor").value))
+        === JSON.stringify(expected.scene)
       && !document.querySelector("[data-node-id='OLD']");
-  });
+  }, { mermaid: payload.diagrams[1].mermaid_code, scene: payload.diagrams[1].scene_ir });
   await page.locator("#provenance-overlay [data-node-id='N2']").click();
   const clickSelection = await page.locator("#node-select").inputValue();
   await page.selectOption("#node-select", "N1");

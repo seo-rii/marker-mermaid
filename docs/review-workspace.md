@@ -23,6 +23,20 @@ normalized schema와 content-addressed snapshot으로 revision됩니다. code, I
 바뀐 revision은 원본 기반 점수를 자동 승계하지 않고
 `unscored_user_revision`으로 표시합니다.
 
+저장이 `422` 또는 다른 오류로 실패해도 두 editor의 local draft는 유지됩니다. `409`에서는
+최신 server revision의 version과 digest를 다시 불러오되 local draft는 덮어쓰지 않으며,
+충돌 draft의 저장은 잠급니다. 사용자가 `Reload latest`로 draft 폐기를 승인한 뒤의 다음 저장은
+갱신된 version/digest를 사용합니다. `Reload latest`는 server를 다시 조회하고 ID가 일치하는 상세
+응답을 받은 경우에만 local draft를 교체합니다. 충돌 refresh가 실패하면 draft와 저장 잠금을 유지합니다.
+일반 dirty draft는 `Discard draft`로 현재 로드된 revision을 복원할 수 있습니다. 대안 선택,
+승인·거절, undo/redo·restore, diagram 전환 등 editor 외부 작업은 dirty draft를 버리기
+전에 사용자 확인을 요구합니다. 전환 중 늦게 도착한 이전 diagram 응답은 request generation과
+diagram ID 검사로 무시합니다.
+
+초기 bootstrap과 diagram 목록은 summary일 뿐 편집 기준으로 사용하지 않습니다. 상세 bundle을
+성공적으로 읽기 전에는 editor, 명령, 후보 선택, 구조 변경, 승인·거절을 잠급니다. 상세 조회가
+실패하면 `Retry load`로 다시 불러올 수 있으며, 성공한 응답을 받은 뒤에만 mutation이 활성화됩니다.
+
 대안 후보 선택, 승인, 사유가 필수인 거절, undo/redo를 지원합니다. 승인은 저장 당시 성공 여부를
 신뢰하지 않고 현재 code를 strict validator로 다시 parse/render하며 새 SVG/PNG를 같은 revision에
 저장합니다. Validator가 없는 embedding에서는 승인 자체를 거부합니다. 최초 수정 시 원본 revision
