@@ -155,6 +155,8 @@ pixel 상한을 넘거나 Pillow decompression-bomb 판정이 나면 preview만 
 
 ## SVG 검사
 
+runtime의 `render_valid` 보고만 신뢰하지 않으며 비어 있지 않은 문자열 SVG artifact를 함께 요구합니다.
+누락·빈 문자열·공백뿐인 SVG는 사후 검사를 건너뛰지 않고 render 실패로 바꿉니다. 유효 artifact에는
 단일 SVG root와 dimension/viewBox를 요구합니다. script 계열 element, event handler attribute,
 외부 href, style attribute 및 `<style>` text의 외부 CSS를 거부합니다. strict profile은 `foreignObject`도 거부하며 runtime에서
 `htmlLabels: false`를 강제합니다. fragment reference인 `href="#local-id"`만 허용합니다.

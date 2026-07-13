@@ -22,7 +22,8 @@ Group 삭제는 member node/edge를 보존하면서 exact Scene↔subgraph block
 
 - 원본 이미지 보존은 끌 수 없습니다.
 - 자동 게시 코드는 사전 보안 검사, `mermaid.parse()`, `mermaid.render()`, 사후 SVG 검사를
-  모두 통과해야 합니다.
+  모두 통과해야 합니다. runtime이 render 성공을 보고해도 비어 있지 않은 SVG artifact가 없으면
+  render 실패로 처리합니다.
 - 후보 하나의 실패가 문서 전체를 실패시키지 않습니다.
 - `extended` 기본 budget은 type 2개, candidate 3개, repair 3회입니다.
 - 의미 점수가 없는 결과는 성공률을 부풀리지 않고 `U` 등급과 review 대상으로 둡니다.

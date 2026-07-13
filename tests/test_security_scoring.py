@@ -6,6 +6,7 @@ import pytest
 
 from marker_mermaid.config import MermaidConfig, PublishPolicy, SecurityProfile
 from marker_mermaid.models import MermaidCandidate
+from marker_mermaid.protocols import RuntimeResult
 from marker_mermaid.scoring import (
     aggregate_scores,
     decide_publication,
@@ -160,6 +161,37 @@ def test_svg_inspection_rejects_external_links_and_scripts():
     findings = inspect_svg(svg, SecurityProfile.STRICT)
     assert "rendered SVG contains an external href" in findings
     assert "rendered SVG contains forbidden <script>" in findings
+
+
+@pytest.mark.parametrize(
+    "svg",
+    [None, "", "  \n", b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>'],
+)
+def test_validator_rejects_runtime_render_success_without_non_empty_svg(svg):
+    class MissingSvgRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                syntax_valid=True,
+                render_valid=True,
+                diagram_type="flowchart-v2",
+                svg=svg,
+            )
+
+        def close(self):
+            pass
+
+    outcome = CandidateValidator(MissingSvgRuntime(), SecurityProfile.STRICT).validate(
+        "flowchart LR\nA --> B\n", 1
+    )
+
+    assert outcome.runtime.syntax_valid
+    assert not outcome.runtime.render_valid
+    assert outcome.runtime.svg is None
+    assert outcome.runtime.png is None
+    assert outcome.runtime.error == (
+        "Mermaid runtime reported render success without a non-empty SVG artifact"
+    )
+    assert outcome.warnings == ["rendered SVG artifact is missing or empty"]
 
 
 @pytest.mark.parametrize(

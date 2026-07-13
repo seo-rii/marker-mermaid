@@ -62,6 +62,7 @@
 - Serializer-aligned Event Modeling lane Scenes plus grammar-specific, fallback-safe special-label and accessibility neutralization.
 - Entity-shaped Flowchart source-text preservation, pre-normalization line/control rejection, and Event Modeling compatibility-glyph disclosure.
 - Ishikawa raw-line labels that begin with either reserved header token remain visible instead of being consumed by the lexer.
+- Runtime render success without a non-empty SVG artifact now fails the post-render security gate.
 
 ### Changed
 

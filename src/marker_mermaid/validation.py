@@ -237,7 +237,18 @@ class CandidateValidator:
             )
         runtime_result = self.runtime.validate_and_render(code, timeout_seconds)
         warnings: list[str] = []
-        if runtime_result.render_valid and runtime_result.svg:
+        if runtime_result.render_valid:
+            if not isinstance(runtime_result.svg, str) or not runtime_result.svg.strip():
+                warnings.append("rendered SVG artifact is missing or empty")
+                runtime_result = RuntimeResult(
+                    syntax_valid=runtime_result.syntax_valid,
+                    render_valid=False,
+                    diagram_type=runtime_result.diagram_type,
+                    error=(
+                        "Mermaid runtime reported render success without a non-empty SVG artifact"
+                    ),
+                )
+                return ValidationOutcome(runtime_result, warnings)
             warnings.extend(inspect_svg(runtime_result.svg, self.profile))
             if warnings:
                 runtime_result = RuntimeResult(
