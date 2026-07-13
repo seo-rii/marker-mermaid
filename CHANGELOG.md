@@ -57,6 +57,7 @@
 - Occurrence-preserving, resource-bounded OCR recall over generated node, relation, group, and Gantt labels instead of Mermaid metadata and identifiers.
 - Serializer-aware OCR text projection for Class members/cardinalities, ER attributes, and multi-event Timeline records.
 - Source-sized Review provenance overlays with Scene-coordinate view boxes and stale image-load isolation.
+- Emitted-serializer OCR projection for C4 architecture fallbacks and native Requirement diagrams.
 
 ### Changed
 

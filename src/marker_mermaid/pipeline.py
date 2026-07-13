@@ -1207,6 +1207,7 @@ class ReconstructionPipeline:
             generated_scene = source_scene.model_copy(deep=True)
         generated_texts = None
         generated_texts_over_budget = False
+        generated_text_projection_failed = False
         if generated_scene is not None:
             if typed_ir is not None:
                 semantic_labels = typed_ir_semantic_texts(diagram_type, typed_ir, generated_scene)
@@ -1216,13 +1217,17 @@ class ReconstructionPipeline:
                     (relation.label for relation in generated_scene.relations if relation.label),
                     (group.label for group in generated_scene.groups if group.label),
                 )
-            generated_texts = bounded_ocr_token_multiset(
-                semantic_labels,
-                max_texts=_MAX_OCR_REFERENCE_TEXTS,
-                max_chars=_MAX_OCR_REFERENCE_CHARS,
-                max_tokens=_MAX_OCR_REFERENCE_TOKENS,
-            )
-            if generated_texts is None:
+            try:
+                generated_texts = bounded_ocr_token_multiset(
+                    semantic_labels,
+                    max_texts=_MAX_OCR_REFERENCE_TEXTS,
+                    max_chars=_MAX_OCR_REFERENCE_CHARS,
+                    max_tokens=_MAX_OCR_REFERENCE_TOKENS,
+                )
+            except Exception as exc:
+                generated_text_projection_failed = True
+                warnings.append(f"generated semantic text projection was isolated: {exc}")
+            if generated_texts is None and not generated_text_projection_failed:
                 generated_texts_over_budget = True
                 warnings.append(
                     "generated semantic labels exceed the scoring budget; review is required"
@@ -1232,6 +1237,7 @@ class ReconstructionPipeline:
             if references.ocr_tokens is not None
             and not generated_texts_over_budget
             and not generated_scene_failed
+            and not generated_text_projection_failed
             else None
         )
         if recall is not None:
@@ -1274,7 +1280,11 @@ class ReconstructionPipeline:
                 scores["edge_agreement"] = edge
 
         aggregate = aggregate_scores(scores, self.config)
-        if generated_texts_over_budget or generated_scene_failed:
+        if (
+            generated_texts_over_budget
+            or generated_scene_failed
+            or generated_text_projection_failed
+        ):
             aggregate = None
         if references.warning is not None:
             aggregate = None

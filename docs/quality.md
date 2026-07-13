@@ -45,6 +45,15 @@ data-lineage, Venn까지 포함하며 typed record의 evidence ID를 보존합�
   typed semantic projection이 실제 serializer가 표시하는 Class field/method/parameter/cardinality,
   ER attribute type/name/key/comment, Timeline period/title/모든 event label을 OCR 비교에 추가합니다.
   이 projection도 생성 label 예산 안에서 소비되므로 큰 typed IR이 제한을 우회하지 못합니다.
+- Requested type이 fallback으로 방출되는 경우 projection은 요청 문법이 아니라 실제 emitted serializer를
+  따릅니다. C4는 architecture fallback에 남는 boundary와 service label만 세고 technology, relation
+  label, description은 제외합니다. Requirement는 serializer와 같은 normalized/collision-safe output ID,
+  requirement type·ID·text·risk·verification, element type·docref, relation type을 셉니다. 접근성 metadata와
+  serializer가 무시한 대체 label은 포함하지 않습니다. ID planning은 serializer와 projection이 같은
+  deterministic helper를 공유합니다.
+- Typed semantic projection이 malformed data나 adapter defect로 예외를 내면 해당 candidate의 OCR을
+  direct-code fallback으로 바꾸지 않습니다. 예외를 candidate warning으로 격리하고 aggregate를
+  unavailable로 유지하여 다른 candidate 선택과 문서 변환은 계속합니다.
 - numeric consistency는 source/generated 숫자 multiset의 precision·recall F1입니다. source에 실제
   숫자가 있을 때만 사용하며 추가 생성한 숫자도 precision을 낮춥니다. `accTitle`/`accDescr`/title
   metadata 안의 숫자는 chart data multiset에서 제외합니다.

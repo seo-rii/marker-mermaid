@@ -190,6 +190,118 @@ def test_serializer_aware_texts_exclude_hidden_generic_text_and_task_ids():
     assert ocr_recall(["Secret payload internal-id"], "", generated_texts=gantt_texts) == 0
 
 
+def test_c4_semantic_texts_follow_architecture_fallback_visible_labels_only():
+    ir = {
+        "title": "Hidden diagram title",
+        "elements": [
+            {"id": "user", "label": "User", "kind": "person"},
+            {
+                "id": "api",
+                "name": "Payment API",
+                "text": "Hidden element text",
+                "technology": "Hidden runtime",
+                "boundary": "payments",
+            },
+            {"id": "worker", "label": "Shared", "boundary": "core-boundary"},
+            {"id": "queue", "label": "Shared", "boundary": "core-boundary"},
+        ],
+        "boundaries": [
+            {"id": "payments", "label": "Payments"},
+            {"id": "core-boundary"},
+        ],
+        "relations": [
+            {
+                "source": "user",
+                "target": "api",
+                "label": "Hidden relation label",
+                "technology": "Hidden protocol",
+            }
+        ],
+    }
+    scene = typed_ir_to_scene("c4", ir)
+
+    assert scene is not None
+    texts = list(typed_ir_semantic_texts("c4", ir, scene))
+    assert texts == ["Payments", "core_boundary", "User", "Payment API", "Shared", "Shared"]
+    assert ocr_recall(["Shared Shared"], "", generated_texts=texts) == 1
+    assert (
+        ocr_recall(
+            [
+                "Hidden diagram title element text runtime relation label protocol",
+            ],
+            "",
+            generated_texts=texts,
+        )
+        == 0
+    )
+
+
+def test_requirement_semantic_texts_mirror_normalized_native_fields_and_defaults():
+    ir = {
+        "title": "Secret heading",
+        "requirements": [
+            {
+                "id": "REQ-1",
+                "requirement_id": "R-001",
+                "text": "User can pay",
+                "label": "Concealed primary caption",
+                "type": "functional",
+                "risk": "high",
+                "verify_method": "test",
+            },
+            {"id": "REQ 1", "label": "Backup path"},
+        ],
+        "elements": [
+            {
+                "id": "REQ_1",
+                "type": "system",
+                "label": "Concealed component caption",
+                "docref": "api.md",
+            }
+        ],
+        "relations": [
+            {
+                "source": "REQ_1",
+                "target": "REQ-1",
+                "type": "satisfies",
+                "label": "Concealed connector caption",
+            },
+            {"source": "REQ 1", "target": "REQ-1"},
+        ],
+    }
+    scene = typed_ir_to_scene("requirement", ir)
+
+    assert scene is not None
+    texts = list(typed_ir_semantic_texts("requirement", ir, scene))
+    assert texts == [
+        "REQ_1",
+        "Functional Requirement",
+        "R-001",
+        "User can pay",
+        "high",
+        "test",
+        "REQ_1_2",
+        "Requirement",
+        "REQ 1",
+        "Backup path",
+        "medium",
+        "analysis",
+        "element_REQ_1",
+        "system",
+        "api.md",
+        "satisfies",
+        "traces",
+    ]
+    assert (
+        ocr_recall(
+            ["Secret heading Concealed primary caption component connector"],
+            "",
+            generated_texts=texts,
+        )
+        == 0
+    )
+
+
 def test_planning_and_event_modeling_scenes_preserve_emitted_elements_and_evidence():
     timeline = typed_ir_to_scene(
         "timeline",

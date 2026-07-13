@@ -296,6 +296,32 @@ def test_pipeline_isolates_generated_scene_conversion_failure(fake_runtime, monk
     assert result.review_required
 
 
+def test_pipeline_isolates_generated_semantic_text_projection_failure(fake_runtime, monkeypatch):
+    def fail_text_projection(diagram_type, ir, scene):
+        yield from ()
+        raise ValueError("invalid semantic projection")
+
+    monkeypatch.setattr("marker_mermaid.pipeline.typed_ir_semantic_texts", fail_text_projection)
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation())],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (40, 20), "white"),
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert any(
+        "semantic text projection was isolated" in warning for warning in result.selected.warnings
+    )
+    assert result.review_required
+
+
 @pytest.mark.parametrize(
     ("policy", "sparse_semantic", "rich_semantic"),
     [
@@ -510,6 +536,67 @@ def test_attributed_timeline_typed_candidate_can_pass_extended_provenance_gate()
     assert result.selected.scores["visual_entailment_precision"] == 1
     assert result.selected.aggregate_score is not None
     assert result.publish
+
+
+def test_c4_pipeline_scores_only_architecture_fallback_visible_labels():
+    class ArchitectureRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="architecture",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    ir = {
+        "level": "container",
+        "elements": [
+            {"id": "user", "label": "User", "kind": "person", "evidence_ids": ["ocr"]},
+            {
+                "id": "api",
+                "name": "Payment API",
+                "kind": "container",
+                "technology": "Hidden runtime",
+                "boundary": "payments",
+                "evidence_ids": ["ocr"],
+            },
+            {
+                "id": "worker",
+                "label": "Worker",
+                "boundary": "payments",
+                "evidence_ids": ["ocr"],
+            },
+        ],
+        "boundaries": [{"id": "payments", "label": "Payments"}],
+        "relations": [{"source": "user", "target": "api", "label": "Hidden relation"}],
+    }
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["c4"], scores=[0.9]),
+        typed_candidates=[TypedIRCandidate(diagram_type="c4", ir=ir)],
+        evidence=[
+            VisualEvidence(
+                id="ocr",
+                kind="ocr_token",
+                text="Payments User Payment API Worker",
+                bbox=(0, 0, 50, 10),
+            )
+        ],
+    )
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(ArchitectureRuntime(), config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is not None
+    assert result.selected.emitted_diagram_type == "architecture"
+    assert result.selected.scores["ocr_recall"] == 1
+    assert result.selected.scores["visual_entailment_precision"] == 1
 
 
 def test_direct_structural_candidate_without_attribution_requires_review(fake_runtime):

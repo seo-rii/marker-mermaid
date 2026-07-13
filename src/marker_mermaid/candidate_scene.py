@@ -9,6 +9,7 @@ nodes use a shared origin so layout scoring remains unavailable.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from typing import Any
 
@@ -16,9 +17,15 @@ from marker_mermaid.flowchart_structure import (
     FlowchartStructureError,
     FlowchartStructurePlan,
     plan_flowchart_structure,
+    portable_identifier,
     prepare_swimlane_structure,
 )
 from marker_mermaid.models import DiagramSceneIR, SceneElement, SceneGroup, SceneRelation
+from marker_mermaid.serializers_phase2 import (
+    REQUIREMENT_TYPE_TOKENS,
+    plan_phase2_record_ids,
+    plan_requirement_records,
+)
 
 
 def _hierarchy_records(
@@ -495,6 +502,39 @@ def typed_ir_semantic_texts(
             for task_index, task in enumerate(section.get("tasks") or [], start=1):
                 if isinstance(task, dict):
                     yield str(task.get("label") or f"Task {task_index}")
+        return
+    if diagram_type == "c4":
+        for boundary_index, boundary in enumerate(ir.get("boundaries") or [], start=1):
+            if not isinstance(boundary, dict):
+                continue
+            source_id = str(boundary.get("id") or f"G{boundary_index}")
+            emitted_id = portable_identifier(source_id)
+            yield str(boundary.get("label") or emitted_id)
+        elements, _id_map = plan_phase2_record_ids(
+            ir.get("elements"), field="c4 IR", fallback_prefix="S"
+        )
+        for record, source_id, _output_id in elements:
+            yield str(record.get("label") or record.get("name") or source_id)
+        return
+    if diagram_type == "requirement":
+        requirements, elements, _id_map = plan_requirement_records(ir)
+        for record, source_id, output_id in requirements:
+            source_type = str(record.get("type") or "requirement").lower()
+            type_token = REQUIREMENT_TYPE_TOKENS.get(source_type, "requirement")
+            display_type = re.sub(r"(?<!^)(?=[A-Z])", " ", type_token).title()
+            yield output_id
+            yield display_type
+            yield str(record.get("requirement_id") or source_id)
+            yield str(record.get("text") or record.get("label"))
+            yield str(record.get("risk") or "medium")
+            yield str(record.get("verify_method") or record.get("verifymethod") or "analysis")
+        for record, source_id, output_id in elements:
+            yield output_id
+            yield str(record.get("type") or record.get("label") or "element")
+            yield str(record.get("docref") or source_id)
+        for relation in ir.get("relations") or []:
+            if isinstance(relation, dict):
+                yield str(relation.get("type") or "traces")
         return
 
     for element in scene.elements:

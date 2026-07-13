@@ -22,7 +22,7 @@ from marker_mermaid.serializers import (
 
 Phase2Serialization: TypeAlias = tuple[str, str, str | None]
 
-_REQUIREMENT_TYPES = {
+REQUIREMENT_TYPE_TOKENS = {
     "requirement": "requirement",
     "functional": "functionalRequirement",
     "functional_requirement": "functionalRequirement",
@@ -106,7 +106,7 @@ def _accessibility(ir: dict[str, Any], diagram_type: str, *, experimental: bool)
     ]
 
 
-def _records_with_ids(
+def plan_phase2_record_ids(
     records: Any, *, field: str, fallback_prefix: str
 ) -> tuple[list[tuple[dict[str, Any], str, str]], dict[str, str]]:
     if not isinstance(records, list) or not records:
@@ -130,6 +130,37 @@ def _records_with_ids(
     return normalized, id_map
 
 
+def plan_requirement_records(
+    ir: dict[str, Any],
+) -> tuple[
+    list[tuple[dict[str, Any], str, str]],
+    list[tuple[dict[str, Any], str, str]],
+    dict[str, str],
+]:
+    """Return the exact normalized requirement/element IDs used by serialization."""
+
+    requirements, requirement_ids = plan_phase2_record_ids(
+        ir.get("requirements"), field="requirement IR", fallback_prefix="R"
+    )
+    elements_raw = ir.get("elements", [])
+    if not isinstance(elements_raw, list):
+        raise SerializationError("requirement elements must be a list")
+    elements: list[tuple[dict[str, Any], str, str]] = []
+    element_ids: dict[str, str] = {}
+    if elements_raw:
+        elements, element_ids = plan_phase2_record_ids(
+            elements_raw, field="requirement elements", fallback_prefix="E"
+        )
+    if set(requirement_ids) & set(element_ids):
+        raise SerializationError("requirement and element source ids must be distinct")
+    if set(requirement_ids.values()) & set(element_ids.values()):
+        elements = [
+            (record, source_id, f"element_{output_id}") for record, source_id, output_id in elements
+        ]
+        element_ids = {source_id: output_id for _, source_id, output_id in elements}
+    return requirements, elements, {**requirement_ids, **element_ids}
+
+
 def _resolve_relation(
     relation: dict[str, Any], id_map: dict[str, str], *, field: str
 ) -> tuple[str, str]:
@@ -145,27 +176,7 @@ def _resolve_relation(
 
 
 def serialize_requirement(ir: dict[str, Any], *, experimental: bool = False) -> Phase2Serialization:
-    requirements, requirement_ids = _records_with_ids(
-        ir.get("requirements"), field="requirement IR", fallback_prefix="R"
-    )
-    elements_raw = ir.get("elements", [])
-    if not isinstance(elements_raw, list):
-        raise SerializationError("requirement elements must be a list")
-    elements: list[tuple[dict[str, Any], str, str]] = []
-    element_ids: dict[str, str] = {}
-    if elements_raw:
-        elements, element_ids = _records_with_ids(
-            elements_raw, field="requirement elements", fallback_prefix="E"
-        )
-    if set(requirement_ids) & set(element_ids):
-        raise SerializationError("requirement and element source ids must be distinct")
-    if set(requirement_ids.values()) & set(element_ids.values()):
-        # Re-normalize elements into a distinct deterministic namespace.
-        elements = [
-            (record, source_id, f"element_{output_id}") for record, source_id, output_id in elements
-        ]
-        element_ids = {source_id: output_id for _, source_id, output_id in elements}
-    id_map = {**requirement_ids, **element_ids}
+    requirements, elements, id_map = plan_requirement_records(ir)
     lines = [
         "requirementDiagram",
         *_accessibility(ir, "requirement", experimental=experimental),
@@ -175,7 +186,7 @@ def serialize_requirement(ir: dict[str, Any], *, experimental: bool = False) -> 
         lines.append(f"direction {direction}")
     for record, source_id, output_id in requirements:
         source_type = str(record.get("type") or "requirement").lower()
-        req_type = _REQUIREMENT_TYPES.get(source_type)
+        req_type = REQUIREMENT_TYPE_TOKENS.get(source_type)
         if req_type is None:
             raise SerializationError(
                 f"requirement {source_id!r} has unsupported type {source_type!r}"
@@ -230,7 +241,7 @@ def serialize_requirement(ir: dict[str, Any], *, experimental: bool = False) -> 
 
 def serialize_block(ir: dict[str, Any], *, experimental: bool = False) -> Phase2Serialization:
     del experimental  # See BLOCK_ACCESSIBILITY_LIMITATION.
-    blocks, id_map = _records_with_ids(ir.get("blocks"), field="block IR", fallback_prefix="B")
+    blocks, id_map = plan_phase2_record_ids(ir.get("blocks"), field="block IR", fallback_prefix="B")
     columns = ir.get("columns", "auto")
     if columns != "auto":
         try:
@@ -306,7 +317,9 @@ def serialize_c4_native(ir: dict[str, Any], *, experimental: bool = False) -> Ph
     header = _C4_HEADERS.get(level)
     if header is None:
         raise SerializationError("C4 level must be context, container, or component")
-    elements, id_map = _records_with_ids(ir.get("elements"), field="C4 IR", fallback_prefix="C")
+    elements, id_map = plan_phase2_record_ids(
+        ir.get("elements"), field="C4 IR", fallback_prefix="C"
+    )
     boundaries_raw = ir.get("boundaries", [])
     if not isinstance(boundaries_raw, list):
         raise SerializationError("C4 boundaries must be a list")
@@ -376,7 +389,7 @@ def _architecture_fallback(
     experimental: bool,
     limitation: str,
 ) -> Phase2Serialization:
-    normalized, id_map = _records_with_ids(
+    normalized, id_map = plan_phase2_record_ids(
         records, field=f"{requested_type} IR", fallback_prefix="S"
     )
     services: list[dict[str, Any]] = []
@@ -512,10 +525,10 @@ def serialize_component(ir: dict[str, Any], *, experimental: bool = False) -> Ph
 
 
 def serialize_usecase(ir: dict[str, Any], *, experimental: bool = False) -> Phase2Serialization:
-    actors, actor_ids = _records_with_ids(
+    actors, actor_ids = plan_phase2_record_ids(
         ir.get("actors"), field="use-case actors", fallback_prefix="Actor"
     )
-    use_cases, use_case_ids = _records_with_ids(
+    use_cases, use_case_ids = plan_phase2_record_ids(
         ir.get("use_cases"), field="use-case cases", fallback_prefix="UseCase"
     )
     if set(actor_ids) & set(use_case_ids):
