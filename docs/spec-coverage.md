@@ -33,7 +33,7 @@
 | Organization/Data Lineage | 구현 | TreeView/Flowchart portable fallback과 endpoint 검증 |
 | AST repair/mermaid-ast | 기반 | pre-validation bounded repair, event/history, AST adapter seam; mermaid-ast package adapter 후속 |
 | style recovery | 기반 | trusted PDF vector origin 기반 Flowchart node/group fill·border, bold label, edge color/style와 attribution 구현; raster group/lane과 chart series 후속 |
-| OCR recall | 구현 | bounded occurrence multisets, spatial/bbox-less dedup, structural/Gantt/Class/ER/Timeline 및 emitted C4·Requirement serializer-visible labels, invalid/error/over-budget review gate |
+| OCR recall | 구현 | bounded occurrence multisets, spatial/bbox-less dedup, structural/Gantt/Class/ER/Timeline 및 emitted C4·Requirement·EventModeling·Wardley·ZenUML serializer-visible labels, invalid/error/over-budget review gate |
 | numeric consistency | 구현 | source에 존재하는 숫자만 비교 |
 | edge agreement | 구현 | aligned topology F1, 불가 시 source/render edge IoU fallback |
 | visual entailment | 기반 | 생성 node evidence coverage proxy와 게시 gate; model scorer 후속 |

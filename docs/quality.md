@@ -25,6 +25,9 @@ layout을 추측하지 않습니다. Scene IR portable fallback은 deterministic
 있습니다. raw/direct Mermaid는 아직 일반 AST→Scene 변환이 없으므로 구조 점수가 unavailable일 수 있습니다.
 평가 Scene adapter는 sequence/ZenUML, hierarchy/organization, planning/event, Ishikawa, Wardley,
 data-lineage, Venn까지 포함하며 typed record의 evidence ID를 보존합니다.
+Event Modeling의 generated Scene은 fallback serializer와 같은 normalized frame ID, typed/time label,
+lane subgraph membership, `LR` 방향을 사용합니다. Wardley의 label 없는 component와 ZenUML의 label 없는
+participant도 임의 `text`가 아니라 serializer가 실제 표시하는 safe source ID를 사용합니다.
 
 ## 기존 metric과 결합
 
@@ -49,8 +52,11 @@ data-lineage, Venn까지 포함하며 typed record의 evidence ID를 보존합�
   따릅니다. C4는 architecture fallback에 남는 boundary와 service label만 세고 technology, relation
   label, description은 제외합니다. Requirement는 serializer와 같은 normalized/collision-safe output ID,
   requirement type·ID·text·risk·verification, element type·docref, relation type을 셉니다. 접근성 metadata와
-  serializer가 무시한 대체 label은 포함하지 않습니다. ID planning은 serializer와 projection이 같은
-  deterministic helper를 공유합니다.
+  serializer가 무시한 대체 label은 포함하지 않습니다. Event Modeling은 lane label과 실제 fallback의
+  time·frame type·label 조합 및 relation label, Wardley는 native title·component·link label, ZenUML은
+  Sequence fallback의 participant alias·message label만 셉니다. 내부 endpoint ID, 좌표, anchor 같은 문법
+  구조와 접근성 text는 OCR 의미 증거로 세지 않습니다. 각 유형의 record planning은 serializer와 projection이
+  같은 deterministic helper를 공유합니다.
 - Typed semantic projection이 malformed data나 adapter defect로 예외를 내면 해당 candidate의 OCR을
   direct-code fallback으로 바꾸지 않습니다. 예외를 candidate warning으로 격리하고 aggregate를
   unavailable로 유지하여 다른 candidate 선택과 문서 변환은 계속합니다.

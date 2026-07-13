@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import unicodedata
 from copy import deepcopy
+from xml.etree import ElementTree
 
 import pytest
 
@@ -240,7 +242,179 @@ def test_eventmodeling_edge_label_delimiters_are_encoded() -> None:
 
     result = serialize_special("eventmodeling", ir)
 
-    assert "|continue &#124; retry|" in result.code
+    assert "|continue ∣ retry|" in result.code
+
+
+@pytest.mark.integration
+def test_eventmodeling_neutralized_tokens_render_as_visible_labels() -> None:
+    ir = deepcopy(EVENTMODELING_IR)
+    ir["lanes"][0]["frames"][0]["time"] = "https://clock"
+    ir["lanes"][0]["frames"][0]["label"] = (
+        "style #checkout &amp; &quot; &lt;script&gt; &NewLine; ready"
+    )
+    ir["relations"][0]["label"] = "continue | retry"
+    code = serialize_special("eventmodeling", ir).code
+    runtime = NodeMermaidRuntime()
+    validator = CandidateValidator(runtime, SecurityProfile.STRICT)
+
+    try:
+        outcome = validator.validate(code, 20)
+    finally:
+        runtime.close()
+
+    assert outcome.runtime.syntax_valid, outcome.runtime.error
+    assert outcome.runtime.render_valid, outcome.runtime.error
+    visible_text = " ".join(ElementTree.fromstring(outcome.runtime.svg or "").itertext())
+    visible_text = " ".join(visible_text.replace("\u200b", "").split())
+    assert (
+        "https://clock — [ui] style #checkout &amp; &quot; &lt;script&gt; &NewLine; ready"
+        in visible_text
+    )
+    assert "continue ∣ retry" in visible_text
+    assert not any(entity in visible_text for entity in ("&#8203;", "&#35;", "&#58;", "&#124;"))
+
+
+@pytest.mark.integration
+def test_native_packet_and_treeview_preserve_safe_visible_and_accessible_text() -> None:
+    packet = deepcopy(PACKET_IR)
+    packet["title"] = 'Packet & title; "Q"'
+    packet["description"] = "See https://docs.invalid <guide>"
+    packet["fields"][0]["label"] = 'A & B; "Q" <x> #tag'
+    treeview = deepcopy(TREEVIEW_IR)
+    treeview["title"] = 'Tree & title; "Q"'
+    treeview["description"] = "See https://docs.invalid <guide>"
+    treeview["root"]["children"][0]["label"] = "A & B; <x> #tag"
+    cases = [
+        (serialize_special("packet", packet), 'A & B; "Q" <x> #tag'),
+        (serialize_special("treeview", treeview), "A & B; <x> #tag"),
+    ]
+    runtime = NodeMermaidRuntime()
+    validator = CandidateValidator(runtime, SecurityProfile.STRICT)
+
+    try:
+        outcomes = [(result, validator.validate(result.code, 20), label) for result, label in cases]
+    finally:
+        runtime.close()
+
+    for result, outcome, label in outcomes:
+        assert result.emitted_type == result.requested_type
+        assert outcome.runtime.syntax_valid, outcome.runtime.error
+        assert outcome.runtime.render_valid, outcome.runtime.error
+        root = ElementTree.fromstring(outcome.runtime.svg or "")
+        visible_text = " ".join(" ".join(root.itertext()).replace("\u200b", "").split())
+        assert label in visible_text
+        assert 'title; "Q"' in visible_text
+        assert "See https://docs.invalid <guide>" not in visible_text
+        assert "original accessibility text remains in review metadata" in visible_text
+        assert any("generic SVG description" in warning for warning in result.warnings)
+
+
+@pytest.mark.integration
+def test_special_character_loss_uses_safe_flowchart_fallback_without_raw_ir_leaks() -> None:
+    packet = deepcopy(PACKET_IR)
+    packet["fields"][0].update(start=1, end=1, label="https://packet.invalid <field>")
+    packet["fields"] = packet["fields"][:1]
+    treeview = deepcopy(TREEVIEW_IR)
+    treeview["root"]["children"][0]["label"] = 'Tree "quoted" \\ path'
+    ishikawa = deepcopy(ISHIKAWA_IR)
+    ishikawa["effect"]["label"] = "A & B <effect>"
+    cases = [
+        (serialize_special("packet", packet), "https://packet.invalid <field>"),
+        (serialize_special("treeview", treeview), "Tree ″quoted″ ∖ path"),
+        (serialize_special("ishikawa", ishikawa), "A & B <effect>"),
+    ]
+    runtime = NodeMermaidRuntime()
+    validator = CandidateValidator(runtime, SecurityProfile.STRICT)
+
+    try:
+        outcomes = [(result, validator.validate(result.code, 20), label) for result, label in cases]
+    finally:
+        runtime.close()
+
+    for result, outcome, label in outcomes:
+        assert result.emitted_type == "flowchart"
+        assert "flowchart" in result.fallback_chain
+        assert outcome.runtime.syntax_valid, (result.code, outcome.runtime.error)
+        assert outcome.runtime.render_valid, (result.code, outcome.runtime.error)
+        visible_text = " ".join(
+            " ".join(ElementTree.fromstring(outcome.runtime.svg or "").itertext())
+            .replace("\u200b", "")
+            .split()
+        )
+        assert label in visible_text
+        assert MermaidSecurityScanner(SecurityProfile.STRICT).scan(result.code).safe
+    assert any("compatibility glyphs" in warning for warning in cases[1][0].warnings)
+
+
+@pytest.mark.integration
+def test_ishikawa_comment_and_header_labels_remain_visible_native_text() -> None:
+    ir = deepcopy(ISHIKAWA_IR)
+    ir["effect"]["label"] = "%% hidden effect"
+    ir["categories"][0]["label"] = "ishikawa-beta"
+    ir["categories"][1]["label"] = "Ishikawa"
+    result = serialize_special("ishikawa", ir)
+    runtime = NodeMermaidRuntime()
+    validator = CandidateValidator(runtime, SecurityProfile.STRICT)
+
+    try:
+        outcome = validator.validate(result.code, 20)
+    finally:
+        runtime.close()
+
+    assert result.emitted_type == "ishikawa"
+    assert outcome.runtime.syntax_valid, outcome.runtime.error
+    assert outcome.runtime.render_valid, outcome.runtime.error
+    visible_text = " ".join(
+        " ".join(ElementTree.fromstring(outcome.runtime.svg or "").itertext())
+        .replace("\u200b", "")
+        .split()
+    )
+    assert "%% hidden effect" in visible_text
+    assert "ishikawa-beta" in visible_text
+    assert "Ishikawa" in visible_text
+
+
+def test_special_text_rejects_source_control_and_format_characters() -> None:
+    for label in (
+        "bad\x00label",
+        "bad\tlabel",
+        "bad\nlabel",
+        "bad\u200blabel",
+        "bad\u2028label",
+        "bad\u2029label",
+    ):
+        ir = deepcopy(EVENTMODELING_IR)
+        ir["lanes"][0]["frames"][0]["label"] = label
+        with pytest.raises(SerializationError, match="control characters"):
+            serialize_special("eventmodeling", ir)
+
+
+def test_eventmodeling_discloses_flowchart_compatibility_glyph_replacement() -> None:
+    ir = deepcopy(EVENTMODELING_IR)
+    ir["lanes"][0]["label"] = 'Customer "quoted"'
+    ir["lanes"][0]["frames"][0]["time"] = "T\\0"
+    ir["relations"][0]["label"] = 'continue "now"'
+
+    result = serialize_special("eventmodeling", ir)
+
+    assert 'subgraph lane_customer["Customer ″quoted″"]' in result.code
+    assert 'open["T∖0 — [ui] Open checkout"]' in result.code
+    assert "continue ″now″" in result.code
+    assert any("compatibility glyphs" in warning for warning in result.warnings)
+
+
+def test_eventmodeling_neutralization_stays_safe_after_nfkc() -> None:
+    ir = deepcopy(EVENTMODELING_IR)
+    ir["lanes"][0]["frames"][0]["label"] = "style https://docs.invalid #tag"
+    ir["relations"][0]["label"] = "continue | retry"
+    code = serialize_special("eventmodeling", ir).code
+
+    report = MermaidSecurityScanner(SecurityProfile.STRICT).scan(
+        unicodedata.normalize("NFKC", code)
+    )
+
+    assert report.safe, report.findings
+    assert "∣" in code
 
 
 def test_eventmodeling_rejects_unknown_types_references_and_id_collisions() -> None:

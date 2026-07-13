@@ -599,6 +599,166 @@ def test_c4_pipeline_scores_only_architecture_fallback_visible_labels():
     assert result.selected.scores["visual_entailment_precision"] == 1
 
 
+def test_eventmodeling_pipeline_scores_lane_typed_frame_and_relation_labels():
+    class FlowchartRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="flowchart-v2",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    ir = {
+        "lanes": [
+            {
+                "id": "customer",
+                "label": "Customer lane",
+                "frames": [
+                    {
+                        "id": "open",
+                        "type": "ui",
+                        "time": "T0",
+                        "label": "Open checkout",
+                        "evidence_ids": ["ocr"],
+                    }
+                ],
+            },
+            {
+                "id": "operations",
+                "frames": [
+                    {
+                        "id": "placed",
+                        "label": "Order placed",
+                        "evidence_ids": ["ocr"],
+                    }
+                ],
+            },
+        ],
+        "relations": [{"source": "open", "target": "placed", "label": "continue"}],
+    }
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["eventmodeling"], scores=[0.9]),
+        typed_candidates=[TypedIRCandidate(diagram_type="eventmodeling", ir=ir)],
+        evidence=[
+            VisualEvidence(
+                id="ocr",
+                kind="ocr_token",
+                text=("Customer lane T0 ui Open checkout operations unknown Order placed continue"),
+                bbox=(0, 0, 50, 10),
+            )
+        ],
+    )
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(FlowchartRuntime(), config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is not None
+    assert result.selected.emitted_diagram_type == "flowchart"
+    assert result.selected.scores["ocr_recall"] == 1
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "runtime_type", "emitted_type", "ir", "visible_text"),
+    [
+        (
+            "wardley",
+            "wardley",
+            "wardley",
+            {
+                "title": "Payment value chain",
+                "components": [
+                    {
+                        "id": "customer",
+                        "label": "Customer",
+                        "x": 0.9,
+                        "y": 0.8,
+                        "evidence_ids": ["ocr"],
+                    },
+                    {
+                        "id": "payment_api",
+                        "text": "Hidden component text",
+                        "x": 0.5,
+                        "y": 0.4,
+                        "evidence_ids": ["ocr"],
+                    },
+                ],
+                "links": [{"source": "customer", "target": "payment_api", "label": "requests"}],
+            },
+            "Payment value chain Customer payment_api requests",
+        ),
+        (
+            "zenuml",
+            "sequence",
+            "sequence",
+            {
+                "participants": [
+                    {"id": "InternalUser", "label": "Customer", "evidence_ids": ["ocr"]},
+                    {
+                        "id": "PaymentAPI",
+                        "text": "Hidden participant text",
+                        "evidence_ids": ["ocr"],
+                    },
+                ],
+                "messages": [
+                    {
+                        "source": "InternalUser",
+                        "target": "PaymentAPI",
+                        "label": "Authorize payment",
+                    }
+                ],
+            },
+            "Customer PaymentAPI Authorize payment",
+        ),
+    ],
+)
+def test_experimental_typed_pipeline_scores_emitted_visible_text(
+    diagram_type, runtime_type, emitted_type, ir, visible_text
+):
+    class TypedRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type=runtime_type,
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=[diagram_type], scores=[0.9]),
+        typed_candidates=[TypedIRCandidate(diagram_type=diagram_type, ir=ir)],
+        evidence=[
+            VisualEvidence(
+                id="ocr",
+                kind="ocr_token",
+                text=visible_text,
+                bbox=(0, 0, 50, 10),
+            )
+        ],
+    )
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(TypedRuntime(), config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is not None
+    assert result.selected.emitted_diagram_type == emitted_type
+    assert result.selected.scores["ocr_recall"] == 1
+
+
 def test_direct_structural_candidate_without_attribution_requires_review(fake_runtime):
     class DirectOnlyEngine:
         name = "direct-only"

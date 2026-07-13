@@ -1,3 +1,5 @@
+from collections import UserDict
+
 from marker_mermaid.candidate_scene import typed_ir_semantic_texts, typed_ir_to_scene
 from marker_mermaid.scoring import ocr_recall
 
@@ -295,6 +297,195 @@ def test_requirement_semantic_texts_mirror_normalized_native_fields_and_defaults
     assert (
         ocr_recall(
             ["Secret heading Concealed primary caption component connector"],
+            "",
+            generated_texts=texts,
+        )
+        == 0
+    )
+
+
+def test_eventmodeling_semantic_texts_mirror_lane_typed_frame_and_relation_labels():
+    ir = {
+        "title": "Hidden accessibility title",
+        "lanes": [
+            {
+                "id": "customer",
+                "label": "Customer lane",
+                "frames": [
+                    {
+                        "id": "source_internal",
+                        "type": "UI",
+                        "time": "https://clock",
+                        "label": "style #checkout",
+                        "text": "Hidden frame text",
+                    }
+                ],
+            },
+            {
+                "id": "operations",
+                "frames": [
+                    {
+                        "id": "target_internal",
+                        "label": "Order placed",
+                    }
+                ],
+            },
+        ],
+        "relations": [
+            {
+                "source": "source_internal",
+                "target": "target_internal",
+                "label": "continue | retry",
+                "text": "Hidden relation text",
+            }
+        ],
+    }
+    scene = typed_ir_to_scene("eventmodeling", ir)
+
+    assert scene is not None
+    assert [(element.id, element.text) for element in scene.elements] == [
+        ("source_internal", "https://clock — [ui] style #checkout"),
+        ("target_internal", "[unknown] Order placed"),
+    ]
+    assert [(group.id, group.label, group.member_ids) for group in scene.groups] == [
+        ("lane_customer", "Customer lane", ["source_internal"]),
+        ("lane_operations", "operations", ["target_internal"]),
+    ]
+    assert scene.reading_direction == "LR"
+    texts = list(typed_ir_semantic_texts("eventmodeling", ir, scene))
+    assert texts == [
+        "Customer lane",
+        "https://clock — [ui] style #checkout",
+        "operations",
+        "[unknown] Order placed",
+        "continue | retry",
+    ]
+    assert (
+        ocr_recall(
+            [
+                "Customer lane operations https clock ui style checkout unknown "
+                "Order placed continue retry"
+            ],
+            "",
+            generated_texts=texts,
+        )
+        == 1
+    )
+    assert ocr_recall(["8203 35 58 124"], "", generated_texts=texts) == 0
+    assert (
+        ocr_recall(
+            ["Concealed accessibility heading payload connector source_internal target_internal"],
+            "",
+            generated_texts=texts,
+        )
+        == 0
+    )
+
+
+def test_wardley_semantic_texts_include_native_title_and_visible_labels_only():
+    ir = {
+        "title": "Payment value chain",
+        "description": "Hidden accessibility description",
+        "components": [
+            {
+                "id": "internal_user",
+                "label": "Customer",
+                "text": "Hidden component text",
+                "x": 0.9,
+                "y": 0.8,
+                "anchor": True,
+            },
+            UserDict(
+                {
+                    "id": "payment_api",
+                    "text": "Hidden default component text",
+                    "x": 0.5,
+                    "y": 0.4,
+                    "evidence_ids": ["ocr-api"],
+                }
+            ),
+        ],
+        "links": [
+            {
+                "source": "internal_user",
+                "target": "payment_api",
+                "label": "requests",
+                "text": "Hidden link text",
+            }
+        ],
+    }
+    scene = typed_ir_to_scene("wardley", ir)
+
+    assert scene is not None
+    assert [(element.id, element.text) for element in scene.elements] == [
+        ("internal_user", "Customer"),
+        ("payment_api", "payment_api"),
+    ]
+    assert scene.elements[1].evidence_ids == ["ocr-api"]
+    texts = list(typed_ir_semantic_texts("wardley", ir, scene))
+    assert texts == ["Payment value chain", "Customer", "payment_api", "requests"]
+    assert (
+        ocr_recall(["Payment value chain Customer payment_api requests"], "", generated_texts=texts)
+        == 1
+    )
+    assert (
+        ocr_recall(
+            ["Hidden accessibility description component link internal_user anchor"],
+            "",
+            generated_texts=texts,
+        )
+        == 0
+    )
+
+
+def test_zenuml_semantic_texts_follow_sequence_fallback_aliases_and_messages():
+    ir = {
+        "title": "Hidden accessibility title",
+        "participants": [
+            {"id": "InternalUser", "label": "Customer", "text": "Hidden participant text"},
+            UserDict(
+                {
+                    "id": "PaymentAPI",
+                    "text": "Hidden default participant text",
+                    "evidence_ids": ["ocr-api"],
+                }
+            ),
+        ],
+        "messages": [
+            {
+                "source": "InternalUser",
+                "target": "PaymentAPI",
+                "label": "Authorize payment",
+                "text": "Hidden message text",
+            },
+            {
+                "source": "InternalUser",
+                "target": "PaymentAPI",
+                "label": "Authorize payment",
+            },
+        ],
+    }
+    scene = typed_ir_to_scene("zenuml", ir)
+
+    assert scene is not None
+    assert [(element.id, element.text) for element in scene.elements] == [
+        ("InternalUser", "Customer"),
+        ("PaymentAPI", "PaymentAPI"),
+    ]
+    assert scene.elements[1].evidence_ids == ["ocr-api"]
+    texts = list(typed_ir_semantic_texts("zenuml", ir, scene))
+    assert texts == ["Customer", "PaymentAPI", "Authorize payment", "Authorize payment"]
+    assert (
+        ocr_recall(
+            ["Customer PaymentAPI Authorize payment Authorize payment"],
+            "",
+            generated_texts=texts,
+        )
+        == 1
+    )
+    assert (
+        ocr_recall(
+            ["Hidden accessibility title participant message InternalUser"],
             "",
             generated_texts=texts,
         )

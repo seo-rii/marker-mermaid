@@ -62,19 +62,20 @@ def _coordinate(value: Any, field: str) -> str:
     return rendered if "." in rendered else f"{rendered}.0"
 
 
-def serialize_wardley(ir: Mapping[str, Any], *, experimental: bool = False) -> SerializationResult:
-    """Serialize explicitly positioned components without inferring coordinates."""
+def plan_wardley_records(
+    ir: Mapping[str, Any],
+) -> tuple[str | None, list[dict[str, str]], list[dict[str, str | None]]]:
+    """Validate and normalize the exact title, components, and links Wardley emits."""
 
+    title = _text(ir["title"], "title") if ir.get("title") is not None else None
     components = ir.get("components")
     if not isinstance(components, list) or not components:
         raise SerializationError("wardley IR requires components")
     if len(components) > MAX_ITEMS:
         raise SerializationError("wardley component limit exceeded")
-    lines = ["wardley-beta", *_accessibility(ir, "wardley", experimental=experimental)]
-    if ir.get("title") is not None:
-        lines.append(f"title {_text(ir['title'], 'title')}")
     tokens: dict[str, str] = {}
     labels: set[str] = set()
+    normalized_components: list[dict[str, str]] = []
     for index, component in enumerate(components):
         if not isinstance(component, Mapping):
             raise SerializationError("wardley components must be objects")
@@ -90,11 +91,14 @@ def serialize_wardley(ir: Mapping[str, Any], *, experimental: bool = False) -> S
         kind = "anchor" if component.get("anchor") is True else "component"
         x = _coordinate(component.get("x"), f"components[{index}].x")
         y = _coordinate(component.get("y"), f"components[{index}].y")
-        lines.append(f"{kind} {token} [{x}, {y}]")
+        normalized_components.append(
+            {"id": component_id, "label": label, "token": token, "kind": kind, "x": x, "y": y}
+        )
     links = ir.get("links", [])
     if not isinstance(links, list) or len(links) > MAX_ITEMS:
         raise SerializationError("wardley links must be a bounded list")
     seen_links: set[tuple[str, str]] = set()
+    normalized_links: list[dict[str, str | None]] = []
     for index, link in enumerate(links):
         if not isinstance(link, Mapping):
             raise SerializationError("wardley links must be objects")
@@ -105,13 +109,37 @@ def serialize_wardley(ir: Mapping[str, Any], *, experimental: bool = False) -> S
         if source == target or (source, target) in seen_links:
             raise SerializationError(f"duplicate or self Wardley link: {source}->{target}")
         seen_links.add((source, target))
-        suffix = ""
+        label = None
         if link.get("label") is not None:
             label = _text(link["label"], f"links[{index}].label")
             if any(char in label for char in ";\r\n"):
                 raise SerializationError("Wardley link labels cannot contain separators")
-            suffix = f"; {label}"
-        lines.append(f"{tokens[source]} -> {tokens[target]}{suffix}")
+        normalized_links.append(
+            {
+                "source": source,
+                "target": target,
+                "source_token": tokens[source],
+                "target_token": tokens[target],
+                "label": label,
+            }
+        )
+    return title, normalized_components, normalized_links
+
+
+def serialize_wardley(ir: Mapping[str, Any], *, experimental: bool = False) -> SerializationResult:
+    """Serialize explicitly positioned components without inferring coordinates."""
+
+    title, components, links = plan_wardley_records(ir)
+    lines = ["wardley-beta", *_accessibility(ir, "wardley", experimental=experimental)]
+    if title is not None:
+        lines.append(f"title {title}")
+    lines.extend(
+        f"{component['kind']} {component['token']} [{component['x']}, {component['y']}]"
+        for component in components
+    )
+    for link in links:
+        suffix = f"; {link['label']}" if link["label"] is not None else ""
+        lines.append(f"{link['source_token']} -> {link['target_token']}{suffix}")
     return SerializationResult.native("wardley", "\n".join(lines) + "\n", stability="experimental")
 
 
@@ -236,8 +264,10 @@ def serialize_railroad(ir: Mapping[str, Any], *, experimental: bool = False) -> 
     return SerializationResult.native("railroad", "\n".join(lines) + "\n", stability="experimental")
 
 
-def serialize_zenuml(ir: Mapping[str, Any], *, experimental: bool = False) -> SerializationResult:
-    """Emit sequence-like ZenUML evidence through the bundled sequence grammar."""
+def plan_zenuml_records(
+    ir: Mapping[str, Any],
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """Validate and normalize the participant/message records the fallback emits."""
 
     participants = ir.get("participants")
     messages = ir.get("messages")
@@ -247,8 +277,8 @@ def serialize_zenuml(ir: Mapping[str, Any], *, experimental: bool = False) -> Se
         raise SerializationError("zenuml IR requires messages")
     if len(participants) + len(messages) > MAX_ITEMS:
         raise SerializationError("zenuml IR exceeds the item limit")
-    lines = ["sequenceDiagram", *_accessibility(ir, "zenuml", experimental=experimental)]
     participant_ids: set[str] = set()
+    normalized_participants: list[dict[str, str]] = []
     for index, participant in enumerate(participants):
         if isinstance(participant, Mapping):
             participant_id = _identifier(participant.get("id"), f"participants[{index}].id")
@@ -259,7 +289,10 @@ def serialize_zenuml(ir: Mapping[str, Any], *, experimental: bool = False) -> Se
         if participant_id in participant_ids:
             raise SerializationError(f"duplicate ZenUML participant: {participant_id}")
         participant_ids.add(participant_id)
-        lines.append(f"    participant {participant_id} as {_text(label, 'participant label')}")
+        normalized_participants.append(
+            {"id": participant_id, "label": _text(label, "participant label")}
+        )
+    normalized_messages: list[dict[str, str]] = []
     for index, message in enumerate(messages):
         if not isinstance(message, Mapping):
             raise SerializationError("zenuml messages must be objects")
@@ -268,7 +301,22 @@ def serialize_zenuml(ir: Mapping[str, Any], *, experimental: bool = False) -> Se
         if source not in participant_ids or target not in participant_ids:
             raise SerializationError(f"ZenUML message {source}->{target} is unresolved")
         label = _text(message.get("label"), f"messages[{index}].label")
-        lines.append(f"    {source}->>{target}: {label}")
+        normalized_messages.append({"source": source, "target": target, "label": label})
+    return normalized_participants, normalized_messages
+
+
+def serialize_zenuml(ir: Mapping[str, Any], *, experimental: bool = False) -> SerializationResult:
+    """Emit sequence-like ZenUML evidence through the bundled sequence grammar."""
+
+    participants, messages = plan_zenuml_records(ir)
+    lines = ["sequenceDiagram", *_accessibility(ir, "zenuml", experimental=experimental)]
+    lines.extend(
+        f"    participant {participant['id']} as {participant['label']}"
+        for participant in participants
+    )
+    lines.extend(
+        f"    {message['source']}->>{message['target']}: {message['label']}" for message in messages
+    )
     return SerializationResult.fallback(
         "zenuml",
         "sequence",

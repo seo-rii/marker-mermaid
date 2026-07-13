@@ -30,6 +30,17 @@ native C4는 Mermaid 11.16에서 parse/render되지만 생성 SVG가 undeclared 
 `style-only`은 마지막 세 Mermaid style statement만 허용하고 외부 URL/CSS는 계속 거부합니다.
 `trusted-local`은 자동 Markdown에 게시할 수 없습니다.
 
+Specialized typed serializer의 label에 위 token이 관찰돼도 active statement로 방출하지 않습니다.
+keyword와 URL-like token 내부의 zero-width separator는 scanner와 parser 양쪽에서 동작을 비활성화하고,
+Flowchart label의 source `&`도 entity로 재해석되지 않도록 같은 방식으로 분리합니다. Event Modeling edge의
+`|`는 NFKC로 delimiter가 되돌아오지 않는 `∣`로 표시합니다. source가 제공한 control/format 문자와
+line/paragraph separator는 공백 정규화 전에 거부하므로 invisible character를 이용해 검사 규칙을 우회할
+수 없습니다. Packet,
+TreeView, Ishikawa는 각 native grammar의 실제 SVG text 동작에 맞춘 encoder를 사용하며 보존할 수 없는
+문자는 검증 가능한 Flowchart fallback과 compatibility warning으로 전환합니다. unsafe 접근성 원문은
+typed IR/review metadata에만 유지하고 자동 SVG에는 generic 문구를 넣습니다. native/fallback label과
+SVG title/description은 pinned Mermaid integration test로 검사합니다.
+
 Style recovery는 Scene IR 값을 그대로 CSS로 복사하지 않습니다. Node와 edge는 exact built-in PDF vector
 engine이 현재 source block에서 새로 등록한 collision-free contour/line과 bbox/endpoint ownership을
 증명해야 하며 edge는 source/vector/generated/code 네 방향 표현도 일치해야 합니다. 그 trusted vector

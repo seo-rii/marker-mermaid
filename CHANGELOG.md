@@ -58,6 +58,10 @@
 - Serializer-aware OCR text projection for Class members/cardinalities, ER attributes, and multi-event Timeline records.
 - Source-sized Review provenance overlays with Scene-coordinate view boxes and stale image-load isolation.
 - Emitted-serializer OCR projection for C4 architecture fallbacks and native Requirement diagrams.
+- Emitted-visible OCR projection for Event Modeling, Wardley, and ZenUML fallbacks/native output.
+- Serializer-aligned Event Modeling lane Scenes plus grammar-specific, fallback-safe special-label and accessibility neutralization.
+- Entity-shaped Flowchart source-text preservation, pre-normalization line/control rejection, and Event Modeling compatibility-glyph disclosure.
+- Ishikawa raw-line labels that begin with either reserved header token remain visible instead of being consumed by the lexer.
 
 ### Changed
 
