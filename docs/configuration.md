@@ -17,9 +17,14 @@ repair 횟수는 structured `RepairEngine` proposal 상한입니다. Marker 기�
 evidence-backed Flowchart repair engine을 구성합니다. Label은 trusted Marker OCR 또는 exact built-in Vector
 text가 source block/bbox와 일치할 때만 교정합니다. Marker processor에서는 built-in Geometry relation이
 단독으로 지지하고 engine 간 방향 충돌이 없는 reversed edge와 무라벨 missing edge도 교정할 수 있습니다.
+기존 conditional edge의 label은 trusted OCR/vector text와 unique built-in Geometry connector가 각각 text와
+방향·위치를 독립적으로 지지하고, source/typed edge가 같은 exact 방향으로 하나씩만 존재할 때 label-only로
+교정합니다. Typed label이 비어 있거나 source label과 유사한 오타일 때만 허용하며 의미가 다른 기존 label은
+덮어쓰지 않습니다.
 Fixture CLI는 JSON이 trust를 스스로 선언하지 못하도록 connector topology repair를 활성화하지 않으며 label
-fixture도 trusted Marker/Vector provenance가 없으면 자동 교정하지 않습니다. Node/conditional/layout repair는
-아직 기본 연결하지 않습니다.
+fixture도 trusted Marker/Vector provenance가 없으면 자동 교정하지 않습니다. 누락 node, conditional topology,
+endpoint·방향 변경, 새 branch와 Yes/No 의미 추론, parallel relation, layout repair는 아직 기본 연결하지
+않습니다.
 
 ## 게시 정책
 

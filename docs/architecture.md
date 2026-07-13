@@ -41,7 +41,7 @@ flowchart TB
 | `flowchart_structure.py` | node/group ID와 flat disjoint subgraph membership의 공용 emission plan |
 | `serializers*.py`, `serialization.py` | software/chart typed IR, requested/emitted type와 fallback 계약 |
 | `ast_repair.py` | 의미를 추가하지 않는 bounded lexical/structural repair와 AST adapter seam |
-| `semantic_repair.py` | exact text와 고신뢰 line/arrow 근거가 있는 typed flowchart label·directed-edge 교정 |
+| `semantic_repair.py` | exact text와 고신뢰 line/arrow 근거가 있는 typed flowchart node/conditional-edge label·directed-edge 교정 |
 | `style_recovery.py` | trusted PDF vector origin/profile-gated flowchart node·group fill/border/bold와 exact-mapped edge color/style attribution |
 | `security.py` | active/external Mermaid syntax의 fail-closed 검사 |
 | `validation.py` | bounded nonblocking Chromium protocol, parse/render, SVG 재검사, process-group 정리 |
@@ -61,6 +61,10 @@ exact OCR/vector label과 내장 Geometry engine에서 온 동일 source block�
 방향 반전·무라벨 누락 edge만 다룹니다. Connector evidence ID가 충돌하거나 VLM이 새로 선언한 경우에는 구조
 수정 권한을 부여하지 않으며 fusion 전 engine 방향 충돌도 별도 pair set으로 보존해 repair를 막습니다. Label
 evidence도 초기 Marker OCR 또는 exact Vector engine만 trust하고 ID collision/source block/bbox를 확인합니다.
+기존 조건 분기 edge label은 trusted OCR/vector text와 unique built-in Geometry connector가 동시에 지지하고
+source/typed endpoint가 같은 방향으로 1:1 대응할 때만 label-only로 교정합니다. 이 경로는 topology, node,
+endpoint, 방향, layout을 바꾸지 않으며 새 branch나 Yes/No 의미를 추론하지 않고 parallel/reversed edge를
+거부합니다.
 Repair typed IR은 입력 resource budget과 deterministic code 동기화를 다시 검증합니다. 테스트와 offline
 재현은 Marker/LLM/Chromium을 각각 fake로 대체할 수 있습니다.
 

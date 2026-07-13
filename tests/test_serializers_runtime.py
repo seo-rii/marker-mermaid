@@ -84,6 +84,56 @@ def test_flowchart_groups_are_emitted_as_subgraphs():
 
 
 @pytest.mark.integration
+def test_labeled_flowchart_connector_styles_parse_and_render_in_real_mermaid():
+    cases = [
+        (
+            {
+                "source": "A",
+                "target": "B",
+                "label": "Retry",
+                "style": "dashed",
+            },
+            "A -.->|Retry| B",
+        ),
+        (
+            {
+                "source": "A",
+                "target": "B",
+                "label": "Sync",
+                "bidirectional": True,
+            },
+            "A <-->|Sync| B",
+        ),
+    ]
+    runtime = NodeMermaidRuntime()
+    validator = CandidateValidator(runtime, SecurityProfile.STRICT)
+    try:
+        for edge, expected in cases:
+            code = serialize_flowchart(
+                {
+                    "nodes": [
+                        {"id": "A", "label": "Start"},
+                        {"id": "B", "label": "End"},
+                    ],
+                    "edges": [edge],
+                }
+            )
+            assert expected in code
+            outcome = validator.validate(code, 20)
+            assert outcome.runtime.syntax_valid, (code, outcome.runtime.error)
+            assert outcome.runtime.render_valid, (
+                code,
+                outcome.runtime.error,
+                outcome.warnings,
+            )
+    finally:
+        process = runtime._process
+        runtime.close()
+    assert process is not None
+    assert process.poll() is not None
+
+
+@pytest.mark.integration
 def test_phase_one_serializers_parse_and_render_in_real_mermaid():
     runtime = NodeMermaidRuntime()
     validator = CandidateValidator(runtime, SecurityProfile.STRICT)

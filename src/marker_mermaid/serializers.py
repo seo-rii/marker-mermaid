@@ -124,7 +124,7 @@ def serialize_flowchart(ir: dict[str, Any], *, experimental: bool = False) -> st
         if edge.get("bidirectional"):
             arrow = "<-->"
         label = edge.get("label")
-        connector = f"-->|{_text(label)}|" if label else arrow
+        connector = f"{arrow}|{_text(label)}|" if label else arrow
         lines.append(f"    {source} {connector} {target}")
     return "\n".join(lines) + "\n"
 

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import math
 import unicodedata
+from difflib import SequenceMatcher
 
 from marker_mermaid.accessibility import (
     EXPERIMENTAL_NOTICE,
@@ -202,9 +204,7 @@ class EvidenceBackedFlowchartRepair:
             return label_proposal
         known_node_ids = set(node_ids)
         typed_nodes_by_id = {str(node["id"]): node for node in nodes}
-        source_elements_by_id = {
-            element.id: element for element in candidate.scene_ir.elements
-        }
+        source_elements_by_id = {element.id: element for element in candidate.scene_ir.elements}
 
         edges_by_pair: dict[frozenset[str], list[tuple[str, str, dict[str, object]]]] = {}
         for edge in edges:
@@ -223,9 +223,7 @@ class EvidenceBackedFlowchartRepair:
 
         evidence_by_id = {item.id: item for item in context.evidence}
         context_blocks = set(context.source_block_ids)
-        trusted_relations_by_pair: dict[
-            frozenset[str], list[tuple[str, str, frozenset[str]]]
-        ] = {}
+        trusted_relations_by_pair: dict[frozenset[str], list[tuple[str, str, frozenset[str]]]] = {}
         for source_id, target_id, evidence_ids in context.trusted_connector_relations:
             pair = frozenset({source_id, target_id})
             trusted_relations_by_pair.setdefault(pair, []).append(
@@ -239,46 +237,31 @@ class EvidenceBackedFlowchartRepair:
                 or relation.source_id == relation.target_id
                 or relation.source_id not in known_node_ids
                 or relation.target_id not in known_node_ids
+                or relation.source_id not in source_elements_by_id
+                or relation.target_id not in source_elements_by_id
             ):
                 continue
             key = frozenset({relation.source_id, relation.target_id})
             relations_by_pair.setdefault(key, []).append(relation)
 
-        strong_relations: list[tuple[SceneRelation, list[str]]] = []
-        for relations in relations_by_pair.values():
-            relation = relations[0] if len(relations) == 1 else None
-            if relation is None:
-                continue
-            pair = frozenset({relation.source_id, relation.target_id})
-            if pair in context.conflicted_connector_pairs:
-                continue
-            relation_type = relation.relation_type.casefold()
-            source_element = source_elements_by_id[relation.source_id]
-            typed_source = typed_nodes_by_id[relation.source_id]
-            source_node_signals = {
-                str(source_element.role or "").casefold(),
-                str(source_element.shape or "").casefold(),
-                str(typed_source.get("role") or "").casefold(),
-                str(typed_source.get("shape") or "").casefold(),
-                str(typed_source.get("type") or "").casefold(),
-            }
-            if (
-                relation.arrow_at_start
-                or not relation.arrow_at_end
-                or relation.confidence < 0.6
-                or relation.label is not None
-                or relation.semantic_relation == "conditional"
-                or any(
-                    marker in relation_type
-                    for marker in ("branch", "conditional", "decision", "gateway")
+        relation_evidence_use_count: dict[str, int] = {}
+        for relation in candidate.scene_ir.relations:
+            for evidence_id in set(relation.evidence_ids):
+                relation_evidence_use_count[evidence_id] = (
+                    relation_evidence_use_count.get(evidence_id, 0) + 1
                 )
-                or any(
-                    marker in signal
-                    for signal in source_node_signals
-                    for marker in ("decision", "diamond", "gateway")
-                )
-            ):
+
+        trusted_connector_support_by_pair: dict[
+            frozenset[str], tuple[list[str], set[str], list[VisualEvidence]]
+        ] = {}
+        trusted_connector_segments_by_pair: dict[
+            frozenset[str],
+            list[tuple[tuple[float, float], tuple[float, float]]],
+        ] = {}
+        for pair, relations in relations_by_pair.items():
+            if len(relations) != 1 or pair in context.conflicted_connector_pairs:
                 continue
+            relation = relations[0]
             relation_evidence = set(relation.evidence_ids)
             trusted_relations = trusted_relations_by_pair.get(pair, [])
             if len(trusted_relations) != 1:
@@ -290,8 +273,8 @@ class EvidenceBackedFlowchartRepair:
                 or not trusted_evidence_ids.issubset(relation_evidence)
             ):
                 continue
-            line_evidence = []
-            arrow_evidence = []
+            line_evidence: list[VisualEvidence] = []
+            arrow_evidence: list[VisualEvidence] = []
             for evidence_id in sorted(trusted_evidence_ids):
                 evidence = evidence_by_id.get(evidence_id)
                 if (
@@ -323,13 +306,249 @@ class EvidenceBackedFlowchartRepair:
             shared_blocks = line_blocks.intersection(arrow_blocks)
             if not line_evidence or not arrow_evidence or not shared_blocks:
                 continue
-            line_evidence.sort(key=lambda item: item.id)
-            arrow_evidence.sort(key=lambda item: item.id)
+            shared_lines = [
+                evidence
+                for evidence in line_evidence
+                if shared_blocks.intersection(evidence.source_block_ids)
+            ]
             supporting_ids = [
                 evidence.id
                 for evidence in [*line_evidence, *arrow_evidence]
                 if shared_blocks.intersection(evidence.source_block_ids)
             ]
+            trusted_connector_support_by_pair[pair] = (
+                supporting_ids,
+                shared_blocks,
+                shared_lines,
+            )
+            trusted_connector_segments_by_pair[pair] = [
+                (start, end)
+                for start, end in zip(
+                    relation.polyline,
+                    relation.polyline[1:],
+                    strict=False,
+                )
+                if start != end
+            ]
+
+        edge_label_corrections: list[dict[str, object]] = []
+        for pair, relations in relations_by_pair.items():
+            if len(relations) != 1:
+                continue
+            relation = relations[0]
+            relation_type = relation.relation_type.casefold()
+            relation_type_tokens = set(
+                relation_type.replace("-", "_").replace("/", "_").replace(" ", "_").split("_")
+            )
+            if relation.semantic_relation != "conditional" and (
+                relation.semantic_relation != "unknown"
+                or relation_type_tokens.intersection({"unconditional", "nonconditional"})
+                or not relation_type_tokens.intersection(
+                    {"branch", "conditional", "decision", "gateway"}
+                )
+            ):
+                continue
+            after = relation.label.strip() if relation.label else ""
+            if (
+                not after
+                or relation.arrow_at_start
+                or not relation.arrow_at_end
+                or relation.confidence < 0.6
+            ):
+                continue
+            connector_support = trusted_connector_support_by_pair.get(pair)
+            if connector_support is None:
+                continue
+            connector_ids, connector_blocks, _ = connector_support
+            pair_edges = edges_by_pair.get(pair, [])
+            exact_edges = [
+                edge
+                for edge_source, edge_target, edge in pair_edges
+                if edge_source == relation.source_id and edge_target == relation.target_id
+            ]
+            if len(pair_edges) != 1 or len(exact_edges) != 1:
+                continue
+            edge = exact_edges[0]
+            if any(
+                field in edge and not isinstance(edge[field], bool)
+                for field in ("bidirectional", "arrow_at_start", "arrow_at_end")
+            ):
+                continue
+            if (
+                edge.get("bidirectional")
+                or edge.get("arrow_at_start")
+                or edge.get("arrow_at_end") is False
+            ):
+                continue
+            typed_semantic = edge.get("semantic_relation")
+            if typed_semantic is not None and not isinstance(typed_semantic, str):
+                continue
+            if typed_semantic not in {None, "", "unknown", "conditional"}:
+                continue
+            raw_before = edge.get("label")
+            if raw_before is not None and not isinstance(raw_before, str):
+                continue
+            before = raw_before.strip() if isinstance(raw_before, str) else None
+            before = before or None
+            normalized_after = _normalized(after)
+            if before:
+                normalized_before = _normalized(before)
+                if normalized_before == normalized_after:
+                    continue
+                if (
+                    not normalized_before
+                    or SequenceMatcher(
+                        None,
+                        normalized_before,
+                        normalized_after,
+                    ).ratio()
+                    < 0.6
+                ):
+                    continue
+            existing_evidence_ids = edge.get("evidence_ids", [])
+            if not isinstance(existing_evidence_ids, list) or not all(
+                isinstance(item, str) for item in existing_evidence_ids
+            ):
+                continue
+            label_evidence_ids: list[str] = []
+            for evidence_id in relation.evidence_ids:
+                evidence = evidence_by_id.get(evidence_id)
+                if (
+                    evidence is None
+                    or evidence_id not in context.trusted_label_evidence_ids
+                    or relation_evidence_use_count.get(evidence_id) != 1
+                    or evidence.bbox is None
+                    or not evidence.text
+                    or _normalized(evidence.text) != normalized_after
+                    or not connector_blocks.intersection(evidence.source_block_ids)
+                ):
+                    continue
+                if evidence.kind == "ocr_token":
+                    if evidence.score is None or evidence.score < 0.8:
+                        continue
+                elif evidence.kind != "vector_text":
+                    continue
+                width = evidence.bbox[2] - evidence.bbox[0]
+                height = evidence.bbox[3] - evidence.bbox[1]
+                thickness = min(width, height)
+                if thickness <= 0:
+                    continue
+                center = (
+                    (evidence.bbox[0] + evidence.bbox[2]) / 2,
+                    (evidence.bbox[1] + evidence.bbox[3]) / 2,
+                )
+                if any(
+                    element.bbox[0] <= center[0] <= element.bbox[2]
+                    and element.bbox[1] <= center[1] <= element.bbox[3]
+                    for element in candidate.scene_ir.elements
+                ):
+                    continue
+                max_distance = 2.0 * thickness
+                spatially_supported_pairs: set[frozenset[str]] = set()
+                for (
+                    support_pair,
+                    (_, support_blocks, support_lines),
+                ) in trusted_connector_support_by_pair.items():
+                    if not support_blocks.intersection(evidence.source_block_ids):
+                        continue
+                    if not any(
+                        line.bbox is not None
+                        and min(line.bbox[0], line.bbox[2]) - max_distance
+                        <= center[0]
+                        <= max(line.bbox[0], line.bbox[2]) + max_distance
+                        and min(line.bbox[1], line.bbox[3]) - max_distance
+                        <= center[1]
+                        <= max(line.bbox[1], line.bbox[3]) + max_distance
+                        for line in support_lines
+                    ):
+                        continue
+                    support_segments = trusted_connector_segments_by_pair[support_pair]
+                    segment_distances: list[float] = []
+                    for start, end in support_segments:
+                        dx = end[0] - start[0]
+                        dy = end[1] - start[1]
+                        length_squared = dx * dx + dy * dy
+                        if length_squared == 0:
+                            distance = math.hypot(
+                                center[0] - start[0],
+                                center[1] - start[1],
+                            )
+                        else:
+                            ratio = max(
+                                0.0,
+                                min(
+                                    1.0,
+                                    ((center[0] - start[0]) * dx + (center[1] - start[1]) * dy)
+                                    / length_squared,
+                                ),
+                            )
+                            distance = math.hypot(
+                                center[0] - (start[0] + ratio * dx),
+                                center[1] - (start[1] + ratio * dy),
+                            )
+                        segment_distances.append(distance)
+                    if segment_distances and min(segment_distances) <= max_distance:
+                        spatially_supported_pairs.add(support_pair)
+                if spatially_supported_pairs != {pair}:
+                    continue
+                label_evidence_ids.append(evidence_id)
+            label_evidence_ids = list(dict.fromkeys(label_evidence_ids))
+            if not label_evidence_ids:
+                continue
+            edge["label"] = after
+            edge["evidence_ids"] = list(
+                dict.fromkeys([*existing_evidence_ids, *label_evidence_ids, *connector_ids])
+            )
+            edge_label_corrections.append(
+                {
+                    "operation": "relabel_conditional_edge",
+                    "edge_id": edge.get("id"),
+                    "relation_id": relation.id,
+                    "source": relation.source_id,
+                    "target": relation.target_id,
+                    "before": before,
+                    "after": after,
+                    "label_evidence_ids": label_evidence_ids,
+                    "connector_evidence_ids": connector_ids,
+                }
+            )
+
+        strong_relations: list[tuple[SceneRelation, list[str]]] = []
+        for pair, relations in relations_by_pair.items():
+            relation = relations[0] if len(relations) == 1 else None
+            if relation is None:
+                continue
+            relation_type = relation.relation_type.casefold()
+            source_element = source_elements_by_id[relation.source_id]
+            typed_source = typed_nodes_by_id[relation.source_id]
+            source_node_signals = {
+                str(source_element.role or "").casefold(),
+                str(source_element.shape or "").casefold(),
+                str(typed_source.get("role") or "").casefold(),
+                str(typed_source.get("shape") or "").casefold(),
+                str(typed_source.get("type") or "").casefold(),
+            }
+            if (
+                relation.arrow_at_start
+                or not relation.arrow_at_end
+                or relation.confidence < 0.6
+                or relation.label is not None
+                or relation.semantic_relation == "conditional"
+                or any(
+                    marker in relation_type
+                    for marker in ("branch", "conditional", "decision", "gateway")
+                )
+                or any(
+                    marker in signal
+                    for signal in source_node_signals
+                    for marker in ("decision", "diamond", "gateway")
+                )
+            ):
+                continue
+            connector_support = trusted_connector_support_by_pair.get(pair)
+            if connector_support is None:
+                continue
+            supporting_ids, _, _ = connector_support
             strong_relations.append((relation, supporting_ids))
 
         structural_corrections: list[dict[str, object]] = []
@@ -420,7 +639,7 @@ class EvidenceBackedFlowchartRepair:
                 }
             )
 
-        if not structural_corrections:
+        if not structural_corrections and not edge_label_corrections:
             return label_proposal
 
         experimental = EXPERIMENTAL_NOTICE in str(candidate.typed_ir.get("acc_description") or "")
@@ -450,9 +669,7 @@ class EvidenceBackedFlowchartRepair:
         if serialized.emitted_type != candidate.emitted_diagram_type:
             return label_proposal
         label_corrections = (
-            label_proposal.details.get("corrections", [])
-            if label_proposal is not None
-            else []
+            label_proposal.details.get("corrections", []) if label_proposal is not None else []
         )
         return RepairProposal(
             code=serialized.code,
@@ -460,6 +677,7 @@ class EvidenceBackedFlowchartRepair:
             typed_ir=updated_ir,
             details={
                 "label_corrections": label_corrections,
+                "edge_label_corrections": edge_label_corrections,
                 "structural_corrections": structural_corrections,
             },
         )

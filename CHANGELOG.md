@@ -49,6 +49,8 @@
 - Provenance-backed Review edge creation and exact-mapped deletion with global topology preflight.
 - Exact-mapped Review group deletion that preserves member nodes, edges, provenance, and layout.
 - Trusted-geometry-backed typed Flowchart direction reversal and unlabeled missing-edge repair with shared source-block attribution and collision revocation.
+- Dual-gated typed Flowchart conditional-edge label-only repair from trusted OCR/vector text and one conflict-free built-in Geometry connector, without topology or direction inference.
+- Labeled Flowchart serialization that retains dashed and bidirectional connector operators.
 - Shared deterministic Flowchart group emission plans with validated flat subgraphs and generated SceneGroup reconstruction.
 - Trusted vector-container Flowchart group style recovery with exact membership, bbox, collision, and audit gates.
 - Trusted vector-origin gates and explicit attribution for Flowchart node and edge styles.

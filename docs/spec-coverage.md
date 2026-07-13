@@ -38,7 +38,7 @@
 | edge agreement | 구현 | aligned topology F1, 불가 시 source/render edge IoU fallback |
 | visual entailment | 기반 | 생성 node evidence coverage proxy와 게시 gate; model scorer 후속 |
 | arrow/layout/path score | 구현 | explicit-arrow/path F1, relative layout; 근거 부족 시 unavailable |
-| render-and-compare repair | 기반 | trusted text label과 conflict-free built-in Geometry reversed·unlabeled-missing edge repair, IR/code/resource 재검증과 공통 재평가; node/conditional/layout patch 후속 |
+| render-and-compare repair | 기반 | trusted text label, unique built-in Geometry connector와 결합한 existing conditional edge label-only, conflict-free reversed·unlabeled-missing edge repair, IR/code/resource 재검증과 공통 재평가; node/conditional topology·endpoint·direction·new branch·Yes-No inference·parallel/layout patch 후속 |
 | atomic sidecars | 구현 | preflight, manifest/hash/alternatives/provenance/source affine map |
 | Review Workspace | 구현 | source-sized Scene-coordinate provenance/node overlay와 OCR/vector label 선택, bounds-normalized difference blend, 실패 bundle bootstrap, summary mutation lock, guarded draft/conflict reload, dirty-discard·stale-response 방어, 대안 선택, 승인/거절, active revision timeline과 canonical append-only log를 보존하는 newest-first 100개 audit view |
 | code/IR/provenance revision | 구현 | strict code/Scene/evidence schema, content-addressed provenance, 0.3 lazy migration, rollback/undo/redo와 active timeline restore |
