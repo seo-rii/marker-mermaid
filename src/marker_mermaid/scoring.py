@@ -5,23 +5,124 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections import Counter
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
 from marker_mermaid.config import MermaidConfig, PublishPolicy, quality_grade
 from marker_mermaid.models import MermaidCandidate
 
 
-def _tokens(text: str) -> set[str]:
+def _tokens(text: str) -> Iterator[str]:
     normalized = unicodedata.normalize("NFKC", text).casefold()
-    return {token for token in re.findall(r"[\w가-힣ぁ-んァ-ン一-龥]+", normalized) if token}
+    return (
+        match.group(0)
+        for match in re.finditer(r"[\w가-힣ぁ-んァ-ン一-龥]+", normalized)
+        if match.group(0)
+    )
 
 
-def ocr_recall(source_texts: list[str], mermaid_code: str) -> float | None:
-    source = set().union(*(_tokens(text) for text in source_texts)) if source_texts else set()
+def ocr_token_multiset(texts: Iterable[str]) -> Counter[str]:
+    """Return a Unicode-normalized token multiset without collapsing occurrences."""
+
+    return Counter(token for text in texts for token in _tokens(text))
+
+
+def bounded_ocr_token_multiset(
+    texts: Iterable[str],
+    *,
+    max_texts: int,
+    max_chars: int,
+    max_tokens: int,
+) -> Counter[str] | None:
+    """Tokenize within a fixed work budget, returning ``None`` instead of truncating."""
+
+    result: Counter[str] = Counter()
+    char_count = 0
+    token_count = 0
+    for text_count, text in enumerate(texts, start=1):
+        char_count += len(text)
+        if text_count > max_texts or char_count > max_chars:
+            return None
+        for token in _tokens(text):
+            token_count += 1
+            if token_count > max_tokens:
+                return None
+            result[token] += 1
+    return result
+
+
+def _direct_mermaid_label_texts(code: str) -> list[str]:
+    """Extract a conservative label subset from raw Mermaid without counting IDs/metadata."""
+
+    labels: list[str] = []
+    quoted = re.compile(r'"(?P<label>(?:[^"\\]|\\.)*)"')
+    metadata = re.compile(
+        r"^\s*(?:accTitle|accDescr|title)\s*:|^\s*(?:flowchart|graph|sequenceDiagram|"
+        r"stateDiagram(?:-v2)?|classDiagram|erDiagram|mindmap|timeline|gantt|pie|"
+        r"xychart-beta|quadrantChart|sankey-beta)\b",
+        re.IGNORECASE,
+    )
+    first_content = next(
+        (
+            line.strip().casefold()
+            for line in code.splitlines()
+            if line.strip() and not line.lstrip().startswith("%%")
+        ),
+        "",
+    )
+    is_gantt = first_content == "gantt"
+    for line in code.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("%%") or metadata.search(stripped):
+            continue
+        if is_gantt:
+            section = re.match(r"section\s+(?P<label>.+)$", stripped, re.IGNORECASE)
+            if section:
+                labels.append(section["label"].strip())
+                continue
+            if re.match(
+                r"(?:dateFormat|axisFormat|tickInterval|excludes|todayMarker|title)\b",
+                stripped,
+                re.IGNORECASE,
+            ):
+                continue
+            if ":" in line:
+                task_label, _fields = line.split(":", 1)
+                if task_label.strip():
+                    labels.append(task_label.strip())
+                continue
+        if re.match(r"(?:style|classDef|linkStyle|class)\b", stripped, re.IGNORECASE):
+            continue
+        labels.extend(match["label"] for match in quoted.finditer(line))
+        if ":" in line and not quoted.search(line):
+            _prefix, suffix = line.split(":", 1)
+            if suffix.strip():
+                labels.append(suffix.strip())
+    return labels
+
+
+def ocr_recall(
+    source_texts: Counter[str] | Iterable[str],
+    mermaid_code: str,
+    *,
+    generated_texts: Counter[str] | Iterable[str] | None = None,
+) -> float | None:
+    source = (
+        source_texts.copy()
+        if isinstance(source_texts, Counter)
+        else ocr_token_multiset(source_texts)
+    )
     if not source:
         return None
-    generated = _tokens(mermaid_code)
-    return len(source & generated) / len(source)
+    if isinstance(generated_texts, Counter):
+        generated = generated_texts.copy()
+    else:
+        generated = ocr_token_multiset(
+            generated_texts
+            if generated_texts is not None
+            else _direct_mermaid_label_texts(mermaid_code)
+        )
+    return sum((source & generated).values()) / source.total()
 
 
 def numeric_consistency(source_texts: list[str], mermaid_code: str) -> float | None:

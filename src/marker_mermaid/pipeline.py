@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass
+from itertools import chain
 from typing import Literal
 
 from PIL import Image, ImageChops, ImageFilter, ImageOps
@@ -50,6 +52,7 @@ from marker_mermaid.quality import (
 )
 from marker_mermaid.scoring import (
     aggregate_scores,
+    bounded_ocr_token_multiset,
     decide_publication,
     numeric_consistency,
     ocr_recall,
@@ -93,6 +96,71 @@ class _CandidateEvaluation:
     aggregate_score: float | None
     warnings: list[str]
     generated_scene_ir: DiagramSceneIR | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ReferenceTexts:
+    general: list[str]
+    ocr_tokens: Counter[str] | None
+    warning: str | None = None
+
+
+_MAX_OCR_REFERENCE_TEXTS = 50_000
+_MAX_OCR_REFERENCE_CHARS = 1_000_000
+_MAX_OCR_REFERENCE_TOKENS = 100_000
+
+
+def _reference_text_sets(ocr_texts: list[str], evidence: list[VisualEvidence]) -> _ReferenceTexts:
+    """Return general source text plus occurrence-preserving OCR recall tokens."""
+
+    budget_warning = (
+        "OCR/vector reference text exceeds the semantic scoring budget; review is required"
+    )
+    if len(ocr_texts) > _MAX_OCR_REFERENCE_TEXTS:
+        return _ReferenceTexts([], None, budget_warning)
+    reference_chars = sum(len(text) for text in ocr_texts)
+    if reference_chars > _MAX_OCR_REFERENCE_CHARS:
+        return _ReferenceTexts([], None, budget_warning)
+    evidence_texts: list[str] = []
+    seen_observations: set[tuple[str, object]] = set()
+    for item in evidence:
+        if not item.text or item.kind not in {"ocr_token", "vector_text"}:
+            continue
+        normalized = unicodedata.normalize("NFKC", item.text).casefold().strip()
+        location: object = tuple(item.bbox) if item.bbox is not None else None
+        key = (normalized, location)
+        if not normalized or key in seen_observations:
+            continue
+        seen_observations.add(key)
+        reference_chars += len(item.text)
+        if (
+            len(ocr_texts) + len(evidence_texts) + 1 > _MAX_OCR_REFERENCE_TEXTS
+            or reference_chars > _MAX_OCR_REFERENCE_CHARS
+        ):
+            return _ReferenceTexts([], None, budget_warning)
+        evidence_texts.append(item.text)
+    general = list(dict.fromkeys([*ocr_texts, *evidence_texts]))
+    token_budget = {
+        "max_texts": _MAX_OCR_REFERENCE_TEXTS,
+        "max_chars": _MAX_OCR_REFERENCE_CHARS,
+        "max_tokens": _MAX_OCR_REFERENCE_TOKENS,
+    }
+    context_tokens = bounded_ocr_token_multiset(ocr_texts, **token_budget)
+    evidence_tokens = bounded_ocr_token_multiset(evidence_texts, **token_budget)
+    if context_tokens is None or evidence_tokens is None:
+        return _ReferenceTexts(
+            [],
+            None,
+            "OCR/vector reference tokens exceed the semantic scoring budget; review is required",
+        )
+    merged_tokens: Counter[str] = context_tokens | evidence_tokens
+    if merged_tokens.total() > _MAX_OCR_REFERENCE_TOKENS:
+        return _ReferenceTexts(
+            [],
+            None,
+            "OCR/vector reference tokens exceed the semantic scoring budget; review is required",
+        )
+    return _ReferenceTexts(general, merged_tokens)
 
 
 def _edge_iou(source: Image.Image, rendered: bytes | None) -> float | None:
@@ -208,8 +276,7 @@ def _generated_node_provenance_score(
     safe_source_by_id = {
         source_id: element
         for source_id, element in source_by_id.items()
-        if source_id not in ambiguous_source_ids
-        and source_id not in ambiguous_emitted_ids
+        if source_id not in ambiguous_source_ids and source_id not in ambiguous_emitted_ids
     }
     source_by_portable_id = {
         emitted_id: source_by_id[source_id]
@@ -226,9 +293,7 @@ def _generated_node_provenance_score(
         if known.intersection(element.evidence_ids):
             supported += 1
             continue
-        source_element = safe_source_by_id.get(element.id) or source_by_portable_id.get(
-            element.id
-        )
+        source_element = safe_source_by_id.get(element.id) or source_by_portable_id.get(element.id)
         if source_element is None:
             matches = source_by_label.get(_normalized_label(element.text), [])
             source_element = matches[0] if len(matches) == 1 else None
@@ -384,9 +449,7 @@ class ReconstructionPipeline:
         )
 
         successful_observations: list[tuple[str, str, EngineObservation]] = []
-        observed_relation_directions: dict[
-            frozenset[str], set[tuple[str, str, bool, bool]]
-        ] = {}
+        observed_relation_directions: dict[frozenset[str], set[tuple[str, str, bool, bool]]] = {}
         view_type_hints: list[str] = []
         for engine in self.engines:
             try:
@@ -542,10 +605,7 @@ class ReconstructionPipeline:
                     if not (
                         relation.source_id in vector_elements_by_id
                         and relation.target_id in vector_elements_by_id
-                        and (
-                            relation.line_color
-                            or relation.line_style in {"dashed", "thick"}
-                        )
+                        and (relation.line_color or relation.line_style in {"dashed", "thick"})
                     ):
                         continue
                     for evidence_id in relation.evidence_ids:
@@ -553,16 +613,10 @@ class ReconstructionPipeline:
                             evidence_id in new_trusted_vector_lines
                             and line_reference_counts.get(evidence_id) == 1
                         ):
-                            trusted_edge_style_evidence[evidence_id] = (
-                                TrustedEdgeStyleEvidence(
-                                    relation=relation.model_copy(deep=True),
-                                    source_bbox=vector_elements_by_id[
-                                        relation.source_id
-                                    ].bbox,
-                                    target_bbox=vector_elements_by_id[
-                                        relation.target_id
-                                    ].bbox,
-                                )
+                            trusted_edge_style_evidence[evidence_id] = TrustedEdgeStyleEvidence(
+                                relation=relation.model_copy(deep=True),
+                                source_bbox=vector_elements_by_id[relation.source_id].bbox,
+                                target_bbox=vector_elements_by_id[relation.target_id].bbox,
                             )
             if trusted_geometry_engine and observation.scene_ir is not None:
                 for relation in observation.scene_ir.relations:
@@ -744,26 +798,24 @@ class ReconstructionPipeline:
             draft_groups = remaining_groups
 
         candidates: list[MermaidCandidate] = []
-        reference_texts = list(
-            dict.fromkeys(
-                [
-                    *context.ocr_texts,
-                    *(
-                        item.text
-                        for item in all_evidence
-                        if item.text and item.kind in {"ocr_token", "vector_text"}
-                    ),
-                ]
-            )
-        )
+        references = _reference_text_sets(context.ocr_texts, all_evidence)
         for index, draft in enumerate(drafts, start=1):
-            if self.config.enable_style_recovery:
+            style_preflight_warnings: list[str] = []
+            if (
+                self.config.enable_style_recovery
+                and len(draft.code) <= self.config.max_mermaid_chars
+            ):
                 style_candidate_scene = None
                 if draft.typed_ir is not None:
-                    style_candidate_scene = typed_ir_to_scene(
-                        draft.diagram_type,
-                        draft.typed_ir,
-                    )
+                    try:
+                        style_candidate_scene = typed_ir_to_scene(
+                            draft.diagram_type,
+                            draft.typed_ir,
+                        )
+                    except Exception as exc:
+                        style_preflight_warnings.append(
+                            f"style recovery scene conversion was isolated: {exc}"
+                        )
                 elif draft.method == "scene_ir_fallback" and draft.observation.scene_ir is not None:
                     style_candidate_scene = draft.observation.scene_ir.model_copy(deep=True)
                 style_recovery = recover_flowchart_styles(
@@ -831,6 +883,10 @@ class ReconstructionPipeline:
                 styled_code = draft.code
                 style_recovery = None
                 style_repair_history = []
+                if self.config.enable_style_recovery:
+                    style_preflight_warnings.append(
+                        "style recovery skipped because Mermaid source exceeds the resource limit"
+                    )
             source_repair = self.source_repair.repair(styled_code)
             repair_accepted = bool(
                 source_repair.changed
@@ -878,6 +934,7 @@ class ReconstructionPipeline:
                     *view_warnings,
                     *draft.observation.warnings,
                     *(draft.warnings or []),
+                    *style_preflight_warnings,
                     *(style_recovery.warnings if style_recovery is not None else ()),
                     *source_repair_warnings,
                 ],
@@ -1050,7 +1107,7 @@ class ReconstructionPipeline:
                 typed_ir=draft.typed_ir,
                 source_scene=draft.observation.scene_ir,
                 evidence=all_evidence,
-                reference_texts=reference_texts,
+                references=references,
                 type_fitness=type_fitness,
                 image=context.image,
             )
@@ -1102,9 +1159,7 @@ class ReconstructionPipeline:
         return max(
             eligible,
             key=lambda item: (
-                int(decide_publication(item, self.config).publish)
-                if automatic_publication
-                else 0,
+                int(decide_publication(item, self.config).publish) if automatic_publication else 0,
                 item.aggregate_score if item.aggregate_score is not None else -1,
                 item.scores.get("ocr_recall", -1),
                 priority.get(item.generation_method, 0),
@@ -1124,7 +1179,7 @@ class ReconstructionPipeline:
         typed_ir: dict | None,
         source_scene: DiagramSceneIR | None,
         evidence: list[VisualEvidence],
-        reference_texts: list[str],
+        references: _ReferenceTexts,
         type_fitness: float | None,
         image: Image.Image,
     ) -> _CandidateEvaluation:
@@ -1135,20 +1190,52 @@ class ReconstructionPipeline:
             "render": float(render_valid),
         }
         warnings: list[str] = []
-        recall = ocr_recall(reference_texts, code)
-        if recall is not None:
-            scores["ocr_recall"] = recall
-        numeric = numeric_consistency(reference_texts, code)
-        if numeric is not None and diagram_type in _NUMERIC_TYPES:
-            scores["numeric_consistency"] = numeric
         if type_fitness is not None:
             scores["type_fitness"] = type_fitness
-
+        if not syntax_valid or not render_valid:
+            warnings.append("semantic scoring skipped because parse/render validation failed")
+            return _CandidateEvaluation(scores, None, warnings, None)
         generated_scene = None
+        generated_scene_failed = False
         if typed_ir is not None:
-            generated_scene = typed_ir_to_scene(diagram_type, typed_ir)
+            try:
+                generated_scene = typed_ir_to_scene(diagram_type, typed_ir)
+            except Exception as exc:
+                generated_scene_failed = True
+                warnings.append(f"generated semantic scene conversion was isolated: {exc}")
         elif method == "scene_ir_fallback" and source_scene is not None:
             generated_scene = source_scene.model_copy(deep=True)
+        generated_texts = None
+        generated_texts_over_budget = False
+        if generated_scene is not None:
+            semantic_labels = chain(
+                (element.text for element in generated_scene.elements if element.text),
+                (relation.label for relation in generated_scene.relations if relation.label),
+                (group.label for group in generated_scene.groups if group.label),
+            )
+            generated_texts = bounded_ocr_token_multiset(
+                semantic_labels,
+                max_texts=_MAX_OCR_REFERENCE_TEXTS,
+                max_chars=_MAX_OCR_REFERENCE_CHARS,
+                max_tokens=_MAX_OCR_REFERENCE_TOKENS,
+            )
+            if generated_texts is None:
+                generated_texts_over_budget = True
+                warnings.append(
+                    "generated semantic labels exceed the scoring budget; review is required"
+                )
+        recall = (
+            ocr_recall(references.ocr_tokens, code, generated_texts=generated_texts)
+            if references.ocr_tokens is not None
+            and not generated_texts_over_budget
+            and not generated_scene_failed
+            else None
+        )
+        if recall is not None:
+            scores["ocr_recall"] = recall
+        numeric = numeric_consistency(references.general, code)
+        if numeric is not None and diagram_type in _NUMERIC_TYPES:
+            scores["numeric_consistency"] = numeric
         provenance = _generated_node_provenance_score(
             generated_scene,
             source_scene,
@@ -1184,6 +1271,11 @@ class ReconstructionPipeline:
                 scores["edge_agreement"] = edge
 
         aggregate = aggregate_scores(scores, self.config)
+        if generated_texts_over_budget or generated_scene_failed:
+            aggregate = None
+        if references.warning is not None:
+            aggregate = None
+            warnings.append(references.warning)
         if self.config.mode != Mode.STRICT and diagram_type in _PROVENANCE_GATED_TYPES:
             if provenance is None:
                 aggregate = None
@@ -1216,18 +1308,7 @@ class ReconstructionPipeline:
 
     def _repair(self, context: SourceContext, selected: MermaidCandidate) -> MermaidCandidate:
         current = selected
-        reference_texts = list(
-            dict.fromkeys(
-                [
-                    *context.ocr_texts,
-                    *(
-                        item.text
-                        for item in context.evidence
-                        if item.text and item.kind in {"ocr_token", "vector_text"}
-                    ),
-                ]
-            )
-        )
+        references = _reference_text_sets(context.ocr_texts, context.evidence)
         for iteration in range(1, int(self.config.max_repair_iterations or 0) + 1):
             try:
                 proposal = self.repair_engine.repair(context, current)  # type: ignore[union-attr]
@@ -1342,7 +1423,7 @@ class ReconstructionPipeline:
                 typed_ir=validated_ir,
                 source_scene=current.scene_ir,
                 evidence=context.evidence,
-                reference_texts=reference_texts,
+                references=references,
                 type_fitness=current.scores.get("type_fitness"),
                 image=context.image,
             )

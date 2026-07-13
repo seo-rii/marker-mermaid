@@ -103,6 +103,199 @@ def test_pipeline_selects_valid_candidate_and_respects_budget(fake_runtime):
     assert "Start" in result.selected.typed_ir["acc_description"]
 
 
+def test_pipeline_ocr_recall_uses_generated_labels_and_spatial_occurrence_max(fake_runtime):
+    repeated = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[0.9]),
+        scene_ir=DiagramSceneIR(
+            elements=[
+                SceneElement(
+                    id="A",
+                    role="node",
+                    text="X",
+                    bbox=(0, 0, 10, 10),
+                    evidence_ids=["ocr-1"],
+                )
+            ]
+        ),
+        typed_candidates=[
+            TypedIRCandidate(
+                diagram_type="flowchart",
+                ir={
+                    "nodes": [{"id": "A", "label": "X", "evidence_ids": ["ocr-1"]}],
+                    "edges": [],
+                },
+            )
+        ],
+        evidence=[
+            VisualEvidence(id="ocr-1", kind="ocr_token", text="X", bbox=(0, 0, 1, 1)),
+            VisualEvidence(id="ocr-2", kind="ocr_token", text="X", bbox=(2, 0, 3, 1)),
+            VisualEvidence(id="ocr-3", kind="ocr_token", text="X", bbox=(4, 0, 5, 1)),
+            VisualEvidence(
+                id="vector-duplicate",
+                kind="vector_text",
+                text="X",
+                bbox=(0, 0, 1, 1),
+            ),
+        ],
+    )
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(repeated)],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (40, 20), "white"),
+        ocr_texts=["X X"],
+    )
+
+    assert result.selected is not None
+    assert result.selected.scores["ocr_recall"] == pytest.approx(1 / 3)
+
+
+def test_pipeline_ocr_recall_includes_generated_relation_and_group_labels(fake_runtime):
+    labeled_structure = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[0.9]),
+        scene_ir=DiagramSceneIR(
+            elements=[
+                SceneElement(id="A", role="node", text="Start", bbox=(0, 0, 1, 1)),
+                SceneElement(id="B", role="node", text="End", bbox=(2, 0, 3, 1)),
+            ],
+            relations=[
+                SceneRelation(
+                    id="edge",
+                    source_id="A",
+                    target_id="B",
+                    relation_type="arrow",
+                    label="Approved",
+                )
+            ],
+        ),
+        typed_candidates=[
+            TypedIRCandidate(
+                diagram_type="flowchart",
+                ir={
+                    "nodes": [
+                        {"id": "A", "label": "Start"},
+                        {"id": "B", "label": "End"},
+                    ],
+                    "edges": [{"source": "A", "target": "B", "label": "Approved"}],
+                    "groups": [{"id": "G", "label": "Payment lane", "member_ids": ["A", "B"]}],
+                },
+            )
+        ],
+    )
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(labeled_structure)],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (40, 20), "white"),
+        ocr_texts=["Start End Approved Payment lane"],
+    )
+
+    assert result.selected is not None
+    assert result.selected.scores["ocr_recall"] == 1
+
+
+def test_pipeline_deduplicates_bboxless_evidence_occurrences(fake_runtime):
+    repeated = observation()
+    repeated.evidence = [
+        VisualEvidence(id="ocr-a", kind="ocr_token", text="Start"),
+        VisualEvidence(id="ocr-b", kind="vector_text", text="Start"),
+    ]
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(repeated)],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (40, 20), "white"),
+    )
+
+    assert result.selected is not None
+    assert result.selected.scores["ocr_recall"] == 1
+
+
+def test_pipeline_marks_oversized_ocr_reference_scoring_unavailable(fake_runtime, monkeypatch):
+    monkeypatch.setattr("marker_mermaid.pipeline._MAX_OCR_REFERENCE_CHARS", 3)
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation())],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (40, 20), "white"),
+        ocr_texts=["Start"],
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert "ocr_recall" not in result.selected.scores
+    assert any("semantic scoring budget" in warning for warning in result.selected.warnings)
+    assert result.review_required
+
+
+def test_pipeline_marks_oversized_generated_semantic_labels_unavailable(fake_runtime, monkeypatch):
+    oversized = observation()
+    oversized.typed_candidates[0].ir["nodes"][0]["label"] = "Very long generated label"
+    monkeypatch.setattr("marker_mermaid.pipeline._MAX_OCR_REFERENCE_CHARS", 10)
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(oversized)],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (40, 20), "white"),
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert "ocr_recall" not in result.selected.scores
+    assert any(
+        "generated semantic labels exceed" in warning for warning in result.selected.warnings
+    )
+    assert result.review_required
+
+
+def test_pipeline_isolates_generated_scene_conversion_failure(fake_runtime, monkeypatch):
+    def fail_scene_conversion(diagram_type, ir):
+        raise ValueError("oversized generated scene")
+
+    monkeypatch.setattr("marker_mermaid.pipeline.typed_ir_to_scene", fail_scene_conversion)
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation())],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (40, 20), "white"),
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert any("scene conversion was isolated" in warning for warning in result.selected.warnings)
+    assert result.review_required
+
+
 @pytest.mark.parametrize(
     ("policy", "sparse_semantic", "rich_semantic"),
     [

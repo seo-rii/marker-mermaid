@@ -29,7 +29,18 @@ data-lineage, Venn까지 포함하며 typed record의 evidence ID를 보존합�
 ## 기존 metric과 결합
 
 - syntax/render는 게시 hard gate이면서 score input입니다.
-- OCR recall은 원 OCR token coverage입니다.
+- OCR recall은 NFKC/casefold한 원 OCR token multiset의 occurrence recall입니다. 같은 text라도 다른 bbox에서
+  관찰되면 별도 occurrence로 유지하고, context OCR과 OCR/vector evidence가 겹치면 token별 최대 count를
+  사용합니다. bbox가 없는 동일 text evidence는 공간적으로 다른 occurrence임을 입증하지 못하므로 하나로
+  합칩니다. Typed/Scene 후보는 generated Scene의 node, relation, group label을 비교하며 Gantt task와
+  section도 Scene 의미 label로 복원합니다. 따라서 Mermaid ID, schedule field, header,
+  `accTitle`/`accDescr`가 recall을 올릴 수 없습니다. Scene adapter가 없는 direct 후보는 quoted label과
+  문법별 보수적 label fallback을 적용합니다.
+- OCR/vector reference와 생성 semantic label은 각각 최대 50,000개 observation, 1,000,000자,
+  100,000 token의 평가 예산을 적용합니다. 어느 한도를 넘으면 일부 입력을 잘라 점수를 만들지 않고
+  semantic evaluation을 unavailable로 표시하여 자동 게시를 막습니다. Token occurrence는 `Counter`로
+  유지하며 반복 횟수만큼 list를 확장하지 않습니다. Parse/render에 실패한 후보는 구조 변환과 OCR 같은
+  고비용 semantic scoring을 건너뛰고, typed Scene 변환 오류는 후보 단위 warning으로 격리합니다.
 - numeric consistency는 source/generated 숫자 multiset의 precision·recall F1입니다. source에 실제
   숫자가 있을 때만 사용하며 추가 생성한 숫자도 precision을 낮춥니다. `accTitle`/`accDescr`/title
   metadata 안의 숫자는 chart data multiset에서 제외합니다.

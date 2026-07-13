@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+
 import pytest
 
 from marker_mermaid.config import MermaidConfig, PublishPolicy, SecurityProfile
@@ -49,6 +51,44 @@ def test_reference_free_text_scores_do_not_invent_numbers():
         )
         == 1
     )
+
+
+def test_ocr_recall_preserves_occurrences_and_normalizes_unicode_labels():
+    assert ocr_recall(["X X X"], "flowchart LR", generated_texts=["x"]) == pytest.approx(1 / 3)
+    assert ocr_recall(["X X X"], "flowchart LR", generated_texts=["X", "x"]) == pytest.approx(2 / 3)
+    assert ocr_recall(["Ａ 승인"], "flowchart LR", generated_texts=["a 승인"]) == 1
+
+
+def test_ocr_recall_keeps_large_repetition_counts_compact():
+    assert ocr_recall(
+        Counter({"x": 1_000_000_000}),
+        "flowchart LR",
+        generated_texts=["x"],
+    ) == pytest.approx(1e-9)
+
+
+def test_direct_ocr_recall_ignores_accessibility_metadata_headers_and_node_ids():
+    code = (
+        "flowchart LR\n"
+        "    accTitle: Payment\n"
+        "    accDescr: Payment was observed\n"
+        '    Payment["Other"]\n'
+    )
+
+    assert ocr_recall(["Payment"], code) == 0
+    assert ocr_recall(["Other"], code) == 1
+
+
+def test_direct_gantt_recall_counts_visible_labels_not_schedule_fields():
+    code = (
+        "gantt\n"
+        "    dateFormat YYYY-MM-DD\n"
+        "    section Review phase\n"
+        "    Review payment :done, t1, 2026-07-01, 2026-07-02\n"
+    )
+
+    assert ocr_recall(["Review phase Review payment"], code) == 1
+    assert ocr_recall(["done t1 2026"], code) == 0
 
 
 def test_aggregate_requires_a_semantic_metric():

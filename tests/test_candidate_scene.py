@@ -50,6 +50,37 @@ def test_unsupported_or_empty_typed_ir_is_unavailable():
     assert typed_ir_to_scene("flowchart", {"nodes": []}) is None
 
 
+def test_gantt_scene_preserves_task_and_section_labels_without_schedule_metadata():
+    scene = typed_ir_to_scene(
+        "gantt",
+        {
+            "sections": [
+                {
+                    "id": "review",
+                    "title": "Review phase",
+                    "tasks": [
+                        {
+                            "id": "t1",
+                            "label": "Review payment",
+                            "status": "done",
+                            "start": "2026-07-01",
+                            "end": "2026-07-02",
+                            "evidence_ids": ["ocr-task"],
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert scene is not None
+    assert [(item.id, item.text) for item in scene.elements] == [("t1", "Review payment")]
+    assert scene.elements[0].evidence_ids == ["ocr-task"]
+    assert [(group.id, group.label, group.member_ids) for group in scene.groups] == [
+        ("review", "Review phase", ["t1"])
+    ]
+
+
 def test_planning_and_event_modeling_scenes_preserve_emitted_elements_and_evidence():
     timeline = typed_ir_to_scene(
         "timeline",

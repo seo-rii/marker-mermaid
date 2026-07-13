@@ -145,6 +145,25 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
         node_records, edge_records = _hierarchy_records(root, fallback_root_id="effect")
     elif diagram_type == "timeline":
         node_records = _ordered_records(ir.get("events"), prefix="event_")
+    elif diagram_type == "gantt":
+        for section_index, section in enumerate(ir.get("sections") or [], start=1):
+            if not isinstance(section, dict):
+                continue
+            member_ids: list[str] = []
+            for task_index, task in enumerate(section.get("tasks") or [], start=1):
+                if not isinstance(task, dict):
+                    continue
+                task_id = str(task.get("id") or f"section_{section_index}_task_{task_index}")
+                node_records.append({**task, "id": task_id})
+                member_ids.append(task_id)
+            group_records.append(
+                {
+                    **section,
+                    "id": section.get("id") or f"section_{section_index}",
+                    "label": section.get("title") or "Tasks",
+                    "member_ids": member_ids,
+                }
+            )
     elif diagram_type == "journey":
         for section_index, section in enumerate(ir.get("sections") or [], start=1):
             if not isinstance(section, dict):
@@ -329,6 +348,37 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
         )
         known_group_ids.add(group_id)
         grouped_members.update(member_ids)
+    if diagram_type == "gantt":
+        for index, group_record in enumerate(group_records, start=1):
+            group_id = str(group_record.get("id") or f"section_{index}")
+            member_ids = [
+                str(member_id)
+                for member_id in group_record.get("member_ids") or []
+                if str(member_id) in known_ids
+            ]
+            if not member_ids or group_id in known_group_ids:
+                continue
+            explicit_bbox = group_record.get("bbox")
+            if isinstance(explicit_bbox, list | tuple) and len(explicit_bbox) == 4:
+                bbox = _bbox(explicit_bbox)
+            else:
+                member_boxes = [elements_by_id[member_id].bbox for member_id in member_ids]
+                bbox = (
+                    min(item[0] for item in member_boxes),
+                    min(item[1] for item in member_boxes),
+                    max(item[2] for item in member_boxes),
+                    max(item[3] for item in member_boxes),
+                )
+            groups.append(
+                SceneGroup(
+                    id=group_id,
+                    role=str(group_record.get("role") or "section"),
+                    label=str(group_record.get("label") or "Tasks"),
+                    bbox=bbox,
+                    member_ids=member_ids,
+                )
+            )
+            known_group_ids.add(group_id)
     direction = ir.get("direction", "unknown")
     if direction not in {"TB", "BT", "LR", "RL", "radial", "timeline", "unknown"}:
         direction = "unknown"

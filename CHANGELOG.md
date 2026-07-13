@@ -54,6 +54,7 @@
 - Trusted vector-origin gates and explicit attribution for Flowchart node and edge styles.
 - Publication-aware candidate selection that retains aggregate ordering within the same eligibility class.
 - Bounded online path-consistency search with explicit state/stack exhaustion reporting.
+- Occurrence-preserving, resource-bounded OCR recall over generated node, relation, group, and Gantt labels instead of Mermaid metadata and identifiers.
 
 ### Changed
 
