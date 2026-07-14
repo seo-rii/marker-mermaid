@@ -17,11 +17,14 @@ import unicodedata
 from collections import Counter
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 
+from marker_mermaid.config import SecurityProfile
 from marker_mermaid.models import ReviewHistoryEntry, VisualEvidence
+from marker_mermaid.security import MermaidSecurityScanner
 
 MAX_COMMAND_LENGTH = 500
 MAX_LABEL_LENGTH = 200
@@ -97,6 +100,7 @@ class ParsedReviewCommand(BaseModel):
         "delete_edge",
         "delete_node",
         "reconnect_edge",
+        "set_edge_label",
     ]
     edge_id: str | None = None
     group_id: str | None = None
@@ -151,6 +155,16 @@ class ReconnectEdgeOperation(BaseModel):
     edge_id: str
     source_id: str
     target_id: str
+
+
+class SetEdgeLabelOperation(BaseModel):
+    """Set or remove the label of one stable Scene relation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation: Literal["set_edge_label"]
+    edge_id: str
+    label: str | None
 
 
 class GroupNodesOperation(BaseModel):
@@ -212,6 +226,7 @@ StructuredReviewOperation = Annotated[
     AddNodeOperation
     | DeleteNodeOperation
     | ReconnectEdgeOperation
+    | SetEdgeLabelOperation
     | GroupNodesOperation
     | AddEdgeOperation
     | DeleteEdgeOperation
@@ -269,14 +284,48 @@ def _validated_label(value: str) -> str:
     return label
 
 
+def _encoded_edge_label(value: str) -> str:
+    """Return visible, quoted-edge-safe text without relying on HTML entities."""
+
+    zero_width_space = "\u200b"
+    return (
+        value.replace("&", f"&{zero_width_space}")
+        .replace("<", f"<{zero_width_space}")
+        .replace(">", f">{zero_width_space}")
+        .replace('"', "″")
+        .replace("\\", "∖")
+    )
+
+
+def _validated_edge_label(value: str | None) -> str | None:
+    """Validate a structured edge label without rewriting its IR value."""
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ReviewCommandError("invalid_label", "edge label must be a string or null")
+    if not value.strip():
+        raise ReviewCommandError("invalid_label", "edge label cannot be empty")
+    if len(value) > MAX_LABEL_LENGTH:
+        raise ReviewCommandError("invalid_label", "edge label exceeds the length limit")
+    if any(
+        unicodedata.category(character) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for character in value
+    ):
+        raise ReviewCommandError("invalid_label", "edge label must be safe single-line text")
+    encoded = _encoded_edge_label(value)
+    probe = f'flowchart LR\nA -->|"{encoded}"| B\n'
+    if not MermaidSecurityScanner(SecurityProfile.STRICT).scan(probe).safe:
+        raise ReviewCommandError("invalid_label", "edge label contains active or remote syntax")
+    return value
+
+
 def _validated_evidence_label(value: str | None) -> str:
     """Validate an observed label without rewriting its linguistic content."""
 
     if not isinstance(value, str):
         raise ReviewCommandError("invalid_label", "selected evidence has no text label")
     if any(
-        unicodedata.category(character) in {"Cc", "Cf", "Cs", "Zl", "Zp"}
-        for character in value
+        unicodedata.category(character) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for character in value
     ):
         raise ReviewCommandError(
             "invalid_label", "selected evidence text must be a safe single-line label"
@@ -489,9 +538,7 @@ def _is_finite_ordered_bbox(value: Any) -> bool:
         isinstance(value, list | tuple)
         and len(value) == 4
         and all(
-            not isinstance(item, bool)
-            and isinstance(item, int | float)
-            and math.isfinite(item)
+            not isinstance(item, bool) and isinstance(item, int | float) and math.isfinite(item)
             for item in value
         )
         and value[2] > value[0]
@@ -643,18 +690,11 @@ def _flat_mermaid_subgraphs(
 
 
 def _mermaid_subgraph_memberships(code: str) -> dict[str, tuple[str, ...]]:
-    return {
-        group_id: record[0]
-        for group_id, record in _flat_mermaid_subgraphs(code).items()
-    }
+    return {group_id: record[0] for group_id, record in _flat_mermaid_subgraphs(code).items()}
 
 
-def _quoted_rectangle_declaration_counts(
-    code: str, node_ids: set[str]
-) -> Counter[str]:
-    declaration = re.compile(
-        rf'^\s*(?P<id>{_ID})\s*\[\s*"(?:[^"\\]|\\.)*"\s*\]\s*$'
-    )
+def _quoted_rectangle_declaration_counts(code: str, node_ids: set[str]) -> Counter[str]:
+    declaration = re.compile(rf'^\s*(?P<id>{_ID})\s*\[\s*"(?:[^"\\]|\\.)*"\s*\]\s*$')
     counts: Counter[str] = Counter()
     for line in code.splitlines():
         match = declaration.fullmatch(line)
@@ -811,6 +851,28 @@ def _apply_ir(
             {"source": intent.source_id, "target": intent.target_id},
         )
 
+    if intent.operation == "set_edge_label":
+        assert intent.edge_id
+        matches = [
+            relation for relation in _relation_container(ir) if relation.get("id") == intent.edge_id
+        ]
+        if len(matches) != 1:
+            code = "unresolved_reference" if not matches else "ambiguous_reference"
+            raise ReviewCommandError(code, "edge id must identify exactly one Scene relation")
+        relation = matches[0]
+        current_label = relation.get("label")
+        if current_label is not None and not isinstance(current_label, str):
+            raise ReviewCommandError("unsupported_ir", "IR edge label must be a string or null")
+        if current_label == intent.label:
+            raise ReviewCommandError("no_change", "edge already has the requested label")
+        relation["label"] = intent.label
+        return (
+            ir,
+            intent.edge_id,
+            {"label": current_label},
+            {"label": intent.label},
+        )
+
     if intent.operation == "delete_node":
         assert intent.node_id
         nodes, _ = _node_container(ir)
@@ -877,10 +939,7 @@ def _apply_ir(
         node = matches[0]
         label_key = next((key for key in ("text", "label", "name") if key in node), "label")
         before = {label_key: node.get(label_key)}
-        if (
-            intent.operation == "relabel_node_from_evidence"
-            and before[label_key] == intent.label
-        ):
+        if intent.operation == "relabel_node_from_evidence" and before[label_key] == intent.label:
             raise ReviewCommandError("no_change", "node already has the selected evidence label")
         node[label_key] = intent.label
         after = {label_key: intent.label}
@@ -931,9 +990,7 @@ def _apply_ir(
                 "unsupported_ir", "group members require explicit four-number bbox evidence"
             )
         width, height = _scene_canvas_bounds(ir)
-        if any(
-            box[0] < 0 or box[1] < 0 or box[2] > width or box[3] > height for box in boxes
-        ):
+        if any(box[0] < 0 or box[1] < 0 or box[2] > width or box[3] > height for box in boxes):
             raise ReviewCommandError(
                 "unsupported_ir", "group member bbox must remain inside the Scene canvas"
             )
@@ -984,11 +1041,187 @@ _PLAIN_EDGE_RE = re.compile(
 )
 
 
+_STANDALONE_EDITABLE_EDGE_RE = re.compile(
+    rf"^(?P<indent>[ \t]*)(?P<src>{_ID})(?P<source_ws>[ \t]*)"
+    r"(?P<connector><-->|-->|---|==>|-\.->)(?P<connector_ws>[ \t]*)"
+    r"(?:(?:\|\"(?P<quoted_label>[^\"\r\n]+)\"\|)"
+    r"|(?:\|(?P<plain_label>[^|\r\n]+)\|))?"
+    rf"(?P<label_ws>[ \t]*)(?P<dst>{_ID})(?P<tail>[ \t]*)"
+    r"(?P<newline>\r?\n)?$"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _StandaloneMermaidEdge:
+    """One independently addressable edge statement and its source layout."""
+
+    line_index: int
+    indent: str
+    source: str
+    source_ws: str
+    connector: str
+    connector_ws: str
+    label: str | None
+    quoted_label: bool
+    label_ws: str
+    target: str
+    tail: str
+    newline: str
+
+
+def _standalone_editable_edges(code: str) -> list[_StandaloneMermaidEdge]:
+    """Parse only bounded standalone edges, rejecting edge-like alternatives."""
+
+    if len(code) > MAX_MERMAID_LENGTH:
+        raise ReviewCommandError("input_too_large", "Mermaid source exceeds the safe edit limit")
+    quoted_declaration = re.compile(rf'^\s*{_ID}\s*\[\s*"(?:[^"\\]|\\.)*"\s*\]\s*$')
+    edge_signal = re.compile(r"(?:--|==|-\.|~~~|<--|--[ox])")
+    result: list[_StandaloneMermaidEdge] = []
+    for line_index, line in enumerate(code.splitlines(keepends=True)):
+        match = _STANDALONE_EDITABLE_EDGE_RE.fullmatch(line)
+        if match:
+            quoted_label = match["quoted_label"] is not None
+            label = match["quoted_label"] if quoted_label else match["plain_label"]
+            if label is not None and (
+                not label.strip()
+                or any(
+                    unicodedata.category(character) in {"Cc", "Cs", "Zl", "Zp"}
+                    for character in label
+                )
+                or (not quoted_label and '"' in label)
+            ):
+                raise ReviewCommandError(
+                    "unsupported_mermaid", "edge label is not safely addressable"
+                )
+            result.append(
+                _StandaloneMermaidEdge(
+                    line_index=line_index,
+                    indent=match["indent"],
+                    source=match["src"],
+                    source_ws=match["source_ws"],
+                    connector=match["connector"],
+                    connector_ws=match["connector_ws"],
+                    label=label,
+                    quoted_label=quoted_label,
+                    label_ws=match["label_ws"],
+                    target=match["dst"],
+                    tail=match["tail"],
+                    newline=match["newline"] or "",
+                )
+            )
+            continue
+        raw_line = line.rstrip("\r\n")
+        stripped = raw_line.strip()
+        if (
+            not stripped
+            or stripped.startswith("%%")
+            or stripped.startswith(("accTitle:", "accDescr:"))
+            or re.fullmatch(
+                rf'subgraph\s+{_ID}(?:\s*\[\s*"(?:[^"\\]|\\.)*"\s*\])?',
+                stripped,
+            )
+            or stripped == "end"
+            or quoted_declaration.fullmatch(raw_line)
+        ):
+            continue
+        if edge_signal.search(raw_line):
+            raise ReviewCommandError(
+                "unsupported_mermaid",
+                "non-standalone or unsupported Mermaid edges are not safely editable",
+            )
+    return result
+
+
+def _editable_edge_for_relation(
+    ir: dict[str, Any], code: str, edge_id: str
+) -> _StandaloneMermaidEdge:
+    """Require an exact Scene-to-Mermaid mapping and return the selected edge."""
+
+    node_ids = set(_node_ids(ir))
+    relations = _relation_container(ir)
+    relation_ids = [relation.get("id") for relation in relations]
+    if not all(
+        isinstance(relation_id, str) and _ID_RE.fullmatch(relation_id)
+        for relation_id in relation_ids
+    ):
+        raise ReviewCommandError(
+            "unsupported_ir", "editable relations require stable safe identifiers"
+        )
+    if len(relation_ids) != len(set(relation_ids)):
+        raise ReviewCommandError("ambiguous_reference", "IR relation ids must be unique")
+    if edge_id not in relation_ids:
+        raise ReviewCommandError(
+            "unresolved_reference", "edge id does not identify one Scene relation"
+        )
+
+    relation_by_pair: dict[tuple[str, str], dict[str, Any]] = {}
+    target_pair: tuple[str, str] | None = None
+    for relation in relations:
+        source_key, target_key = _edge_keys(relation)
+        source = relation.get(source_key)
+        target = relation.get(target_key)
+        if (
+            not isinstance(source, str)
+            or not isinstance(target, str)
+            or not _ID_RE.fullmatch(source)
+            or not _ID_RE.fullmatch(target)
+            or source not in node_ids
+            or target not in node_ids
+        ):
+            raise ReviewCommandError(
+                "unsupported_ir", "editable relations require explicit existing endpoints"
+            )
+        label = relation.get("label")
+        if label is not None and not isinstance(label, str):
+            raise ReviewCommandError("unsupported_ir", "IR relation labels must be strings or null")
+        pair = (source, target)
+        if pair in relation_by_pair:
+            raise ReviewCommandError(
+                "ambiguous_reference", "parallel Scene relations are not safely editable"
+            )
+        relation_by_pair[pair] = relation
+        if relation["id"] == edge_id:
+            target_pair = pair
+
+    mermaid_by_pair: dict[tuple[str, str], _StandaloneMermaidEdge] = {}
+    for edge in _standalone_editable_edges(code):
+        pair = (edge.source, edge.target)
+        if pair in mermaid_by_pair:
+            raise ReviewCommandError(
+                "ambiguous_reference", "parallel Mermaid edges are not safely editable"
+            )
+        mermaid_by_pair[pair] = edge
+    if relation_by_pair.keys() != mermaid_by_pair.keys():
+        raise ReviewCommandError(
+            "unsupported_artifact",
+            "Scene relations and standalone Mermaid edges do not match one-to-one",
+        )
+
+    for pair, relation in relation_by_pair.items():
+        scene_label = relation.get("label")
+        mermaid_edge = mermaid_by_pair[pair]
+        if scene_label is None:
+            labels_match = mermaid_edge.label is None
+        elif mermaid_edge.quoted_label:
+            labels_match = mermaid_edge.label == _encoded_edge_label(scene_label)
+        else:
+            legacy_label = (
+                scene_label.replace("\\", "\\\\").replace('"', "&quot;").replace("\n", " ").strip()
+            )
+            labels_match = mermaid_edge.label in {scene_label, legacy_label}
+        if not labels_match:
+            raise ReviewCommandError(
+                "unsupported_artifact",
+                "Scene relation labels and Mermaid edge labels do not match one-to-one",
+            )
+
+    assert target_pair is not None
+    return mermaid_by_pair[target_pair]
+
+
 def _plain_mermaid_edge_counter(code: str) -> Counter[tuple[str, str]]:
     counter: Counter[tuple[str, str]] = Counter()
-    quoted_declaration = re.compile(
-        rf'^\s*{_ID}\s*\[\s*"(?:[^"\\]|\\.)*"\s*\]\s*$'
-    )
+    quoted_declaration = re.compile(rf'^\s*{_ID}\s*\[\s*"(?:[^"\\]|\\.)*"\s*\]\s*$')
     edge_signal = re.compile(r"(?:--|==|-\.|~~~|<--|--[ox])")
     for line in code.splitlines(keepends=True):
         match = _PLAIN_EDGE_RE.fullmatch(line)
@@ -1021,6 +1254,7 @@ def _apply_mermaid(
     code: str,
     *,
     before: Mapping[str, Any] | None = None,
+    editable_edge: _StandaloneMermaidEdge | None = None,
 ) -> str:
     if len(code) > MAX_MERMAID_LENGTH:
         raise ReviewCommandError("input_too_large", "Mermaid source exceeds the safe edit limit")
@@ -1034,6 +1268,42 @@ def _apply_mermaid(
         # The IR is changed and must be serialized again; changing only the header
         # would create invalid cross-dialect Mermaid.
         return code
+
+    if intent.operation == "set_edge_label":
+        if editable_edge is None:
+            raise ReviewCommandError(
+                "unsupported_artifact",
+                "edge labeling requires an exact Scene-to-Mermaid mapping",
+            )
+        if intent.label is None:
+            label_fragment = ""
+            preserved_label_ws = editable_edge.label_ws if editable_edge.label is not None else ""
+            connector_suffix = editable_edge.connector_ws + preserved_label_ws
+        else:
+            label_fragment = f'|"{_encoded_edge_label(intent.label)}"|'
+            if editable_edge.label is None:
+                connector_suffix = label_fragment + editable_edge.connector_ws
+            else:
+                connector_suffix = (
+                    editable_edge.connector_ws + label_fragment + editable_edge.label_ws
+                )
+        replacement = (
+            editable_edge.indent
+            + editable_edge.source
+            + editable_edge.source_ws
+            + editable_edge.connector
+            + connector_suffix
+            + editable_edge.target
+            + editable_edge.tail
+            + editable_edge.newline
+        )
+        lines = code.splitlines(keepends=True)
+        if editable_edge.line_index >= len(lines):
+            raise ReviewCommandError(
+                "unsupported_artifact", "selected Mermaid edge is no longer addressable"
+            )
+        lines[editable_edge.line_index] = replacement
+        return "".join(lines)
 
     if intent.operation == "reverse_edge":
         assert intent.source_id and intent.target_id
@@ -1135,9 +1405,7 @@ def _apply_mermaid(
             raise ReviewCommandError(
                 "unsupported_artifact", "edge deletion requires explicit Scene endpoints"
             )
-        quoted_node = re.compile(
-            rf'^\s*{_ID}\s*\[\s*"(?:[^"\\]|\\.)*"\s*\]\s*$'
-        )
+        quoted_node = re.compile(rf'^\s*{_ID}\s*\[\s*"(?:[^"\\]|\\.)*"\s*\]\s*$')
         unsafe_link_style = any(
             re.search(r"\blinkStyle\b", line)
             and not line.lstrip().startswith("%%")
@@ -1263,9 +1531,7 @@ def _apply_mermaid(
             "unsupported_artifact", "Scene groups and Mermaid subgraphs do not match one-to-one"
         )
     if scene_groups is not None:
-        existing_members = {
-            member for members in scene_groups.values() for member in members
-        }
+        existing_members = {member for members in scene_groups.values() for member in members}
         declaration_counts = _quoted_rectangle_declaration_counts(code, existing_members)
         if any(declaration_counts[member] != 1 for member in existing_members):
             raise ReviewCommandError(
@@ -1438,9 +1704,7 @@ def apply_review_operation(
                     "unsupported_artifact",
                     "Scene groups and Mermaid subgraphs do not match one-to-one",
                 )
-            existing_members = {
-                member for members in scene_groups.values() for member in members
-            }
+            existing_members = {member for members in scene_groups.values() for member in members}
             declaration_counts = _quoted_rectangle_declaration_counts(
                 original_code, existing_members
             )
@@ -1473,7 +1737,9 @@ def apply_review_operation(
                 payload[key] = _validated_id(value)
         if payload.get("node_ids") is not None:
             payload["node_ids"] = [_validated_id(value) for value in payload["node_ids"]]
-        if payload.get("label") is not None:
+        if parsed.operation == "set_edge_label":
+            payload["label"] = _validated_edge_label(payload["label"])
+        elif payload.get("label") is not None:
             payload["label"] = _validated_label(payload["label"])
         selected_evidence: VisualEvidence | None = None
         if parsed.operation == "relabel_node_from_evidence":
@@ -1554,8 +1820,18 @@ def apply_review_operation(
                 )
             payload["edge_id"] = _validated_id(user_relation_id)
         intent = ParsedReviewCommand.model_validate(payload)
+        editable_edge = (
+            _editable_edge_for_relation(original_ir, original_code, intent.edge_id)
+            if intent.operation == "set_edge_label" and intent.edge_id is not None
+            else None
+        )
         patched_ir, target, before, after = _apply_ir(intent, deepcopy(original_ir))
-        patched_code = _apply_mermaid(intent, original_code, before=before)
+        patched_code = _apply_mermaid(
+            intent,
+            original_code,
+            before=before,
+            editable_edge=editable_edge,
+        )
         if intent.operation == "group_nodes":
             before = {}
         patched_provenance = deepcopy(original_provenance)

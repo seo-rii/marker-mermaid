@@ -44,7 +44,7 @@
 | Review Workspace | 구현 | source-sized Scene-coordinate provenance/node overlay와 OCR/vector label 선택, bounds-normalized difference blend, 실패 bundle bootstrap, summary mutation lock, guarded draft/conflict reload, dirty-discard·stale-response 방어, 대안 선택, 승인/거절, active revision timeline과 canonical append-only log를 보존하는 newest-first 100개 audit view |
 | code/IR/provenance revision | 구현 | strict code/Scene/evidence schema, content-addressed provenance, 0.3 lazy migration, rollback/undo/redo와 active timeline restore |
 | NL patch | 구현 | 품질 invalidation, 명시 ID 기반 patch와 구조화 audit history |
-| structured operations | 구현 | linked OCR/vector evidence 기반 node relabel, provenance-backed edge 추가, exact-ID edge 재연결·삭제, node 삭제, group 생성·삭제, screen-space endpoint drag와 accessible forms, global IR↔Mermaid node/edge/group 1:1 gate, pre-interpretation optimistic lock |
+| structured operations | 구현 | linked OCR/vector evidence 기반 node relabel, provenance-backed edge 추가, stable relation ID 기반 label 추가·교체·제거와 exact-ID edge 재연결·삭제, node 삭제, group 생성·삭제, screen-space endpoint drag와 accessible forms, global IR↔Mermaid node/edge/group 1:1 gate, pre-interpretation optimistic lock |
 | source-anchored node add | 구현 | bounded canvas bbox, server-created user_edit evidence, code/IR/provenance transaction |
 | layout drag-and-drop | 구현 | source bbox와 분리된 normalized advisory node move, screen-space edge endpoint snap, pointer/keyboard fallback, content-addressed revision과 undo/redo |
 | release evaluation | 기반 | hash-bound manifest, micro metrics, hard/fixture/22-type/quality gate와 JSON/Markdown report; 대규모 corpus와 격리 runner 후속 |

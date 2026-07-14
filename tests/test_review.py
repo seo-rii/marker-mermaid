@@ -1076,6 +1076,152 @@ def test_structured_edge_operation_is_validated_rendered_and_audited(tmp_path):
     assert reconnect["reason"] == "confirmed against source"
 
 
+def test_structured_edge_label_add_replace_remove_is_revisioned_and_undoable(tmp_path):
+    diagram_path = make_bundle(tmp_path)
+    (diagram_path / "final.mmd").write_text(
+        'flowchart LR\n  A["A"]\n  B["B"]\n  A --> B\n', encoding="utf-8"
+    )
+    source_before = (tmp_path / "images" / "source.png").read_bytes()
+    with running_server(tmp_path) as (base, store):
+        initial = store.load_bundle("diagram-a")
+        current = store.apply_layout_hint(
+            "diagram-a",
+            node_id="A",
+            x=0.2,
+            y=0.8,
+            expected_version=initial.state.version,
+            expected_digest=initial.state.code_digest,
+        )
+        provenance_before = [item.model_dump(mode="json") for item in current.provenance]
+        layout_before = current.layout_hints.model_dump(mode="json")
+        base_version = current.state.version
+        add_payload = {
+            **expected(current),
+            "operation": {
+                "operation": "set_edge_label",
+                "edge_id": "E1",
+                "label": "Needs review",
+            },
+            "reason": "label confirmed against source",
+        }
+        added, _ = post_json(f"{base}/api/diagrams/diagram-a/operations", add_payload)
+        with pytest.raises(urllib.error.HTTPError) as stale:
+            post_json(f"{base}/api/diagrams/diagram-a/operations", add_payload)
+
+        current = store.load_bundle("diagram-a")
+        replaced, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/operations",
+            {
+                **expected(current),
+                "operation": {
+                    "operation": "set_edge_label",
+                    "edge_id": "E1",
+                    "label": "Approved",
+                },
+                "reason": "wording corrected",
+            },
+        )
+        current = store.load_bundle("diagram-a")
+        removed, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/operations",
+            {
+                **expected(current),
+                "operation": {
+                    "operation": "set_edge_label",
+                    "edge_id": "E1",
+                    "label": None,
+                },
+                "reason": "source has no edge label",
+            },
+        )
+        current = store.load_bundle("diagram-a")
+        undone, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/history",
+            {**expected(current), "action": "undo"},
+        )
+        current = store.load_bundle("diagram-a")
+        redone, _ = post_json(
+            f"{base}/api/diagrams/diagram-a/history",
+            {**expected(current), "action": "redo"},
+        )
+
+    assert added["diagram"]["scene_ir"]["relations"][0]["label"] == "Needs review"
+    assert added["diagram"]["scene_ir"]["relations"][0]["id"] == "E1"
+    assert added["diagram"]["version"] == base_version + 1
+    assert "Needs review" in added["diagram"]["mermaid_code"]
+    assert replaced["diagram"]["scene_ir"]["relations"][0]["label"] == "Approved"
+    assert replaced["diagram"]["version"] == base_version + 2
+    assert "Approved" in replaced["diagram"]["mermaid_code"]
+    assert "Needs review" not in replaced["diagram"]["mermaid_code"]
+    assert removed["diagram"]["scene_ir"]["relations"][0]["label"] is None
+    assert removed["diagram"]["version"] == base_version + 3
+    assert "Approved" not in removed["diagram"]["mermaid_code"]
+    assert "A --> B" in removed["diagram"]["mermaid_code"]
+    assert undone["diagram"]["scene_ir"]["relations"][0]["label"] == "Approved"
+    assert undone["diagram"]["version"] == base_version + 4
+    assert "Approved" in undone["diagram"]["mermaid_code"]
+    assert redone["diagram"]["scene_ir"]["relations"][0]["label"] is None
+    assert redone["diagram"]["version"] == base_version + 5
+    for result in (added, replaced, removed, undone, redone):
+        assert result["diagram"]["provenance"] == provenance_before
+        assert result["diagram"]["layout_hints"] == layout_before
+    assert stale.value.code == HTTPStatus.CONFLICT
+    assert (tmp_path / "images" / "source.png").read_bytes() == source_before
+
+    entries = json.loads((diagram_path / "review-history.json").read_text(encoding="utf-8"))
+    label_edits = [entry for entry in entries if entry["operation"] == "set_edge_label"]
+    assert [entry["target"] for entry in label_edits] == ["E1", "E1", "E1"]
+    assert [(entry["before"], entry["after"]) for entry in label_edits] == [
+        ({"label": None}, {"label": "Needs review"}),
+        ({"label": "Needs review"}, {"label": "Approved"}),
+        ({"label": "Approved"}, {"label": None}),
+    ]
+    assert [entry["reason"] for entry in label_edits] == [
+        "label confirmed against source",
+        "wording corrected",
+        "source has no edge label",
+    ]
+
+
+def test_structured_edge_label_render_failure_leaves_bundle_unchanged(tmp_path):
+    diagram_path = make_bundle(tmp_path)
+    (diagram_path / "final.mmd").write_text(
+        'flowchart LR\n  A["A"]\n  B["B"]\n  A --> B\n', encoding="utf-8"
+    )
+    before = {
+        path.relative_to(diagram_path): path.read_bytes()
+        for path in diagram_path.rglob("*")
+        if path.is_file()
+    }
+    validator = lambda code: ReviewValidationResult(  # noqa: E731
+        valid="Rejected label" not in code,
+        svg="<svg viewBox='0 0 1 1'/>",
+        error="injected render rejection",
+    )
+    with running_server(tmp_path, validator=validator) as (base, store):
+        current = store.load_bundle("diagram-a")
+        with pytest.raises(urllib.error.HTTPError) as rejected:
+            post_json(
+                f"{base}/api/diagrams/diagram-a/operations",
+                {
+                    **expected(current),
+                    "operation": {
+                        "operation": "set_edge_label",
+                        "edge_id": "E1",
+                        "label": "Rejected label",
+                    },
+                },
+            )
+
+    after = {
+        path.relative_to(diagram_path): path.read_bytes()
+        for path in diagram_path.rglob("*")
+        if path.is_file()
+    }
+    assert rejected.value.code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert after == before
+
+
 def test_layout_move_operation_is_advisory_versioned_and_stale_safe(tmp_path):
     make_bundle(tmp_path)
     with running_server(tmp_path) as (base, store):

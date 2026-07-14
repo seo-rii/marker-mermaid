@@ -82,6 +82,9 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
         "edge-select",
         "edge-source",
         "edge-target",
+        "edge-label",
+        "set-edge-label",
+        "remove-edge-label",
         "delete-edge",
         "add-edge-form",
         "add-edge-source",
@@ -147,6 +150,7 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert "eval(" not in assets.javascript
     assert "innerHTML" not in assets.javascript
     assert 'operation: "reconnect_edge"' in assets.javascript
+    assert 'operation: "set_edge_label"' in assets.javascript
     assert 'operation: "add_edge"' in assets.javascript
     assert 'operation: "relabel_node_from_evidence"' in assets.javascript
     assert 'operation: "delete_edge"' in assets.javascript
@@ -174,15 +178,14 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert "evidenceIdCounts.get(evidenceId) !== 1" in assets.javascript
     assert "links.length !== 1 || links[0] !== node" in assets.javascript
     assert "node[labelKey] === label" in assets.javascript
-    assert '/^[A-Za-z][A-Za-z0-9_-]{0,63}$/' in assets.javascript
+    assert "/^[A-Za-z][A-Za-z0-9_-]{0,63}$/" in assets.javascript
     assert "declarationCounts.get(node.id) !== 1" in assets.javascript
     assert "[\\p{Cc}\\p{Cf}\\p{Cs}\\p{Zl}\\p{Zp}]" in assets.javascript
     assert 'rect.setAttribute("aria-pressed", selected ? "true" : "false")' in assets.javascript
     assert 'rect.setAttribute("role", "button")' in assets.javascript
     assert "Use source-backed label" in assets.html
     assert (
-        'id="evidence-label-status" class="muted" role="status" aria-live="polite"'
-        in assets.html
+        'id="evidence-label-status" class="muted" role="status" aria-live="polite"' in assets.html
     )
     assert ".evidence-box.selected" in assets.css
     relabel_submit = assets.javascript.split(
@@ -250,6 +253,52 @@ def test_review_workspace_contains_required_controls_and_same_origin_api_routes(
     assert 'preserveAspectRatio="none"' in assets.html
     assert 'id="source-canvas" class="source-canvas" hidden' in assets.html
     assert ".source-canvas" in assets.css
+
+
+def test_review_workspace_edge_label_controls_send_only_structured_label_operations():
+    assets = build_review_workspace_assets({"diagrams": []})
+
+    assert 'id="edge-label" maxlength="200"' in assets.html
+    assert "Set a non-empty label of at most 200 characters" in assets.html
+    assert 'controls.edgeLabel.value = typeof selectedRelation?.label === "string"' in (
+        assets.javascript
+    )
+    assert "controls.edgeLabel.disabled = locked || !selectedRelation" in assets.javascript
+    assert "controls.setEdgeLabel.disabled = locked || !selectedRelation || nextLabel === null" in (
+        assets.javascript
+    )
+    assert (
+        "controls.removeEdgeLabel.disabled = locked || !selectedRelation || !currentLabel"
+        in assets.javascript
+    )
+    assert '? selectedRelation.label.trim() : ""' in assets.javascript
+    assert "function validEdgeLabel()" in assets.javascript
+    assert "[...label].length <= 200" in assets.javascript
+    key_handler = assets.javascript.split('controls.edgeLabel.addEventListener("keydown"', 1)[
+        1
+    ].split("function clearGroupSelection", 1)[0]
+    key_check = key_handler.index('event.key !== "Enter"')
+    prevent_default = key_handler.index("event.preventDefault()")
+    composition_check = key_handler.index("event.isComposing")
+    save_label = key_handler.index("await saveEdgeLabel()")
+    assert key_check < prevent_default < composition_check < save_label
+
+    set_handler = assets.javascript.split("async function saveEdgeLabel()", 1)[1].split(
+        'controls.removeEdgeLabel.addEventListener("click"', 1
+    )[0]
+    assert 'controls.setEdgeLabel.addEventListener("click", async () =>' in set_handler
+    assert "await saveEdgeLabel()" in set_handler
+    remove_handler = assets.javascript.split(
+        'controls.removeEdgeLabel.addEventListener("click"', 1
+    )[1].split('byId("add-edge-form").addEventListener("submit"', 1)[0]
+    assert '{ operation: { operation: "set_edge_label", edge_id: edgeId, label } }' in set_handler
+    assert (
+        '{ operation: { operation: "set_edge_label", edge_id: edgeId, label: null } }'
+        in remove_handler
+    )
+    for handler in (set_handler, remove_handler):
+        for forbidden in ("source_id:", "target_id:", "mermaid_code:", "provenance:"):
+            assert forbidden not in handler
 
 
 def test_review_workspace_renders_bounded_safe_audit_history_and_refreshes_mutations():
@@ -332,9 +381,7 @@ def test_review_workspace_renders_bounded_safe_audit_history_and_refreshes_mutat
         "can_redo": False,
         "revision_navigation": {"current_revision": "r000000", "timeline": ["r000000"]},
     }
-    assets = build_review_workspace_assets(
-        {"diagrams": summaries, "csrf_token": "history-token"}
-    )
+    assets = build_review_workspace_assets({"diagrams": summaries, "csrf_token": "history-token"})
     node_script = r"""
 import fs from "node:fs";
 import { createRequire } from "node:module";

@@ -1172,3 +1172,278 @@ def test_structured_reconnect_rejects_duplicate_or_labeled_edge_mapping() -> Non
     assert duplicate.error_code == "ambiguous_reference"
     assert not labeled.applied
     assert labeled.error_code == "unresolved_reference"
+
+
+def test_structured_set_edge_label_adds_label_by_stable_relation_id() -> None:
+    provenance = [
+        {
+            "id": "ocr-a",
+            "kind": "ocr_token",
+            "bbox": None,
+            "text": "query",
+            "font_weight": None,
+            "score": None,
+            "source_block_ids": [],
+        }
+    ]
+    original_ir = scene_ir()
+    untouched_relation = deepcopy(original_ir["relations"][1])
+
+    result = apply_review_operation(
+        {"operation": "set_edge_label", "edge_id": "E7", "label": "query"},
+        ir=original_ir,
+        mermaid_code=flowchart(),
+        provenance=provenance,
+        reason="edge text confirmed",
+    )
+
+    assert result.applied
+    assert result.ir["relations"][0] == {
+        "id": "E7",
+        "source_id": "DB",
+        "target_id": "API",
+        "label": "query",
+    }
+    assert result.ir["relations"][1] == untouched_relation
+    assert '    DB -->|"query"| API\n' in result.mermaid_code
+    assert result.provenance == provenance
+    assert not result.provenance_changed
+    assert result.history_entry.operation == "set_edge_label"
+    assert result.history_entry.target == "E7"
+    assert result.history_entry.before == {"label": None}
+    assert result.history_entry.after == {"label": "query"}
+    assert result.history_entry.reason == "edge text confirmed"
+    assert original_ir == scene_ir()
+
+
+def test_structured_set_edge_label_uses_visible_safe_quoted_text() -> None:
+    ir = scene_ir()
+    ir["relations"][0]["label"] = 'query "old"'
+    code = flowchart().replace("    DB --> API\n", "    DB -->|query &quot;old&quot;| API\n")
+    label = 'A & <B> "quoted" | \\tail\\'
+
+    result = apply_review_operation(
+        {"operation": "set_edge_label", "edge_id": "E7", "label": label},
+        ir=ir,
+        mermaid_code=code,
+    )
+
+    encoded = "A &\u200b <\u200bB>\u200b ″quoted″ | ∖tail∖"
+    assert result.applied
+    assert result.ir["relations"][0]["label"] == label
+    assert f'    DB -->|"{encoded}"| API\n' in result.mermaid_code
+    assert result.history_entry.before == {"label": 'query "old"'}
+    assert result.history_entry.after == {"label": label}
+
+    reparsed = apply_review_operation(
+        {"operation": "set_edge_label", "edge_id": "E7", "label": "final"},
+        ir=result.ir,
+        mermaid_code=result.mermaid_code,
+    )
+    assert reparsed.applied
+    assert '    DB -->|"final"| API\n' in reparsed.mermaid_code
+
+
+def test_structured_set_edge_label_preserves_connector_spacing_and_crlf() -> None:
+    for connector in ("-->", "---", "==>", "-.->", "<-->"):
+        code = flowchart().replace(
+            "    DB --> API\n",
+            f"\tDB  {connector}   API \t\r\n",
+        )
+        added = apply_review_operation(
+            {"operation": "set_edge_label", "edge_id": "E7", "label": "reviewed"},
+            ir=scene_ir(),
+            mermaid_code=code,
+        )
+
+        assert added.applied
+        assert f'\tDB  {connector}|"reviewed"|   API \t\r\n' in added.mermaid_code
+
+        replaced = apply_review_operation(
+            {"operation": "set_edge_label", "edge_id": "E7", "label": "next"},
+            ir=added.ir,
+            mermaid_code=added.mermaid_code,
+        )
+        assert replaced.applied
+        assert f'\tDB  {connector}|"next"|   API \t\r\n' in replaced.mermaid_code
+
+        removed = apply_review_operation(
+            {"operation": "set_edge_label", "edge_id": "E7", "label": None},
+            ir=replaced.ir,
+            mermaid_code=replaced.mermaid_code,
+        )
+        assert removed.applied
+        assert f"\tDB  {connector}   API \t\r\n" in removed.mermaid_code
+        assert removed.ir["relations"][0]["label"] is None
+        assert removed.history_entry.before == {"label": "next"}
+        assert removed.history_entry.after == {"label": None}
+
+
+def test_structured_set_edge_label_removes_only_legacy_label_wrapper() -> None:
+    ir = scene_ir()
+    ir["relations"][0]["label"] = "old | label"
+    code = flowchart().replace(
+        "    DB --> API\n",
+        '\tDB  -.->  |"old | label"|   API \t\r\n',
+    )
+
+    result = apply_review_operation(
+        {"operation": "set_edge_label", "edge_id": "E7", "label": None},
+        ir=ir,
+        mermaid_code=code,
+    )
+
+    assert result.applied
+    assert "\tDB  -.->     API \t\r\n" in result.mermaid_code
+    assert result.mermaid_code.replace("\tDB  -.->     API \t\r\n", "") == code.replace(
+        '\tDB  -.->  |"old | label"|   API \t\r\n', ""
+    )
+
+
+def test_structured_set_edge_label_rejects_invalid_payloads_atomically() -> None:
+    original_ir = scene_ir()
+    original_code = flowchart()
+    cases = [
+        ({"operation": "set_edge_label", "edge_id": "E7"}, "invalid_operation"),
+        (
+            {
+                "operation": "set_edge_label",
+                "edge_id": "E7",
+                "label": "query",
+                "extra": True,
+            },
+            "invalid_operation",
+        ),
+        (
+            {"operation": "set_edge_label", "edge_id": "E7", "label": 7},
+            "invalid_operation",
+        ),
+        (
+            {"operation": "set_edge_label", "edge_id": "E7", "label": ""},
+            "invalid_label",
+        ),
+        (
+            {"operation": "set_edge_label", "edge_id": "E7", "label": "   "},
+            "invalid_label",
+        ),
+        (
+            {"operation": "set_edge_label", "edge_id": "E7", "label": "x\ny"},
+            "invalid_label",
+        ),
+        (
+            {"operation": "set_edge_label", "edge_id": "E7", "label": "x\x00y"},
+            "invalid_label",
+        ),
+        (
+            {"operation": "set_edge_label", "edge_id": "E7", "label": "x\u2028y"},
+            "invalid_label",
+        ),
+        (
+            {"operation": "set_edge_label", "edge_id": "E7", "label": "x\u200by"},
+            "invalid_label",
+        ),
+        (
+            {"operation": "set_edge_label", "edge_id": "E7", "label": "x" * 201},
+            "invalid_label",
+        ),
+        (
+            {
+                "operation": "set_edge_label",
+                "edge_id": "E7",
+                "label": "https://example.test",
+            },
+            "invalid_label",
+        ),
+    ]
+
+    for operation, error_code in cases:
+        result = apply_review_operation(
+            operation,
+            ir=original_ir,
+            mermaid_code=original_code,
+        )
+        assert not result.applied
+        assert result.error_code == error_code
+        assert result.ir == original_ir
+        assert result.mermaid_code == original_code
+        assert result.history_entry is None
+
+
+def test_structured_set_edge_label_rejects_noop_and_unstable_relation_id() -> None:
+    same_ir = scene_ir()
+    same_ir["relations"][0]["label"] = "query"
+    same_code = flowchart().replace("    DB --> API\n", '    DB -->|"query"| API\n')
+    same = apply_review_operation(
+        {"operation": "set_edge_label", "edge_id": "E7", "label": "query"},
+        ir=same_ir,
+        mermaid_code=same_code,
+    )
+    remove_absent = apply_review_operation(
+        {"operation": "set_edge_label", "edge_id": "E7", "label": None},
+        ir=scene_ir(),
+        mermaid_code=flowchart(),
+    )
+    missing = apply_review_operation(
+        {"operation": "set_edge_label", "edge_id": "Missing", "label": "query"},
+        ir=scene_ir(),
+        mermaid_code=flowchart(),
+    )
+    duplicated_ir = scene_ir()
+    duplicated_ir["relations"][1]["id"] = "E7"
+    duplicated = apply_review_operation(
+        {"operation": "set_edge_label", "edge_id": "E7", "label": "query"},
+        ir=duplicated_ir,
+        mermaid_code=flowchart(),
+    )
+
+    assert not same.applied and same.error_code == "no_change"
+    assert not remove_absent.applied and remove_absent.error_code == "no_change"
+    assert not missing.applied and missing.error_code == "unresolved_reference"
+    assert not duplicated.applied and duplicated.error_code == "ambiguous_reference"
+
+
+def test_structured_set_edge_label_requires_exact_standalone_edge_mapping() -> None:
+    labeled_ir = scene_ir()
+    labeled_ir["relations"][0]["label"] = "query"
+    parallel_ir = scene_ir()
+    parallel_ir["relations"].append({"id": "E9", "source_id": "DB", "target_id": "API"})
+    cases = [
+        (
+            parallel_ir,
+            flowchart() + "    DB --> API\n",
+            "ambiguous_reference",
+        ),
+        (
+            scene_ir(),
+            flowchart().replace("    DB --> API\n", "    DB --> API --> User\n"),
+            "unsupported_mermaid",
+        ),
+        (
+            scene_ir(),
+            flowchart().replace("    DB --> API\n", "    DB --o API\n"),
+            "unsupported_mermaid",
+        ),
+        (
+            scene_ir(),
+            flowchart().replace("    DB --> API\n", "    API --> DB\n"),
+            "unsupported_artifact",
+        ),
+        (
+            labeled_ir,
+            flowchart().replace("    DB --> API\n", "    DB -->|other| API\n"),
+            "unsupported_artifact",
+        ),
+    ]
+
+    for ir, code, error_code in cases:
+        original_ir = deepcopy(ir)
+        result = apply_review_operation(
+            {"operation": "set_edge_label", "edge_id": "E7", "label": "reviewed"},
+            ir=ir,
+            mermaid_code=code,
+        )
+        assert not result.applied
+        assert result.error_code == error_code
+        assert result.ir == original_ir
+        assert result.mermaid_code == code
+        assert ir == original_ir

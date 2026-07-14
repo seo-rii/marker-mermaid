@@ -113,9 +113,10 @@ request identity와 일치한 load만 Scene-coordinate overlay를 다시 표시�
 함께 기록합니다. Review validator를 구성하지 않은 API embedding은 승인할 수 없습니다.
 
 구조 연산 API는 자연어 command와 분리된 closed discriminated schema를 사용합니다. 현재
-source-backed node label 선택·추가·삭제, edge 추가·재연결·삭제, group 생성·삭제와 advisory node 이동만
-허용합니다. 기존 IR relation/node와 독립 Mermaid line이 정확히 대응하지 않거나 group, style,
-chained/labeled edge 같은 추가 참조가 있으면 mutation 전에 거부합니다. optimistic revision은 operation을
+source-backed node label 선택·추가·삭제, edge 추가·재연결·label 설정·삭제, group 생성·삭제와 advisory
+node 이동만 허용합니다. 기존 IR relation/node와 독립 Mermaid line이 정확히 대응하지 않거나 연산별
+허용 범위 밖의 group, style, chained/labeled edge 같은 추가 참조가 있으면 mutation 전에 거부합니다.
+optimistic revision은 operation을
 IR에 해석하기 전과 실제 commit lock 안에서 모두 검사합니다. node 추가는 safe ID/label,
 reason, positive bbox, explicit Scene canvas bounds를 요구하며 client가 evidence ID/kind/score/source를
 정하지 못하게 서버가 revision 기반 `user_edit` evidence를 생성합니다. 이동 payload는 현재 Scene node
@@ -144,6 +145,21 @@ edge multiset 전체를 1:1 대조하고, non-plain/labeled/chained/bidirectiona
 quoted node label을 제외한 `linkStyle` token이 어디에 있어도 거부합니다. delete는 evidence를 지우지 않아
 undo가 relation을 같은 provenance에 다시 연결할 수 있습니다. 두 operation 모두 strict render 실패나
 stale optimistic lock에서 code/IR/render/history/provenance/layout 어느 파일도 commit하지 않습니다.
+
+`set_edge_label`은 stable relation ID와 필수 `label`만 받는 closed payload입니다. label은 `null` 또는
+control/format/surrogate/line-separator가 없는 200자 이하 non-empty single-line 문자열이며, 문자열은
+quoted pipe wrapper 안에 넣습니다. literal `|`은 quote 안에서 보존하고, double quote와 backslash는
+각각 visible compatibility glyph `″`(U+2033), `∖`(U+2216)으로 바꾸며 `&`, `<`, `>` 뒤에는
+U+200B separator를 붙여 Mermaid entity/HTML syntax로 재해석되지 않게 합니다. 원문은 Scene IR과
+audit history에 그대로 남습니다. 변환 뒤에도 source-wide scanner가 금지하는
+external/protocol-relative URL, directive, callback, HTML, CSS import 또는 remote icon pattern이 남으면
+label을 거절합니다. 서버는 모든 Scene relation과 독립 Mermaid edge의 ordered endpoint 및 canonical
+label을 먼저 1:1 대조하고 parallel, chained, unsupported connector, label mismatch, ambiguous line을
+fail-closed로 거부합니다. 성공 시 대상
+relation의 `label`과 정확히 한 edge의 quoted `|"..."|` segment만 추가·교체·제거합니다. provenance와
+`evidence_ids`는 그대로 보존하며 사용자 입력을 새로운 시각 근거로 만들지 않습니다. 같은 label은
+`no_change`로 거절되고, optimistic lock, full Scene schema, strict parse/render/SVG, validated revision과
+undo/redo gate는 다른 구조 연산과 같습니다.
 
 `delete_group` payload는 stable `group_id` 하나만 허용합니다. 삭제 전 모든 Scene group의 safe ID,
 group/node collision, disjoint existing members, exact bbox union과 모든 flat Mermaid subgraph의 ID/member

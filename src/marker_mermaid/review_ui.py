@@ -170,6 +170,13 @@ def build_review_workspace_assets(
             <label for="edge-target">New target</label>
             <select id="edge-target" required></select>
             <button id="reconnect-edge" type="submit">Reconnect</button>
+            <label for="edge-label">Relation label</label>
+            <input id="edge-label" maxlength="200" aria-describedby="edge-label-help">
+            <p id="edge-label-help" class="muted">
+              Set a non-empty label of at most 200 characters, or remove the current label.
+            </p>
+            <button id="set-edge-label" type="button">Set label</button>
+            <button id="remove-edge-label" class="reject" type="button">Remove label</button>
             <button id="delete-edge" class="reject" type="button">Delete relation</button>
           </form>
           <form id="add-edge-form">
@@ -467,6 +474,8 @@ REVIEW_JAVASCRIPT = r"""
     node: byId("node-select"), edge: byId("edge-select"),
     edgeSource: byId("edge-source"), edgeTarget: byId("edge-target"),
     edgeCount: byId("node-edge-count"), reconnect: byId("reconnect-edge"),
+    edgeLabel: byId("edge-label"), setEdgeLabel: byId("set-edge-label"),
+    removeEdgeLabel: byId("remove-edge-label"),
     deleteEdge: byId("delete-edge"), deleteNode: byId("delete-node"),
     addEdge: byId("add-edge"), addEdgeSource: byId("add-edge-source"),
     addEdgeTarget: byId("add-edge-target"), addEdgeReason: byId("add-edge-reason"),
@@ -1006,6 +1015,23 @@ REVIEW_JAVASCRIPT = r"""
     }
   }
 
+  function validEdgeLabel() {
+    const label = controls.edgeLabel.value.trim();
+    return label && [...label].length <= 200
+      && !/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(label) ? label : null;
+  }
+
+  function updateEdgeLabelState(selectedRelation) {
+    const locked = mutationLocked();
+    const currentLabel = typeof selectedRelation?.label === "string"
+      ? selectedRelation.label.trim() : "";
+    const nextLabel = validEdgeLabel();
+    controls.edgeLabel.disabled = locked || !selectedRelation;
+    controls.setEdgeLabel.disabled = locked || !selectedRelation || nextLabel === null
+      || nextLabel === currentLabel;
+    controls.removeEdgeLabel.disabled = locked || !selectedRelation || !currentLabel;
+  }
+
   function renderStructure(diagram) {
     const ir = diagram.scene_ir && typeof diagram.scene_ir === "object" ? diagram.scene_ir : {};
     const nodes = Array.isArray(ir.elements) ? ir.elements.filter((item) => item?.id) : [];
@@ -1081,6 +1107,9 @@ REVIEW_JAVASCRIPT = r"""
       controls.edgeSource.value = text(selectedRelation.source_id);
       controls.edgeTarget.value = text(selectedRelation.target_id);
     }
+    controls.edgeLabel.value = typeof selectedRelation?.label === "string"
+      ? selectedRelation.label : "";
+    updateEdgeLabelState(selectedRelation);
     if (controls.addEdgeSource.value === controls.addEdgeTarget.value && nodes.length > 1) {
       controls.addEdgeTarget.value = text(nodes[1].id);
     }
@@ -1494,6 +1523,20 @@ REVIEW_JAVASCRIPT = r"""
   controls.edge.addEventListener("change", () => {
     renderStructure(state.current || {}); renderLayout(state.current || {});
   });
+  controls.edgeLabel.addEventListener("input", () => {
+    const relations = Array.isArray(state.current?.scene_ir?.relations)
+      ? state.current.scene_ir.relations : [];
+    const selectedRelation = relations.find(
+      (item) => text(item?.id) === controls.edge.value,
+    );
+    updateEdgeLabelState(selectedRelation);
+  });
+  controls.edgeLabel.addEventListener("keydown", async (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    if (event.isComposing) return;
+    await saveEdgeLabel();
+  });
   function clearGroupSelection() {
     for (const option of controls.groupNodeSelect.options) option.selected = false;
     controls.groupLabel.value = "";
@@ -1773,6 +1816,28 @@ REVIEW_JAVASCRIPT = r"""
       route("/operations"),
       { operation: { operation: "delete_edge", edge_id: edgeId } },
       "Edge deleted.",
+    );
+  });
+  async function saveEdgeLabel() {
+    const edgeId = controls.edge.value;
+    const label = validEdgeLabel();
+    if (!edgeId || label === null || controls.setEdgeLabel.disabled) return false;
+    return perform(
+      route("/operations"),
+      { operation: { operation: "set_edge_label", edge_id: edgeId, label } },
+      "Edge label set.",
+    );
+  }
+  controls.setEdgeLabel.addEventListener("click", async () => {
+    await saveEdgeLabel();
+  });
+  controls.removeEdgeLabel.addEventListener("click", async () => {
+    const edgeId = controls.edge.value;
+    if (!edgeId) return;
+    await perform(
+      route("/operations"),
+      { operation: { operation: "set_edge_label", edge_id: edgeId, label: null } },
+      "Edge label removed.",
     );
   });
   byId("add-edge-form").addEventListener("submit", async (event) => {

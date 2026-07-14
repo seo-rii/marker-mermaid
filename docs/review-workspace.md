@@ -84,7 +84,7 @@ audit entry는 디스크에서 삭제하지 않습니다. UI는 restore 전에 �
 
 workspace의 `Validated structure operations`는 자유 형식 JSON 편집보다 작은 동기화 경계를
 제공합니다. 원본 overlay에서 node bbox를 클릭하거나 ID select를 사용해 entity를 선택할 수 있습니다.
-현재 지원 연산은 다음 아홉 가지입니다.
+현재 지원 연산은 다음 열 가지입니다.
 
 원본 image와 provenance SVG는 stage 전체가 아니라 image가 실제로 차지하는 shrink-to-fit canvas를
 공유합니다. normalized Scene은 `0 0 1 1`, pixel Scene은 유효한 `canvas_size`, 크기가 없는 pixel
@@ -107,6 +107,12 @@ request identity를 사용하므로 늦게 도착한 이전 load가 현재 bbox�
   선택한 evidence ID를 구조화 audit에 기록합니다.
 - `reconnect_edge`: stable relation ID와 새 source/target node ID를 지정합니다. Scene IR relation과
   독립적인 Mermaid edge line이 정확히 1:1로 대응할 때만 connector를 보존하며 양쪽을 함께 바꿉니다.
+- `set_edge_label`: stable relation ID와 필수 `label` field를 받습니다. 200자 이하 non-empty single-line
+  문자열은 label을 추가하거나 교체하고 `null`은 제거합니다. Scene relation의 `label`과 독립 Mermaid
+  edge의 quoted `|"..."|` segment만 함께 바꾸며 endpoint, connector, provenance, `evidence_ids`는
+  그대로 유지합니다. Mermaid가 문자를 syntax로 재해석할 때는 원문 IR을 유지하면서 출력 label만
+  명시적인 compatibility glyph 또는 비활성 separator로 중화하고, 남은 active URL/directive-like
+  문자열은 거절합니다.
 - `add_edge`: 두 explicit node ID와 필수 evidence note만 받습니다. client는 relation/evidence ID, label,
   type, style, polyline, confidence를 정할 수 없습니다. 서버가 next revision 기반 ID와 bbox 없는
   `user_edit` evidence를 만들고 `user_edge`/`unknown`, unlabeled, arrow-at-target인 relation 및 plain
@@ -145,11 +151,15 @@ overlay highlight가 동기화됩니다. bbox가 없는 text evidence도 select�
 서버가 같은 linkage와 text 계약을 다시 검사합니다.
 
 edge add/delete 전에는 기존 Scene relation의 ordered endpoint multiset과 Mermaid의 지원되는 plain edge
-multiset 전체가 1:1인지 확인합니다. `--o`, `--x`, bidirectional, labeled, chained 등 지원하지 않는 edge
-syntax가 하나라도 있으면 일부만 추측해 편집하지 않습니다. add의 evidence note는 trim 후 1..4096자
-single-line이며 source block mapping과 함께 provenance에 저장됩니다. add를 undo하면 relation, line,
-evidence가 함께 사라지고 redo하면 같은 server ID로 복원됩니다. delete는 provenance와 layout을 바꾸지
-않으며 add/delete 모두 source image, element bbox, group, 기존 relation을 그대로 둡니다.
+multiset 전체가 1:1인지 확인합니다. `set_edge_label`은 unlabeled 또는 정확히 하나의 quoted/bare pipe
+label을 가진 독립 edge를 포함해 endpoint와 대응 label까지 전체 Scene↔Mermaid mapping을 다시
+확인합니다. parallel, chained, unsupported connector, active-looking syntax 또는 label 불일치는 일부만
+추측해 편집하지 않습니다. add의 evidence note는 trim 후 1..4096자 single-line이며 source block mapping과 함께
+provenance에 저장됩니다.
+add를 undo하면 relation, line, evidence가 함께 사라지고 redo하면 같은 server ID로 복원됩니다. delete와
+label 수정은 provenance와 layout을 바꾸지 않으며, label 수정은 근거를 새로 만들거나 기존 evidence에
+label 출처를 주장하지 않습니다. 세 연산 모두 source image, element bbox, group과 대상 밖 relation을
+그대로 둡니다.
 
 Group form은 grouped option을 비활성화해 설명하고 선택 수를 live status로 알립니다. 두 node와 비어 있지
 않은 label이 없으면 submit할 수 없습니다. 성공 시 Scene/Code와 audit만 바뀌며 source element bbox,

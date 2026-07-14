@@ -104,6 +104,9 @@
 - Use-case serialization and Scene projection now share a bounded, collision-free Actor/UseCase
   namespace, including second-order prefix collisions, deterministic relation IDs, and exact
   Flowchart direction and arrow behavior.
+- Closed Review edge-label add, replace, and remove operations keyed by stable relation ID, with
+  validated canonical Scene-to-Mermaid label mapping, compatibility-neutralized quoted output,
+  unchanged provenance, and transactional validation, revision, audit, and undo/redo gates.
 
 ### Changed
 
