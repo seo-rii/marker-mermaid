@@ -3,8 +3,9 @@
 Structured VLM은 `diagram_type`만 맞춘 임의 JSON을 내보내지 않습니다. 활성화된 Mermaid 유형마다
 root 필드와 container 종류를 고정한 `TypedIRContract`를 prompt로 받고, 응답은 Pydantic 모델 생성
 시점에 같은 registry로 다시 검사됩니다. Phase 1 유형, stable Core UML 유형(State, Class, ER),
-native Phase 2의 Requirement·Block과 C4 fallback은 record 내부의 알려진 필드와 recursive container도
-전용 Pydantic model로 검사합니다. serializer의 세부 의미 검사는 그 다음 단계에서 수행합니다.
+native Phase 2의 Requirement·Block과 C4·Deployment·Component fallback은 record 내부의 알려진 필드와
+recursive container도 전용 Pydantic model로 검사합니다. serializer의 세부 의미 검사는 그 다음 단계에서
+수행합니다.
 
 이 경계는 두 문제를 분리합니다.
 
@@ -35,6 +36,7 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | Requirement | requirement/element/relation record와 닫힌 type·risk·verify·relation token |
 | Block | block/edge record, shape token, `columns` scalar 형식 |
 | C4 fallback | element/boundary/relation record, level·kind token, Architecture port side |
+| Deployment / Component fallback | service-like primary/secondary record, group, canonical relation과 Architecture port side |
 
 ### Requirement·Block record 계약
 
@@ -115,6 +117,53 @@ partial/legacy 후보를 위해 선택이고, `bbox`·evidence의 strict 형은 
 않은 metadata는 `extra="allow"`로 남고 검증 model이 입력을 대체하지 않으므로 casing, legacy `type`, extra
 field를 포함한 원본 dict가 serializer·repair·canonical hash·sidecar로 전달됩니다.
 
+### Deployment·Component Architecture fallback 계약
+
+Deployment는 `nodes: list`, Component는 `components: list` root가 필수입니다. Deployment의 canonical
+선택 root는 `artifacts`·`groups`·`links`, Component는 `interfaces`·`groups`·`dependencies`입니다.
+두 nested model 모두 legacy `edges`를 compatibility field로 검사하지만 root contract와 활성 type의
+canonical prompt에는 광고하지 않고 다음 record만 공개합니다.
+
+| Type | Prompt record | 공개 field |
+| --- | --- | --- |
+| Deployment | `nodes[]`, `artifacts[]` | `id`, `label`, `name`, `icon`, `group`, `bbox`, `evidence_ids` |
+| Deployment | `groups[]` | `id`, `label`, `icon`, `bbox`, `evidence_ids` |
+| Deployment | `links[]` | `id`, `source`, `target`, `label`, `bidirectional`, `source_side`, `target_side`, `bbox`, `evidence_ids` |
+| Component | `components[]`, `interfaces[]` | `id`, `label`, `name`, `icon`, `group`, `bbox`, `evidence_ids` |
+| Component | `groups[]` | `id`, `label`, `icon`, `bbox`, `evidence_ids` |
+| Component | `dependencies[]` | `id`, `source`, `target`, `label`, `bidirectional`, `source_side`, `target_side`, `bbox`, `evidence_ids` |
+
+Node와 artifact 또는 component와 interface는 각 목록 내부 순서를 유지하면서 primary record 뒤에
+secondary record를 붙인 하나의 Architecture service 목록으로 평탄화됩니다. 각 record 자체는
+collision-safe service ID와 `label` → `name` → source ID 순서의 표시
+label을 얻지만, artifact containment·stereotype 또는 provided/required interface notation은 canonical
+field가 아니며 원본 extra metadata에만 남습니다. Link/dependency의 `label`, raw relation ID와 bbox도
+typed IR/review metadata이며 자동 Mermaid edge에는 표시되지 않습니다. Source/target, strict boolean
+`bidirectional`, 대문자 `L/R/T/B` port side만 Architecture topology가 소비하고 relation evidence는 generated
+Scene attribution에 유지됩니다.
+
+Service-like `icon`은 string 형을 검사하지만 닫힌 token으로 거부하지 않습니다. Serializer가
+case-insensitive로 `cloud`, `database`, `disk`, `internet`, `server`를 사용하고 그 밖의 값은 `server`로
+낮춥니다. Group icon도 string metadata로 보존하며 누락 시 Architecture 기본값을 사용합니다. Group ID·label과
+service `group`은 공용 Architecture structure plan에서 실제 membership으로 검사·방출됩니다.
+Architecture output은 service/group icon과 relation port side를 사용하지만 runtime이 이를 거부해 nested
+Flowchart로 재시도하면 같은 service/group ID·label·membership과 무라벨 endpoint/bidirectional topology만
+남고 icon·port side는 typed IR에 보존됩니다.
+
+Canonical relation collection이 root에 존재하면 비어 있어도 우선합니다. 따라서 Deployment `links`가
+있으면 legacy `edges`를 합치거나 되살리지 않고, Component `dependencies`가 있으면 `edges`를 사용하지
+않습니다. Canonical collection이 아예 없을 때만 `edges`를 compatibility alias로 읽습니다. Nested model은
+legacy alias도 같은 strict relation 형으로 검사하지만 provider prompt에는 canonical collection만
+요구합니다. 검증 결과는 원본 dict에 default list를 삽입하지 않으므로 이 key-presence 우선순위가 바뀌지
+않습니다.
+
+각 record field와 evidence는 partial/legacy reconstruction을 위해 선택이고 등록하지 않은 metadata는
+`extra="allow"`로 보존됩니다. Known scalar/container, strict bbox/evidence, port와 boolean 형만 extraction
+경계에서 확인하며, 결합된 service 목록의 non-empty 조건, ID/group collision, group reference, endpoint,
+resource cap은 record ID planner와 공용 Architecture structure plan이 최종 판정합니다. Serializer와
+generated Scene은 이 planner의 emitted identity/topology를 따르지만 별도의 Deployment/Component native
+notation을 만들지는 않습니다.
+
 알려진 scalar field에는 object/list를 넣을 수 없고, record와 child container의 종류도 고정합니다. `bbox`는
 정확히 네 개의 finite number, `evidence_ids`와 membership은 string list여야 합니다. `extra="allow"`를
 사용하므로 style, geometry, plugin 또는 향후 Mermaid field 같은 미등록 metadata는 삭제하지 않습니다.
@@ -135,7 +184,8 @@ metadata도 OCR 구조 점수에서는 제외합니다.
 Gantt 날짜와 Mermaid 표현 가능성은 serializer 및 evaluation gate가 계속 판정합니다. Architecture port는
 nested contract에서 `L/R/T/B`만 허용합니다.
 State kind, Class member visibility/kind/classifier 및 relation type, ER attribute key와 relationship
-cardinality, Requirement·Block 및 C4의 위 token처럼 serializer가 닫힌 집합으로 해석하는 값도
+cardinality, Requirement·Block 및 C4의 위 token과 Deployment/Component port처럼 serializer가 닫힌
+집합으로 해석하는 값도
 같은 집합으로 제한합니다. Root list 이외의 record field는 partial reconstruction을 위해 선택이며,
 필드 존재, non-empty, 표시 text, ID 중복, endpoint 참조 같은 의미 조건은 계속 serializer가
 판정합니다.
@@ -150,10 +200,10 @@ message만 serializer와 Scene에 함께 전달하고, raw message ID와 무관�
 부여합니다. 따라서 Mermaid에서 합쳐진 actor나 생략된 message를 평가 Scene이 별도 구조로 세지 않습니다.
 
 현재 Marker `response_schema`의 외부 envelope는 여전히 `TypedIRCandidate.ir: dict`입니다. 따라서 이 단계는
-활성화된 Requirement·Block·C4의 prompt와 응답 후 검증을 중첩 구조까지 확장하지만, provider에 모든
+활성화된 Requirement·Block·C4·Deployment·Component의 prompt와 응답 후 검증을 중첩 구조까지 확장하지만,
+provider에 모든
 Mermaid 유형을 하나의 discriminated JSON Schema로 직접 노출하거나 generic envelope reserve를
-늘리지는 않습니다. Deployment·Component·Use-case 등 나머지 Phase 2 fallback은 아직 root contract이며,
-그 밖의 later-phase 유형을 포함한
+늘리지는 않습니다. Phase 2 fallback 중 Use-case만 아직 root contract이며, 그 밖의 later-phase 유형을 포함한
 전용 model과 envelope-level discriminated schema는 후속 작업이므로 `ARCH-001`은 여전히 부분 완화 상태입니다.
 
 Marker 1.10.2의 stock Ollama service는 원래 schema의 최상위 `properties`와 `required`만 복사해 `$defs`를

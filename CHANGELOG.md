@@ -103,6 +103,11 @@
   preservation, exact Architecture port sides, and serializer-owned reference/collision semantics.
   Native-only description, technology, relation labels, and boundary notation remain review metadata;
   automatic publication still uses the shared bounded Architecture-to-Flowchart fallback path.
+- Deployment and Component fallback typed IR now has strict nested contracts for primary and flattened
+  secondary service records, groups, and canonical links/dependencies. Legacy `edges` remains a
+  validated, non-advertised compatibility alias; open icon strings, exact ports/booleans, extra
+  notation metadata, and the original dictionary preserve the existing Architecture-to-Flowchart
+  fallback behavior while semantic references remain serializer-owned.
 - Serializer-visible Scene text now includes Architecture group labels, excludes hidden
   Deployment/Component relation labels, and mirrors Use-case Flowchart relation type-over-label
   precedence; hidden role/shape/style/semantic metadata cannot enter the projected Scene, and

@@ -601,6 +601,147 @@ def test_architecture_fallback_relation_texts_match_visible_mermaid_only() -> No
         assert ocr_recall([hidden_label], "", generated_texts=texts) == 0
 
 
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "visible_texts", "hidden_texts"),
+    [
+        (
+            "deployment",
+            {
+                "nodes": [
+                    {
+                        "id": "app",
+                        "label": "Application",
+                        "group": "runtime",
+                        "bbox": [10, 20, 30, 40],
+                        "evidence_ids": ["ocr-app"],
+                        "stereotype": "executionEnvironment",
+                    }
+                ],
+                "artifacts": [
+                    {
+                        "id": "image",
+                        "name": "Image",
+                        "group": "runtime",
+                        "bbox": [50, 60, 70, 80],
+                        "evidence_ids": ["ocr-image"],
+                        "containment": "app",
+                    }
+                ],
+                "groups": [
+                    {
+                        "id": "runtime",
+                        "label": "Runtime",
+                        "bbox": [1, 2, 90, 100],
+                        "evidence_ids": ["contour-runtime"],
+                    }
+                ],
+                "links": [
+                    {
+                        "id": "raw-link",
+                        "source": "app",
+                        "target": "image",
+                        "label": "Hidden JDBC",
+                        "bidirectional": True,
+                        "bbox": [30, 40, 50, 60],
+                        "evidence_ids": ["arrow-jdbc"],
+                    }
+                ],
+                "edges": [
+                    {
+                        "source": "image",
+                        "target": "app",
+                        "label": "Hidden legacy edge",
+                        "evidence_ids": ["legacy-arrow"],
+                    }
+                ],
+            },
+            ["Application", "Image", "Runtime"],
+            ["Hidden JDBC legacy edge executionEnvironment containment"],
+        ),
+        (
+            "component",
+            {
+                "components": [
+                    {
+                        "id": "web",
+                        "label": "Web",
+                        "group": "application",
+                        "bbox": [10, 20, 30, 40],
+                        "evidence_ids": ["ocr-web"],
+                        "stereotype": "component",
+                    }
+                ],
+                "interfaces": [
+                    {
+                        "id": "auth",
+                        "name": "Auth port",
+                        "group": "application",
+                        "bbox": [50, 60, 70, 80],
+                        "evidence_ids": ["ocr-auth"],
+                        "provided": True,
+                    }
+                ],
+                "groups": [
+                    {
+                        "id": "application",
+                        "label": "Application",
+                        "bbox": [1, 2, 90, 100],
+                        "evidence_ids": ["contour-application"],
+                    }
+                ],
+                "dependencies": [
+                    {
+                        "id": "raw-dependency",
+                        "source": "web",
+                        "target": "auth",
+                        "label": "Hidden OAuth",
+                        "bbox": [30, 40, 50, 60],
+                        "evidence_ids": ["arrow-oauth"],
+                    }
+                ],
+                "edges": [
+                    {
+                        "source": "auth",
+                        "target": "web",
+                        "label": "Hidden legacy edge",
+                        "evidence_ids": ["legacy-arrow"],
+                    }
+                ],
+            },
+            ["Web", "Auth port", "Application"],
+            ["Hidden OAuth legacy edge component provided"],
+        ),
+    ],
+)
+def test_architecture_fallback_scene_keeps_provenance_but_not_lost_metadata(
+    diagram_type: str,
+    ir: dict[str, object],
+    visible_texts: list[str],
+    hidden_texts: list[str],
+) -> None:
+    scene = typed_ir_to_scene(diagram_type, ir)
+
+    assert scene is not None
+    first_evidence = "ocr-app" if diagram_type == "deployment" else "ocr-web"
+    second_evidence = "ocr-image" if diagram_type == "deployment" else "ocr-auth"
+    assert [(element.text, element.bbox, element.evidence_ids) for element in scene.elements] == [
+        (visible_texts[0], (10, 20, 30, 40), [first_evidence]),
+        (visible_texts[1], (50, 60, 70, 80), [second_evidence]),
+    ]
+    assert [(group.label, group.member_ids, group.bbox) for group in scene.groups] == [
+        (visible_texts[2], [scene.elements[0].id, scene.elements[1].id], (1, 2, 90, 100))
+    ]
+    assert len(scene.relations) == 1
+    assert scene.relations[0].id == "generated-relation-1"
+    assert scene.relations[0].label is None
+    assert scene.relations[0].evidence_ids == [
+        "arrow-jdbc" if diagram_type == "deployment" else "arrow-oauth"
+    ]
+    texts = list(typed_ir_semantic_texts(diagram_type, ir, scene))
+    assert texts == visible_texts
+    assert ocr_recall(hidden_texts, "", generated_texts=texts) == 0
+
+
 def test_architecture_fallback_scene_does_not_revive_legacy_edges() -> None:
     deployment = typed_ir_to_scene(
         "deployment",

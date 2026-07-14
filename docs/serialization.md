@@ -25,7 +25,7 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 | BPMN | `bpmn → swimlane → flowchart` | BPMN 전용 notation 손실 |
 | Generic Network | `flowchart` | portable node/edge 표현 |
 | C4 | `c4 → architecture → flowchart` | native C4 SVG가 strict gate의 data/xlink 정책과 불일치하며 Architecture runtime 거부 시 nested fallback |
-| Deployment, Component | `deployment/component → architecture → flowchart` | Architecture runtime 거부 시 nested fallback; stereotype/interface/link label 일부는 typed IR에 유지 |
+| Deployment, Component | `deployment/component → architecture → flowchart` | primary/secondary record를 service로 평탄화; Architecture runtime 거부 시 nested fallback, 특수 notation/relation label은 typed IR에 유지 |
 | Use-case | `flowchart` | actor glyph와 system boundary는 typed IR에 유지 |
 | Pie, XY, Quadrant | 동일 | explicit finite values/axis/coordinates 필수 |
 | Sankey | `sankey` 또는 `flowchart` | native-safe positive DAG, 그 외 exact-weight fallback |
@@ -99,8 +99,8 @@ Architecture/Flowchart 후보를 불필요하게 거부하지 않기 위한 호�
 `bbox`·string evidence list 및 `extra="allow"` 보존 규칙을 따릅니다. 검증 model은 입력 dict를
 재작성하지 않습니다. Non-empty element, normalized ID collision, boundary reference/membership, endpoint와
 Scene budget은 nested model이 추측하지 않고 아래의 공용 bounded C4-to-Architecture plan이 계속
-판정합니다. Deployment·Component·Use-case는 아직 이 nested Phase 2 fallback 계약의 적용 대상이 아니라
-root contract만 사용합니다.
+판정합니다. Use-case는 아직 이 nested Phase 2 fallback 계약의 적용 대상이 아니라 root contract만
+사용합니다.
 
 `serialize_c4_native`는 pinned Mermaid의 native macro를 확인하는 trusted diagnostic 경로이며 자동 C4
 게시·평가의 구조 기준이 아닙니다. 자동 경로는 C4 element를 Architecture service로, boundary를 group으로,
@@ -122,3 +122,33 @@ runtime fallback repair history에서
 않습니다. Service가 없는 C4 boundary는 Architecture group과 generated Scene에는 보존하지만 portable
 Flowchart가 empty subgraph를 안전하게 표현하지 못하므로, 해당 nested retry는 기존처럼 후보 단위로
 실패하고 다른 후보 처리를 계속합니다.
+
+### Deployment·Component의 Architecture projection
+
+Deployment와 Component도 자동 후보가 각각 `nodes`·`components` 필수 root와 내부 record를 strict nested
+contract로 통과한 뒤 Architecture로 방출됩니다. Deployment `artifacts`와 Component `interfaces`는 별도
+notation으로 그리지 않고 primary record 뒤에 평탄화된 generic service가 됩니다. `groups`는 service
+`group` reference와 함께 공용 Architecture plan의 실제 group/membership으로 방출됩니다. 따라서 artifact나
+interface의 ID와 `label`/`name`은 보이지만, artifact containment·stereotype과 provided/required interface
+notation은 extra typed IR/review metadata에만 남습니다.
+
+Deployment는 canonical `links`, Component는 canonical `dependencies`를 prompt에 사용합니다. 해당 key가
+root에 있으면 빈 list여도 legacy `edges`를 병합하거나 대신 사용하지 않으며, canonical key가 없을 때만
+`edges`를 compatibility alias로 읽습니다. Nested validation은 legacy edge record도 같은 형으로 검사하지만
+원본 dict에 default key를 삽입하거나 field를 coercion하지 않습니다. Link/dependency label, raw relation ID와
+bbox는 Mermaid에 방출하지 않고 typed IR에 보존합니다. Endpoint와 strict `bidirectional`, 대문자
+`source_side`/`target_side`(`L/R/T/B`)가 unlabeled Architecture edge를 결정하며 evidence는 generated Scene
+attribution에 유지됩니다.
+
+Service-like icon은 open string입니다. Serializer가 지원하는 `cloud`·`database`·`disk`·`internet`·`server`는
+대소문자를 정규화해 사용하고 알 수 없는 값은 `server`로 낮추므로, extraction contract가 fallback 가능한
+후보를 icon enum만으로 거부하지 않습니다. Architecture output은 service/group icon과 connector port를
+표시합니다. Runtime rejection 뒤 Flowchart retry는 같은 collision-safe service/group ID, label, membership,
+무라벨 endpoint와 bidirectional topology를 유지하지만 icon과 port side는 표시하지 않습니다. Root
+`direction`도 Architecture grammar에서는 무시되고 generated Scene과 Flowchart retry에서만 사용됩니다.
+
+Known record/container/scalar 형, bbox/evidence, strict boolean과 port는 nested contract가 판정합니다. 결합된
+service 목록의 non-empty 조건, normalized ID/group collision, unknown group/endpoint와 Scene resource cap은
+기존 record ID planner와 Architecture structure plan이 계속 fail closed로 처리합니다. 빈 group은
+Architecture에는 보존되지만 portable Flowchart가 안전하게 표현하지 못하므로 해당 runtime retry에서 후보
+단위로 거부됩니다. Deployment/Component 전용 native serializer나 특수 notation을 복원했다는 뜻이 아닙니다.

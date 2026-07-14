@@ -1083,6 +1083,228 @@ def test_generic_candidate_envelopes_apply_c4_nested_contract() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "location"),
+    [
+        ("deployment", {"nodes": ["not-an-object"]}, "nodes[0]"),
+        ("deployment", {"nodes": [], "artifacts": {"id": "image"}}, "artifacts"),
+        ("deployment", {"nodes": [], "groups": ["not-an-object"]}, "groups[0]"),
+        ("deployment", {"nodes": [], "links": {"source": "app"}}, "links"),
+        ("deployment", {"nodes": [], "edges": {"source": "app"}}, "edges"),
+        ("deployment", {"nodes": [{"id": 1}]}, "nodes[0].id"),
+        ("deployment", {"nodes": [{"name": {"text": "App"}}]}, "nodes[0].name"),
+        ("deployment", {"nodes": [{"icon": ["server"]}]}, "nodes[0].icon"),
+        ("deployment", {"nodes": [{"group": 1}]}, "nodes[0].group"),
+        ("deployment", {"nodes": [{"bbox": [0, 0, 10]}]}, "nodes[0].bbox"),
+        ("deployment", {"nodes": [{"evidence_ids": [1]}]}, "nodes[0].evidence_ids[0]"),
+        ("deployment", {"nodes": [], "artifacts": [{"label": ["Image"]}]}, "artifacts[0].label"),
+        ("deployment", {"nodes": [], "groups": [{"id": 1}]}, "groups[0].id"),
+        ("deployment", {"nodes": [], "groups": [{"label": ["Zone"]}]}, "groups[0].label"),
+        ("deployment", {"nodes": [], "groups": [{"icon": {"name": "cloud"}}]}, "groups[0].icon"),
+        ("deployment", {"nodes": [], "groups": [{"bbox": [0, False, 10, 10]}]}, "groups[0].bbox"),
+        (
+            "deployment",
+            {"nodes": [], "groups": [{"evidence_ids": [1]}]},
+            "groups[0].evidence_ids[0]",
+        ),
+        ("deployment", {"nodes": [], "links": ["not-an-object"]}, "links[0]"),
+        ("deployment", {"nodes": [], "links": [{"id": 1}]}, "links[0].id"),
+        ("deployment", {"nodes": [], "links": [{"source": ["app"]}]}, "links[0].source"),
+        ("deployment", {"nodes": [], "links": [{"target": 1}]}, "links[0].target"),
+        ("deployment", {"nodes": [], "links": [{"label": {"text": "uses"}}]}, "links[0].label"),
+        ("deployment", {"nodes": [], "links": [{"bidirectional": 1}]}, "links[0].bidirectional"),
+        ("deployment", {"nodes": [], "links": [{"source_side": "r"}]}, "links[0].source_side"),
+        ("deployment", {"nodes": [], "links": [{"target_side": "X"}]}, "links[0].target_side"),
+        ("deployment", {"nodes": [], "links": [{"bbox": [0, 0, "10", 10]}]}, "links[0].bbox"),
+        ("deployment", {"nodes": [], "links": [{"evidence_ids": [1]}]}, "links[0].evidence_ids[0]"),
+        (
+            "deployment",
+            {"nodes": [], "links": [], "edges": [{"label": ["ignored but invalid"]}]},
+            "edges[0].label",
+        ),
+        ("component", {"components": ["not-an-object"]}, "components[0]"),
+        ("component", {"components": [], "interfaces": {"id": "port"}}, "interfaces"),
+        ("component", {"components": [], "groups": {"id": "zone"}}, "groups"),
+        ("component", {"components": [], "dependencies": {"source": "web"}}, "dependencies"),
+        ("component", {"components": [], "edges": ["not-an-object"]}, "edges[0]"),
+        ("component", {"components": [{"label": ["Web"]}]}, "components[0].label"),
+        (
+            "component",
+            {"components": [], "interfaces": [{"evidence_ids": [1]}]},
+            "interfaces[0].evidence_ids[0]",
+        ),
+        (
+            "component",
+            {"components": [], "dependencies": [{"bidirectional": 1}]},
+            "dependencies[0].bidirectional",
+        ),
+        (
+            "component",
+            {"components": [], "dependencies": [{"source_side": "L "}]},
+            "dependencies[0].source_side",
+        ),
+        (
+            "component",
+            {"components": [], "dependencies": [{"target_side": "b"}]},
+            "dependencies[0].target_side",
+        ),
+        (
+            "component",
+            {"components": [], "dependencies": [], "edges": [{"source": ["ignored"]}]},
+            "edges[0].source",
+        ),
+    ],
+)
+def test_architecture_fallback_nested_contracts_reject_wrong_shapes(
+    diagram_type: str,
+    ir: dict[str, object],
+    location: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    message = str(exc_info.value)
+    assert "violates its nested contract" in message
+    assert location in message
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "deployment",
+            {
+                "nodes": [
+                    {
+                        "name": "App",
+                        "icon": "VENDOR_RUNTIME",
+                        "group": "runtime",
+                        "bbox": [0, 0, 10, 10],
+                        "evidence_ids": ["ocr-app"],
+                        "stereotype": "executionEnvironment",
+                    }
+                ],
+                "artifacts": [{"label": "Image", "future_metadata": {"kept": True}}],
+                "groups": [
+                    {
+                        "id": "runtime",
+                        "label": "Runtime",
+                        "icon": "PRIVATE_CLOUD",
+                        "bbox": [0, 0, 20, 20],
+                        "evidence_ids": ["contour-runtime"],
+                    }
+                ],
+                "links": [
+                    {
+                        "source": "unknown",
+                        "target": "also-unknown",
+                        "label": "JDBC",
+                        "source_side": "T",
+                        "target_side": "B",
+                        "bidirectional": False,
+                        "evidence_ids": ["line-jdbc"],
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "edges": [{"source": "legacy", "target": "ignored", "label": "Legacy"}],
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+        (
+            "component",
+            {
+                "components": [
+                    {
+                        "label": "Web",
+                        "icon": "SERVER",
+                        "group": "application",
+                        "bbox": [0, 0, 10, 10],
+                        "evidence_ids": ["ocr-web"],
+                        "stereotype": "component",
+                    }
+                ],
+                "interfaces": [{"name": "Auth port", "provided": True}],
+                "groups": [{"id": "application", "icon": "cloud"}],
+                "dependencies": [
+                    {
+                        "source": "unknown",
+                        "target": "also-unknown",
+                        "label": "OAuth",
+                        "source_side": "L",
+                        "target_side": "R",
+                        "bidirectional": True,
+                        "evidence_ids": ["line-oauth"],
+                    }
+                ],
+                "edges": [{"source": "legacy", "target": "ignored", "label": "Legacy"}],
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+    ],
+)
+def test_architecture_fallback_nested_contracts_preserve_partial_and_extra_ir(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    assert candidate.ir == ir
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "mutation", "location"),
+    [
+        (
+            "deployment",
+            {"nodes": [{"icon": "server"}]},
+            lambda ir: ir["nodes"][0].__setitem__("icon", ["server"]),
+            r"nodes\[0\]\.icon",
+        ),
+        (
+            "component",
+            {"components": [{"id": "web"}], "dependencies": [{"source_side": "L"}]},
+            lambda ir: ir["dependencies"][0].__setitem__("source_side", "l"),
+            r"dependencies\[0\]\.source_side",
+        ),
+    ],
+)
+def test_canonical_key_revalidates_mutated_architecture_fallback_contracts(
+    diagram_type: str,
+    ir: dict[str, object],
+    mutation,
+    location: str,
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+    mutation(candidate.ir)
+
+    with pytest.raises(ValidationError, match=location):
+        candidate.canonical_key()
+
+
+def test_generic_candidate_envelopes_apply_architecture_fallback_nested_contracts() -> None:
+    with pytest.raises(ValidationError, match=r"links\[0\]\.bidirectional"):
+        EngineObservation(
+            prediction=DiagramTypePrediction(candidates=["deployment"], scores=[1.0]),
+            typed_candidates=[
+                {
+                    "diagram_type": "deployment",
+                    "ir": {"nodes": [], "links": [{"bidirectional": 1}]},
+                }
+            ],
+        )
+
+    with pytest.raises(ValidationError, match=r"dependencies\[0\]\.target_side"):
+        MermaidCandidate(
+            candidate_id="candidate-component",
+            generation_method="typed_ir",
+            diagram_type="component",
+            typed_ir={
+                "components": [],
+                "dependencies": [{"target_side": "b"}],
+            },
+        )
+
+
 @pytest.mark.parametrize("bbox", [[0, 0, 10], [0, 0, True, 10], ["0", 0, 10, 10]])
 def test_phase_one_nested_contracts_require_four_strict_finite_bbox_numbers(bbox) -> None:
     with pytest.raises(ValidationError, match="bbox"):

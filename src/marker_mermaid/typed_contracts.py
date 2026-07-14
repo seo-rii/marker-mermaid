@@ -474,6 +474,46 @@ class _ArchitectureIR(_TypedIRRoot):
     edges: list[_ArchitectureEdge] = Field(default_factory=list)
 
 
+class _ArchitectureFallbackRecord(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+    name: str | None = None
+    icon: str | None = None
+    group: str | None = None
+
+
+class _ArchitectureFallbackGroup(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+    icon: str | None = None
+
+
+class _ArchitectureFallbackEdge(_TypedIRRecord):
+    id: str | None = None
+    source: str | None = None
+    target: str | None = None
+    label: str | None = None
+    bidirectional: bool | None = None
+    source_side: Literal["L", "R", "T", "B"] | None = None
+    target_side: Literal["L", "R", "T", "B"] | None = None
+
+
+class _DeploymentIR(_TypedIRRoot):
+    nodes: list[_ArchitectureFallbackRecord]
+    artifacts: list[_ArchitectureFallbackRecord] = Field(default_factory=list)
+    groups: list[_ArchitectureFallbackGroup] = Field(default_factory=list)
+    links: list[_ArchitectureFallbackEdge] = Field(default_factory=list)
+    edges: list[_ArchitectureFallbackEdge] = Field(default_factory=list)
+
+
+class _ComponentIR(_TypedIRRoot):
+    components: list[_ArchitectureFallbackRecord]
+    interfaces: list[_ArchitectureFallbackRecord] = Field(default_factory=list)
+    groups: list[_ArchitectureFallbackGroup] = Field(default_factory=list)
+    dependencies: list[_ArchitectureFallbackEdge] = Field(default_factory=list)
+    edges: list[_ArchitectureFallbackEdge] = Field(default_factory=list)
+
+
 @dataclass(frozen=True, slots=True)
 class TypedIRContract:
     required: tuple[tuple[str, RootKind], ...]
@@ -653,12 +693,36 @@ TYPED_IR_CONTRACTS: dict[str, TypedIRContract] = {
         ),
     ),
     "deployment": TypedIRContract(
-        (("nodes", "list"),), ("artifacts", "links", "edges"), "deployment nodes/artifacts"
+        (("nodes", "list"),),
+        ("artifacts", "groups", "links"),
+        "deployment nodes/artifacts",
+        _DeploymentIR,
+        (
+            "nodes[]: {id:string,label:string,name:string,icon:string,group:string,"
+            "bbox:number[4],evidence_ids:string[]}",
+            "artifacts[]: {id:string,label:string,name:string,icon:string,group:string,"
+            "bbox:number[4],evidence_ids:string[]}",
+            "groups[]: {id:string,label:string,icon:string,bbox:number[4],evidence_ids:string[]}",
+            "links[]: {id:string,source:string,target:string,label:string,"
+            "bidirectional:boolean,source_side:L|R|T|B,target_side:L|R|T|B,"
+            "bbox:number[4],evidence_ids:string[]}",
+        ),
     ),
     "component": TypedIRContract(
         (("components", "list"),),
-        ("interfaces", "dependencies", "edges"),
+        ("interfaces", "groups", "dependencies"),
         "components and interfaces",
+        _ComponentIR,
+        (
+            "components[]: {id:string,label:string,name:string,icon:string,group:string,"
+            "bbox:number[4],evidence_ids:string[]}",
+            "interfaces[]: {id:string,label:string,name:string,icon:string,group:string,"
+            "bbox:number[4],evidence_ids:string[]}",
+            "groups[]: {id:string,label:string,icon:string,bbox:number[4],evidence_ids:string[]}",
+            "dependencies[]: {id:string,source:string,target:string,label:string,"
+            "bidirectional:boolean,source_side:L|R|T|B,target_side:L|R|T|B,"
+            "bbox:number[4],evidence_ids:string[]}",
+        ),
     ),
     "usecase": TypedIRContract(
         (("actors", "list"), ("use_cases", "list")),
@@ -756,7 +820,7 @@ if set(TYPED_IR_CONTRACTS) != set(ALL_TYPES):  # pragma: no cover - import-time 
 PHASE_ONE_NESTED_TYPES = PHASE_ONE_TYPES | {"generic_network"}
 CORE_UML_NESTED_TYPES = frozenset({"state", "class", "er"})
 PHASE_TWO_NATIVE_NESTED_TYPES = frozenset({"requirement", "block"})
-PHASE_TWO_FALLBACK_NESTED_TYPES = frozenset({"c4"})
+PHASE_TWO_FALLBACK_NESTED_TYPES = frozenset({"c4", "component", "deployment"})
 NESTED_TYPED_IR_TYPES = (
     PHASE_ONE_NESTED_TYPES
     | CORE_UML_NESTED_TYPES

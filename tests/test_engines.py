@@ -1474,11 +1474,59 @@ def test_c4_fallback_nested_prompt_is_exact_deterministic_and_enabled_type_only(
     assert "requirement.requirements[]" not in first
 
 
-def test_c4_is_the_only_phase_two_fallback_nested_contract():
-    contract = TYPED_IR_CONTRACTS["c4"]
-    prompt = typed_ir_contract_prompt({"c4"})
+def test_architecture_fallback_nested_prompts_are_exact_and_enabled_type_only():
+    deployment = typed_ir_contract_prompt({"deployment"})
+    component = typed_ir_contract_prompt({"component"})
 
-    assert frozenset({"c4"}) == PHASE_TWO_FALLBACK_NESTED_TYPES
+    assert (
+        "  deployment.nodes[]: {id:string,label:string,name:string,icon:string,group:string,"
+        "bbox:number[4],evidence_ids:string[]}"
+    ) in deployment
+    assert (
+        "  deployment.artifacts[]: {id:string,label:string,name:string,icon:string,"
+        "group:string,bbox:number[4],evidence_ids:string[]}"
+    ) in deployment
+    assert (
+        "  deployment.groups[]: {id:string,label:string,icon:string,bbox:number[4],"
+        "evidence_ids:string[]}"
+    ) in deployment
+    assert (
+        "  deployment.links[]: {id:string,source:string,target:string,label:string,"
+        "bidirectional:boolean,source_side:L|R|T|B,target_side:L|R|T|B,"
+        "bbox:number[4],evidence_ids:string[]}"
+    ) in deployment
+    assert "  deployment.edges[]" not in deployment
+    assert "  component.components[]" not in deployment
+
+    assert (
+        "  component.components[]: {id:string,label:string,name:string,icon:string,"
+        "group:string,bbox:number[4],evidence_ids:string[]}"
+    ) in component
+    assert (
+        "  component.interfaces[]: {id:string,label:string,name:string,icon:string,"
+        "group:string,bbox:number[4],evidence_ids:string[]}"
+    ) in component
+    assert (
+        "  component.groups[]: {id:string,label:string,icon:string,bbox:number[4],"
+        "evidence_ids:string[]}"
+    ) in component
+    assert (
+        "  component.dependencies[]: {id:string,source:string,target:string,label:string,"
+        "bidirectional:boolean,source_side:L|R|T|B,target_side:L|R|T|B,"
+        "bbox:number[4],evidence_ids:string[]}"
+    ) in component
+    assert "  component.edges[]" not in component
+    assert "  deployment.nodes[]" not in component
+
+
+def test_every_phase_two_fallback_type_has_exact_nested_prompt_records():
+    expected_records = {
+        "c4": ("level", "elements[]", "boundaries[]", "relations[]"),
+        "component": ("components[]", "interfaces[]", "groups[]", "dependencies[]"),
+        "deployment": ("nodes[]", "artifacts[]", "groups[]", "links[]"),
+    }
+
+    assert set(expected_records) == PHASE_TWO_FALLBACK_NESTED_TYPES
     assert NESTED_TYPED_IR_TYPES == (
         PHASE_ONE_NESTED_TYPES
         | CORE_UML_NESTED_TYPES
@@ -1490,14 +1538,16 @@ def test_c4_is_the_only_phase_two_fallback_nested_contract():
         for diagram_type, registered in TYPED_IR_CONTRACTS.items()
         if registered.nested_model is not None
     } == NESTED_TYPED_IR_TYPES
-    assert contract.nested_model is not None
-    assert tuple(record.split(":", 1)[0] for record in contract.prompt_records) == (
-        "level",
-        "elements[]",
-        "boundaries[]",
-        "relations[]",
-    )
-    assert all(f"  c4.{record}" in prompt for record in contract.prompt_records)
+    for diagram_type, prefixes in expected_records.items():
+        contract = TYPED_IR_CONTRACTS[diagram_type]
+        prompt = typed_ir_contract_prompt({diagram_type})
+        assert contract.nested_model is not None
+        assert tuple(record.split(":", 1)[0] for record in contract.prompt_records) == prefixes
+        assert all(f"  {diagram_type}.{record}" in prompt for record in contract.prompt_records)
+        assert all(
+            f"  {other_type}." not in prompt
+            for other_type in PHASE_TWO_FALLBACK_NESTED_TYPES - {diagram_type}
+        )
 
 
 def test_all_enabled_nested_contract_prompts_fit_minimum_request_budget():

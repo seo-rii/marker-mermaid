@@ -586,6 +586,197 @@ def test_c4_nested_contract_preserves_duplicate_identity_and_empty_boundary_sema
 
 
 @pytest.mark.parametrize(
+    ("diagram_type", "ir", "expected_lines", "hidden_label"),
+    [
+        (
+            "deployment",
+            {
+                "nodes": [
+                    {
+                        "id": "A-B",
+                        "label": "Application",
+                        "name": "Hidden app name",
+                        "icon": "DATABASE",
+                        "group": "runtime zone",
+                    }
+                ],
+                "artifacts": [
+                    {
+                        "id": "A B",
+                        "name": "Image",
+                        "icon": "vendor-runtime",
+                        "group": "runtime zone",
+                    }
+                ],
+                "groups": [{"id": "runtime zone", "label": "Runtime", "icon": "cloud"}],
+                "links": [
+                    {
+                        "source": "A-B",
+                        "target": "A B",
+                        "label": "Hidden JDBC",
+                        "source_side": "T",
+                        "target_side": "B",
+                        "bidirectional": True,
+                    }
+                ],
+                "edges": [{"source": "A B", "target": "A-B", "label": "Legacy"}],
+            },
+            (
+                'group runtime_zone(cloud)["Runtime"]',
+                'service A_B(database)["Application"] in runtime_zone',
+                'service A_B_2(server)["Image"] in runtime_zone',
+                "A_B:T <--> B:A_B_2",
+            ),
+            "Hidden JDBC",
+        ),
+        (
+            "component",
+            {
+                "components": [
+                    {
+                        "id": "web-api",
+                        "label": "Web",
+                        "name": "Hidden web name",
+                        "icon": "SERVER",
+                        "group": "application",
+                    }
+                ],
+                "interfaces": [
+                    {
+                        "id": "web api",
+                        "name": "Auth port",
+                        "icon": "custom-interface",
+                        "group": "application",
+                    }
+                ],
+                "groups": [{"id": "application", "label": "Application"}],
+                "dependencies": [
+                    {
+                        "source": "web-api",
+                        "target": "web api",
+                        "label": "Hidden OAuth",
+                        "source_side": "L",
+                        "target_side": "R",
+                        "bidirectional": False,
+                    }
+                ],
+                "edges": [{"source": "web api", "target": "web-api", "label": "Legacy"}],
+            },
+            (
+                'group application(cloud)["Application"]',
+                'service web_api(server)["Web"] in application',
+                'service web_api_2(server)["Auth port"] in application',
+                "web_api:L --> R:web_api_2",
+            ),
+            "Hidden OAuth",
+        ),
+    ],
+)
+def test_architecture_fallback_contract_tracks_visible_combined_records_groups_and_ports(
+    diagram_type: str,
+    ir: dict[str, object],
+    expected_lines: tuple[str, ...],
+    hidden_label: str,
+) -> None:
+    assert TypedIRCandidate(diagram_type=diagram_type, ir=ir).ir == ir
+    code, emitted_type, _reason = serialize_phase2(diagram_type, ir)
+
+    assert emitted_type == "architecture"
+    assert all(line in code for line in expected_lines)
+    assert hidden_label not in code
+    assert "Legacy" not in code
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "primary_field", "root_field", "secondary_field"),
+    [
+        ("deployment", "links", "nodes", "artifacts"),
+        ("component", "dependencies", "components", "interfaces"),
+    ],
+)
+def test_architecture_fallback_relation_alias_precedence_is_not_merged(
+    diagram_type: str,
+    primary_field: str,
+    root_field: str,
+    secondary_field: str,
+) -> None:
+    records = [{"id": "a"}, {"id": "b"}]
+    legacy_only = {
+        root_field: records,
+        secondary_field: [],
+        "edges": [{"source": "a", "target": "b"}],
+    }
+    suppressed_legacy = {
+        **legacy_only,
+        primary_field: [],
+    }
+
+    assert TypedIRCandidate(diagram_type=diagram_type, ir=legacy_only).ir == legacy_only
+    assert "a:R --> L:b" in serialize_phase2(diagram_type, legacy_only)[0]
+    assert TypedIRCandidate(diagram_type=diagram_type, ir=suppressed_legacy).ir == suppressed_legacy
+    assert "a:R --> L:b" not in serialize_phase2(diagram_type, suppressed_legacy)[0]
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "root_field", "secondary_field"),
+    [
+        ("deployment", "nodes", "artifacts"),
+        ("component", "components", "interfaces"),
+    ],
+)
+def test_architecture_fallback_secondary_records_share_identity_and_duplicate_semantics(
+    diagram_type: str,
+    root_field: str,
+    secondary_field: str,
+) -> None:
+    ir = {
+        root_field: [{"id": "same", "label": "Primary"}],
+        secondary_field: [{"id": "same", "label": "Secondary"}],
+        "edges": [{"source": "same", "target": "same"}],
+    }
+
+    assert TypedIRCandidate(diagram_type=diagram_type, ir=ir).ir == ir
+    code = serialize_phase2(diagram_type, ir)[0]
+    assert 'service same(server)["Primary"]' in code
+    assert 'service same_2(server)["Secondary"]' in code
+    assert "same:R --> L:same" in code
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "message"),
+    [
+        ("deployment", {"nodes": [], "artifacts": []}, "non-empty list"),
+        ("component", {"components": [], "interfaces": []}, "non-empty list"),
+        (
+            "deployment",
+            {
+                "nodes": [{"id": "app", "group": "missing"}],
+                "groups": [{"id": "known"}],
+            },
+            "unknown group",
+        ),
+        (
+            "component",
+            {
+                "components": [{"id": "web"}],
+                "dependencies": [{"source": "web", "target": "missing"}],
+            },
+            "unknown endpoint",
+        ),
+    ],
+)
+def test_architecture_fallback_contract_leaves_semantic_validation_to_serializer(
+    diagram_type: str,
+    ir: dict[str, object],
+    message: str,
+) -> None:
+    assert TypedIRCandidate(diagram_type=diagram_type, ir=ir).ir == ir
+
+    with pytest.raises(SerializationError, match=message):
+        serialize_phase2(diagram_type, ir)
+
+
+@pytest.mark.parametrize(
     ("ir", "message"),
     [
         (
