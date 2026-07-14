@@ -143,7 +143,10 @@ JSON/deep copy/directory 생성 전에, output은 image 쓰기 전에 전체 결
 budget에 admission하며, 초과 collection의 evidence와 OCR text context를 함께 비우고 bounded error를
 남긴 뒤 source reconstruction을 계속합니다. Review는 root/revision provenance read, trusted replacement,
 content digest/commit, structured `user_edit` 추가 전에 raw dict/model 입력을 한 건씩 detached
-canonical record로 바꿉니다. Evaluation prediction importer 적용은 후속입니다.
+canonical record로 바꿉니다. Standalone Structured VLM adapter도 전체 prior evidence에 이 snapshot을
+먼저 적용하고 나서만 view 검증, prompt selection, provider 호출을 수행합니다. 따라서 선택되지 않을
+tail의 duplicate source-block fan-out이나 capture 중 nested-list 변경도 provider 경계를 넘지 못합니다.
+Evaluation prediction importer 적용은 후속입니다.
 
 PDF vector provider도 신뢰하는 collection이 아닙니다. Vector source와 raw text/drawing,
 PyMuPDF drawing command는 전체를 먼저 materialize하지 않고 각 상한보다 한 개만 더 읽어

@@ -681,8 +681,10 @@ Snapshot은 exact public field와 nested exact list를 built-in access로 고정
 `model_dump`나 subclass hook을 사용하지 않습니다. Final result와 publication/Markdown, sidecar/output
 sink도 같은 snapshot을 재사용합니다. JSON/dict ingress는 record별 canonical validation과 누적 snapshot을
 교대로 수행해 over-budget prefix 전체를 폐기합니다. Marker OCR producer와 Review provenance
-read/replacement/structured-add도 이 경계를 공유합니다. 이 runtime 계약은 provider response schema,
-public config, sidecar manifest를 변경하지 않으며 evaluation ingestion은 후속입니다.
+read/replacement/structured-add 및 standalone Structured VLM prior-evidence ingress도 이 경계를 공유합니다.
+Structured VLM은 prompt item selection보다 먼저 whole-input snapshot을 만들며 provider에는 detached
+record만 전달합니다. 이 runtime 계약은 provider response schema, public config, sidecar manifest를
+변경하지 않으며 evaluation ingestion은 후속입니다.
 
 Canonical candidate key는 이 bounded snapshot의 SHA-256 digest를 사용하므로 multi-megabyte IR을 key로
 보유하지 않습니다. set, bytes 같은 비결정적·비 JSON 값도 dedup이나 private mapping lookup에 들어가기

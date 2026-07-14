@@ -8,6 +8,7 @@ import pytest
 from PIL import Image
 
 import marker_mermaid.engines as engines_module
+import marker_mermaid.models as models_module
 from marker_mermaid.config import ALL_TYPES, MIN_VLM_PROMPT_CHARS, PHASE_ONE_TYPES
 from marker_mermaid.engines import (
     MAX_VLM_EVIDENCE_INPUT_CHARS,
@@ -619,6 +620,154 @@ def test_marker_vlm_rejects_aggregate_evidence_chars_before_copy_or_provider():
     with pytest.raises(RuntimeError, match="aggregate input character budget"):
         MarkerStructuredVLMEngine(service, enabled_types={"flowchart"}).observe(context)
 
+    assert not called
+
+
+def test_marker_vlm_enforces_aggregate_source_block_reference_budget(monkeypatch):
+    monkeypatch.setattr(models_module, "MAX_EVIDENCE_SOURCE_BLOCK_REFS", 2)
+    prompts: list[str] = []
+
+    def service(**kwargs):
+        prompts.append(kwargs["prompt"])
+        return EngineObservation(
+            prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0])
+        ).model_dump(mode="json")
+
+    engine = MarkerStructuredVLMEngine(
+        service,
+        enabled_types={"flowchart"},
+        max_evidence_items=1,
+    )
+    accepted = SourceContext(
+        source_id="figure-1",
+        source_block_ids=["/page/0/Figure/1"],
+        source_image_name="figure.png",
+        image=Image.new("RGB", (20, 20), "white"),
+        views={"original": Image.new("RGB", (20, 20), "white")},
+        evidence=[
+            VisualEvidence(id="first", kind="contour", source_block_ids=["shared"]),
+            VisualEvidence(id="second", kind="contour", source_block_ids=["shared"]),
+        ],
+    )
+
+    result = engine.observe(accepted)
+
+    assert len(prompts) == 1
+    assert '"source_block_ids":["shared"]' in prompts[0]
+    assert result.prompt_budget_notice.evidence_total == 2
+    assert result.prompt_budget_notice.evidence_included == 1
+
+    selected_refs = ["shared", "shared"]
+    omitted_tail_refs = ["shared"]
+    rejected = SourceContext(
+        source_id="figure-2",
+        source_block_ids=["/page/0/Figure/2"],
+        source_image_name="figure.png",
+        image=Image.new("RGB", (20, 20), "white"),
+        views={"original": Image.new("RGB", (20, 20), "white")},
+        evidence=[
+            VisualEvidence(
+                id="selected-exact",
+                kind="contour",
+                source_block_ids=selected_refs,
+            ),
+            VisualEvidence(
+                id="omitted-overflow-tail",
+                kind="contour",
+                source_block_ids=omitted_tail_refs,
+            ),
+        ],
+    )
+
+    def forbidden_validation(cls, *_args, **_kwargs):
+        raise AssertionError("over-budget evidence must fail before canonical model copying")
+
+    monkeypatch.setattr(VisualEvidence, "model_validate", classmethod(forbidden_validation))
+    with pytest.raises(RuntimeError, match="aggregate source-block reference budget"):
+        engine.observe(rejected)
+
+    assert len(prompts) == 1
+    assert rejected.evidence[0].source_block_ids == selected_refs
+    assert rejected.evidence[1].source_block_ids == omitted_tail_refs
+
+
+def test_marker_vlm_counts_aggregate_source_block_python_characters(monkeypatch):
+    monkeypatch.setattr(models_module, "MAX_EVIDENCE_SOURCE_BLOCK_CHARS", 2)
+    provider_calls = 0
+
+    def service(**_kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        return EngineObservation(
+            prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0])
+        ).model_dump(mode="json")
+
+    engine = MarkerStructuredVLMEngine(service, enabled_types={"flowchart"})
+    accepted = SourceContext(
+        source_id="figure-1",
+        source_block_ids=["/page/0/Figure/1"],
+        source_image_name="figure.png",
+        image=Image.new("RGB", (20, 20), "white"),
+        views={"original": Image.new("RGB", (20, 20), "white")},
+        evidence=[VisualEvidence(id="exact", kind="contour", source_block_ids=["가나"])],
+    )
+
+    engine.observe(accepted)
+    assert provider_calls == 1
+
+    rejected = SourceContext(
+        source_id="figure-2",
+        source_block_ids=["/page/0/Figure/2"],
+        source_image_name="figure.png",
+        image=Image.new("RGB", (20, 20), "white"),
+        views={"original": Image.new("RGB", (20, 20), "white")},
+        evidence=[VisualEvidence(id="over", kind="contour", source_block_ids=["가나다"])],
+    )
+
+    with pytest.raises(RuntimeError, match="aggregate source-block character budget"):
+        engine.observe(rejected)
+    assert provider_calls == 1
+
+
+def test_marker_vlm_rejects_source_block_mutation_during_snapshot(monkeypatch):
+    called = False
+
+    def service(**_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("provider must not be called")
+
+    source_block_ids = ["stable"]
+    evidence = VisualEvidence(
+        id="mutable",
+        kind="contour",
+        source_block_ids=source_block_ids,
+    )
+    original_require_utf8 = models_module._require_utf8_text
+    mutated = False
+
+    def mutate_during_preflight(value, field):
+        nonlocal mutated
+        if field == "evidence source block id" and not mutated:
+            mutated = True
+            evidence.source_block_ids.append("late")
+        return original_require_utf8(value, field)
+
+    monkeypatch.setattr(models_module, "_require_utf8_text", mutate_during_preflight)
+    context = SourceContext(
+        source_id="figure-1",
+        source_block_ids=["/page/0/Figure/1"],
+        source_image_name="figure.png",
+        image=Image.new("RGB", (20, 20), "white"),
+        views={"original": Image.new("RGB", (20, 20), "white")},
+        evidence=[evidence],
+    )
+
+    with pytest.raises(RuntimeError, match="canonical structure preflight") as captured:
+        MarkerStructuredVLMEngine(service, enabled_types={"flowchart"}).observe(context)
+
+    assert "changed while they were captured" in str(captured.value.__cause__)
+    assert evidence.source_block_ids == ["stable", "late"]
     assert not called
 
 

@@ -156,6 +156,10 @@ Marker 기본 구성에서는 PyMuPDF page provider를 연결한 VectorPrimitive
 구조 evidence를 만듭니다. Structured VLM은 bounded structural quota와 문자 예산이 선택한 evidence/OCR
 subset을 prompt에서 보고, overlay view는 별도의 검증된 image list로 받습니다. scene node에 읽을 수
 있는 label이 하나도 없으면 문법적으로 렌더 가능해도 `U`로 두어 자동 Markdown 게시를 막습니다.
+`MarkerStructuredVLMEngine.observe()`를 pipeline 밖에서 직접 호출해도 prior evidence 전체를 먼저 공용
+aggregate snapshot으로 고정합니다. 따라서 prompt selection이 버릴 tail도 20,000 source-block occurrence와
+독립 문자 예산에 포함되며, 초과 또는 capture 중 mutation은 view/prompt/provider 작업 전에 collection
+전체를 거부합니다. 이후 selection과 provider prompt는 이 detached snapshot만 사용합니다.
 
 Pipeline은 engine 호출 전에 source block/page ID, OCR, initial evidence, opaque block/vector source list를
 각 hard cap보다 하나 많은 항목까지만 읽어 plain snapshot으로 고정합니다. 타입·값·합계 상한을 벗어난

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import re
 from itertools import islice
 from pathlib import Path
@@ -23,14 +22,12 @@ from marker_mermaid.config import (
     MIN_VLM_PROMPT_CHARS,
 )
 from marker_mermaid.models import (
-    MAX_EVIDENCE_REFS,
     MAX_ID_CHARS,
     MAX_OBSERVATION_EVIDENCE,
     MAX_OBSERVATION_WARNINGS,
-    MAX_TEXT_CHARS,
     EngineObservation,
     PromptBudgetNotice,
-    VisualEvidence,
+    canonical_evidence_collection_snapshot,
 )
 from marker_mermaid.protocols import SourceContext
 from marker_mermaid.resource_limits import MAX_EVIDENCE_INPUT_CHARS
@@ -56,18 +53,6 @@ _PIL_IMAGING_CORE_TYPE = type(Image.new("RGB", (1, 1)).im)
 _PIL_IMAGE_DICT_DESCRIPTOR = Image.Image.__dict__["__dict__"]
 _VIEW_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]*\Z")
 _STRUCTURAL_KINDS = ("arrowhead", "line_segment", "contour", "vector_text")
-_EVIDENCE_KINDS = frozenset(
-    {
-        "source_crop",
-        "ocr_token",
-        "vector_text",
-        "contour",
-        "line_segment",
-        "arrowhead",
-        "vlm_observation",
-        "user_edit",
-    }
-)
 _SELECTION_PROFILE = "structural-quota-v1"
 _MIN_EVIDENCE_JSON_CHARS = len(
     json.dumps(
@@ -230,101 +215,41 @@ class MarkerStructuredVLMEngine:
             raise RuntimeError("Marker LLM service is not configured")
         if type(context.evidence) is not list:
             raise RuntimeError("Structured VLM prior evidence must be an exact plain list")
-        evidence_context = context.evidence[: MAX_OBSERVATION_EVIDENCE + 1]
-        if len(evidence_context) > MAX_OBSERVATION_EVIDENCE:
-            raise RuntimeError("Structured VLM prior evidence exceeds the observation item limit")
-        if type(evidence_context) is not list:  # pragma: no cover - exact-list invariant
-            raise RuntimeError("Structured VLM prior evidence snapshot must be a plain list")
-        evidence_payloads: list[dict[str, Any]] = []
-        evidence_input_chars = 0
-        for item in evidence_context:
-            if type(item) is not VisualEvidence:
-                raise RuntimeError(
+        try:
+            evidence_snapshot = canonical_evidence_collection_snapshot(
+                context.evidence,
+                character_limit=MAX_VLM_EVIDENCE_INPUT_CHARS,
+            )
+        except TypeError as exc:
+            if "exact canonical VisualEvidence" in str(exc):
+                message = (
                     "Structured VLM prior evidence must contain canonical VisualEvidence records"
                 )
-            try:
-                item_id = item.id
-                kind = item.kind
-                text = item.text
-                font_weight = item.font_weight
-                bbox = item.bbox
-                score = item.score
-                live_source_block_ids = item.source_block_ids
-                if type(item_id) is not str or not item_id or len(item_id) > MAX_ID_CHARS:
-                    raise TypeError
-                item_id.encode("utf-8")
-                if type(kind) is not str or len(kind) > 32 or kind not in _EVIDENCE_KINDS:
-                    raise TypeError
-                if text is not None and (type(text) is not str or len(text) > MAX_TEXT_CHARS):
-                    raise TypeError
-                if text is not None:
-                    text.encode("utf-8")
-                if font_weight is not None and (
-                    type(font_weight) is not str or font_weight not in {"normal", "bold"}
-                ):
-                    raise TypeError
-                if bbox is not None and (
-                    type(bbox) is not tuple
-                    or len(bbox) != 4
-                    or any(type(value) not in {int, float} for value in bbox)
-                    or not all(math.isfinite(value) for value in bbox)
-                ):
-                    raise TypeError
-                if score is not None and (
-                    type(score) not in {int, float}
-                    or not math.isfinite(score)
-                    or not 0 <= score <= 1
-                ):
-                    raise TypeError
-                if type(live_source_block_ids) is not list:
-                    raise TypeError
-                source_block_ids = live_source_block_ids[: MAX_EVIDENCE_REFS + 1]
-                if len(source_block_ids) > MAX_EVIDENCE_REFS:
-                    raise TypeError
-                for source_block_id in source_block_ids:
-                    if (
-                        type(source_block_id) is not str
-                        or not source_block_id
-                        or len(source_block_id) > MAX_ID_CHARS
-                    ):
-                        raise TypeError
-                    source_block_id.encode("utf-8")
-                    evidence_input_chars += len(source_block_id)
-                    if evidence_input_chars > MAX_VLM_EVIDENCE_INPUT_CHARS:
-                        break
-                evidence_input_chars += len(item_id) + len(kind)
-                if text is not None:
-                    evidence_input_chars += len(text)
-                if font_weight is not None:
-                    evidence_input_chars += len(font_weight)
-                evidence_payloads.append(
-                    {
-                        "id": item_id,
-                        "kind": kind,
-                        "bbox": bbox,
-                        "text": text,
-                        "font_weight": font_weight,
-                        "score": score,
-                        "source_block_ids": source_block_ids,
-                    }
+            else:
+                message = "Structured VLM prior evidence failed canonical structure preflight"
+            raise RuntimeError(message) from exc
+        except ValueError as exc:
+            detail = str(exc)
+            if "observation item limit" in detail:
+                message = "Structured VLM prior evidence exceeds the observation item limit"
+            elif "source-block references" in detail:
+                message = (
+                    "Structured VLM prior evidence exceeds the aggregate source-block "
+                    "reference budget"
                 )
-            except (AttributeError, TypeError, UnicodeEncodeError) as exc:
-                raise RuntimeError(
-                    "Structured VLM prior evidence failed canonical structure preflight"
-                ) from exc
-            if evidence_input_chars > MAX_VLM_EVIDENCE_INPUT_CHARS:
-                raise RuntimeError(
+            elif "source-block characters" in detail:
+                message = (
+                    "Structured VLM prior evidence exceeds the aggregate source-block "
+                    "character budget"
+                )
+            elif "evidence characters" in detail:
+                message = (
                     "Structured VLM prior evidence exceeds the aggregate input character budget"
                 )
-
-        canonical_evidence: list[VisualEvidence] = []
-        for payload in evidence_payloads:
-            try:
-                canonical_evidence.append(VisualEvidence.model_validate(payload))
-            except Exception as exc:
-                raise RuntimeError(
-                    "Structured VLM prior evidence failed canonical validation"
-                ) from exc
+            else:
+                message = "Structured VLM prior evidence failed canonical structure preflight"
+            raise RuntimeError(message) from exc
+        canonical_evidence = list(evidence_snapshot.evidence)
 
         if type(context.views) is not dict:
             raise RuntimeError("Structured VLM views must be an ordered plain dictionary")

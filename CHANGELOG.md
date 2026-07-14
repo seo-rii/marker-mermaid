@@ -247,7 +247,10 @@
   overflow atomically removes OCR evidence/text context, records a bounded source diagnostic, and lets
   reconstruction continue. Review root/revision reads, trusted replacement, digest/commit sinks, and
   structured `user_edit` additions normalize detached evidence through the same contract before copying
-  or writing. These internal guards add no public configuration or schema/manifest version change;
+  or writing. The standalone Structured VLM adapter now snapshots its complete prior-evidence collection
+  through that contract before view, prompt-selection, or provider work, so prompt item limits cannot hide
+  an over-budget tail and direct callers receive the same source-block occurrence/character protection as
+  the pipeline. These internal guards add no public configuration or schema/manifest version change;
   evaluation prediction ingestion remains a follow-up.
 - Generated-node provenance scoring and the release evaluator now share a collision-free attribution
   policy. Only `ocr_token`, `vector_text`, `contour`, `vlm_observation`, and `user_edit` evidence can
