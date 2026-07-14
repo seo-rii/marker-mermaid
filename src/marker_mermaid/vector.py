@@ -53,6 +53,8 @@ MAX_VECTOR_TOKEN_CHARS = 256
 MAX_VECTOR_DEDUP_COMPARISONS = 250_000
 MAX_VECTOR_TEXT_MATCH_COMPARISONS = 1_000_000
 MAX_VECTOR_ENDPOINT_MATCH_COMPARISONS = 1_000_000
+MAX_VECTOR_PROVENANCE_REFS = MAX_OBSERVATION_EVIDENCE
+MAX_VECTOR_PROVENANCE_CHARS = MAX_EVIDENCE_INPUT_CHARS
 
 
 def _bounded_items(
@@ -355,14 +357,30 @@ class VectorObservation:
         if invalid_text:
             budget_warnings.append("invalid or oversized vector text records were omitted")
         texts, dedupe_warnings = _deduplicate_texts(valid_text_inputs)
+        node_primitives = [item for item in primitives if _is_node_primitive(item)]
+        open_primitives = [item for item in primitives if _is_open_path(item)]
+        prospective_evidence_count = len(node_primitives) + len(texts) + len(open_primitives)
+        provenance_references = prospective_evidence_count * len(block_ids)
+        provenance_characters = prospective_evidence_count * sum(
+            len(block_id) for block_id in block_ids
+        )
+        if (
+            provenance_references > MAX_VECTOR_PROVENANCE_REFS
+            or provenance_characters > MAX_VECTOR_PROVENANCE_CHARS
+        ):
+            return EngineObservation(
+                prediction=_prediction([], []),
+                warnings=(
+                    "vector aggregate provenance budget exceeded; vector observation was "
+                    "isolated atomically",
+                ),
+            )
         evidence: list[VisualEvidence] = []
         elements: list[SceneElement] = []
         records: list[tuple[VectorPrimitive, str]] = []
         text_warnings: list[str] = []
 
-        for primitive in primitives:
-            if not _is_node_primitive(primitive):
-                continue
+        for primitive in node_primitives:
             evidence_id = f"vector-shape-{len(elements) + 1:03d}"
             element_id = f"vector-node-{len(elements) + 1:03d}"
             evidence.append(
@@ -463,7 +481,6 @@ class VectorObservation:
 
         relations: list[SceneRelation] = []
         relation_keys: set[tuple[str, str, bool, bool]] = set()
-        open_primitives = [item for item in primitives if _is_open_path(item)]
         endpoint_match_comparisons = 0
         endpoint_matching_limited = False
         for index, primitive in enumerate(open_primitives, 1):

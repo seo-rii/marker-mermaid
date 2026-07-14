@@ -148,6 +148,16 @@ direct attribute와 `get_text("dict"/"words")` 모두 label을 한 번 읽어 pl
 뒤 파싱과 `strip()` 전에 그 exact-string 길이를 raw character work에 합산합니다. Numeric scalar는
 finite float로 안전하게 변환 가능한 exact `int`/`float`만 허용해 초대형 정수도 격리합니다.
 
+Record별 256 source-block reference gate와 별도로, 최종 vector 경계는 canonical deduplicated
+source-block ID가 유효·deduplicate된 shape/text/open-line evidence마다 복제될 aggregate provenance를
+preflight합니다. Reconstruction 전체에서 logical reference 20,000개와 Python 문자열 길이
+8,000,000자를 exact boundary까지 허용합니다. 한쪽이라도 `+1`이면 어떤 Scene/`VisualEvidence`도
+만들기 전에 unknown prediction, 빈 Scene/evidence와 단일 warning으로 vector observation 전체를
+격리합니다. 따라서 bounded prefix가 provenance authority로 게시되지 않으며, 이 공통 경계는
+built-in/direct/custom extraction에 적용됩니다. 실패는 해당 engine에만 머물러 다른 reconstruction
+engine은 계속 실행합니다. Payload 없는 warning은 bounded generation failure로 result와 sidecar
+manifest에 보존됩니다. 두 aggregate 상한은 공개 config/API가 아닌 내부 보안 정책입니다.
+
 Source mapping도 vector source별 linear scan 대신 built-in `observe()` 호출에서 한 번만 bounded
 index로 고정합니다. Exact built-in placement list/tuple은 256개까지 받고 한 개 lookahead로
 초과를 판정하며, 257번째가 있으면 일부 prefix를 쓰지 않고 index 전체를 invalid로 둡니다.

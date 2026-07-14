@@ -1487,6 +1487,16 @@ class ReconstructionPipeline:
                 or observation.direct_candidates
                 or observation.evidence
             )
+            if not has_payload:
+                for warning in observation.warnings:
+                    failures.append(
+                        CandidateFailure(
+                            stage="generation",
+                            engine=engine.name,
+                            error_type="EmptyObservationWarning",
+                            message=warning,
+                        )
+                    )
             current_prior = {
                 evidence_id: item
                 for evidence_id, item in publication_evidence_registry.items()

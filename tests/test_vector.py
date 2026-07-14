@@ -2279,6 +2279,183 @@ def test_source_block_provenance_is_preserved_or_omitted_atomically(
         assert any("source-block provenance" in warning for warning in result.warnings)
 
 
+@pytest.mark.parametrize(("reference_limit", "overflow"), [(6, False), (5, True)])
+def test_vector_aggregate_provenance_reference_budget_is_exact_and_atomic(
+    monkeypatch: pytest.MonkeyPatch,
+    reference_limit: int,
+    overflow: bool,
+) -> None:
+    monkeypatch.setattr(vector_module, "MAX_VECTOR_PROVENANCE_REFS", reference_limit)
+    monkeypatch.setattr(vector_module, "MAX_VECTOR_PROVENANCE_CHARS", 100)
+    observation = VectorObservation(
+        canvas_size=(100, 100),
+        texts=(VectorText("Node", (5, 5, 15, 15)),),
+        primitives=(
+            VectorPrimitive(kind="rectangle", bbox=(0, 0, 20, 20), closed=True),
+            VectorPrimitive(
+                kind="line",
+                bbox=(40, 10, 60, 10),
+                points=((40, 10), (60, 10)),
+            ),
+        ),
+    )
+
+    result = observation.to_engine_observation(["a", "b"])
+
+    if overflow:
+        assert result.prediction.candidates == ["unknown"]
+        assert result.scene_ir is None
+        assert result.evidence == []
+        assert result.warnings == [
+            "vector aggregate provenance budget exceeded; vector observation was isolated "
+            "atomically"
+        ]
+    else:
+        assert result.scene_ir is not None
+        assert len(result.scene_ir.elements) == 1
+        assert result.scene_ir.elements[0].text == "Node"
+        assert result.scene_ir.relations == []
+        assert len(result.evidence) == 3
+        assert {item.kind for item in result.evidence} == {
+            "contour",
+            "line_segment",
+            "vector_text",
+        }
+        assert all(item.source_block_ids == ["a", "b"] for item in result.evidence)
+        assert not result.warnings
+
+
+@pytest.mark.parametrize(("character_limit", "overflow"), [(2, False), (1, True)])
+def test_vector_aggregate_provenance_character_budget_uses_python_characters(
+    monkeypatch: pytest.MonkeyPatch,
+    character_limit: int,
+    overflow: bool,
+) -> None:
+    monkeypatch.setattr(vector_module, "MAX_VECTOR_PROVENANCE_REFS", 100)
+    monkeypatch.setattr(vector_module, "MAX_VECTOR_PROVENANCE_CHARS", character_limit)
+    observation = VectorObservation(
+        canvas_size=(100, 100),
+        primitives=(
+            VectorPrimitive(kind="rectangle", bbox=(0, 0, 20, 20), closed=True),
+            VectorPrimitive(kind="rectangle", bbox=(40, 0, 60, 20), closed=True),
+        ),
+    )
+
+    result = observation.to_engine_observation(["가"])
+
+    if overflow:
+        assert result.prediction.candidates == ["unknown"]
+        assert result.scene_ir is None
+        assert result.evidence == []
+        assert result.warnings == [
+            "vector aggregate provenance budget exceeded; vector observation was isolated "
+            "atomically"
+        ]
+    else:
+        assert result.scene_ir is not None
+        assert len(result.evidence) == 2
+        assert all(item.source_block_ids == ["가"] for item in result.evidence)
+        assert not result.warnings
+
+
+def test_vector_aggregate_provenance_budget_counts_deduplicated_source_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(vector_module, "MAX_VECTOR_PROVENANCE_REFS", 2)
+    monkeypatch.setattr(vector_module, "MAX_VECTOR_PROVENANCE_CHARS", 2)
+    observation = VectorObservation(
+        canvas_size=(100, 100),
+        primitives=(
+            VectorPrimitive(kind="rectangle", bbox=(0, 0, 20, 20), closed=True),
+            VectorPrimitive(kind="rectangle", bbox=(40, 0, 60, 20), closed=True),
+        ),
+    )
+
+    result = observation.to_engine_observation(["a", "a"])
+
+    assert result.scene_ir is not None
+    assert len(result.evidence) == 2
+    assert all(item.source_block_ids == ["a"] for item in result.evidence)
+    assert not result.warnings
+
+
+def test_vector_aggregate_provenance_overflow_precedes_scene_and_evidence_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(vector_module, "MAX_VECTOR_PROVENANCE_REFS", 1)
+    monkeypatch.setattr(vector_module, "MAX_VECTOR_PROVENANCE_CHARS", 100)
+    observation = VectorObservation(
+        canvas_size=(100, 100),
+        texts=(VectorText("Node", (5, 5, 15, 15)),),
+        primitives=(VectorPrimitive(kind="rectangle", bbox=(0, 0, 20, 20), closed=True),),
+    )
+
+    def forbidden_construction(*_args, **_kwargs):
+        raise AssertionError("provenance overflow must precede model construction")
+
+    monkeypatch.setattr(vector_module, "VisualEvidence", forbidden_construction)
+    monkeypatch.setattr(vector_module, "SceneElement", forbidden_construction)
+
+    result = observation.to_engine_observation(["source"])
+
+    assert result.prediction.candidates == ["unknown"]
+    assert result.scene_ir is None
+    assert result.evidence == []
+    assert result.warnings == [
+        "vector aggregate provenance budget exceeded; vector observation was isolated atomically"
+    ]
+
+
+@pytest.mark.parametrize(("reference_limit", "overflow"), [(4, False), (3, True)])
+def test_vector_engine_applies_aggregate_provenance_budget_after_custom_source_combination(
+    monkeypatch: pytest.MonkeyPatch,
+    reference_limit: int,
+    overflow: bool,
+) -> None:
+    monkeypatch.setattr(vector_module, "MAX_VECTOR_PROVENANCE_REFS", reference_limit)
+    monkeypatch.setattr(vector_module, "MAX_VECTOR_PROVENANCE_CHARS", 100)
+
+    @dataclass(frozen=True)
+    class Source:
+        index: int
+
+    context = _context(object(), block_ids=["a", "b"])
+    context.vector_sources = [Source(0), Source(1)]  # type: ignore[attr-defined]
+    seen: list[int] = []
+
+    def extractor(source: Source, size: tuple[int, int]) -> VectorObservation:
+        seen.append(source.index)
+        left = source.index * 40
+        return VectorObservation(
+            canvas_size=size,
+            primitives=(
+                VectorPrimitive(
+                    kind="rectangle",
+                    bbox=(left, 0, left + 20, 20),
+                    closed=True,
+                ),
+            ),
+        )
+
+    result = VectorPrimitiveEngine(extractor=extractor).observe(context)
+
+    assert seen == [0, 1]
+    if overflow:
+        assert result.prediction.candidates == ["unknown"]
+        assert result.scene_ir is None
+        assert result.evidence == []
+        assert result.warnings == [
+            "vector aggregate provenance budget exceeded; vector observation was isolated "
+            "atomically"
+        ]
+    else:
+        assert result.scene_ir is not None
+        assert len(result.scene_ir.elements) == 2
+        assert len(result.evidence) == 2
+        assert all(item.source_block_ids == ["a", "b"] for item in result.evidence)
+        assert not result.warnings
+
+
 def test_vector_warning_collection_is_canonicalized_at_the_observation_boundary() -> None:
     observation = VectorObservation(
         canvas_size=(100, 100),

@@ -29,6 +29,8 @@ vector source에 공유됩니다. 기본값과 절대 상한은 다음과 같습
 | raw primitive/command record | 2,048 | 설정 최대 5,000 (`SceneElement` 상한) |
 | raw vector text record | 5,000 | primitive+text 설정 최대의 합이 20,000 이하 |
 | vector text 문자 | 8,000,000 | reconstruction evidence 문자 상한을 늘릴 수 없음 |
+| provenance reference fan-out | 20,000 | 생성 예정 evidence 전체의 source-block logical reference 합계 |
+| provenance 문자 fan-out | 8,000,000 | Python 문자열 길이 기준, evidence별 반복 복제도 모두 계산 |
 | vector source | 256 | source 순서의 bounded prefix만 검사 |
 | 전체 보존 point | 100,000 | source 전체의 polygon/polyline geometry 합계 |
 | vector metadata token | 256자 | kind, command, color, style, coordinate-space 등 |
@@ -38,6 +40,16 @@ vector source에 공유됩니다. 기본값과 절대 상한은 다음과 같습
 제한합니다. 파싱에 실패한 record, crop 밖으로 mapping된 record, deduplication으로 사라진
 record, 빈 nested drawing container도 해당 dimension의 예산을 소모합니다. 그렇지 않으면
 유효한 Scene을 하나도 만들지 않는 입력이 무제한으로 뒤 source를 순회할 수 있습니다.
+
+Provenance fan-out은 위 raw-work count와 별도 단계에서 검사합니다. 유효 record를 고르고
+deduplication한 뒤 canonical source-block ID와 생성 예정 shape/text/open-line `VisualEvidence`
+record의 곱을 reference 수로 계산하고, 같은 각 ID의 Python 문자열 길이도 evidence마다 반복해
+문자 수에 합산합니다. 이 계산은 어떤 Scene 또는 evidence record도 만들기 전에 끝납니다.
+20,000 reference와 8,000,000자는 각각 exact boundary까지 허용하며 어느 한쪽이라도 초과하면
+vector 결과 전체를 원자적으로 격리합니다. 결과는 unknown prediction, `scene_ir=None`, 빈 evidence와
+하나의 budget warning만 가지므로 일부 provenance prefix가 평가·게시 authority를 얻지 못합니다.
+Pipeline은 이 payload 없는 warning observation을 bounded generation failure로 변환해 result와
+sidecar manifest에 남기므로 sibling engine이 게시를 계속해도 초과 원인은 추적할 수 있습니다.
 
 Source collection, raw record iterable, PyMuPDF drawing `items`는 필요할 때만 스트리밍하며,
 상한 초과를 판정하기 위해 최대 한 개만 더 읽습니다. Primitive count, text count,
@@ -60,9 +72,10 @@ record로 snapshot한 뒤 exact-string 길이를 파싱 전에 같은 aggregate 
 Built-in extractor가 작업량 metadata를 남기지만 이 값 자체도 신뢰 경계 밖에 있습니다.
 `VectorPrimitiveEngine`은 custom extractor의 observation을 다시 bound하고 보고된 작업량을
 보존 record 수 이상·남은 예산 이하로 clamp합니다. `VectorObservation.to_engine_observation()`을
-직접 호출해도 같은 primitive/text/문자/point/warning 상한을 다시 적용합니다.
+직접 호출해도 같은 primitive/text/문자/point/warning 및 aggregate provenance 상한을 다시
+적용합니다. 따라서 built-in, direct, custom extraction은 모두 같은 최종 preflight를 통과합니다.
 세부 예산은 현재 Marker JSON 공개 설정이 아니라 engine 생성자와 통합 계층의 조정
-지점입니다.
+지점이며, aggregate provenance 상한은 공개 config/API를 추가하지 않는 내부 정책입니다.
 
 이 예산은 provider가 값을 반환한 뒤의 소비와 정규화를 제한합니다. Provider property/callable,
 custom extractor, PyMuPDF `get_text()`/`get_drawings()` 자체의 실행과 내부 materialization은 아직

@@ -257,7 +257,13 @@
   Because transform validity does not filter the index, malformed placements still contribute to
   ambiguity instead of creating false uniqueness; an invalid selected affine falls back to bbox.
   Exact source page IDs reject block-matched and sole mismatched placements, while present-but-invalid
-  page identities reject mapping altogether, without adding a public configuration or API surface.
+  page identities reject mapping altogether. The shared final vector boundary also preflights the
+  canonical source-block provenance copied across every prospective shape, text, and open-line evidence
+  record, with reconstruction-global limits of 20,000 logical references and 8,000,000 characters.
+  Either aggregate overflow atomically returns an unknown observation with no Scene or evidence, so no
+  retained prefix can gain publication authority. Warning-only empty observations are retained as bounded
+  generation diagnostics in the result and sidecar manifest. These internal limits cover built-in, direct,
+  and custom extraction without adding a public configuration or API surface.
 - Fusion now bounds Scene element/relation evidence and VisualEvidence source-block unions before
   assignment. Source-block unions are decided atomically across every matching input, and an
   overflowing cluster keeps its deterministic precedence winner without partial provenance

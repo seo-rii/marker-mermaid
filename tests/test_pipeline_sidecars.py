@@ -8,6 +8,7 @@ from PIL import Image
 
 import marker_mermaid.pipeline as pipeline_module
 import marker_mermaid.sidecars as sidecar_module
+import marker_mermaid.vector as vector_module
 from marker_mermaid.config import MermaidConfig, PublishPolicy
 from marker_mermaid.engines import JsonFixtureEngine, MarkerStructuredVLMEngine
 from marker_mermaid.fusion import FusionEngine
@@ -235,6 +236,73 @@ def test_pipeline_publishes_and_writes_sidecars_after_vector_budget_truncation(
     assert any("text count budget" in warning for warning in result.selected.warnings)
     relative = SidecarStore(tmp_path).write(result)
     assert (tmp_path / relative / "scene-ir.json").is_file()
+
+
+def test_vector_provenance_overflow_does_not_block_sibling_publication_or_sidecars(
+    monkeypatch,
+    tmp_path,
+    fake_runtime,
+) -> None:
+    monkeypatch.setattr(vector_module, "MAX_VECTOR_PROVENANCE_REFS", 1)
+    monkeypatch.setattr(vector_module, "MAX_VECTOR_PROVENANCE_CHARS", 100)
+    extractor_calls = []
+
+    def overflowing_extractor(source, size):
+        extractor_calls.append((source, size))
+        return VectorObservation(
+            canvas_size=size,
+            primitives=(
+                VectorPrimitive(kind="rectangle", bbox=(0, 0, 20, 20), closed=True),
+                VectorPrimitive(kind="rectangle", bbox=(30, 0, 50, 20), closed=True),
+            ),
+        )
+
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [
+            VectorPrimitiveEngine(
+                extractor=overflowing_extractor,
+                max_primitives=2,
+                max_texts=0,
+                max_text_chars=0,
+            ),
+            JsonFixtureEngine(observation()),
+        ],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "vector-overflow-with-sibling",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        ocr_texts=["Start End"],
+    )
+
+    assert extractor_calls == [(None, (100, 50))]
+    assert result.publish
+    assert result.has_authorized_publication()
+    assert result.selected is not None
+    assert result.selected.generation_engine == JsonFixtureEngine.name
+    assert {item.id for item in result.evidence} == {"ocr-1", "vlm-1"}
+    assert all(not item.id.startswith("vector-") for item in result.evidence)
+    overflow_failures = [
+        item
+        for item in result.failures
+        if item.engine == VectorPrimitiveEngine.name
+        and item.error_type == "EmptyObservationWarning"
+    ]
+    assert len(overflow_failures) == 1
+    assert overflow_failures[0].message == (
+        "vector aggregate provenance budget exceeded; vector observation was isolated atomically"
+    )
+
+    relative = SidecarStore(tmp_path).write(result)
+    provenance_path = tmp_path / relative / "provenance.json"
+    provenance = json.loads(provenance_path.read_text())
+    manifest = json.loads((tmp_path / relative / "manifest.json").read_text())
+
+    assert {item["id"] for item in provenance} == {"ocr-1", "vlm-1"}
+    assert "vector-" not in provenance_path.read_text()
+    assert overflow_failures[0].model_dump(mode="json") in manifest["failures"]
 
 
 @pytest.mark.parametrize("record_kind", ["element", "relation"])

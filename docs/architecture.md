@@ -156,7 +156,15 @@ warning collection 256개도 공유합니다. Exact duplicate hash 뒤 approxima
 text/node와 endpoint matching은 각각 1,000,000회 비교로 닫힙니다. Built-in extractor가 남긴
 work count, custom extractor output, 직접 `VectorObservation`은 engine·Scene 경계에서 다시 bound됩니다.
 Direct/dict/words의 duck-typed span label은 한 번 읽은 plain snapshot으로 파싱하며 aggregate
-문자 예산에 포함됩니다. Built-in vector `observe()`는 최대 256개 placement와 placement당
+문자 예산에 포함됩니다. 같은 최종 경계는 유효·deduplicate된 shape/text/open-line evidence에
+canonical source-block ID가 복제될 fan-out을 Scene/evidence 생성 전에 계산합니다. Reconstruction당
+20,000 logical reference와 Python 문자열 길이 8,000,000자를 각각 exact boundary까지 허용하고,
+어느 한쪽이라도 초과하면 unknown prediction, 빈 Scene/evidence와 단일 warning으로 vector observation
+전체를 격리합니다. 이 atomic preflight는 built-in, direct, custom extraction에 공통으로 적용되어
+일부 provenance prefix가 게시 authority를 얻지 못하게 합니다. Payload 없는 warning observation은
+pipeline에서 bounded generation failure로 바뀌어 result와 sidecar manifest에 남습니다. 공개
+config/API는 추가하지 않습니다.
+Built-in vector `observe()`는 최대 256개 placement와 placement당
 256개 block ID를 한 번 순회해 exact-dict placement reference의 all/page/block/page+block
 index를 만든 뒤, 최대 256 source에서 O(1) dictionary lookup을 사용합니다. Index build 중에는
 transform을 파싱하지 않습니다. Source의 유일 placement를 선택한 뒤에만 affine/bbox를 지연
