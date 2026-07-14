@@ -231,6 +231,20 @@
 
 ### Changed
 
+- PDF vector extraction now applies reconstruction-global streaming budgets before parsing,
+  mapping, or deduplication: 256 sources, 2,048 primitive/command records, 5,000 text records,
+  and 8,000,000 text characters by default. Malformed, out-of-crop, duplicate, and empty nested
+  drawing records consume work; exhausted dimensions remain closed across later sources. Polygon
+  and polyline point collections are bounded at 256/512, aggregate retained geometry at 100,000
+  points, and vector metadata tokens at 256 characters; oversized geometry is omitted whole.
+  Exact duplicate hashing plus 250,000 approximate-dedup comparisons and 1,000,000 comparisons each
+  for text ownership and connector endpoints bound the remaining geometry matching work.
+  Custom extractors, reported work metadata, direct vector observations, and warning collections
+  are defensively rebound at the engine/Scene boundary with at most one lookahead per iterable.
+  Direct/dict/words duck-typed span strings are read once into a plain snapshot and charged before
+  parsing, huge integer coordinates/IDs fail closed before float or decimal conversion, and nested
+  providers reuse one source-local placement lookup. Exact source page IDs reject block-matched and
+  sole mismatched placements, while present-but-invalid page identities reject mapping altogether.
 - Fusion now bounds Scene element/relation evidence and VisualEvidence source-block unions before
   assignment. Source-block unions are decided atomically across every matching input, and an
   overflowing cluster keeps its deterministic precedence winner without partial provenance

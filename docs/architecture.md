@@ -34,7 +34,7 @@ flowchart TB
 | `marker_discovery.py` | Marker block/current_children adapter, source registry와 dedupe |
 | `source_assembly.py` | panel/merged canvas 조립과 source/page affine mapping |
 | `geometry.py` | contour, Hough line, arrowhead의 보수적 Scene IR/provenance 변환 |
-| `vector.py` | duck-typed PDF vector/text primitive 추출과 canvas affine 변환 |
+| `vector.py` | reconstruction-global raw-work budget으로 제한한 duck-typed PDF vector/text primitive 추출과 canvas affine 변환 |
 | `fusion.py` | vector/geometry/OCR/VLM Scene IR 결정적 병합과 제한된 Flowchart/Generic Network node-ID 정합화 |
 | `mapping_validation.py` | node-ID mapping의 공용 bbox/text/contour provenance 정합성 gate |
 | `views.py` | type-aware thumbnail/edge/threshold/overlay와 source-resolution tile 생성 |
@@ -143,6 +143,24 @@ Pipeline은 engine 호출 전에 source block/page ID, OCR, initial evidence, op
 컬렉션은 일부 prefix를 사용하지 않고 해당 컬렉션 전체를 안전한 기본값으로 격리하며
 `CandidateFailure(stage="source_context")`를 남깁니다. Engine이 추가한 evidence도 reconstruction 전체의
 단일 item cap을 공유하고, 상한 뒤 record는 평가·게시 authority를 얻지 못합니다.
+
+Vector extraction은 최종 Scene에 남은 record가 아니라 provider에서 읽은 raw work를 독립적으로
+계산합니다. 기본 reconstruction-global 예산은 primitive/command 2,048개, vector text
+5,000개·총 8,000,000자, vector source 256개입니다. Primitive 설정 상한은 Scene element
+5,000개 이하이고 primitive+text 설정 상한의 합은 observation evidence 20,000개 이하입니다.
+Provider·source가 바뀌어도 닫힌 count/character dimension은 다시 열리지 않으며 malformed,
+out-of-crop, duplicate, 빈 nested drawing input도 작업량을 소모합니다. 모든 iterable은 스트리밍하고
+초과 판정에 한 개의 lookahead만 사용합니다. Nested polygon/polyline은 각각 256/512 point에서
+완전 record 단위로 닫히며 전체 보존 point 100,000개, vector metadata token 256자,
+warning collection 256개도 공유합니다. Exact duplicate hash 뒤 approximate dedup은 250,000회,
+text/node와 endpoint matching은 각각 1,000,000회 비교로 닫힙니다. Built-in extractor가 남긴
+work count, custom extractor output, 직접 `VectorObservation`은 engine·Scene 경계에서 다시 bound됩니다.
+Direct/dict/words의 duck-typed span label은 한 번 읽은 plain snapshot으로 파싱하며 aggregate
+문자 예산에 포함되고, source 하나의 page-to-canvas placement lookup은 모든 nested provider가
+공유합니다. 초대형 exact integer coordinate/ID도
+부동소수·decimal 변환 전에 fail closed됩니다.
+세부 설정은 공개 Marker JSON key가 아니라 `VectorPrimitiveEngine` 생성자/통합 계층에
+속합니다.
 
 Typed IR은 engine response, fusion ordering, accessibility enrichment, repair, candidate key, sidecar sink에서
 같은 canonical boundary를 사용합니다. Exact built-in JSON container/scalar만 iterative snapshot으로

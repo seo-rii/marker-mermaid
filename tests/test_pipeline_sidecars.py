@@ -34,6 +34,12 @@ from marker_mermaid.protocols import RuntimeResult
 from marker_mermaid.scoring import aggregate_scores, decide_publication
 from marker_mermaid.sidecars import SidecarStore
 from marker_mermaid.validation import CandidateValidator
+from marker_mermaid.vector import (
+    VectorObservation,
+    VectorPrimitive,
+    VectorPrimitiveEngine,
+    VectorText,
+)
 
 
 class _ExplosiveList(list):
@@ -175,6 +181,60 @@ def test_pipeline_publishes_the_exact_per_record_evidence_reference_limit(fake_r
     assert result.selected.generated_scene_ir is not None
     assert result.selected.generated_scene_ir.elements[0].evidence_ids == evidence_ids
     assert not result.failures
+
+
+def test_pipeline_publishes_and_writes_sidecars_after_vector_budget_truncation(
+    tmp_path,
+    fake_runtime,
+) -> None:
+    def overflowing_extractor(_source, _size):
+        return VectorObservation(
+            canvas_size=(100, 50),
+            texts=(
+                VectorText("Node", (5, 5, 25, 15)),
+                VectorText("Omitted", (55, 5, 85, 15)),
+            ),
+            primitives=(
+                VectorPrimitive(kind="rectangle", bbox=(0, 0, 40, 20), closed=True),
+                VectorPrimitive(kind="rectangle", bbox=(50, 0, 90, 20), closed=True),
+            ),
+        )
+
+    config = MermaidConfig(
+        candidate_count=1,
+        enable_typed_ir=False,
+        enable_generic_scene_ir=True,
+        enable_direct_mermaid=False,
+    )
+    result = ReconstructionPipeline(
+        config,
+        [
+            VectorPrimitiveEngine(
+                extractor=overflowing_extractor,
+                max_primitives=1,
+                max_texts=1,
+                max_text_chars=100,
+            )
+        ],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "bounded-vector",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        vector_sources=[object()],
+        ocr_texts=["Node"],
+    )
+
+    assert result.publish
+    assert result.has_authorized_publication()
+    assert result.selected is not None
+    assert result.selected.scene_ir is not None
+    assert len(result.selected.scene_ir.elements) == 1
+    assert len(result.evidence) == 2
+    assert any("primitive input budget" in warning for warning in result.selected.warnings)
+    assert any("text count budget" in warning for warning in result.selected.warnings)
+    relative = SidecarStore(tmp_path).write(result)
+    assert (tmp_path / relative / "scene-ir.json").is_file()
 
 
 @pytest.mark.parametrize("record_kind", ["element", "relation"])

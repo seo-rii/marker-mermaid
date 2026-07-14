@@ -33,6 +33,7 @@ from marker_mermaid.models import (
     VisualEvidence,
 )
 from marker_mermaid.protocols import SourceContext
+from marker_mermaid.resource_limits import MAX_EVIDENCE_INPUT_CHARS
 from marker_mermaid.typed_contracts import typed_ir_contract_prompt
 
 SYSTEM_PROMPT = """You reconstruct diagrams from source images and structural overlays.
@@ -49,7 +50,7 @@ Never emit click actions, URLs, directives, HTML, callbacks, CSS imports, or rem
 
 MAX_VLM_RESPONSE_SCHEMA_CHARS = 65_536
 MAX_VLM_VIEW_NAME_CHARS = 128
-MAX_VLM_EVIDENCE_INPUT_CHARS = 8_000_000
+MAX_VLM_EVIDENCE_INPUT_CHARS = MAX_EVIDENCE_INPUT_CHARS
 MAX_VLM_OCR_INPUT_CHARS = 8_000_000
 _PIL_IMAGING_CORE_TYPE = type(Image.new("RGB", (1, 1)).im)
 _PIL_IMAGE_DICT_DESCRIPTOR = Image.Image.__dict__["__dict__"]

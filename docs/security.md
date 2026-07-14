@@ -125,6 +125,34 @@ normalized SVG가 raw SVG와 같은 compatibility glyph를 표시한다고 요�
 Wardley·Cynefin·Event Modeling·ZenUML·Organization·Data Lineage·Railroad serializer의 생성 source는
 security scanner에 넘기기 전에도 50,000자·5,000줄을 넘으면 전체 후보 단위로 거부됩니다.
 
+PDF vector provider도 신뢰하는 collection이 아닙니다. Vector source와 raw text/drawing,
+PyMuPDF drawing command는 전체를 먼저 materialize하지 않고 각 상한보다 한 개만 더 읽어
+초과를 판정합니다. Reconstruction 전체에 기본 256 source, 2,048 primitive/command
+record, 5,000 text record, 8,000,000 text character를 공유하며 primitive·text 설정 최대의
+합은 observation evidence 20,000개를 넘을 수 없고 primitive 상한은 Scene node 5,000개를
+넘을 수 없습니다. 문자 상한도 공용 evidence 입력 상한보다 늘릴 수 없습니다.
+
+예산은 validation 후의 유효 record나 deduplication 후의 결과가 아니라 원시 시도에서
+소모됩니다. 따라서 malformed, crop 밖, duplicate record와 빈 nested drawing container도
+유효한 결과처럼 작업 예산을 사용하며, count 또는 character dimension이 닫힌 뒤에는
+나중 source가 그 예산을 다시 사용할 수 없습니다. Polygon은 256 point, polyline은 512
+point를 넘으면 record 전체를 거부하여 잘린 geometry가 provenance로 남지 않게 합니다.
+전체 보존 geometry는 100,000 point, kind·command·color·style 같은 non-label token은
+각 256자로 제한합니다. Exact duplicate는 hash로 제거하고 approximate bbox dedup은 250,000회,
+text ownership과 endpoint ownership은 각각 1,000,000회 비교 뒤 fail-closed warning으로
+종료합니다. Warning도 observation당 256개로 제한합니다. Custom extractor 및 직접 주입된
+`VectorObservation`은 자체 work metadata를 신뢰하지 않고 engine/Scene 경계에서 다시
+bound·clamp됩니다. 이 검사는 Pydantic 최종 거부나 O(n²) deduplication 후에 의존하지 않고
+외부 iterable을 전체 소비하거나 후단 검증에 넘기기 전에 적용됩니다. Duck-typed text span도
+direct attribute와 `get_text("dict"/"words")` 모두 label을 한 번 읽어 plain snapshot으로 고정한
+뒤 파싱과 `strip()` 전에 그 exact-string 길이를 raw character work에 합산합니다. Numeric scalar는
+finite float로 안전하게 변환 가능한 exact `int`/`float`만 허용해 초대형 정수도 격리합니다.
+
+단, 이 상한은 provider가 반환한 값의 소비부터 적용됩니다. Duck-typed property/callable,
+custom extractor, `get_text()`/`get_drawings()` 호출 및 라이브러리 내부 materialization 자체에는
+아직 wall-clock/RSS 격리가 없습니다. 따라서 provider 구현은 trusted local code여야 하며,
+untrusted provider 실행에는 별도 worker process와 kill/reap 자원 제한이 필요합니다.
+
 Style recovery는 Scene IR 값을 그대로 CSS로 복사하지 않습니다. Node와 edge는 exact built-in PDF vector
 engine이 현재 source block에서 새로 등록한 collision-free contour/line과 bbox/endpoint ownership을
 증명해야 하며 edge는 source/vector/generated/code 네 방향 표현도 일치해야 합니다. 그 trusted vector

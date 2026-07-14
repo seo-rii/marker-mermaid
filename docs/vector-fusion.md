@@ -19,10 +19,65 @@ evidence reference는 최대 256개이며, 결합 text 또는 reference가 상�
 않습니다. 해당 text enrichment 전체를 생략하고 원래 contour-only node와 개별 `vector_text` evidence,
 명시적 warning을 유지하므로 뒤 engine은 원본 span을 계속 사용할 수 있습니다.
 
+### Reconstruction-global 자원 예산
+
+Vector budget은 provider·page·fragment별로 새로 시작하지 않고 reconstruction 하나의 모든
+vector source에 공유됩니다. 기본값과 절대 상한은 다음과 같습니다.
+
+| 자원 | 기본값 | 추가 제약 |
+| --- | ---: | --- |
+| raw primitive/command record | 2,048 | 설정 최대 5,000 (`SceneElement` 상한) |
+| raw vector text record | 5,000 | primitive+text 설정 최대의 합이 20,000 이하 |
+| vector text 문자 | 8,000,000 | reconstruction evidence 문자 상한을 늘릴 수 없음 |
+| vector source | 256 | source 순서의 bounded prefix만 검사 |
+| 전체 보존 point | 100,000 | source 전체의 polygon/polyline geometry 합계 |
+| vector metadata token | 256자 | kind, command, color, style, coordinate-space 등 |
+| warning | 256 | 초과·비정규 warning은 하나의 종단 warning으로 정규화 |
+
+이 수치는 최종에 남은 node/span 개수가 아니라 provider에서 읽은 원시 작업량을
+제한합니다. 파싱에 실패한 record, crop 밖으로 mapping된 record, deduplication으로 사라진
+record, 빈 nested drawing container도 해당 dimension의 예산을 소모합니다. 그렇지 않으면
+유효한 Scene을 하나도 만들지 않는 입력이 무제한으로 뒤 source를 순회할 수 있습니다.
+
+Source collection, raw record iterable, PyMuPDF drawing `items`는 필요할 때만 스트리밍하며,
+상한 초과를 판정하기 위해 최대 한 개만 더 읽습니다. Primitive count, text count,
+text character 중 하나가 닫히면 그 dimension은 나중 source에서 다시 열지 않습니다.
+다른 dimension에 예산이 남아 있는 동안만 그 입력을 계속 읽습니다. Polygon/closed shape의
+point는 256개, open polyline은 512개까지이며 초과 record는 부분 point로 복원하지 않고
+전체를 생략합니다. Reconstruction 전체에서 보존하는 point도 100,000개로 제한하며,
+point 예산을 소진한 뒤에도 point가 없는 rectangle 같은 record는 primitive count 예산 안에서
+계속 처리할 수 있습니다.
+
+건수 상한 안의 계산량도 별도로 제한합니다. Primitive는 exact key를 hash로 제거한 뒤
+근사 bbox deduplication을 최대 250,000회만 비교합니다. Text-to-node ownership과 connector
+endpoint ownership은 각각 최대 1,000,000회 비교하며, 상한 뒤 label은 미배정 상태로,
+connector는 unresolved 상태로 남기고 warning을 기록합니다. Kind·command·color·style 같은
+비-label token은 각 256자로 제한하고 임의 객체의 문자열 coercion을 호출하지 않습니다.
+Direct text attribute와 `get_text("dict"/"words")`의 duck-typed span은 label을 한 번만 읽어 plain
+record로 snapshot한 뒤 exact-string 길이를 파싱 전에 같은 aggregate character budget에 합산하고,
+좌표·confidence·canvas·tolerance·source ID의 초대형 정수는 float/decimal 변환 전에 거부합니다.
+
+Built-in extractor가 작업량 metadata를 남기지만 이 값 자체도 신뢰 경계 밖에 있습니다.
+`VectorPrimitiveEngine`은 custom extractor의 observation을 다시 bound하고 보고된 작업량을
+보존 record 수 이상·남은 예산 이하로 clamp합니다. `VectorObservation.to_engine_observation()`을
+직접 호출해도 같은 primitive/text/문자/point/warning 상한을 다시 적용합니다.
+세부 예산은 현재 Marker JSON 공개 설정이 아니라 engine 생성자와 통합 계층의 조정
+지점입니다.
+
+이 예산은 provider가 값을 반환한 뒤의 소비와 정규화를 제한합니다. Provider property/callable,
+custom extractor, PyMuPDF `get_text()`/`get_drawings()` 자체의 실행과 내부 materialization은 아직
+별도 process로 격리되지 않으므로 trusted local integration 경계로 취급합니다.
+
 panel/merged source는 `source-map.json`과 같은 assembly placement의 `page_to_canvas` affine을 사용합니다.
+Placement는 최대 256개를 원자적으로 검사하며 Marker 1.10.2 `BlockId`는 임의 `str()` 호출 없이
+`page_id`/`block_type.name`/`block_id` 필드에서 canonical path로 복원합니다.
+한 source의 placement lookup 결과는 `page`/`document_page`/`page_ref` provider가 공유해 같은 bounded
+placement 목록을 반복 검색하지 않습니다.
 block/page mapping이 모호하거나 없으면 bbox fallback warning을 남기며, primitive가 없으면 unknown empty
-observation으로 종료합니다. PyMuPDF cubic curve에서 ellipse를 추측하거나 raster 선을 vector로 간주하지
-않습니다.
+observation으로 종료합니다. Source가 exact page ID를 제공하면 같은 page placement만 허용하며 단일
+placement나 block-ID match여도 page ID가 다르면 bbox fallback합니다. Page identity가 명시됐지만
+exact bounded integer가 아니어도 mapping 전체를 fail closed합니다. PyMuPDF cubic curve에서
+ellipse를 추측하거나 raster 선을 vector로 간주하지 않습니다.
 
 ## FusionEngine
 

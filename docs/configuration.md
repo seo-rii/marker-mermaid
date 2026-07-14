@@ -100,6 +100,35 @@ heuristic과 occupied-region exclusion을 사용하며 unanchored proposal은 Pa
 보존하되 Markdown에는 자동 삽입하지 않습니다.
 자세한 구분은 [스펙 대응표](spec-coverage.md)를 참고하세요.
 
+Vector extraction 세부 예산은 현재 Marker JSON/환경 설정으로 노출되지 않습니다.
+Custom integration은 `VectorPrimitiveEngine(max_primitives=..., max_texts=...,
+max_text_chars=..., max_points=...)`로 hard validation 상한 안에서 조정할 수 있으며 새
+`MermaidDiagramProcessor_*` key를 추측해 넘기면 안 됩니다. 생성자 기본값과 hard
+validation은 다음과 같습니다.
+
+| Vector engine 자원 | 생성자 기본값 | 확장 불가 상한 |
+| --- | ---: | ---: |
+| primitive/command raw work | 2,048 | 5,000 |
+| vector text raw work | 5,000 | primitive+text 합 20,000 |
+| vector text 문자 | 8,000,000 | 8,000,000 |
+| vector source | 256 | 256 |
+| polygon / polyline point | 256 / 512 | 256 / 512 |
+| reconstruction 전체 보존 point | 100,000 | 100,000 |
+| vector metadata token | 256자 | 256자 |
+| approximate dedup 비교 | 250,000 | 250,000 |
+| text ownership / endpoint 비교 | 1,000,000 / 1,000,000 | 동일 |
+| observation warning | 256 | 256 |
+
+예산은 source별 보존 output이 아니라 reconstruction-global raw work입니다. Malformed,
+out-of-crop, deduplicated record와 빈 nested drawing container도 소모하며, count/문자 상한이
+닫히면 뒤 source에서 그 dimension을 다시 열지 않습니다. Source/raw iterable은 최대 한 개의
+lookahead만 사용하고 point 초과 geometry는 prefix로 자르지 않고 record 전체를 생략합니다.
+Point가 없는 primitive는 전체 point budget 소진 뒤에도 record count 예산 안에서 처리됩니다.
+비교 상한 뒤 label은 unassigned, connector는 unresolved로 보존하고 warning을 남깁니다.
+Custom extractor output과 `VectorObservation.to_engine_observation()` 직접 입력도 같은 상한으로
+다시 검사됩니다. 원시 작업량 계산과 fusion 경계는
+[Vector extraction과 fusion](vector-fusion.md)에 정리합니다.
+
 State/Class/ER/Requirement/Block typed serializer와 C4/Deployment/Component/Use-case fallback은
 `enabled_types` allowlist에 포함할 때 활성화됩니다. 요청 type과 실제 grammar가 다를 수 있으므로
 [serializer 계약](serialization.md)의 emitted type과 fallback chain을 함께 확인해야 합니다.
@@ -155,6 +184,11 @@ subclass를 검증 뒤 provider에 그대로 전달하지 않습니다. Caller�
 | typed IR candidate | envelope 3 fields, depth 64, 100,000 items, field 50,000 chars, UTF-8 text 1,000,000 bytes, compact JSON 4,000,000 bytes | 해당 candidate 격리 |
 | observation/fused typed IR | 최대 64 candidates, compact JSON 합계 8,000,000 bytes | provider/fixture observation 거부 또는 fusion의 bounded prefix 유지 |
 | `source_mapping` | depth 32, 25,000 items, string 50,000 chars, compact JSON 4,000,000 bytes | mapping만 `null`로 격리 |
+
+위 `vector_sources` source-context 항목은 pipeline 경계에서 비정규/초과 collection을 전체
+격리하는 규칙입니다. `VectorPrimitiveEngine`을 pipeline 밖에서 직접 주입했을 때의
+추가 백스톱은 source iterable을 256개 prefix와 한 개 lookahead까지만 소비하고 warning을
+남깁니다. 두 경계는 각각 caller container와 engine work을 방어하며 서로 대체하지 않습니다.
 
 `source_mapping`은 exact `dict`/`list`/`tuple`과 JSON scalar만 허용합니다. Tuple은 JSON array로
 정규화되고 key는 정렬되며, finite number와 JavaScript safe-integer 범위를 요구합니다. 이 snapshot은
