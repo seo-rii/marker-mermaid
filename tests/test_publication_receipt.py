@@ -9,6 +9,7 @@ import pytest
 from PIL import Image
 from pydantic import ValidationError
 
+import marker_mermaid.models as models_module
 from marker_mermaid.config import MermaidConfig, PublishPolicy, SecurityProfile
 from marker_mermaid.engines import JsonFixtureEngine
 from marker_mermaid.markdown import reconstruction_markdown, standalone_document_markdown
@@ -24,7 +25,7 @@ from marker_mermaid.models import (
     VisualEvidence,
     _candidate_quality_sha256,
 )
-from marker_mermaid.pipeline import ReconstructionPipeline
+from marker_mermaid.pipeline import ReconstructionPipeline, certify_publication_result
 from marker_mermaid.protocols import RuntimeResult
 from marker_mermaid.sidecars import SidecarStore
 from marker_mermaid.validation import CandidateValidator
@@ -200,6 +201,44 @@ def test_mutating_validated_code_invalidates_publication(fake_runtime) -> None:
     markdown = standalone_document_markdown(result, image_path="images/source.jpeg")
     assert "![원본 다이어그램](images/source.jpeg)" in markdown
     assert "```mermaid" not in markdown
+
+
+def test_mutated_aggregate_evidence_provenance_invalidates_publication(
+    monkeypatch,
+    fake_runtime,
+) -> None:
+    result = _validated_result(fake_runtime)
+    result.evidence = [
+        VisualEvidence(
+            id="first",
+            kind="contour",
+            source_block_ids=["source", "a"],
+        ),
+        VisualEvidence(
+            id="second",
+            kind="line_segment",
+            source_block_ids=["source", "b"],
+        ),
+    ]
+    monkeypatch.setattr(models_module, "MAX_EVIDENCE_SOURCE_BLOCK_REFS", 4)
+
+    assert result.has_authorized_publication()
+
+    monkeypatch.setattr(models_module, "MAX_EVIDENCE_SOURCE_BLOCK_REFS", 3)
+
+    def forbidden_result_copy(*_args, **_kwargs):
+        raise AssertionError("certification must preflight evidence before copying the result")
+
+    monkeypatch.setattr(ReconstructionResult, "model_copy", forbidden_result_copy)
+
+    assert not certify_publication_result(
+        result,
+        MermaidConfig(candidate_count=1, type_candidate_count=1),
+    )
+    assert not result.has_authorized_publication()
+    assert reconstruction_markdown(result) == ""
+    markdown = standalone_document_markdown(result, image_path="images/source.jpeg")
+    assert markdown == "![원본 다이어그램](images/source.jpeg)\n"
 
 
 def test_removing_validated_svg_invalidates_publication(fake_runtime) -> None:

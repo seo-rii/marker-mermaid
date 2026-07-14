@@ -6,6 +6,7 @@ import json
 import pytest
 from PIL import Image
 
+import marker_mermaid.models as models_module
 import marker_mermaid.pipeline as pipeline_module
 import marker_mermaid.sidecars as sidecar_module
 import marker_mermaid.vector as vector_module
@@ -303,6 +304,178 @@ def test_vector_provenance_overflow_does_not_block_sibling_publication_or_sideca
     assert {item["id"] for item in provenance} == {"ocr-1", "vlm-1"}
     assert "vector-" not in provenance_path.read_text()
     assert overflow_failures[0].model_dump(mode="json") in manifest["failures"]
+
+
+@pytest.mark.parametrize(("reference_limit", "overflow"), [(4, False), (3, True)])
+def test_pipeline_admits_each_engine_evidence_batch_atomically_under_global_provenance_budget(
+    monkeypatch,
+    fake_runtime,
+    reference_limit,
+    overflow,
+) -> None:
+    monkeypatch.setattr(
+        models_module,
+        "MAX_EVIDENCE_SOURCE_BLOCK_REFS",
+        reference_limit,
+    )
+
+    first_observation = observation()
+    first_observation.evidence[0].source_block_ids = ["source"]
+    first_observation.evidence[1].source_block_ids = ["source"]
+    second_observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["unknown"], scores=[1.0]),
+        evidence=[
+            VisualEvidence(
+                id="second-1",
+                kind="contour",
+                source_block_ids=["source"],
+            ),
+            VisualEvidence(
+                id="second-2",
+                kind="line_segment",
+                source_block_ids=["source"],
+            ),
+        ],
+    )
+
+    class StaticEngine:
+        def __init__(self, name, result):
+            self.name = name
+            self.result = result
+
+        def observe(self, _context):
+            return self.result
+
+    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    result = ReconstructionPipeline(
+        config,
+        [
+            StaticEngine("first", first_observation),
+            StaticEngine("second", second_observation),
+        ],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        ocr_texts=["Start End"],
+    )
+
+    assert result.publish
+    assert result.has_authorized_publication()
+    expected_ids = {"ocr-1", "vlm-1"}
+    if not overflow:
+        expected_ids.update({"second-1", "second-2"})
+    assert {item.id for item in result.evidence} == expected_ids
+    assert ("second-1" in expected_ids) is (not overflow)
+    limit_failures = [item for item in result.failures if item.error_type == "EvidenceLimitError"]
+    assert len(limit_failures) == int(overflow)
+    if overflow:
+        assert "provenance limit" in limit_failures[0].message
+
+
+@pytest.mark.parametrize(("reference_limit", "overflow"), [(4, False), (3, True)])
+def test_pipeline_isolates_initial_evidence_provenance_overflow_atomically(
+    monkeypatch,
+    fake_runtime,
+    reference_limit,
+    overflow,
+) -> None:
+    monkeypatch.setattr(
+        models_module,
+        "MAX_EVIDENCE_SOURCE_BLOCK_REFS",
+        reference_limit,
+    )
+    captured_ids: list[str] = []
+
+    class CaptureEngine:
+        name = "capture"
+
+        def observe(self, context):
+            captured_ids.extend(item.id for item in context.evidence)
+            return observation()
+
+    initial_evidence = [
+        VisualEvidence(
+            id="initial-1",
+            kind="contour",
+            source_block_ids=["source", "a"],
+        ),
+        VisualEvidence(
+            id="initial-2",
+            kind="line_segment",
+            source_block_ids=["source", "b"],
+        ),
+    ]
+    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    result = ReconstructionPipeline(
+        config,
+        [CaptureEngine()],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        evidence=initial_evidence,
+        ocr_texts=["Start End"],
+    )
+
+    expected_initial_ids = [] if overflow else ["initial-1", "initial-2"]
+    assert captured_ids == expected_initial_ids
+    assert {item.id for item in result.evidence}.issuperset(expected_initial_ids)
+    source_failures = [item for item in result.failures if item.stage == "source_context"]
+    assert len(source_failures) == int(overflow)
+    if overflow:
+        assert all(not item.id.startswith("initial-") for item in result.evidence)
+        assert "source-block references exceed the aggregate limit" in source_failures[0].message
+
+
+def test_pipeline_revalidates_mutated_custom_engine_evidence_provenance_atomically(
+    monkeypatch,
+    fake_runtime,
+) -> None:
+    oversized = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["unknown"], scores=[1.0]),
+        evidence=[
+            VisualEvidence(
+                id="custom-1",
+                kind="contour",
+                source_block_ids=["source", "a"],
+            ),
+            VisualEvidence(
+                id="custom-2",
+                kind="line_segment",
+                source_block_ids=["source", "b"],
+            ),
+        ],
+    )
+    monkeypatch.setattr(models_module, "MAX_EVIDENCE_SOURCE_BLOCK_REFS", 3)
+
+    class CustomEngine:
+        name = "custom"
+
+        def observe(self, _context):
+            return oversized
+
+    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    result = ReconstructionPipeline(
+        config,
+        [CustomEngine(), JsonFixtureEngine(observation())],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        ocr_texts=["Start End"],
+    )
+
+    assert result.publish
+    assert result.selected is not None
+    assert result.selected.generation_engine == JsonFixtureEngine.name
+    assert all(not item.id.startswith("custom-") for item in result.evidence)
+    custom_failures = [item for item in result.failures if item.engine == "custom"]
+    assert len(custom_failures) == 1
+    assert "source-block references exceed the aggregate limit" in custom_failures[0].message
 
 
 @pytest.mark.parametrize("record_kind", ["element", "relation"])
@@ -4935,7 +5108,10 @@ def test_pipeline_reports_global_engine_evidence_limit_only_once(monkeypatch, fa
     assert len(limit_failures) == 1
     assert result.selected is not None
     assert (
-        sum("global evidence item or character limit" in item for item in result.selected.warnings)
+        sum(
+            "global evidence item limit, character limit, or provenance limit" in item
+            for item in result.selected.warnings
+        )
         == 1
     )
 

@@ -110,6 +110,23 @@ Fusion의 element/relation evidence와 evidence source-block 합집합은 공용
 다시 검증하므로 canonical Scene만 candidate generation, scoring, publication receipt와 sidecar 경계로
 이동합니다.
 
+Record별 256개 상한과 별도로, retained `VisualEvidence` collection은 `source_block_ids`의 논리적
+occurrence를 합계 20,000개, 그 ID 문자열을 Python `len()` 합계 8,000,000자로 제한합니다. 같은 ID의
+중복 occurrence도 메모리 비용이므로 각각 계산합니다. `id`, `kind`, `text`, `font_weight`, source-block
+ID를 모두 더한 기존 full-evidence 8,000,000자 상한도 독립적으로 적용됩니다. 각 exact boundary는
+허용하고 `+1`은 bounded prefix를 남기지 않고 해당 collection 또는 reconstruction-global 신규 ID batch
+전체를 격리합니다. Snapshot은 exact list/model field를 built-in access로 읽고 detached
+`VisualEvidence`를 다시 만들며 live `model_dump`, subclass iteration/equality/coercion hook을 호출하지
+않습니다.
+
+이 계약은 initial/custom-engine evidence, reconstruction-global whole-new-ID admission, fusion의 모든
+observation과 정렬에 포함되는 `prior_evidence` 누적 입력 및 fused output, 최종
+`ReconstructionResult`와 publication/Markdown snapshot에 적용됩니다. Sidecar는 JSON/deep copy와 임시
+directory 생성 전에, document output은 image 쓰기 전에 같은 final-result snapshot을 preflight합니다.
+공개 config나 sidecar schema/manifest version은 바뀌지 않습니다. Marker adapter가 OCR evidence를 만들기 전
+단계, Review provenance 교체/읽기, evaluation prediction ingestion에 같은 공용 경계를 직접 적용하는 일은
+후속입니다.
+
 fused observation의 `flowchart`와 `generic_network` typed 후보만 별도 ID 정합화 gate를 거칩니다. typed
 node가 같은 owner Scene element ID를 정확히 재사용하고, 그 element가 독립 vector/geometry node 하나와
 IoU 0.45 이상으로 유일하게 대응하며, source evidence가 engine 호출 전 payload snapshot에 있고 그 bbox
@@ -142,7 +159,8 @@ Pipeline은 engine 호출 전에 source block/page ID, OCR, initial evidence, op
 각 hard cap보다 하나 많은 항목까지만 읽어 plain snapshot으로 고정합니다. 타입·값·합계 상한을 벗어난
 컬렉션은 일부 prefix를 사용하지 않고 해당 컬렉션 전체를 안전한 기본값으로 격리하며
 `CandidateFailure(stage="source_context")`를 남깁니다. Engine이 추가한 evidence도 reconstruction 전체의
-단일 item cap을 공유하고, 상한 뒤 record는 평가·게시 authority를 얻지 못합니다.
+item/reference/character cap을 공유합니다. 신규 evidence ID batch가 남은 예산을 넘으면 일부 record만
+평가·게시 authority에 넣지 않고 batch 전체를 격리합니다.
 
 Vector extraction은 최종 Scene에 남은 record가 아니라 provider에서 읽은 raw work를 독립적으로
 계산합니다. 기본 reconstruction-global 예산은 primitive/command 2,048개, vector text

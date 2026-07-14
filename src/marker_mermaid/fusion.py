@@ -23,6 +23,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
+import marker_mermaid.models as models_module
 from marker_mermaid.mapping_validation import (
     authority_evidence_matches,
     normalize_scene_bbox,
@@ -37,6 +38,7 @@ from marker_mermaid.models import (
     DiagramTypePrediction,
     DirectMermaidCandidate,
     EngineObservation,
+    EvidenceBudgetUsage,
     NodeIdMapping,
     SceneElement,
     SceneGroup,
@@ -44,6 +46,7 @@ from marker_mermaid.models import (
     TypedIRCandidate,
     VisualEvidence,
     _canonical_typed_candidate_fields,
+    canonical_evidence_collection_snapshot,
     canonical_typed_ir_snapshot,
 )
 from marker_mermaid.resource_limits import MAX_EVIDENCE_REFS
@@ -225,6 +228,7 @@ class FusionEngine:
             warning for item in ordered for warning in item.observation.warnings if warning
         )
         evidence, evidence_warnings, collided_evidence_ids = self._fuse_evidence(ordered)
+        evidence = list(canonical_evidence_collection_snapshot(evidence).evidence)
         collided_evidence_ids.update(
             evidence_id for item in ordered for evidence_id in item.excluded_evidence_ids
         )
@@ -294,16 +298,42 @@ class FusionEngine:
                 raise TypeError("fusion inputs must be FusionInput instances")
         canonical_values: list[FusionInput] = []
         observation_projection_digests: dict[int, str] = {}
+        evidence_usage: EvidenceBudgetUsage | None = None
         for value in values:
+            observation_evidence = canonical_evidence_collection_snapshot(
+                value.observation.evidence,
+                base=evidence_usage,
+            )
+            evidence_usage = observation_evidence.usage
+            if type(value.prior_evidence) is not tuple:
+                raise TypeError("fusion prior evidence must be an exact tuple")
+            prior_evidence_count = tuple.__len__(value.prior_evidence)
+            if evidence_usage.items + prior_evidence_count > models_module.MAX_OBSERVATION_EVIDENCE:
+                raise ValueError("evidence exceeds the observation item limit")
+            prior_evidence_values = list(
+                tuple.__getitem__(value.prior_evidence, slice(0, prior_evidence_count))
+            )
+            if tuple.__len__(value.prior_evidence) != prior_evidence_count:
+                raise ValueError("fusion prior evidence changed while it was captured")
+            prior_evidence = canonical_evidence_collection_snapshot(
+                prior_evidence_values,
+                base=evidence_usage,
+            )
+            evidence_usage = prior_evidence.usage
             typed_candidates, typed_warnings = _canonical_typed_candidates(
                 value.observation.typed_candidates
             )
             observation = value.observation.model_copy(deep=False)
             observation.typed_candidates = typed_candidates
+            observation.evidence = list(observation_evidence.evidence)
             observation.warnings = list(
                 dict.fromkeys([*list(observation.warnings), *typed_warnings])
             )
-            canonical_value = replace(value, observation=observation)
+            canonical_value = replace(
+                value,
+                observation=observation,
+                prior_evidence=prior_evidence.evidence,
+            )
             canonical_values.append(canonical_value)
             projection = EngineObservation.__pydantic_serializer__.to_python(
                 observation,

@@ -28,10 +28,11 @@ from marker_mermaid.models import (
     MAX_OBSERVATION_CANDIDATES,
     MAX_OBSERVATION_TYPED_IR_JSON_BYTES,
     NODE_ID_MAPPING_MIN_IOU,
+    EvidenceBudgetUsage,
     MermaidCandidate,
     ReconstructionResult,
     TypedIRCandidate,
-    VisualEvidence,
+    canonical_evidence_collection_snapshot,
     canonical_prompt_budget_notice_json,
     canonical_source_mapping_snapshot,
     canonical_typed_ir_snapshot,
@@ -215,6 +216,11 @@ class SidecarStore:
     def write(self, result: ReconstructionResult) -> str:
         if type(result) is not ReconstructionResult:
             raise TypeError("sidecar writes require a ReconstructionResult")
+        try:
+            before_evidence_snapshot = canonical_evidence_collection_snapshot(result.evidence)
+        except (AttributeError, TypeError, UnicodeEncodeError, ValueError) as exc:
+            raise ValueError(f"sidecar evidence preflight failed: {exc}") from exc
+        before_evidence_usage: EvidenceBudgetUsage = before_evidence_snapshot.usage
         live_result = result
         live_before_selected = result.selected
         try:
@@ -319,7 +325,9 @@ class SidecarStore:
                     "alternatives": [
                         _candidate_json(candidate) for candidate in before_alternatives
                     ],
-                    "evidence": [item.model_dump(mode="json") for item in result.evidence],
+                    "evidence": [
+                        item.model_dump(mode="json") for item in before_evidence_snapshot.evidence
+                    ],
                     "source_mapping": before_source_mapping,
                     "failures": [item.model_dump(mode="json") for item in result.failures],
                     "prompt_budget_notices": canonical_prompt_budget_notice_json(
@@ -396,6 +404,7 @@ class SidecarStore:
             shallow_result.selected = before_selected
             shallow_result.alternatives = before_alternatives
             shallow_result.source_mapping = before_source_mapping
+            shallow_result.evidence = list(before_evidence_snapshot.evidence)
             result = ReconstructionResult.model_copy(shallow_result, deep=True)
         except Exception as exc:
             raise ValueError("sidecar snapshot failed publication authorization") from exc
@@ -573,6 +582,14 @@ class SidecarStore:
                 "sidecar source changed while its snapshot was captured: invalid source mapping"
             ) from exc
         try:
+            after_evidence_snapshot = canonical_evidence_collection_snapshot(live_result.evidence)
+            snapshot_evidence_snapshot = canonical_evidence_collection_snapshot(result.evidence)
+            result.evidence = list(snapshot_evidence_snapshot.evidence)
+        except (AttributeError, TypeError, UnicodeEncodeError, ValueError) as exc:
+            raise ValueError(
+                f"sidecar source changed while its snapshot was captured: invalid evidence: {exc}"
+            ) from exc
+        try:
             after_sink_payload = _json_bytes(
                 {
                     "selected": (
@@ -583,7 +600,9 @@ class SidecarStore:
                     "alternatives": [
                         _candidate_json(candidate) for candidate in after_alternatives
                     ],
-                    "evidence": [item.model_dump(mode="json") for item in live_result.evidence],
+                    "evidence": [
+                        item.model_dump(mode="json") for item in after_evidence_snapshot.evidence
+                    ],
                     "source_mapping": after_source_mapping,
                     "failures": [item.model_dump(mode="json") for item in live_result.failures],
                     "prompt_budget_notices": canonical_prompt_budget_notice_json(
@@ -601,7 +620,9 @@ class SidecarStore:
                     "alternatives": [
                         _candidate_json(candidate) for candidate in snapshot_alternatives
                     ],
-                    "evidence": [item.model_dump(mode="json") for item in result.evidence],
+                    "evidence": [
+                        item.model_dump(mode="json") for item in snapshot_evidence_snapshot.evidence
+                    ],
                     "source_mapping": snapshot_source_mapping,
                     "failures": [item.model_dump(mode="json") for item in result.failures],
                     "prompt_budget_notices": canonical_prompt_budget_notice_json(
@@ -720,7 +741,12 @@ class SidecarStore:
             )
         except (AttributeError, TypeError, UnicodeEncodeError, ValueError) as exc:
             raise ValueError("sidecar snapshot has an invalid publication core") from exc
-        if after_core != before_core or snapshot_core != before_core:
+        if (
+            after_core != before_core
+            or snapshot_core != before_core
+            or after_evidence_snapshot.usage != before_evidence_usage
+            or snapshot_evidence_snapshot.usage != before_evidence_usage
+        ):
             raise ValueError("sidecar source changed while its snapshot was captured")
         if (
             (
@@ -825,6 +851,7 @@ class SidecarStore:
             ):
                 raise ValueError("sidecar diagrams directory identity changed before writing")
             selected = result.selected
+            validated_evidence = list(snapshot_evidence_snapshot.evidence)
             has_trusted_decision = result.has_trusted_publication_decision()
             if has_trusted_decision:
                 assert result.publication_receipt is not None
@@ -868,10 +895,6 @@ class SidecarStore:
                     png_error = png_inspection_error(selected.png)
                     if png_error is not None:
                         raise ValueError(f"selected PNG failed artifact inspection: {png_error}")
-                validated_evidence = [
-                    VisualEvidence.model_validate(item.model_dump(mode="python"))
-                    for item in result.evidence
-                ]
                 if selected.mermaid_code:
                     hashes["final.mmd"] = _write(
                         _AnchoredArtifactPath(temporary_fd, "final.mmd"),
@@ -1036,11 +1059,6 @@ class SidecarStore:
                                 raise ValueError("written PNG differs from validation receipt")
                             trusted_validation_receipt = None
                             trusted_publication_receipt = None
-            if selected is None:
-                validated_evidence = [
-                    VisualEvidence.model_validate(item.model_dump(mode="python"))
-                    for item in result.evidence
-                ]
             if (self.write_provenance or mapping_requires_provenance) and validated_evidence:
                 hashes["provenance.json"] = _write(
                     _AnchoredArtifactPath(temporary_fd, "provenance.json"),

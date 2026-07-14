@@ -124,6 +124,24 @@ vector로 간주하지 않습니다.
 | semantic relation | VLM → other → vector → geometry → OCR |
 | type distribution | source별 고정 weight의 결정적 합성 |
 
+### Aggregate evidence ingress/output budget
+
+Fusion은 observation projection을 JSON으로 만들거나 evidence winner를 deep-copy하기 전에 모든
+`observation.evidence`와 정렬 key에 직렬화되는 `FusionInput.prior_evidence`를 하나의 누적 snapshot으로
+고정합니다. `VisualEvidence.source_block_ids` occurrence는 duplicate 포함 20,000개, 해당 ID의 Python
+문자열 길이는 8,000,000자까지이며 `id`·`kind`·`text`·`font_weight`까지 포함한 full-evidence 문자도
+독립적으로 8,000,000자까지입니다. Exact boundary는 허용하고 `+1`은 `_fuse_evidence`나 live
+`model_copy` 전에 fusion 호출 전체를 원자적으로 거부합니다. Fused evidence도 새 예산으로 다시 detached
+snapshot한 뒤에만 `EngineObservation`을 만듭니다.
+
+공용 snapshot은 exact list/model field를 built-in access로 읽어 nested source-block list와 scalar를
+분리하고, live `model_dump`·iteration/equality/coercion hook을 호출하지 않습니다. Pipeline의
+initial/custom-engine collection, reconstruction-global whole-new-ID admission, final result 및
+publication/Markdown/sidecar/output 경계도 같은 상수를 사용합니다. Vector의 prospective fan-out 검사는
+Scene/evidence allocation 전에 실행하는 더 이른 최적화 경계이지만 상한은 이 generic runtime 계약과
+공유합니다. 공개 config나 sidecar schema/manifest version은 바뀌지 않습니다. Marker OCR adapter,
+Review provenance, evaluation prediction ingestion에 같은 공용 경계를 직접 적용하는 것은 후속입니다.
+
 Scene node는 동일 ID 또는 정규화된 bbox IoU로 cluster합니다. relation endpoint와 group member는 fused
 Scene node ID로 다시 매핑하며 provenance와 source block ID를 합칩니다. 서로 다른 값이 경쟁하면
 우선순위로 선택하고 warning을 남깁니다. typed/direct candidate는 canonical JSON/code 기준으로 중복
@@ -135,7 +153,8 @@ Element/relation `evidence_ids`와 같은 VisualEvidence의 `source_block_ids` �
 cross-input enrichment 전체를 생략해 위 우선순위의 원 winner record를 유지하고 warning을 남깁니다.
 Relation endpoint remap과 direction-conflict 추적은 이 경우에도 유지됩니다. 모든 변형 record는 새
 Pydantic record로 다시 검증되고, pipeline도 내부 fused Scene/evidence와 exact-list/20,000-item evidence
-collection을 후보 생성 전에 한 번 더 검증합니다. 따라서 정확히 256개는 손실 없이 합쳐지고 257번째
+collection 및 aggregate source-block reference/문자·full-evidence 문자 계약을 후보 생성 전에 한 번 더
+검증합니다. 따라서 정확히 256개는 손실 없이 합쳐지고 257번째
 근거가 scoring·게시·sidecar 사이의 계약 차이를 만들지 않습니다.
 
 ### Flow node ID 정합화

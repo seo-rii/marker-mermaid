@@ -169,6 +169,15 @@ lower bound가 큰 항목은 escape scan 전에 건너뜁니다. Evidence nested
 label/connector ID set도 각 schema item 상한까지만 immutable snapshot으로 만들고, 그 snapshot만 canonical
 validation과 selection에 사용합니다.
 
+Prompt 설정과 별도로 retained runtime evidence에는 설정으로 늘릴 수 없는 aggregate provenance 계약이
+있습니다. `VisualEvidence.source_block_ids` occurrence 합계 20,000개와 그 ID의 Python `len()` 합계
+8,000,000자를 허용하며, 중복도 각각 계산합니다. `id`·`kind`·`text`·`font_weight`까지 포함한 기존 전체
+evidence 문자 합계도 독립적으로 8,000,000자를 넘을 수 없습니다. Exact boundary는 허용하고 `+1`은
+initial/custom-engine collection, reconstruction-global 신규 ID batch, fusion 또는 final sink snapshot
+단위로 원자적으로 거부합니다. 이 값에는 `MermaidDiagramProcessor_*` key가 없으며 Python 공개 config,
+sidecar schema와 manifest version도 바꾸지 않습니다. Marker OCR 생산 단계, Review, evaluation ingestion에
+같은 경계를 직접 적용하는 작업은 후속입니다.
+
 `max_image_dimension`과 `tile_size`의 상한은 4,096px입니다. View는 `original`이 첫 항목인 RGB Pillow
 image여야 합니다. 이름, 개수, 한 변 4,096px, view당
 16,777,216px, 전체 33,554,432px를 provider 호출 전에 검사합니다. 입력 dict는 `max_views + 1`개까지만
@@ -182,9 +191,10 @@ subclass를 검증 뒤 provider에 그대로 전달하지 않습니다. Caller�
 | 입력 | hard cap | 초과·비정규 입력 동작 |
 | --- | ---: | --- |
 | `source_block_ids`, `page_ids`, `source_blocks`, `vector_sources` | 각 256 items | 해당 collection 전체 격리 |
-| initial/engine/fused evidence | reconstruction 전체 20,000 items | initial/engine collection 격리 또는 이후 evidence authority 차단 |
+| initial/custom-engine/fused evidence | reconstruction 전체 20,000 items | initial/engine collection 또는 fused observation 격리 |
+| retained evidence의 `source_block_ids` | 합계 20,000 logical occurrences, 8,000,000 Python characters | duplicate 포함; collection 또는 whole-new-ID batch 원자적 격리 |
 | source OCR | 50,000 items, 합계 1,000,000 chars | OCR collection 전체 격리 |
-| evidence ID/text/source-block text | 합계 8,000,000 chars | evidence collection 전체 격리 또는 이후 evidence authority 차단 |
+| evidence ID/kind/text/font-weight/source-block text | 합계 8,000,000 Python characters | evidence collection 또는 whole-new-ID batch 원자적 격리 |
 | typed IR candidate | envelope 3 fields, depth 64, 100,000 items, field 50,000 chars, UTF-8 text 1,000,000 bytes, compact JSON 4,000,000 bytes | 해당 candidate 격리 |
 | observation/fused typed IR | 최대 64 candidates, compact JSON 합계 8,000,000 bytes | provider/fixture observation 거부 또는 fusion의 bounded prefix 유지 |
 | `source_mapping` | depth 32, 25,000 items, string 50,000 chars, compact JSON 4,000,000 bytes | mapping만 `null`로 격리 |

@@ -36,7 +36,11 @@ from marker_mermaid.models import (
     VisualEvidence,
 )
 from marker_mermaid.protocols import SourceContext
-from marker_mermaid.resource_limits import MAX_EVIDENCE_INPUT_CHARS
+from marker_mermaid.resource_limits import (
+    MAX_EVIDENCE_INPUT_CHARS,
+    MAX_EVIDENCE_SOURCE_BLOCK_CHARS,
+    MAX_EVIDENCE_SOURCE_BLOCK_REFS,
+)
 
 BBox = tuple[float, float, float, float]
 Point = tuple[float, float]
@@ -53,8 +57,8 @@ MAX_VECTOR_TOKEN_CHARS = 256
 MAX_VECTOR_DEDUP_COMPARISONS = 250_000
 MAX_VECTOR_TEXT_MATCH_COMPARISONS = 1_000_000
 MAX_VECTOR_ENDPOINT_MATCH_COMPARISONS = 1_000_000
-MAX_VECTOR_PROVENANCE_REFS = MAX_OBSERVATION_EVIDENCE
-MAX_VECTOR_PROVENANCE_CHARS = MAX_EVIDENCE_INPUT_CHARS
+MAX_VECTOR_PROVENANCE_REFS = MAX_EVIDENCE_SOURCE_BLOCK_REFS
+MAX_VECTOR_PROVENANCE_CHARS = MAX_EVIDENCE_SOURCE_BLOCK_CHARS
 
 
 def _bounded_items(

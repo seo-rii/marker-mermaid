@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
@@ -52,6 +51,7 @@ from marker_mermaid.models import (
     DiagramTypePrediction,
     DirectMermaidCandidate,
     EngineObservation,
+    EvidenceBudgetUsage,
     MermaidCandidate,
     NodeIdMapping,
     PromptBudgetNotice,
@@ -63,6 +63,7 @@ from marker_mermaid.models import (
     _canonical_typed_candidate_fields,
     _publication_authorization_seal,
     _sink_safe_diagnostic_text,
+    canonical_evidence_collection_snapshot,
     canonical_source_mapping_snapshot,
     canonical_typed_ir_snapshot,
 )
@@ -451,6 +452,10 @@ def certify_publication_result(
     result._publication_authorization_seal = None
     if type(result) is not ReconstructionResult or type(config) is not MermaidConfig:
         return False
+    try:
+        evidence_snapshot = canonical_evidence_collection_snapshot(result.evidence)
+    except (AttributeError, TypeError, UnicodeEncodeError, ValueError):
+        return False
     selected = result.selected
     weights = config.score_weights
     if not (
@@ -489,7 +494,9 @@ def certify_publication_result(
             include=included_fields,
         )
         before_validation_seal = selected._validation_receipt_seal
-        snapshot = result.model_copy(deep=True)
+        shallow_snapshot = ReconstructionResult.model_copy(result, deep=False)
+        shallow_snapshot.evidence = list(evidence_snapshot.evidence)
+        snapshot = ReconstructionResult.model_copy(shallow_snapshot, deep=True)
         after_projection = result.model_dump(
             mode="python",
             include=included_fields,
@@ -860,97 +867,18 @@ class ReconstructionPipeline:
                     resolved_vector_sources = vector_source_snapshot
 
         all_evidence: list[VisualEvidence] = []
-        evidence_payloads: list[dict[str, object]] = []
-        evidence_input_chars = 0
+        global_evidence_usage = EvidenceBudgetUsage()
         evidence_collection_error: Exception | None = None
-        if evidence is not None and type(evidence) is not list:
-            evidence_collection_error = TypeError("evidence must be an exact plain list")
-        elif evidence is not None:
-            evidence_snapshot = evidence[: MAX_OBSERVATION_EVIDENCE + 1]
-            try:
-                if len(evidence_snapshot) > MAX_OBSERVATION_EVIDENCE:
-                    raise ValueError(f"evidence exceeds the {MAX_OBSERVATION_EVIDENCE}-item limit")
-                for item in evidence_snapshot:
-                    if type(item) is not VisualEvidence:
-                        raise TypeError(
-                            "evidence must contain exact canonical VisualEvidence records"
-                        )
-                    item_id = item.id
-                    kind = item.kind
-                    bbox = item.bbox
-                    text = item.text
-                    font_weight = item.font_weight
-                    score = item.score
-                    live_block_ids = item.source_block_ids
-                    if type(item_id) is not str or not item_id or len(item_id) > MAX_ID_CHARS:
-                        raise TypeError("evidence contains an invalid bounded id")
-                    item_id.encode("utf-8")
-                    if type(kind) is not str:
-                        raise TypeError("evidence contains a non-canonical kind")
-                    kind.encode("utf-8")
-                    if text is not None:
-                        if type(text) is not str or len(text) > MAX_TEXT_CHARS:
-                            raise TypeError("evidence contains invalid bounded text")
-                        text.encode("utf-8")
-                    if font_weight is not None and type(font_weight) is not str:
-                        raise TypeError("evidence contains non-canonical font weight")
-                    if bbox is not None and (
-                        type(bbox) is not tuple
-                        or len(bbox) != 4
-                        or any(type(value) not in {int, float} for value in bbox)
-                        or not all(math.isfinite(value) for value in bbox)
-                    ):
-                        raise TypeError("evidence contains a non-canonical bbox")
-                    if score is not None and (
-                        type(score) not in {int, float}
-                        or not math.isfinite(score)
-                        or not 0 <= score <= 1
-                    ):
-                        raise TypeError("evidence contains a non-canonical score")
-                    if type(live_block_ids) is not list:
-                        raise TypeError("evidence source_block_ids must be an exact plain list")
-                    block_ids = live_block_ids[: MAX_EVIDENCE_REFS + 1]
-                    if len(block_ids) > MAX_EVIDENCE_REFS:
-                        raise ValueError("evidence source_block_ids exceeds its item limit")
-                    for block_id in block_ids:
-                        if (
-                            type(block_id) is not str
-                            or not block_id
-                            or len(block_id) > MAX_ID_CHARS
-                        ):
-                            raise TypeError(
-                                "evidence source_block_ids contains an invalid identifier"
-                            )
-                        block_id.encode("utf-8")
-                        evidence_input_chars += len(block_id)
-                    evidence_input_chars += len(item_id) + len(kind)
-                    if text is not None:
-                        evidence_input_chars += len(text)
-                    if font_weight is not None:
-                        evidence_input_chars += len(font_weight)
-                    if evidence_input_chars > MAX_VLM_EVIDENCE_INPUT_CHARS:
-                        raise ValueError("evidence exceeds the aggregate character limit")
-                    evidence_payloads.append(
-                        {
-                            "id": item_id,
-                            "kind": kind,
-                            "bbox": bbox,
-                            "text": text,
-                            "font_weight": font_weight,
-                            "score": score,
-                            "source_block_ids": block_ids,
-                        }
-                    )
-            except Exception as exc:
-                evidence_collection_error = exc
-        if evidence_collection_error is None:
-            try:
-                all_evidence = [
-                    VisualEvidence.model_validate(payload) for payload in evidence_payloads
-                ]
-            except Exception as exc:
-                evidence_collection_error = exc
-                all_evidence = []
+        try:
+            initial_evidence_snapshot = canonical_evidence_collection_snapshot(
+                [] if evidence is None else evidence,
+                item_limit=MAX_OBSERVATION_EVIDENCE,
+                character_limit=MAX_VLM_EVIDENCE_INPUT_CHARS,
+            )
+            all_evidence = list(initial_evidence_snapshot.evidence)
+            global_evidence_usage = initial_evidence_snapshot.usage
+        except Exception as exc:
+            evidence_collection_error = exc
         if evidence_collection_error is not None:
             failures.append(
                 CandidateFailure(
@@ -966,7 +894,6 @@ class ReconstructionPipeline:
             boundary_warnings.append(
                 "invalid or oversized initial evidence was isolated before reconstruction"
             )
-        global_evidence_chars = evidence_input_chars if all_evidence else 0
 
         source_block_id_set = set(resolved_source_block_ids)
         initial_evidence_ids: set[str] = set()
@@ -1316,98 +1243,15 @@ class ReconstructionPipeline:
                     )
             observation_evidence: list[VisualEvidence] = []
             observation_evidence_error: Exception | None = None
-            if type(raw_observation.evidence) is not list:
-                observation_evidence_error = TypeError(
-                    "engine evidence must be an exact plain list"
+            try:
+                observation_evidence_snapshot = canonical_evidence_collection_snapshot(
+                    raw_observation.evidence,
+                    item_limit=MAX_OBSERVATION_EVIDENCE,
+                    character_limit=MAX_VLM_EVIDENCE_INPUT_CHARS,
                 )
-                raw_evidence_snapshot: list[VisualEvidence] = []
-            else:
-                raw_evidence_snapshot = raw_observation.evidence[: MAX_OBSERVATION_EVIDENCE + 1]
-                if len(raw_evidence_snapshot) > MAX_OBSERVATION_EVIDENCE:
-                    observation_evidence_error = ValueError(
-                        "engine evidence exceeds the global observation item limit"
-                    )
-            observation_evidence_chars = 0
-            for item in raw_evidence_snapshot if observation_evidence_error is None else []:
-                try:
-                    if type(item) is not VisualEvidence:
-                        raise TypeError(
-                            "engine evidence must contain exact canonical VisualEvidence records"
-                        )
-                    item_id = item.id
-                    kind = item.kind
-                    bbox = item.bbox
-                    text = item.text
-                    font_weight = item.font_weight
-                    score = item.score
-                    live_block_ids = item.source_block_ids
-                    if type(item_id) is not str or not item_id or len(item_id) > MAX_ID_CHARS:
-                        raise TypeError("engine evidence contains an invalid bounded id")
-                    item_id.encode("utf-8")
-                    if type(kind) is not str:
-                        raise TypeError("engine evidence contains a non-canonical kind")
-                    kind.encode("utf-8")
-                    if text is not None:
-                        if type(text) is not str or len(text) > MAX_TEXT_CHARS:
-                            raise TypeError("engine evidence contains invalid bounded text")
-                        text.encode("utf-8")
-                    if font_weight is not None and type(font_weight) is not str:
-                        raise TypeError("engine evidence contains non-canonical font weight")
-                    if bbox is not None and (
-                        type(bbox) is not tuple
-                        or len(bbox) != 4
-                        or any(type(value) not in {int, float} for value in bbox)
-                        or not all(math.isfinite(value) for value in bbox)
-                    ):
-                        raise TypeError("engine evidence contains a non-canonical bbox")
-                    if score is not None and (
-                        type(score) not in {int, float}
-                        or not math.isfinite(score)
-                        or not 0 <= score <= 1
-                    ):
-                        raise TypeError("engine evidence contains a non-canonical score")
-                    if type(live_block_ids) is not list:
-                        raise TypeError(
-                            "engine evidence source_block_ids must be an exact plain list"
-                        )
-                    block_ids = live_block_ids[: MAX_EVIDENCE_REFS + 1]
-                    if len(block_ids) > MAX_EVIDENCE_REFS:
-                        raise ValueError("engine evidence source_block_ids exceeds its item limit")
-                    for block_id in block_ids:
-                        if (
-                            type(block_id) is not str
-                            or not block_id
-                            or len(block_id) > MAX_ID_CHARS
-                        ):
-                            raise TypeError(
-                                "engine evidence source_block_ids contains an invalid identifier"
-                            )
-                        block_id.encode("utf-8")
-                        observation_evidence_chars += len(block_id)
-                    observation_evidence_chars += len(item_id) + len(kind)
-                    if text is not None:
-                        observation_evidence_chars += len(text)
-                    if font_weight is not None:
-                        observation_evidence_chars += len(font_weight)
-                    if observation_evidence_chars > MAX_VLM_EVIDENCE_INPUT_CHARS:
-                        raise ValueError("engine evidence exceeds the aggregate character limit")
-                    observation_evidence.append(
-                        VisualEvidence.model_validate(
-                            {
-                                "id": item_id,
-                                "kind": kind,
-                                "bbox": bbox,
-                                "text": text,
-                                "font_weight": font_weight,
-                                "score": score,
-                                "source_block_ids": block_ids,
-                            }
-                        )
-                    )
-                except Exception as exc:
-                    observation_evidence_error = exc
-                    observation_evidence = []
-                    break
+                observation_evidence = list(observation_evidence_snapshot.evidence)
+            except Exception as exc:
+                observation_evidence_error = exc
             if observation_evidence_error is not None:
                 failures.append(
                     CandidateFailure(
@@ -1502,19 +1346,6 @@ class ReconstructionPipeline:
                 for evidence_id, item in publication_evidence_registry.items()
                 if prompt_supplied_prior_ids is None or evidence_id in prompt_supplied_prior_ids
             }
-            if has_payload:
-                successful_observations.append((engine.name, fusion_source, observation))
-                existing_prior = prior_evidence_by_observation.get(id(observation))
-                if existing_prior is None:
-                    prior_evidence_by_observation[id(observation)] = current_prior
-                else:
-                    prior_evidence_by_observation[id(observation)] = {
-                        evidence_id: existing
-                        for evidence_id, existing in existing_prior.items()
-                        if evidence_id in current_prior
-                        and existing.model_dump(mode="json")
-                        == current_prior[evidence_id].model_dump(mode="json")
-                    }
             hints_changed = False
             for diagram_type in observation.prediction.candidates[
                 : self.config.type_candidate_count
@@ -1527,36 +1358,47 @@ class ReconstructionPipeline:
                     hints_changed = True
             evidence_changed = False
             new_publication_evidence_ids: set[str] = set()
+            prospective_evidence_ids = set(known_evidence_ids)
+            new_evidence: list[VisualEvidence] = []
+            for item in observation.evidence:
+                if item.id not in prospective_evidence_ids:
+                    new_evidence.append(item)
+                    prospective_evidence_ids.add(item.id)
+            admitted_evidence_by_id: dict[str, VisualEvidence] = {}
+            try:
+                admitted_evidence = canonical_evidence_collection_snapshot(
+                    new_evidence,
+                    base=global_evidence_usage,
+                    item_limit=MAX_OBSERVATION_EVIDENCE,
+                    character_limit=MAX_VLM_EVIDENCE_INPUT_CHARS,
+                )
+            except (TypeError, UnicodeEncodeError, ValueError):
+                observation.evidence = []
+                if not global_evidence_limit_reported:
+                    global_evidence_limit_reported = True
+                    message = (
+                        "global evidence item limit, character limit, or provenance limit reached; "
+                        "additional engine evidence was isolated without publication authority"
+                    )
+                    failures.append(
+                        CandidateFailure(
+                            stage="generation",
+                            engine=engine.name,
+                            error_type="EvidenceLimitError",
+                            message=message,
+                        )
+                    )
+                    view_warnings = list(dict.fromkeys([*view_warnings, message]))
+            else:
+                global_evidence_usage = admitted_evidence.usage
+                admitted_evidence_by_id = {item.id: item for item in admitted_evidence.evidence}
             for item in observation.evidence:
                 if item.id not in known_evidence_ids:
-                    item_chars = len(item.id) + len(item.kind)
-                    if item.text is not None:
-                        item_chars += len(item.text)
-                    if item.font_weight is not None:
-                        item_chars += len(item.font_weight)
-                    item_chars += sum(len(block_id) for block_id in item.source_block_ids)
-                    if (
-                        len(all_evidence) >= MAX_OBSERVATION_EVIDENCE
-                        or global_evidence_chars + item_chars > MAX_VLM_EVIDENCE_INPUT_CHARS
-                    ):
-                        if not global_evidence_limit_reported:
-                            global_evidence_limit_reported = True
-                            message = (
-                                "global evidence item or character limit reached; additional "
-                                "engine evidence was isolated without publication authority"
-                            )
-                            failures.append(
-                                CandidateFailure(
-                                    stage="generation",
-                                    engine=engine.name,
-                                    error_type="EvidenceLimitError",
-                                    message=message,
-                                )
-                            )
-                            view_warnings = list(dict.fromkeys([*view_warnings, message]))
+                    canonical_item = admitted_evidence_by_id.get(item.id)
+                    if canonical_item is None:
                         continue
+                    item = canonical_item
                     all_evidence.append(item)
-                    global_evidence_chars += item_chars
                     known_evidence_ids.add(item.id)
                     evidence_changed = True
                     if prompt_supplied_prior_ids is None:
@@ -1622,6 +1464,25 @@ class ReconstructionPipeline:
                         relation
                         for relation in trusted_connector_relation_registry
                         if item.id not in relation[2]
+                    }
+            has_payload = bool(
+                observation.scene_ir is not None
+                or observation.typed_candidates
+                or observation.direct_candidates
+                or observation.evidence
+            )
+            if has_payload:
+                successful_observations.append((engine.name, fusion_source, observation))
+                existing_prior = prior_evidence_by_observation.get(id(observation))
+                if existing_prior is None:
+                    prior_evidence_by_observation[id(observation)] = current_prior
+                else:
+                    prior_evidence_by_observation[id(observation)] = {
+                        evidence_id: existing
+                        for evidence_id, existing in existing_prior.items()
+                        if evidence_id in current_prior
+                        and existing.model_dump(mode="json")
+                        == current_prior[evidence_id].model_dump(mode="json")
                     }
             if has_payload:
                 evaluation_authority = set(current_prior)
@@ -1802,20 +1663,47 @@ class ReconstructionPipeline:
                     fused.scene_ir = DiagramSceneIR.model_validate(
                         fused.scene_ir.model_dump(mode="python")
                     )
-                if type(fused.evidence) is not list:
-                    raise TypeError("fused evidence must be an exact plain list")
-                if len(fused.evidence) > MAX_OBSERVATION_EVIDENCE:
-                    raise ValueError("fused evidence exceeds the global observation item limit")
-                canonical_fused_evidence: list[VisualEvidence] = []
+                fused_evidence_snapshot = canonical_evidence_collection_snapshot(
+                    fused.evidence,
+                    item_limit=MAX_OBSERVATION_EVIDENCE,
+                    character_limit=MAX_VLM_EVIDENCE_INPUT_CHARS,
+                )
+                fused.evidence = list(fused_evidence_snapshot.evidence)
+                prospective_fused_ids = set(known_evidence_ids)
+                new_fused_evidence: list[VisualEvidence] = []
                 for item in fused.evidence:
-                    if type(item) is not VisualEvidence:
-                        raise TypeError(
-                            "fused evidence must contain exact canonical VisualEvidence records"
-                        )
-                    canonical_fused_evidence.append(
-                        VisualEvidence.model_validate(item.model_dump(mode="python"))
+                    if item.id not in prospective_fused_ids:
+                        new_fused_evidence.append(item)
+                        prospective_fused_ids.add(item.id)
+                admitted_fused_evidence: tuple[VisualEvidence, ...] = ()
+                try:
+                    fused_admission = canonical_evidence_collection_snapshot(
+                        new_fused_evidence,
+                        base=global_evidence_usage,
+                        item_limit=MAX_OBSERVATION_EVIDENCE,
+                        character_limit=MAX_VLM_EVIDENCE_INPUT_CHARS,
                     )
-                fused.evidence = canonical_fused_evidence
+                except (TypeError, UnicodeEncodeError, ValueError):
+                    fused.evidence = []
+                    if not global_evidence_limit_reported:
+                        global_evidence_limit_reported = True
+                        message = (
+                            "global evidence item limit, character limit, or provenance limit "
+                            "reached; "
+                            "additional fused evidence was isolated without publication authority"
+                        )
+                        failures.append(
+                            CandidateFailure(
+                                stage="fusion",
+                                engine=FusionEngine.name,
+                                error_type="EvidenceLimitError",
+                                message=message,
+                            )
+                        )
+                        view_warnings = list(dict.fromkeys([*view_warnings, message]))
+                else:
+                    global_evidence_usage = fused_admission.usage
+                    admitted_fused_evidence = fused_admission.evidence
                 generation_observations = [
                     (FusionEngine.name, fused, True),
                     *generation_observations,
@@ -1829,52 +1717,12 @@ class ReconstructionPipeline:
                     set().union(*fused_authorities) if fused_authorities else set()
                 )
                 context.conflicted_connector_pairs.update(fused.fusion_conflicted_connector_pairs)
-                for item in fused.evidence:
-                    if item.id not in known_evidence_ids:
-                        item_chars = len(item.id) + len(item.kind)
-                        if item.text is not None:
-                            item_chars += len(item.text)
-                        if item.font_weight is not None:
-                            item_chars += len(item.font_weight)
-                        item_chars += sum(len(block_id) for block_id in item.source_block_ids)
-                        if (
-                            len(all_evidence) >= MAX_OBSERVATION_EVIDENCE
-                            or global_evidence_chars + item_chars > MAX_VLM_EVIDENCE_INPUT_CHARS
-                        ):
-                            if not global_evidence_limit_reported:
-                                global_evidence_limit_reported = True
-                                message = (
-                                    "global evidence item or character limit reached; additional "
-                                    "fused evidence was isolated without publication authority"
-                                )
-                                failures.append(
-                                    CandidateFailure(
-                                        stage="fusion",
-                                        engine=FusionEngine.name,
-                                        error_type="EvidenceLimitError",
-                                        message=message,
-                                    )
-                                )
-                                view_warnings = list(dict.fromkeys([*view_warnings, message]))
-                            continue
-                        all_evidence.append(item)
-                        global_evidence_chars += item_chars
-                        if type(context.evidence) is not list:
-                            context.evidence = []
-                        context.evidence.append(
-                            VisualEvidence.model_validate(
-                                {
-                                    "id": item.id,
-                                    "kind": item.kind,
-                                    "bbox": item.bbox,
-                                    "text": item.text,
-                                    "font_weight": item.font_weight,
-                                    "score": item.score,
-                                    "source_block_ids": item.source_block_ids[:],
-                                }
-                            )
-                        )
-                        known_evidence_ids.add(item.id)
+                for item in admitted_fused_evidence:
+                    all_evidence.append(item)
+                    if type(context.evidence) is not list:
+                        context.evidence = []
+                    context.evidence.append(item.model_copy(deep=True))
+                    known_evidence_ids.add(item.id)
             except Exception as exc:
                 failures.append(
                     CandidateFailure(
@@ -2534,9 +2382,30 @@ class ReconstructionPipeline:
                     "candidate warnings were truncated to the publication metadata budget"
                 )
             selected.warnings = bounded_warnings
+        final_evidence_safe = True
+        try:
+            final_evidence_snapshot = canonical_evidence_collection_snapshot(
+                all_evidence,
+                item_limit=MAX_OBSERVATION_EVIDENCE,
+                character_limit=MAX_VLM_EVIDENCE_INPUT_CHARS,
+            )
+            all_evidence = list(final_evidence_snapshot.evidence)
+        except (TypeError, UnicodeEncodeError, ValueError) as exc:
+            final_evidence_safe = False
+            all_evidence = []
+            failures.append(
+                CandidateFailure(
+                    stage="result",
+                    engine="pipeline",
+                    error_type=type(exc).__name__,
+                    message=f"final evidence was isolated atomically: {exc}",
+                )
+            )
         decision = decide_publication(selected, self.config)
         if selected is None:
             status = "failed"
+        elif not final_evidence_safe:
+            status = "review_required"
         elif decision.publish or not decision.review_required:
             status = "success"
         else:
@@ -2555,8 +2424,8 @@ class ReconstructionPipeline:
             failures=failures,
             prompt_budget_notices=prompt_budget_notices,
             grade=decision.grade,
-            publish=decision.publish,
-            review_required=decision.review_required,
+            publish=decision.publish and final_evidence_safe,
+            review_required=decision.review_required or not final_evidence_safe,
             status=status,
         )
         certified = certify_publication_result(result, self.config)

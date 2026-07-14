@@ -12,6 +12,8 @@ from marker_mermaid.models import (
     DiagramSceneIR,
     DiagramTypePrediction,
     EngineObservation,
+    EvidenceBudgetUsage,
+    EvidenceCollectionSnapshot,
     MermaidCandidate,
     MetricResult,
     PromptBudgetNotice,
@@ -20,6 +22,7 @@ from marker_mermaid.models import (
     SceneRelation,
     TypedIRCandidate,
     VisualEvidence,
+    canonical_evidence_collection_snapshot,
     canonical_typed_ir_snapshot,
 )
 
@@ -163,6 +166,183 @@ def test_engine_observation_and_typed_ir_are_resource_bounded():
         cursor = child
     with pytest.raises(ValidationError, match="nesting depth"):
         TypedIRCandidate(diagram_type="mindmap", ir=deeply_nested)
+
+
+def test_evidence_collection_snapshot_enforces_exact_aggregate_limits() -> None:
+    source = VisualEvidence(
+        id="e",
+        kind="contour",
+        text="한",
+        font_weight="bold",
+        source_block_ids=["한", "한", "ab"],
+    )
+    expected_source_characters = 4
+    expected_characters = (
+        len(source.id)
+        + len(source.kind)
+        + len(source.text or "")
+        + len(source.font_weight or "")
+        + expected_source_characters
+    )
+
+    snapshot = canonical_evidence_collection_snapshot(
+        [source],
+        item_limit=1,
+        source_block_reference_limit=3,
+        source_block_character_limit=expected_source_characters,
+        character_limit=expected_characters,
+    )
+
+    assert type(snapshot) is EvidenceCollectionSnapshot
+    assert snapshot.usage == EvidenceBudgetUsage(
+        items=1,
+        source_block_references=3,
+        source_block_characters=expected_source_characters,
+        characters=expected_characters,
+    )
+    assert snapshot.evidence[0].source_block_ids == ["한", "한", "ab"]
+
+    with pytest.raises(ValueError, match="source-block references"):
+        canonical_evidence_collection_snapshot(
+            [source],
+            source_block_reference_limit=2,
+        )
+    with pytest.raises(ValueError, match="source-block characters"):
+        canonical_evidence_collection_snapshot(
+            [source],
+            source_block_reference_limit=3,
+            source_block_character_limit=expected_source_characters - 1,
+        )
+    with pytest.raises(ValueError, match="evidence characters"):
+        canonical_evidence_collection_snapshot(
+            [source],
+            source_block_reference_limit=3,
+            source_block_character_limit=expected_source_characters,
+            character_limit=expected_characters - 1,
+        )
+
+
+def test_evidence_collection_snapshot_resolves_dynamic_defaults(monkeypatch) -> None:
+    source = VisualEvidence(
+        id="e",
+        kind="contour",
+        source_block_ids=["한"],
+    )
+    expected_characters = len(source.id) + len(source.kind) + 1
+    monkeypatch.setattr(models, "MAX_OBSERVATION_EVIDENCE", 1)
+    monkeypatch.setattr(models, "MAX_EVIDENCE_SOURCE_BLOCK_REFS", 1)
+    monkeypatch.setattr(models, "MAX_EVIDENCE_SOURCE_BLOCK_CHARS", 1)
+    monkeypatch.setattr(models, "MAX_EVIDENCE_INPUT_CHARS", expected_characters)
+
+    snapshot = canonical_evidence_collection_snapshot([source])
+
+    assert snapshot.usage.source_block_characters == 1
+    assert snapshot.usage.characters == expected_characters
+    monkeypatch.setattr(models, "MAX_EVIDENCE_SOURCE_BLOCK_REFS", 0)
+    with pytest.raises(ValueError, match="source-block references"):
+        canonical_evidence_collection_snapshot([source])
+
+
+def test_evidence_collection_snapshot_accumulates_base_usage() -> None:
+    base = EvidenceBudgetUsage(
+        items=1,
+        source_block_references=1,
+        source_block_characters=1,
+        characters=10,
+    )
+    source = VisualEvidence(id="e", kind="contour", source_block_ids=["b"])
+
+    snapshot = canonical_evidence_collection_snapshot(
+        [source],
+        base=base,
+        item_limit=2,
+        source_block_reference_limit=2,
+        source_block_character_limit=2,
+        character_limit=19,
+    )
+
+    assert snapshot.usage == EvidenceBudgetUsage(
+        items=2,
+        source_block_references=2,
+        source_block_characters=2,
+        characters=19,
+    )
+    with pytest.raises(ValueError, match="source-block references"):
+        canonical_evidence_collection_snapshot(
+            [source],
+            base=base,
+            item_limit=2,
+            source_block_reference_limit=1,
+        )
+
+
+def test_evidence_collection_snapshot_is_detached_without_model_dump(
+    monkeypatch,
+) -> None:
+    source = VisualEvidence(
+        id="safe",
+        kind="ocr_token",
+        text="Safe",
+        source_block_ids=["source"],
+    )
+
+    def forbidden_model_dump(*_args, **_kwargs):
+        raise AssertionError("live evidence model_dump must not be used")
+
+    monkeypatch.setattr(VisualEvidence, "model_dump", forbidden_model_dump)
+    snapshot = canonical_evidence_collection_snapshot([source])
+
+    assert snapshot.evidence[0] is not source
+    assert snapshot.evidence[0].source_block_ids is not source.source_block_ids
+    source.id = "mutated"
+    source.source_block_ids.append("mutated")
+    assert snapshot.evidence[0].id == "safe"
+    assert snapshot.evidence[0].source_block_ids == ["source"]
+
+
+def test_evidence_collection_snapshot_checks_count_before_inspecting_items() -> None:
+    calls: list[str] = []
+
+    class HookedEvidence:
+        def __getattribute__(self, name):
+            calls.append(name)
+            return super().__getattribute__(name)
+
+    with pytest.raises(ValueError, match="item limit"):
+        canonical_evidence_collection_snapshot(
+            [HookedEvidence()],
+            item_limit=0,
+        )
+
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("field", "match"),
+    [
+        ("kind", "non-canonical kind"),
+        ("font_weight", "non-canonical font weight"),
+    ],
+)
+def test_evidence_collection_snapshot_bounds_mutated_enums_before_utf8_encoding(
+    monkeypatch,
+    field: str,
+    match: str,
+) -> None:
+    source = VisualEvidence(id="safe", kind="contour", font_weight="normal")
+    oversized = "x" * 1_000_000
+    object.__getattribute__(source, "__dict__")[field] = oversized
+    original_require_utf8_text = models._require_utf8_text
+
+    def guarded_require_utf8_text(value, field_name):
+        if value is oversized:
+            raise AssertionError(f"oversized {field_name} reached UTF-8 encoding")
+        return original_require_utf8_text(value, field_name)
+
+    monkeypatch.setattr(models, "_require_utf8_text", guarded_require_utf8_text)
+
+    with pytest.raises(TypeError, match=match):
+        canonical_evidence_collection_snapshot([source])
 
 
 def test_typed_ir_snapshot_is_canonical_detached_and_normalizes_tuples() -> None:

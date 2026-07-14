@@ -7,6 +7,7 @@ from dataclasses import replace
 import pytest
 
 import marker_mermaid.fusion as fusion_module
+import marker_mermaid.models as models_module
 from marker_mermaid.fusion import FusionEngine, FusionInput
 from marker_mermaid.models import (
     MAX_EVIDENCE_REFS,
@@ -1785,3 +1786,136 @@ def test_typed_ir_rejects_non_json_or_non_finite_values(invalid_value) -> None:
 def test_fusion_rejects_element_iou_threshold_below_mapping_contract(threshold) -> None:
     with pytest.raises(ValueError, match="at least 0.45"):
         FusionEngine(element_iou_threshold=threshold)
+
+
+def _provenance_budget_input(
+    name: str,
+    *,
+    observation_blocks: list[str],
+    prior_blocks: list[str],
+) -> FusionInput:
+    return FusionInput(
+        "geometry",
+        EngineObservation(
+            prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
+            evidence=[
+                VisualEvidence(
+                    id=f"observation-{name}",
+                    kind="contour",
+                    bbox=(0, 0, 1, 1),
+                    source_block_ids=observation_blocks,
+                )
+            ],
+        ),
+        name,
+        prior_evidence=(
+            VisualEvidence(
+                id=f"prior-{name}",
+                kind="ocr_token",
+                text=name,
+                bbox=(0, 0, 1, 1),
+                source_block_ids=prior_blocks,
+            ),
+        ),
+    )
+
+
+def test_fusion_accepts_exact_cumulative_provenance_reference_budget(monkeypatch) -> None:
+    monkeypatch.setattr(models_module, "MAX_EVIDENCE_SOURCE_BLOCK_REFS", 4)
+    inputs = [
+        _provenance_budget_input(
+            "a",
+            observation_blocks=["observation-a"],
+            prior_blocks=["prior-a"],
+        ),
+        _provenance_budget_input(
+            "b",
+            observation_blocks=["observation-b"],
+            prior_blocks=["prior-b"],
+        ),
+    ]
+
+    fused = FusionEngine().fuse(inputs)
+
+    assert [item.id for item in fused.evidence] == ["observation-a", "observation-b"]
+    assert sum(len(item.source_block_ids) for item in fused.evidence) == 2
+
+
+def test_fusion_rejects_cumulative_provenance_reference_budget_plus_one_before_copy(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(models_module, "MAX_EVIDENCE_SOURCE_BLOCK_REFS", 4)
+    inputs = [
+        _provenance_budget_input(
+            "a",
+            observation_blocks=["observation-a"],
+            prior_blocks=["prior-a"],
+        ),
+        _provenance_budget_input(
+            "b",
+            observation_blocks=["observation-b"],
+            prior_blocks=["prior-b", "prior-b-extra"],
+        ),
+    ]
+
+    def forbidden_evidence_copy(*_args, **_kwargs):
+        raise AssertionError("fusion must reject aggregate overflow before evidence deep copy")
+
+    monkeypatch.setattr(VisualEvidence, "model_copy", forbidden_evidence_copy)
+
+    with pytest.raises(ValueError, match="source-block references exceed the aggregate limit"):
+        FusionEngine().fuse(inputs)
+
+
+def test_fusion_rejects_oversized_prior_evidence_before_tuple_materialization(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(models_module, "MAX_OBSERVATION_EVIDENCE", 1)
+    evidence = VisualEvidence(
+        id="prior",
+        kind="ocr_token",
+        text="prior",
+        bbox=(0, 0, 1, 1),
+        source_block_ids=["source"],
+    )
+    fusion_input = FusionInput(
+        "geometry",
+        EngineObservation(prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0])),
+        "geometry",
+        prior_evidence=(evidence, evidence),
+    )
+    builtin_list = list
+
+    def guarded_list(value=()):
+        if type(value) is tuple and len(value) > models_module.MAX_OBSERVATION_EVIDENCE:
+            raise AssertionError("oversized prior evidence must not be materialized")
+        return builtin_list(value)
+
+    monkeypatch.setattr(fusion_module, "list", guarded_list, raising=False)
+
+    with pytest.raises(ValueError, match="observation item limit"):
+        FusionEngine().fuse([fusion_input])
+
+
+def test_fusion_defensively_rejects_oversized_fused_evidence(monkeypatch) -> None:
+    monkeypatch.setattr(models_module, "MAX_EVIDENCE_SOURCE_BLOCK_REFS", 1)
+    fusion_input = FusionInput(
+        "geometry",
+        EngineObservation(prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0])),
+        "geometry",
+    )
+    oversized = VisualEvidence(
+        id="oversized",
+        kind="contour",
+        bbox=(0, 0, 1, 1),
+        source_block_ids=["block-a", "block-b"],
+    )
+
+    monkeypatch.setattr(
+        FusionEngine,
+        "_fuse_evidence",
+        lambda _self, _inputs: ([oversized], [], set()),
+    )
+
+    with pytest.raises(ValueError, match="source-block references exceed the aggregate limit"):
+        FusionEngine().fuse([fusion_input])

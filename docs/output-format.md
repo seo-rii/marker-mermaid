@@ -237,13 +237,28 @@ container/scalar, depth/item/field/numeric/cycle 계약 및 알려진 record별 
 교체합니다. Live candidate가 생성 뒤 바뀌었거나 snapshot 도중 다시 바뀌면 임시 bundle을 publish하지
 않습니다.
 
+`provenance.json`의 retained `VisualEvidence.source_block_ids`는 duplicate를 포함한 논리적 occurrence
+20,000개와 Python 문자열 길이 8,000,000자를 넘을 수 없습니다. `id`, `kind`, `text`, `font_weight`,
+source-block ID 전체의 기존 8,000,000-character evidence cap도 별도입니다. Exact boundary는 보존하고
+`+1`은 collection 전체를 원자적으로 거부합니다. Writer는 live evidence에 `model_dump`를 호출하거나
+result를 deep-copy하거나 JSON을 만들기 전에 hook-free detached snapshot으로 이 계약을 확인하고,
+검증된 snapshot만 sink payload와 `provenance.json`에 사용합니다. Output preflight도 어떤 image를 쓰기
+전에 모든 final result에 같은 검사를 적용하고, 그 detached evidence를 가진 reconstruction snapshot을
+이후 sidecar write까지 재사용합니다. 따라서 image 저장 중 caller의 live evidence가 바뀌어도 검증하지
+않은 provenance가 뒤늦게 bundle에 섞이지 않습니다.
+
+이는 저장 순서와 메모리 경계를 강화하는 내부 runtime 변경이며 `provenance.json` record shape,
+`manifest.json`, `mmx-sidecar-0.5` schema version을 바꾸지 않습니다. Review가 읽거나 교체하는 provenance와
+evaluation prediction artifact, Marker OCR 생산 단계의 공용 aggregate gate는 후속입니다.
+
 `include_rendered_preview`를 켠 Marker Markdown 출력은 validation receipt의 PNG SHA-256과 exact bytes가
 일치하는 runtime PNG만 `images/`에 추가합니다.
 원본 image는 계속 먼저 유지되며 preview는 Mermaid code의 게시 결정을 우회하지 않습니다.
 requested type과 emitted/runtime type을 분리하므로 portable fallback을 native 복원처럼 표시하지 않습니다.
 
 writer는 파일을 만들기 전에 source/image/sidecar/alternative 이름 충돌, 누락 source image, 기존 bundle,
-metadata JSON 직렬화를 검사합니다. source별 bundle은 임시 directory에서 원자적으로 공개합니다.
+metadata JSON 직렬화와 final-result evidence budget을 검사합니다. source별 bundle은 임시 directory에서
+원자적으로 공개합니다.
 
 ## JSON 직렬화
 

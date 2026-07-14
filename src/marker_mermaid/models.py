@@ -8,6 +8,7 @@ import json
 import math
 import re
 import secrets
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Literal
@@ -17,7 +18,12 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator,
 from marker_mermaid.config import PublishPolicy, QualityGrade, SecurityProfile
 from marker_mermaid.mapping_validation import bbox_iou
 from marker_mermaid.render_artifacts import MAX_RENDER_BYTES, png_inspection_error
-from marker_mermaid.resource_limits import MAX_EVIDENCE_REFS
+from marker_mermaid.resource_limits import (
+    MAX_EVIDENCE_INPUT_CHARS,
+    MAX_EVIDENCE_REFS,
+    MAX_EVIDENCE_SOURCE_BLOCK_CHARS,
+    MAX_EVIDENCE_SOURCE_BLOCK_REFS,
+)
 from marker_mermaid.typed_contracts import validate_typed_ir_contract
 
 BBox = tuple[float, float, float, float]
@@ -52,6 +58,21 @@ MAX_SOURCE_MAPPING_ITEMS = 25_000
 MAX_SOURCE_MAPPING_STRING_CHARS = 50_000
 MAX_SOURCE_MAPPING_JSON_BYTES = 4_000_000
 MAX_SOURCE_MAPPING_ABS_NUMBER = 9_007_199_254_740_991
+_VISUAL_EVIDENCE_KINDS = frozenset(
+    {
+        "source_crop",
+        "ocr_token",
+        "vector_text",
+        "contour",
+        "line_segment",
+        "arrowhead",
+        "vlm_observation",
+        "user_edit",
+    }
+)
+_MAX_VISUAL_EVIDENCE_KIND_CHARS = max(len(value) for value in _VISUAL_EVIDENCE_KINDS)
+_VISUAL_EVIDENCE_FONT_WEIGHTS = frozenset({"normal", "bold"})
+_MAX_VISUAL_EVIDENCE_FONT_WEIGHT_CHARS = max(len(value) for value in _VISUAL_EVIDENCE_FONT_WEIGHTS)
 
 
 def _sink_safe_diagnostic_text(value: str) -> str:
@@ -200,6 +221,236 @@ class VisualEvidence(BaseModel):
         if value is not None and (value[2] < value[0] or value[3] < value[1]):
             raise ValueError("bbox coordinates must be ordered as x1, y1, x2, y2")
         return value
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceBudgetUsage:
+    """Cumulative logical work represented by one canonical evidence collection."""
+
+    items: int = 0
+    source_block_references: int = 0
+    source_block_characters: int = 0
+    characters: int = 0
+
+    def __post_init__(self) -> None:
+        values = (
+            self.items,
+            self.source_block_references,
+            self.source_block_characters,
+            self.characters,
+        )
+        if any(type(value) is not int or value < 0 for value in values):
+            raise ValueError("evidence budget usage must contain non-negative exact integers")
+        if self.source_block_characters < self.source_block_references:
+            raise ValueError("evidence source-block characters cannot be fewer than references")
+        if self.characters < self.source_block_characters:
+            raise ValueError("evidence characters cannot be fewer than source-block characters")
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceCollectionSnapshot:
+    """Detached evidence records and the cumulative budget used to retain them."""
+
+    evidence: tuple[VisualEvidence, ...]
+    usage: EvidenceBudgetUsage
+
+
+def canonical_evidence_collection_snapshot(
+    evidence: object,
+    *,
+    base: EvidenceBudgetUsage | None = None,
+    item_limit: int | None = None,
+    source_block_reference_limit: int | None = None,
+    source_block_character_limit: int | None = None,
+    character_limit: int | None = None,
+) -> EvidenceCollectionSnapshot:
+    """Capture exact evidence records without materializing unbounded provenance fan-out."""
+
+    resolved_item_limit = MAX_OBSERVATION_EVIDENCE if item_limit is None else item_limit
+    resolved_reference_limit = (
+        MAX_EVIDENCE_SOURCE_BLOCK_REFS
+        if source_block_reference_limit is None
+        else source_block_reference_limit
+    )
+    resolved_source_character_limit = (
+        MAX_EVIDENCE_SOURCE_BLOCK_CHARS
+        if source_block_character_limit is None
+        else source_block_character_limit
+    )
+    resolved_character_limit = (
+        MAX_EVIDENCE_INPUT_CHARS if character_limit is None else character_limit
+    )
+    limits = (
+        resolved_item_limit,
+        resolved_reference_limit,
+        resolved_source_character_limit,
+        resolved_character_limit,
+    )
+    if any(type(limit) is not int or limit < 0 for limit in limits):
+        raise ValueError("evidence limits must be non-negative exact integers")
+    if base is None:
+        base = EvidenceBudgetUsage()
+    elif type(base) is not EvidenceBudgetUsage:
+        raise TypeError("evidence base usage must be an exact EvidenceBudgetUsage")
+    if type(evidence) is not list:
+        raise TypeError("evidence must be an exact plain list")
+
+    item_count = list.__len__(evidence)
+    total_items = base.items + item_count
+    if total_items > resolved_item_limit:
+        raise ValueError("evidence exceeds the observation item limit")
+    if base.source_block_references > resolved_reference_limit:
+        raise ValueError("evidence source-block references exceed the aggregate limit")
+    if base.source_block_characters > resolved_source_character_limit:
+        raise ValueError("evidence source-block characters exceed the aggregate limit")
+    if base.characters > resolved_character_limit:
+        raise ValueError("evidence characters exceed the aggregate limit")
+
+    items = list.__getitem__(evidence, slice(0, item_count))
+    if list.__len__(evidence) != item_count or list.__len__(items) != item_count:
+        raise ValueError("evidence changed while it was captured")
+
+    allowed_fields = {
+        "id",
+        "kind",
+        "bbox",
+        "text",
+        "font_weight",
+        "score",
+        "source_block_ids",
+    }
+    payloads: list[dict[str, object]] = []
+    source_block_references = base.source_block_references
+    source_block_characters = base.source_block_characters
+    characters = base.characters
+    missing = object()
+    for item in items:
+        if type(item) is not VisualEvidence:
+            raise TypeError("evidence must contain exact canonical VisualEvidence records")
+        fields = object.__getattribute__(item, "__dict__")
+        if type(fields) is not dict:
+            raise TypeError("evidence record fields must be canonical")
+        field_count = dict.__len__(fields)
+        if field_count != len(allowed_fields):
+            raise ValueError("evidence record must contain exactly its public fields")
+        field_snapshot = dict.copy(fields)
+        if dict.__len__(field_snapshot) != field_count or dict.__len__(fields) != field_count:
+            raise ValueError("evidence record changed while it was captured")
+        for field_name in list(dict.keys(field_snapshot)):
+            if type(field_name) is not str or field_name not in allowed_fields:
+                raise ValueError("evidence record contains an unknown public field")
+
+        item_id = dict.get(field_snapshot, "id", missing)
+        kind = dict.get(field_snapshot, "kind", missing)
+        bbox = dict.get(field_snapshot, "bbox", missing)
+        text = dict.get(field_snapshot, "text", missing)
+        font_weight = dict.get(field_snapshot, "font_weight", missing)
+        score = dict.get(field_snapshot, "score", missing)
+        live_block_ids = dict.get(field_snapshot, "source_block_ids", missing)
+        if type(item_id) is not str or not item_id or len(item_id) > MAX_ID_CHARS:
+            raise TypeError("evidence contains an invalid bounded id")
+        _require_utf8_text(item_id, "evidence id")
+        if (
+            type(kind) is not str
+            or len(kind) > _MAX_VISUAL_EVIDENCE_KIND_CHARS
+            or kind not in _VISUAL_EVIDENCE_KINDS
+        ):
+            raise TypeError("evidence contains a non-canonical kind")
+        _require_utf8_text(kind, "evidence kind")
+        if text is not None:
+            if type(text) is not str or len(text) > MAX_TEXT_CHARS:
+                raise TypeError("evidence contains invalid bounded text")
+            _require_utf8_text(text, "evidence text")
+        if font_weight is not None:
+            if (
+                type(font_weight) is not str
+                or len(font_weight) > _MAX_VISUAL_EVIDENCE_FONT_WEIGHT_CHARS
+                or font_weight not in _VISUAL_EVIDENCE_FONT_WEIGHTS
+            ):
+                raise TypeError("evidence contains a non-canonical font weight")
+            _require_utf8_text(font_weight, "evidence font weight")
+        if bbox is not None and (
+            type(bbox) is not tuple
+            or len(bbox) != 4
+            or any(type(value) not in {int, float} for value in bbox)
+            or not all(math.isfinite(value) for value in bbox)
+        ):
+            raise TypeError("evidence contains a non-canonical bbox")
+        if score is not None and (
+            type(score) not in {int, float} or not math.isfinite(score) or not 0 <= score <= 1
+        ):
+            raise TypeError("evidence contains a non-canonical score")
+        if type(live_block_ids) is not list:
+            raise TypeError("evidence source_block_ids must be an exact plain list")
+        block_count = list.__len__(live_block_ids)
+        if block_count > MAX_EVIDENCE_REFS:
+            raise ValueError("evidence source_block_ids exceeds its reference count limit")
+        source_block_references += block_count
+        if source_block_references > resolved_reference_limit:
+            raise ValueError("evidence source-block references exceed the aggregate limit")
+        block_ids = list.__getitem__(live_block_ids, slice(0, block_count))
+        if list.__len__(live_block_ids) != block_count or list.__len__(block_ids) != block_count:
+            raise ValueError("evidence source_block_ids changed while they were captured")
+        block_characters = 0
+        for block_id in block_ids:
+            if type(block_id) is not str or not block_id or len(block_id) > MAX_ID_CHARS:
+                raise TypeError("evidence source_block_ids contains an invalid identifier")
+            _require_utf8_text(block_id, "evidence source block id")
+            block_characters += len(block_id)
+            if source_block_characters + block_characters > resolved_source_character_limit:
+                raise ValueError("evidence source-block characters exceed the aggregate limit")
+        source_block_characters += block_characters
+        characters += len(item_id) + len(kind) + block_characters
+        if text is not None:
+            characters += len(text)
+        if font_weight is not None:
+            characters += len(font_weight)
+        if characters > resolved_character_limit:
+            raise ValueError("evidence characters exceed the aggregate limit")
+
+        if list.__len__(live_block_ids) != block_count or any(
+            list.__getitem__(live_block_ids, index) is not block_ids[index]
+            for index in range(block_count)
+        ):
+            raise ValueError("evidence source_block_ids changed while they were captured")
+        if dict.__len__(fields) != field_count:
+            raise ValueError("evidence record changed while it was captured")
+        after_fields = dict.copy(fields)
+        if dict.__len__(after_fields) != field_count or dict.__len__(fields) != field_count:
+            raise ValueError("evidence record changed while it was captured")
+        for field_name in list(dict.keys(after_fields)):
+            if type(field_name) is not str or field_name not in allowed_fields:
+                raise ValueError("evidence record contains an unknown public field")
+        for field_name, original in field_snapshot.items():
+            if dict.get(after_fields, field_name, missing) is not original:
+                raise ValueError("evidence record changed while it was captured")
+
+        payloads.append(
+            {
+                "id": item_id,
+                "kind": kind,
+                "bbox": bbox,
+                "text": text,
+                "font_weight": font_weight,
+                "score": score,
+                "source_block_ids": block_ids,
+            }
+        )
+
+    if list.__len__(evidence) != item_count or any(
+        list.__getitem__(evidence, index) is not items[index] for index in range(item_count)
+    ):
+        raise ValueError("evidence changed while it was captured")
+    canonical_evidence = tuple(VisualEvidence.model_validate(payload) for payload in payloads)
+    return EvidenceCollectionSnapshot(
+        evidence=canonical_evidence,
+        usage=EvidenceBudgetUsage(
+            items=total_items,
+            source_block_references=source_block_references,
+            source_block_characters=source_block_characters,
+            characters=characters,
+        ),
+    )
 
 
 class SceneElement(BaseModel):
@@ -1754,6 +2005,10 @@ class ReconstructionResult(BaseModel):
         policy: PublishPolicy,
         profile: SecurityProfile,
     ) -> PublicationAuthorizationReceipt | None:
+        try:
+            canonical_evidence_collection_snapshot(self.evidence)
+        except (AttributeError, TypeError, UnicodeEncodeError, ValueError):
+            return None
         selected = self.selected
         if not (
             type(self.source_id) is str
@@ -1836,6 +2091,7 @@ class ReconstructionResult(BaseModel):
         """
 
         try:
+            canonical_evidence_collection_snapshot(self.evidence)
             selected = self.selected
             source_id = self.source_id
             grade = self.grade

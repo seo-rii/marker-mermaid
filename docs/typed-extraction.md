@@ -671,6 +671,17 @@ canonical key, fusion, pipeline 및 sidecar 소비 경계의 재검증에서 후
 Observation candidate, evidence, warning 수와 Scene IR element/relation/group, polygon/polyline, ID, bbox도
 별도 상한과 finite-number 검사를 거칩니다. `NaN`/무한 좌표와 범위를 벗어난 confidence는 sidecar에
 도달하기 전에 거부됩니다. JSON sidecar는 `allow_nan=false`로 직렬화합니다.
+
+Semantic record의 `evidence_ids` 상한과 별도로, retained `VisualEvidence.source_block_ids`는 collection
+전체에서 logical occurrence 20,000개와 Python 문자열 길이 8,000,000자를 공유합니다. 중복 reference도
+각각 계산하며 `VisualEvidence`의 `id`·`kind`·`text`·`font_weight`·source-block ID 전체에 대한 기존
+8,000,000-character cap도 독립적으로 적용합니다. Exact boundary는 통과하고 `+1`이면 initial/custom-engine
+collection, reconstruction-global 신규 ID batch 또는 fusion input/output 전체를 원자적으로 격리합니다.
+Snapshot은 exact public field와 nested exact list를 built-in access로 고정해 detached model을 만들며 live
+`model_dump`나 subclass hook을 사용하지 않습니다. Final result와 publication/Markdown, sidecar/output
+sink도 같은 snapshot을 재사용합니다. 이 runtime 계약은 provider response schema, public config, sidecar
+manifest를 변경하지 않으며 Marker OCR 생산 단계, Review provenance, evaluation ingestion은 후속입니다.
+
 Canonical candidate key는 이 bounded snapshot의 SHA-256 digest를 사용하므로 multi-megabyte IR을 key로
 보유하지 않습니다. set, bytes 같은 비결정적·비 JSON 값도 dedup이나 private mapping lookup에 들어가기
 전에 거부합니다.

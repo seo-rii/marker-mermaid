@@ -125,6 +125,23 @@ normalized SVG가 raw SVG와 같은 compatibility glyph를 표시한다고 요�
 Wardley·Cynefin·Event Modeling·ZenUML·Organization·Data Lineage·Railroad serializer의 생성 source는
 security scanner에 넘기기 전에도 50,000자·5,000줄을 넘으면 전체 후보 단위로 거부됩니다.
 
+`VisualEvidence` model의 record별 256 source-block reference 검사는 collection 전체의 list/object
+fan-out을 제한하지 못합니다. Runtime은 retained collection마다 `source_block_ids` occurrence를 최대
+20,000개, 해당 ID의 Python 문자열 길이 합계를 8,000,000자로 제한합니다. 중복 ID도 occurrence마다
+계산하며, `id`·`kind`·`text`·`font_weight`·source-block ID 전체의 기존 8,000,000자 evidence 상한도
+별도로 유지합니다. Exact boundary는 통과하고 어느 dimension이든 `+1`이면 해당 collection 또는
+reconstruction-global 신규 ID batch를 원자적으로 격리합니다.
+
+공용 snapshot은 exact plain list와 exact `VisualEvidence` public field를 hook-free built-in access로 한 번
+고정하고, 제한 안의 scalar/nested list로 detached record를 새로 만듭니다. 검증 전 live `model_dump`,
+deep copy, JSON serialization을 하지 않으며 mutable `kind`/`font_weight`는 UTF-8 encoding 전에 최대
+literal 길이와 allowlist를 확인합니다. Pipeline initial/custom-engine 입력과 global admission,
+fusion ingress/output, final result 및 publication/Markdown snapshot이 이 경계를 공유합니다. Sidecar는
+JSON/deep copy/directory 생성 전에, output은 image 쓰기 전에 전체 결과를 재검증하므로 사후 mutation도
+부분 artifact를 만들지 못합니다. 이 내부 방어는 공개 config와 sidecar schema/manifest version을
+변경하지 않습니다. Marker OCR adapter의 생산 전 제한, Review provenance, evaluation prediction importer는
+아직 이 공용 경계의 후속 적용 대상입니다.
+
 PDF vector provider도 신뢰하는 collection이 아닙니다. Vector source와 raw text/drawing,
 PyMuPDF drawing command는 전체를 먼저 materialize하지 않고 각 상한보다 한 개만 더 읽어
 초과를 판정합니다. Reconstruction 전체에 기본 256 source, 2,048 primitive/command
@@ -148,7 +165,8 @@ direct attribute와 `get_text("dict"/"words")` 모두 label을 한 번 읽어 pl
 뒤 파싱과 `strip()` 전에 그 exact-string 길이를 raw character work에 합산합니다. Numeric scalar는
 finite float로 안전하게 변환 가능한 exact `int`/`float`만 허용해 초대형 정수도 격리합니다.
 
-Record별 256 source-block reference gate와 별도로, 최종 vector 경계는 canonical deduplicated
+Record별 256 source-block reference gate와 별도로, 최종 vector 경계는 위 공용 상수를 사용하는 더 이른
+allocation preflight입니다. Canonical deduplicated
 source-block ID가 유효·deduplicate된 shape/text/open-line evidence마다 복제될 aggregate provenance를
 preflight합니다. Reconstruction 전체에서 logical reference 20,000개와 Python 문자열 길이
 8,000,000자를 exact boundary까지 허용합니다. 한쪽이라도 `+1`이면 어떤 Scene/`VisualEvidence`도
@@ -364,9 +382,11 @@ Marker preview image는 별도로 dimension 8,192와 5천만 pixel 상한을 넘
 Reconstruction 진입점도 engine adapter와 별개의 trust boundary입니다. Source block/page ID, OCR,
 initial evidence, opaque source/vector object list는 exact plain list와 item/aggregate 문자 상한으로 먼저
 snapshot합니다. 잘못되거나 초과한 collection은 prefix를 부분 신뢰하지 않고 collection 전체를 격리해
-안전한 기본값과 source-context failure를 사용합니다. Initial·engine·fusion evidence는 reconstruction
-전체 20,000-item/8,000,000-character cap을 공유하며, cap 뒤 evidence는 publication authority를 얻지
-않습니다. 각 engine 호출 전 image/view/evidence/OCR/mapping/trusted-set snapshot을 다시 복원해 앞선
+안전한 기본값과 source-context failure를 사용합니다. Initial/custom-engine evidence collection은
+20,000-item, 20,000 source-block occurrence, source-block 8,000,000-character, full-evidence
+8,000,000-character cap 중 하나라도 넘으면 전체를 격리합니다. Reconstruction-global admission도 새 evidence
+ID batch 전체를 먼저 계산해 전부 수용하거나 전부 publication authority에서 제외합니다. 각 engine 호출 전
+image/view/evidence/OCR/mapping/trusted-set snapshot을 다시 복원해 앞선
 custom engine의 mutation을 다음 engine으로 전달하지 않습니다. Built-in fusion 후보 여부도
 engine-controlled 이름 비교가 아니라 내부 pipeline 표식으로만 결정됩니다.
 
@@ -395,9 +415,9 @@ Fusion은 Scene element/relation evidence 및 같은 VisualEvidence의 source-bl
 reference 전에 중단합니다. 같은 ID의 모든 입력을 원자적으로 판정하며, 초과 시 앞서 성공한 일부
 합집합도 새 provenance로 게시하지 않고 cross-input enrichment를 버려 precedence winner record를
 유지합니다. Vector text 결합도 새 SceneElement로 검증하며 초과한 label/font attribution 전체를
-생략합니다. Pipeline은 내부 fused Scene/evidence record뿐 아니라 evidence의 exact plain list와 20,000개
-전역 상한도 scoring 전에 다시 검증하므로 post-construction list mutation이 publication receipt와
-sidecar 사이를 우회하지 못합니다.
+생략합니다. Pipeline은 내부 fused Scene/evidence record뿐 아니라 evidence의 exact plain list,
+20,000-item, aggregate source-block occurrence/문자와 full-evidence 문자 상한을 scoring 전에 다시
+검증하므로 post-construction list mutation이 publication receipt와 sidecar 사이를 우회하지 못합니다.
 
 ## SVG 검사
 

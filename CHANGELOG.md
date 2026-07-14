@@ -231,6 +231,20 @@
 
 ### Changed
 
+- Runtime evidence retention now uses one shared hook-free aggregate snapshot contract. Across a
+  retained collection, at most 20,000 logical `VisualEvidence.source_block_ids` occurrences and
+  8,000,000 Python characters of source-block IDs are allowed, in addition to the existing
+  8,000,000-character full-evidence budget. Duplicate references consume the budget; exact limits
+  pass and `+1` rejects the affected collection or reconstruction-global new-ID batch atomically.
+  Initial/custom-engine input, fusion ingress/output, final result and publication/Markdown
+  snapshots, sidecar preflight, and document-output preflight all use detached canonical records
+  before live `model_dump`, deep copy, JSON encoding, directory creation, or image writes. The
+  snapshot bounds mutable enum-like fields before UTF-8 encoding, fusion checks prior-evidence item
+  count before tuple materialization, and document output reuses its preflight evidence snapshot for
+  sidecar emission. The optimized vector preflight shares the same constants and remains an earlier
+  allocation guard.
+  This internal runtime change adds no public configuration or schema/manifest version change;
+  Marker OCR production, Review provenance, and evaluation prediction ingestion remain follow-ups.
 - Generated-node provenance scoring and the release evaluator now share a collision-free attribution
   policy. Only `ocr_token`, `vector_text`, `contour`, `vlm_observation`, and `user_edit` evidence can
   support a node; `source_crop`, `line_segment`, and `arrowhead` cannot. If multiple generated nodes

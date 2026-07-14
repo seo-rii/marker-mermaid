@@ -8,7 +8,10 @@ from pathlib import Path
 from PIL import Image
 
 from marker_mermaid.config import MermaidConfig
-from marker_mermaid.models import ReconstructionResult
+from marker_mermaid.models import (
+    ReconstructionResult,
+    canonical_evidence_collection_snapshot,
+)
 from marker_mermaid.sidecars import SidecarStore, safe_artifact_component
 
 
@@ -17,7 +20,7 @@ def _preflight_output(
     images: dict[str, Image.Image],
     metadata: dict,
     reconstructions: list[ReconstructionResult],
-) -> None:
+) -> list[tuple[ReconstructionResult, ReconstructionResult]]:
     image_names: set[str] = set()
     for name, image in images.items():
         if Path(name).name != name or name in {"", ".", ".."}:
@@ -30,24 +33,35 @@ def _preflight_output(
 
     source_ids: set[str] = set()
     sidecar_names: set[str] = set()
+    reconstruction_pairs: list[tuple[ReconstructionResult, ReconstructionResult]] = []
     for result in reconstructions:
-        if result.source_id in source_ids:
-            raise ValueError(f"duplicate reconstruction source id: {result.source_id}")
-        source_ids.add(result.source_id)
-        sidecar_name = safe_artifact_component(result.source_id)
+        if type(result) is not ReconstructionResult:
+            raise TypeError("output reconstructions must contain ReconstructionResult records")
+        try:
+            evidence_snapshot = canonical_evidence_collection_snapshot(result.evidence)
+        except (AttributeError, TypeError, UnicodeEncodeError, ValueError) as exc:
+            raise ValueError(f"output evidence preflight failed: {exc}") from exc
+        result_snapshot = ReconstructionResult.model_copy(result, deep=False)
+        result_snapshot.evidence = list(evidence_snapshot.evidence)
+        reconstruction_pairs.append((result, result_snapshot))
+        if result_snapshot.source_id in source_ids:
+            raise ValueError(f"duplicate reconstruction source id: {result_snapshot.source_id}")
+        source_ids.add(result_snapshot.source_id)
+        sidecar_name = safe_artifact_component(result_snapshot.source_id)
         if sidecar_name in sidecar_names:
             raise ValueError(f"colliding sidecar directory name: {sidecar_name}")
         sidecar_names.add(sidecar_name)
-        if result.source_image_name not in image_names:
+        if result_snapshot.source_image_name not in image_names:
             raise ValueError(
-                f"missing source image {result.source_image_name!r} for {result.source_id!r}"
+                "missing source image "
+                f"{result_snapshot.source_image_name!r} for {result_snapshot.source_id!r}"
             )
         alternative_names: set[str] = set()
-        for alternative in result.alternatives:
+        for alternative in result_snapshot.alternatives:
             name = safe_artifact_component(alternative.candidate_id)
             if name in alternative_names:
                 raise ValueError(
-                    f"colliding alternative artifact name for {result.source_id!r}: {name}"
+                    f"colliding alternative artifact name for {result_snapshot.source_id!r}: {name}"
                 )
             alternative_names.add(name)
         if (root / "diagrams" / sidecar_name).exists():
@@ -61,6 +75,7 @@ def _preflight_output(
     if len(metadata_ids) != len(set(metadata_ids)):
         raise ValueError("metadata contains duplicate Mermaid source rows")
     json.dumps(metadata, ensure_ascii=False, indent=2)
+    return reconstruction_pairs
 
 
 def save_document_output(
@@ -76,7 +91,7 @@ def save_document_output(
     root = Path(output_dir)
     if Path(filename).name != filename or filename in {"", ".", ".."}:
         raise ValueError("filename must be a single safe path component")
-    _preflight_output(root, images, metadata, reconstructions)
+    reconstruction_pairs = _preflight_output(root, images, metadata, reconstructions)
     root.mkdir(parents=True, exist_ok=True)
     image_dir = root / "images"
     image_dir.mkdir(exist_ok=True)
@@ -94,10 +109,11 @@ def save_document_output(
         write_alternatives=options.write_alternatives,
         write_provenance=options.write_provenance,
     )
-    for result in reconstructions:
-        store.write(result)
+    for live_result, result_snapshot in reconstruction_pairs:
+        store.write(result_snapshot)
+        live_result.sidecar_dir = result_snapshot.sidecar_dir
     rows = {row.get("source_id"): row for row in metadata.get("mermaid", [])}
-    for result in reconstructions:
+    for _, result in reconstruction_pairs:
         row = rows.get(result.source_id)
         if row is not None:
             row["sidecar_dir"] = result.sidecar_dir
