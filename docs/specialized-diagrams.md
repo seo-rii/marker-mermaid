@@ -53,6 +53,18 @@ accessible title/description에 동일하게 적용되며 실제 SVG text integr
 - Packet은 strict nested `fields[]` 계약에서 각 field의 integer `start`/`end`를 요구합니다.
   range overlap, 역순, 누락을 거부하고 non-contiguous range는 gap 값이나 필드 간
   화살표를 만들지 않은 disconnected Flowchart fallback으로 보존합니다.
+  Native Packet, 같은 candidate slot의 Flowchart fallback, semantic repair proposal은 하나의 field plan과
+  field-local numeric association을 공유합니다. 각 field의 label·range는 candidate가 게시 근거로 사용할
+  권한이 있고 field가 직접 인용한 `ocr_token`/`vector_text`에서만 확인합니다. Source-wide `ocr_texts`는
+  field binding 권한이 없습니다. Field와 evidence bbox는 양의 면적으로 실제 image 안에 있어야 하고,
+  evidence bbox 전체가 해당 field 안에 들어가야 합니다.
+  모든 label과 `start`/`end`가 정확히 결합되면 `1.0`, label은 결합되지만 range 숫자가 다르거나 불필요한
+  숫자가 더 있으면 `0.0`과 review입니다. `start == end`인 field는 endpoint 숫자 한 번을 요구합니다.
+  같은 field의 동일 normalized text+bbox OCR/vector 중복은 한 번만 세고 공간적으로 다른 반복은
+  보존합니다. Field overlap, 여러 field에 걸치는 broad evidence box, 공유 evidence ID, 같은 위치의 모호한
+  관측, 누락되거나 잘못된 authority/bbox/image bounds, association budget 소진은 부분 판정 없이
+  unavailable/review가 됩니다. Candidate authority 안의 같은 bbox에 상충 text가 있으면 field가 그중 하나만
+  인용해도 모호성을 숨긴 것으로 보지 않고 unavailable로 처리합니다.
 - Ishikawa와 TreeView는 effect/category/cause 또는 root/children을 strict recursive contract로
   후검증합니다. 공유 hierarchy planner가 ID, normalized collision, cycle, 같은 dict
   object 재사용, 최대 depth/node 예산을 한 번만 판정합니다.
@@ -145,7 +157,8 @@ fallback과 generated Scene만 예약어 안전 namespace `packet_field_`, `ishi
 `treeview_node_`를 공유합니다. Scene은 원 record의 bbox/evidence를 그 순서로 보존하며, Packet에는
 입력에 없는 relation을 만들지 않고 hierarchy에는 공유 parent에서만 containment를
 만듭니다. Packet도 generated-node provenance 80% 게이트의 대상이며 별도 source
-OCR/vector numeric gate를 계속 적용합니다.
+OCR/vector numeric gate를 계속 적용합니다. 이 gate는 source 전역 숫자 multiset이 아니라 위 field-local
+association이며 native/fallback 문법에 따라 달라지지 않습니다.
 
 Organization의 입력 호환용 `name`도 `label`과 같이 있으면 같은 의미여야 하지만,
 canonical provider prompt에는 `label`만 노출합니다. Organization fallback은 source bbox를

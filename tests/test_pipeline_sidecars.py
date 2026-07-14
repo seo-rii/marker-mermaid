@@ -2879,56 +2879,35 @@ def test_wardley_native_rejection_retries_loss_disclosed_plain_flowchart() -> No
     assert repair.details["fallback_chain"] == ["wardley", "flowchart"]
 
 
-@pytest.mark.parametrize(
-    (
-        "reject_native",
-        "attributed",
-        "source_text",
-        "expected_numeric",
-        "expected_publish",
-    ),
-    [
-        (False, True, "Version 0 3 IHL 4 7", 1.0, True),
-        (True, True, "Version 0 3 IHL 4 7", 1.0, True),
-        (False, False, "Version 0 3 IHL 4 7", 1.0, False),
-        (True, False, "Version 0 3 IHL 4 7", 1.0, False),
-        (False, True, "Version IHL", None, False),
-        (True, True, "Version 90 93 IHL 94 97", 0.0, False),
-    ],
-)
-def test_packet_scene_controls_provenance_and_numeric_gates_for_native_and_fallback(
-    tmp_path,
-    reject_native: bool,
-    attributed: bool,
-    source_text: str,
-    expected_numeric: float | None,
-    expected_publish: bool,
-) -> None:
-    class PacketRuntime:
-        def __init__(self) -> None:
-            self.calls: list[str] = []
+class _PacketRuntime:
+    def __init__(self, *, reject_native: bool = False) -> None:
+        self.reject_native = reject_native
+        self.calls: list[str] = []
 
-        def validate_and_render(self, code, timeout_seconds):
-            self.calls.append(code)
-            if code.startswith("packet-beta") and reject_native:
-                return RuntimeResult(False, False, error="native packet rejected")
-            diagram_type = "packet" if code.startswith("packet-beta") else "flowchart-v2"
-            return RuntimeResult(
-                True,
-                True,
-                diagram_type=diagram_type,
-                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
-            )
+    def validate_and_render(self, code, timeout_seconds):
+        self.calls.append(code)
+        if code.startswith("packet-beta") and self.reject_native:
+            return RuntimeResult(False, False, error="native packet rejected")
+        diagram_type = "packet" if code.startswith("packet-beta") else "flowchart-v2"
+        return RuntimeResult(
+            True,
+            True,
+            diagram_type=diagram_type,
+            svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+        )
 
-        def close(self):
-            pass
+    def close(self):
+        pass
 
-    fields = [
+
+def _packet_fields(*, attributed: bool = True) -> list[dict]:
+    return [
         {
             "id": "version",
             "start": 0,
             "end": 3,
             "label": "Version",
+            "bbox": (0, 0, 40, 20),
             **({"evidence_ids": ["ocr-version"]} if attributed else {}),
         },
         {
@@ -2936,39 +2915,104 @@ def test_packet_scene_controls_provenance_and_numeric_gates_for_native_and_fallb
             "start": 4,
             "end": 7,
             "label": "IHL",
+            "bbox": (50, 0, 90, 20),
             **({"evidence_ids": ["ocr-ihl"]} if attributed else {}),
         },
     ]
-    observation = EngineObservation(
-        prediction=DiagramTypePrediction(candidates=["packet"], scores=[0.9]),
-        typed_candidates=[TypedIRCandidate(diagram_type="packet", ir={"fields": fields})],
-        evidence=[
-            VisualEvidence(
-                id="ocr-version",
-                kind="ocr_token",
-                text="Version",
-                bbox=(0, 0, 20, 10),
-            ),
-            VisualEvidence(
-                id="ocr-ihl",
-                kind="ocr_token",
-                text="IHL",
-                bbox=(20, 0, 40, 10),
-            ),
-        ],
-    )
-    runtime = PacketRuntime()
-    config = MermaidConfig(candidate_count=1)
 
+
+def _packet_evidence(
+    *,
+    version_text: str = "Version 0 3",
+    ihl_text: str = "IHL 4 7",
+) -> list[VisualEvidence]:
+    return [
+        VisualEvidence(
+            id="ocr-version",
+            kind="ocr_token",
+            text=version_text,
+            bbox=(5, 5, 35, 15),
+        ),
+        VisualEvidence(
+            id="ocr-ihl",
+            kind="vector_text",
+            text=ihl_text,
+            bbox=(55, 5, 85, 15),
+        ),
+    ]
+
+
+def _reconstruct_packet_candidate(
+    fields: list[dict],
+    evidence: list[VisualEvidence],
+    *,
+    reject_native: bool = False,
+    config: MermaidConfig | None = None,
+    engine_type: type[JsonFixtureEngine] = JsonFixtureEngine,
+    ocr_texts: list[str] | None = None,
+) -> tuple[ReconstructionResult, _PacketRuntime]:
+    runtime = _PacketRuntime(reject_native=reject_native)
+    active_config = config or MermaidConfig(candidate_count=1)
     result = ReconstructionPipeline(
-        config,
-        [JsonFixtureEngine(observation)],
-        CandidateValidator(runtime, config.security_profile),
+        active_config,
+        [
+            engine_type(
+                EngineObservation(
+                    prediction=DiagramTypePrediction(candidates=["packet"], scores=[0.9]),
+                    typed_candidates=[
+                        TypedIRCandidate(diagram_type="packet", ir={"fields": fields})
+                    ],
+                    evidence=evidence,
+                )
+            )
+        ],
+        CandidateValidator(runtime, active_config.security_profile),
     ).reconstruct(
         "packet-source",
         "source.png",
         Image.new("RGB", (100, 50), "white"),
-        ocr_texts=[source_text],
+        ocr_texts=ocr_texts or [],
+    )
+    return result, runtime
+
+
+class _PromptOmittingPacketEngine(JsonFixtureEngine):
+    name = "prompt_omitting_packet_fixture"
+    fusion_source = "vlm"
+
+    def observe(self, context):
+        observation = super().observe(context)
+        observation._set_prompt_supplied_prior_evidence_ids(set())
+        return observation
+
+
+@pytest.mark.parametrize(
+    ("reject_native", "attributed", "evidence_texts", "expected_numeric", "expected_publish"),
+    [
+        (False, True, ("Version 0 3", "IHL 4 7"), 1.0, True),
+        (True, True, ("Version 0 3", "IHL 4 7"), 1.0, True),
+        (False, False, ("Version 0 3", "IHL 4 7"), None, False),
+        (True, False, ("Version 0 3", "IHL 4 7"), None, False),
+        (False, True, ("Version", "IHL"), None, False),
+        (True, True, ("Version 90 93", "IHL 94 97"), 0.0, False),
+    ],
+)
+def test_packet_scene_controls_provenance_and_numeric_gates_for_native_and_fallback(
+    tmp_path,
+    reject_native: bool,
+    attributed: bool,
+    evidence_texts: tuple[str, str],
+    expected_numeric: float | None,
+    expected_publish: bool,
+) -> None:
+    result, runtime = _reconstruct_packet_candidate(
+        _packet_fields(attributed=attributed),
+        _packet_evidence(
+            version_text=evidence_texts[0],
+            ihl_text=evidence_texts[1],
+        ),
+        reject_native=reject_native,
+        ocr_texts=["Version 0 3 IHL 4 7"],
     )
 
     assert result.selected is not None
@@ -2990,10 +3034,15 @@ def test_packet_scene_controls_provenance_and_numeric_gates_for_native_and_fallb
         assert any("provenance gate" in warning for warning in result.selected.warnings)
     if expected_numeric is None:
         assert any(
-            "lacks OCR/vector numeric evidence" in warning for warning in result.selected.warnings
+            "Packet field/range association lacks candidate-authorized spatial OCR/vector evidence"
+            in warning
+            for warning in result.selected.warnings
         )
     elif expected_numeric == 0:
-        assert any("numeric consistency" in warning for warning in result.selected.warnings)
+        assert any(
+            "Packet field/range association conflicts with source numeric evidence" in warning
+            for warning in result.selected.warnings
+        )
 
     if not reject_native and attributed and expected_numeric == 1:
         relative = SidecarStore(tmp_path).write(result)
@@ -3002,6 +3051,325 @@ def test_packet_scene_controls_provenance_and_numeric_gates_for_native_and_fallb
             ["ocr-version"],
             ["ocr-ihl"],
         ]
+
+
+@pytest.mark.parametrize("reject_native", [False, True])
+def test_packet_range_swap_is_rejected_even_when_the_global_numeric_multiset_matches(
+    reject_native: bool,
+) -> None:
+    fields = [
+        {
+            "id": "ihl",
+            "start": 0,
+            "end": 3,
+            "label": "IHL",
+            "bbox": (0, 0, 40, 20),
+            "evidence_ids": ["ocr-ihl"],
+        },
+        {
+            "id": "version",
+            "start": 4,
+            "end": 7,
+            "label": "Version",
+            "bbox": (50, 0, 90, 20),
+            "evidence_ids": ["ocr-version"],
+        },
+    ]
+    evidence = [
+        VisualEvidence(
+            id="ocr-ihl",
+            kind="ocr_token",
+            text="IHL 4 7",
+            bbox=(5, 5, 35, 15),
+        ),
+        VisualEvidence(
+            id="ocr-version",
+            kind="vector_text",
+            text="Version 0 3",
+            bbox=(55, 5, 85, 15),
+        ),
+    ]
+
+    result, _runtime = _reconstruct_packet_candidate(
+        fields,
+        evidence,
+        reject_native=reject_native,
+        config=MermaidConfig(candidate_count=1, publish_min_score=0),
+        ocr_texts=["Version 0 3 IHL 4 7"],
+    )
+
+    assert result.selected is not None
+    assert result.selected.scores["numeric_consistency"] == 0
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any(
+        "Packet field/range association conflicts with source numeric evidence" in warning
+        for warning in result.selected.warnings
+    )
+
+
+def test_packet_source_wide_ocr_numbers_do_not_authorize_field_range_bindings() -> None:
+    result, _runtime = _reconstruct_packet_candidate(
+        _packet_fields(),
+        _packet_evidence(version_text="Version", ihl_text="IHL"),
+        ocr_texts=["Version 0 3 IHL 4 7"],
+    )
+
+    assert result.selected is not None
+    assert "numeric_consistency" not in result.selected.scores
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any(
+        "Packet field/range association lacks candidate-authorized spatial OCR/vector evidence"
+        in warning
+        for warning in result.selected.warnings
+    )
+
+
+@pytest.mark.parametrize(
+    "unsafe_case",
+    [
+        "missing_field_bbox",
+        "zero_area_field_bbox",
+        "outside_image_field_bbox",
+        "evidence_outside_field",
+        "broad_evidence_bbox",
+        "overlapping_field_bboxes",
+    ],
+)
+def test_packet_unsafe_spatial_bindings_are_unavailable(unsafe_case: str) -> None:
+    fields = _packet_fields()
+    evidence = _packet_evidence()
+    if unsafe_case == "missing_field_bbox":
+        del fields[0]["bbox"]
+    elif unsafe_case == "zero_area_field_bbox":
+        fields[0]["bbox"] = (0, 0, 0, 20)
+    elif unsafe_case == "outside_image_field_bbox":
+        fields[0]["bbox"] = (0, 0, 110, 20)
+    elif unsafe_case == "evidence_outside_field":
+        evidence[0] = evidence[0].model_copy(update={"bbox": (42, 5, 48, 15)})
+    elif unsafe_case == "broad_evidence_bbox":
+        evidence[0] = evidence[0].model_copy(update={"bbox": (5, 5, 60, 15)})
+    else:
+        fields[1]["bbox"] = (30, 0, 90, 20)
+
+    result, _runtime = _reconstruct_packet_candidate(fields, evidence)
+
+    assert result.selected is not None
+    assert "numeric_consistency" not in result.selected.scores
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any(
+        "Packet field/range association lacks candidate-authorized spatial OCR/vector evidence"
+        in warning
+        for warning in result.selected.warnings
+    )
+
+
+def test_packet_prompt_omitted_evidence_has_no_publication_authority() -> None:
+    result, _runtime = _reconstruct_packet_candidate(
+        _packet_fields(),
+        _packet_evidence(),
+        engine_type=_PromptOmittingPacketEngine,
+    )
+
+    assert result.selected is not None
+    assert result.selected.publication_evidence_authority_ids == frozenset()
+    assert "numeric_consistency" not in result.selected.scores
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+
+
+def test_packet_same_observation_from_ocr_and_vector_is_deduplicated() -> None:
+    fields = _packet_fields()
+    fields[0]["evidence_ids"] = ["ocr-version", "vector-version"]
+    evidence = [
+        *_packet_evidence(),
+        VisualEvidence(
+            id="vector-version",
+            kind="vector_text",
+            text="Version 0 3",
+            bbox=(5, 5, 35, 15),
+        ),
+    ]
+
+    result, _runtime = _reconstruct_packet_candidate(fields, evidence)
+
+    assert result.selected is not None
+    assert result.selected.scores["numeric_consistency"] == 1
+    assert result.selected.aggregate_score is not None
+    assert result.publish
+
+
+def test_packet_conflicting_text_at_one_position_is_unavailable() -> None:
+    fields = _packet_fields()
+    fields[0]["evidence_ids"] = ["ocr-version", "vector-version"]
+    evidence = [
+        *_packet_evidence(),
+        VisualEvidence(
+            id="vector-version",
+            kind="vector_text",
+            text="Version 90 93",
+            bbox=(5, 5, 35, 15),
+        ),
+    ]
+
+    result, _runtime = _reconstruct_packet_candidate(fields, evidence)
+
+    assert result.selected is not None
+    assert "numeric_consistency" not in result.selected.scores
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+
+
+def test_packet_cannot_omit_an_authorized_conflict_at_the_cited_position() -> None:
+    fields = _packet_fields()
+    evidence = [
+        *_packet_evidence(),
+        VisualEvidence(
+            id="vector-version-conflict",
+            kind="vector_text",
+            text="Version 90 93",
+            bbox=(5, 5, 35, 15),
+        ),
+    ]
+
+    result, _runtime = _reconstruct_packet_candidate(fields, evidence)
+
+    assert result.selected is not None
+    assert "vector-version-conflict" not in fields[0]["evidence_ids"]
+    assert "numeric_consistency" not in result.selected.scores
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+
+
+def test_packet_position_distinct_numeric_repetitions_are_not_collapsed() -> None:
+    fields = _packet_fields()
+    fields[0]["evidence_ids"] = ["ocr-version", "ocr-version-repeat"]
+    evidence = [
+        *_packet_evidence(),
+        VisualEvidence(
+            id="ocr-version-repeat",
+            kind="ocr_token",
+            text="Version 0 3",
+            bbox=(5, 1, 35, 4),
+        ),
+    ]
+
+    result, _runtime = _reconstruct_packet_candidate(fields, evidence)
+
+    assert result.selected is not None
+    assert result.selected.scores["numeric_consistency"] == 0
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+
+
+@pytest.mark.parametrize(("reference_limit", "expected_numeric"), [(2, 1.0), (1, None)])
+def test_packet_evidence_reference_budget_is_atomic(
+    monkeypatch,
+    reference_limit: int,
+    expected_numeric: float | None,
+) -> None:
+    monkeypatch.setattr(
+        pipeline_module,
+        "_MAX_PACKET_ASSOCIATION_REFERENCES",
+        reference_limit,
+    )
+
+    result, _runtime = _reconstruct_packet_candidate(
+        _packet_fields(),
+        _packet_evidence(),
+    )
+
+    assert result.selected is not None
+    assert result.selected.scores.get("numeric_consistency") == expected_numeric
+    assert result.publish is (expected_numeric == 1)
+
+
+@pytest.mark.parametrize(("token_limit", "expected_numeric"), [(8, 1.0), (7, None)])
+def test_packet_token_budget_is_atomic(
+    monkeypatch,
+    token_limit: int,
+    expected_numeric: float | None,
+) -> None:
+    monkeypatch.setattr(pipeline_module, "_MAX_OCR_REFERENCE_TOKENS", token_limit)
+
+    result, _runtime = _reconstruct_packet_candidate(
+        _packet_fields(),
+        _packet_evidence(),
+    )
+
+    assert result.selected is not None
+    assert result.selected.scores.get("numeric_consistency") == expected_numeric
+    assert result.publish is (expected_numeric == 1)
+
+
+@pytest.mark.parametrize(
+    ("label", "evidence_text"),
+    [("Flag", "Flag 0"), ("Flag 2", "Flag 2 0")],
+)
+def test_packet_single_bit_field_requires_one_endpoint_occurrence(
+    label: str,
+    evidence_text: str,
+) -> None:
+    fields = [
+        {
+            "id": "flag",
+            "start": 0,
+            "end": 0,
+            "label": label,
+            "bbox": (0, 0, 40, 20),
+            "evidence_ids": ["ocr-flag"],
+        }
+    ]
+    evidence = [
+        VisualEvidence(
+            id="ocr-flag",
+            kind="ocr_token",
+            text=evidence_text,
+            bbox=(5, 5, 35, 15),
+        )
+    ]
+
+    result, _runtime = _reconstruct_packet_candidate(fields, evidence)
+
+    assert result.selected is not None
+    assert result.selected.scores["numeric_consistency"] == 1
+    assert result.publish
+
+
+def test_direct_packet_candidate_requires_typed_field_association() -> None:
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["packet"], scores=[0.9]),
+        direct_candidates=[
+            DirectMermaidCandidate(
+                diagram_type="packet",
+                code='packet-beta\n0-3: "Version"\n',
+            )
+        ],
+    )
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(_PacketRuntime(), config.security_profile),
+    ).reconstruct(
+        "packet-source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        ocr_texts=["Version 0 3"],
+    )
+
+    assert result.selected is not None
+    assert result.selected.generation_method == "direct_mermaid"
+    assert "numeric_consistency" not in result.selected.scores
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any(
+        "Packet field/range association lacks candidate-authorized spatial OCR/vector evidence"
+        in warning
+        for warning in result.selected.warnings
+    )
 
 
 @pytest.mark.parametrize(

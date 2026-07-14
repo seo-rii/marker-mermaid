@@ -91,6 +91,7 @@ from marker_mermaid.scoring import (
     numeric_consistency,
     numeric_token_multiset,
     ocr_recall,
+    ocr_token_multiset,
     semantic_score,
 )
 from marker_mermaid.security import MermaidSecurityScanner
@@ -101,6 +102,7 @@ from marker_mermaid.serializers import (
     serialize_runtime_fallback_result,
     serialize_typed_ir_result,
 )
+from marker_mermaid.serializers_special import plan_packet_fields
 from marker_mermaid.style_recovery import (
     TrustedEdgeStyleEvidence,
     recover_flowchart_styles,
@@ -145,6 +147,8 @@ class _ReferenceTexts:
 _MAX_OCR_REFERENCE_TEXTS = 50_000
 _MAX_OCR_REFERENCE_CHARS = 1_000_000
 _MAX_OCR_REFERENCE_TOKENS = 100_000
+_MAX_PACKET_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
+_MAX_PACKET_FIELD_OVERLAP_COMPARISONS = 100_000
 _PIL_IMAGING_CORE_TYPE = type(Image.new("RGB", (1, 1)).im)
 _PIL_IMAGE_DICT_DESCRIPTOR = Image.Image.__dict__["__dict__"]
 
@@ -362,6 +366,13 @@ _CYNEFIN_TEMPLATE_REVIEW_WARNING = (
     "Cynefin native runtime adds fixed template content without source provenance; "
     "review is required"
 )
+_PACKET_NUMERIC_ASSOCIATION_UNAVAILABLE_WARNING = (
+    "Packet field/range association lacks candidate-authorized spatial OCR/vector evidence; "
+    "review is required"
+)
+_PACKET_NUMERIC_ASSOCIATION_MISMATCH_WARNING = (
+    "Packet field/range association conflicts with source numeric evidence; review is required"
+)
 
 _EVALUATION_WARNING_TEXT = frozenset(
     {
@@ -369,6 +380,8 @@ _EVALUATION_WARNING_TEXT = frozenset(
         "generated-node provenance gate requires at least 80% attribution",
         "more than 20% of generated nodes lack provenance",
         _CYNEFIN_TEMPLATE_REVIEW_WARNING,
+        _PACKET_NUMERIC_ASSOCIATION_UNAVAILABLE_WARNING,
+        _PACKET_NUMERIC_ASSOCIATION_MISMATCH_WARNING,
         "numeric consistency is below the automatic publication threshold",
         "numeric diagram lacks OCR/vector numeric evidence and cannot auto-publish",
         "unlabeled scene-only candidates require OCR/VLM fusion before publishing",
@@ -2546,7 +2559,245 @@ class ReconstructionPipeline:
         )
         if recall is not None:
             scores["ocr_recall"] = recall
-        numeric = numeric_consistency(references.numeric_tokens, code)
+        packet_binding_state: Literal["exact", "mismatch", "unavailable"] | None = None
+        if gate_diagram_type == "packet":
+            # Packet ranges need a field-local proof.  A document-wide number multiset can
+            # stay identical when two labels exchange their ranges, so it is not publication
+            # authority for this semantic type.
+            packet_binding_state = "unavailable"
+            packet_fields = ()
+            if typed_ir is not None:
+                try:
+                    packet_fields = plan_packet_fields(typed_ir).fields
+                except SerializationError:
+                    packet_fields = ()
+            if packet_fields:
+                image_width, image_height = image.size
+                field_boxes: dict[str, tuple[float, float, float, float]] = {}
+                spatial_evidence_safe = True
+                for field in packet_fields:
+                    raw_bbox = field.source_record.get("bbox")
+                    if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+                        spatial_evidence_safe = False
+                        break
+                    bbox = tuple(float(value) for value in raw_bbox)
+                    x1, y1, x2, y2 = bbox
+                    if (
+                        x2 <= x1
+                        or y2 <= y1
+                        or x1 < 0
+                        or y1 < 0
+                        or x2 > image_width
+                        or y2 > image_height
+                    ):
+                        spatial_evidence_safe = False
+                        break
+                    field_boxes[field.source_id] = bbox
+
+                if spatial_evidence_safe:
+                    overlap_comparisons = 0
+                    ordered_fields = sorted(
+                        field_boxes.items(), key=lambda item: (item[1][0], item[1][2], item[0])
+                    )
+                    for index, (_field_id, bbox) in enumerate(ordered_fields):
+                        for other_index in range(index + 1, len(ordered_fields)):
+                            _other_id, other_bbox = ordered_fields[other_index]
+                            if other_bbox[0] >= bbox[2]:
+                                break
+                            overlap_comparisons += 1
+                            if overlap_comparisons > _MAX_PACKET_FIELD_OVERLAP_COMPARISONS or (
+                                other_bbox[1] < bbox[3] and other_bbox[3] > bbox[1]
+                            ):
+                                spatial_evidence_safe = False
+                                break
+                        if not spatial_evidence_safe:
+                            break
+
+                evidence_by_id: dict[str, VisualEvidence] = {}
+                authorized_texts_by_bbox: dict[tuple[float, float, float, float], set[str]] = {}
+                if spatial_evidence_safe:
+                    for item in evidence:
+                        if item.id in evidence_by_id:
+                            spatial_evidence_safe = False
+                            break
+                        evidence_by_id[item.id] = item
+                    authorized_text_count = sum(
+                        1
+                        for item in evidence
+                        if item.kind in {"ocr_token", "vector_text"}
+                        and item.text
+                        and item.bbox is not None
+                    )
+                    authorized_text_chars = sum(
+                        len(item.text)
+                        for item in evidence
+                        if item.kind in {"ocr_token", "vector_text"}
+                        and item.text
+                        and item.bbox is not None
+                    ) + sum(len(field.label) for field in packet_fields)
+                    if (
+                        authorized_text_count + len(packet_fields) > _MAX_OCR_REFERENCE_TEXTS
+                        or authorized_text_chars > _MAX_OCR_REFERENCE_CHARS
+                    ):
+                        spatial_evidence_safe = False
+                    else:
+                        for item in evidence:
+                            if (
+                                item.kind not in {"ocr_token", "vector_text"}
+                                or not item.text
+                                or item.bbox is None
+                            ):
+                                continue
+                            normalized_text = (
+                                unicodedata.normalize("NFKC", item.text).casefold().strip()
+                            )
+                            if not normalized_text:
+                                continue
+                            authorized_texts_by_bbox.setdefault(
+                                tuple(float(value) for value in item.bbox), set()
+                            ).add(normalized_text)
+
+                field_reference_ids: dict[str, tuple[str, ...]] = {}
+                if spatial_evidence_safe:
+                    reference_count = 0
+                    for field in packet_fields:
+                        raw_evidence_ids = field.source_record.get("evidence_ids") or []
+                        if not isinstance(raw_evidence_ids, list) or any(
+                            not isinstance(evidence_id, str) for evidence_id in raw_evidence_ids
+                        ):
+                            spatial_evidence_safe = False
+                            break
+                        reference_count += len(raw_evidence_ids)
+                        if reference_count > _MAX_PACKET_ASSOCIATION_REFERENCES:
+                            spatial_evidence_safe = False
+                            break
+                        field_reference_ids[field.source_id] = tuple(
+                            dict.fromkeys(raw_evidence_ids)
+                        )
+
+                observation_texts: dict[tuple[str, tuple[float, float, float, float]], str] = {}
+                field_observations: dict[
+                    str, set[tuple[str, tuple[float, float, float, float]]]
+                ] = {field.source_id: set() for field in packet_fields}
+                observation_owners: dict[tuple[str, tuple[float, float, float, float]], str] = {}
+                evidence_id_owners: dict[str, str] = {}
+                if spatial_evidence_safe:
+                    for field in packet_fields:
+                        field_bbox = field_boxes[field.source_id]
+                        for evidence_id in field_reference_ids[field.source_id]:
+                            item = evidence_by_id.get(evidence_id)
+                            if item is None:
+                                spatial_evidence_safe = False
+                                break
+                            if item.kind not in {"ocr_token", "vector_text"}:
+                                continue
+                            if not item.text or item.bbox is None:
+                                spatial_evidence_safe = False
+                                break
+                            evidence_bbox = tuple(float(value) for value in item.bbox)
+                            ex1, ey1, ex2, ey2 = evidence_bbox
+                            if (
+                                ex2 <= ex1
+                                or ey2 <= ey1
+                                or ex1 < 0
+                                or ey1 < 0
+                                or ex2 > image_width
+                                or ey2 > image_height
+                                or ex1 < field_bbox[0]
+                                or ey1 < field_bbox[1]
+                                or ex2 > field_bbox[2]
+                                or ey2 > field_bbox[3]
+                            ):
+                                spatial_evidence_safe = False
+                                break
+                            normalized_text = (
+                                unicodedata.normalize("NFKC", item.text).casefold().strip()
+                            )
+                            if not normalized_text:
+                                spatial_evidence_safe = False
+                                break
+                            if len(authorized_texts_by_bbox.get(evidence_bbox, set())) != 1:
+                                spatial_evidence_safe = False
+                                break
+                            previous_id_owner = evidence_id_owners.get(evidence_id)
+                            if (
+                                previous_id_owner is not None
+                                and previous_id_owner != field.source_id
+                            ):
+                                spatial_evidence_safe = False
+                                break
+                            observation_key = (normalized_text, evidence_bbox)
+                            previous_owner = observation_owners.get(observation_key)
+                            if previous_owner is not None and previous_owner != field.source_id:
+                                spatial_evidence_safe = False
+                                break
+                            evidence_id_owners[evidence_id] = field.source_id
+                            observation_owners[observation_key] = field.source_id
+                            observation_texts.setdefault(observation_key, item.text)
+                            field_observations[field.source_id].add(observation_key)
+                        if not spatial_evidence_safe:
+                            break
+
+                if spatial_evidence_safe and all(field_observations.values()):
+                    association_text_count = len(packet_fields) + len(observation_texts)
+                    association_char_count = sum(len(field.label) for field in packet_fields) + sum(
+                        len(text) for text in observation_texts.values()
+                    )
+                    if (
+                        association_text_count <= _MAX_OCR_REFERENCE_TEXTS
+                        and association_char_count <= _MAX_OCR_REFERENCE_CHARS
+                    ):
+                        token_count = 0
+                        label_tokens: dict[str, Counter[str]] = {}
+                        observation_tokens: dict[
+                            tuple[str, tuple[float, float, float, float]], Counter[str]
+                        ] = {}
+                        for field in packet_fields:
+                            tokens = ocr_token_multiset((field.label,))
+                            token_count += tokens.total()
+                            label_tokens[field.source_id] = tokens
+                        for observation_key, text in observation_texts.items():
+                            tokens = ocr_token_multiset((text,))
+                            token_count += tokens.total()
+                            observation_tokens[observation_key] = tokens
+                        if token_count <= _MAX_OCR_REFERENCE_TOKENS and all(label_tokens.values()):
+                            association_available = True
+                            association_matches = True
+                            for field in packet_fields:
+                                observed_tokens: Counter[str] = Counter()
+                                observed_numbers: Counter[str] = Counter()
+                                for observation_key in field_observations[field.source_id]:
+                                    observed_tokens.update(observation_tokens[observation_key])
+                                    observed_numbers.update(
+                                        numeric_token_multiset(
+                                            (observation_texts[observation_key],)
+                                        )
+                                    )
+                                if (
+                                    label_tokens[field.source_id] - observed_tokens
+                                    or not observed_numbers
+                                ):
+                                    association_available = False
+                                    break
+                                expected_numbers = numeric_token_multiset((field.label,))
+                                expected_numbers.update((str(field.start),))
+                                if field.end != field.start:
+                                    expected_numbers.update((str(field.end),))
+                                if observed_numbers != expected_numbers:
+                                    association_matches = False
+                            if association_available:
+                                packet_binding_state = (
+                                    "exact" if association_matches else "mismatch"
+                                )
+            numeric = (
+                1.0
+                if packet_binding_state == "exact"
+                else 0.0
+                if packet_binding_state == "mismatch"
+                else None
+            )
+        else:
+            numeric = numeric_consistency(references.numeric_tokens, code)
         if numeric is not None and gate_diagram_type in _NUMERIC_TYPES:
             scores["numeric_consistency"] = numeric
         provenance = _generated_node_provenance_score(
@@ -2603,7 +2854,13 @@ class ReconstructionPipeline:
         if gate_diagram_type == "cynefin":
             aggregate = None
             warnings.append(_CYNEFIN_TEMPLATE_REVIEW_WARNING)
-        if gate_diagram_type in _NUMERIC_TYPES and numeric is None:
+        if gate_diagram_type == "packet" and packet_binding_state == "unavailable":
+            aggregate = None
+            warnings.append(_PACKET_NUMERIC_ASSOCIATION_UNAVAILABLE_WARNING)
+        elif gate_diagram_type == "packet" and packet_binding_state == "mismatch":
+            aggregate = None
+            warnings.append(_PACKET_NUMERIC_ASSOCIATION_MISMATCH_WARNING)
+        elif gate_diagram_type in _NUMERIC_TYPES and numeric is None:
             aggregate = None
             warnings.append(
                 "numeric diagram lacks OCR/vector numeric evidence and cannot auto-publish"

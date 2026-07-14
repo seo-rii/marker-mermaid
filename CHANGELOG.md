@@ -218,6 +218,14 @@
   Entity-like literals use disclosed visible compatibility glyphs where Mermaid 11.16 cannot preserve the
   original SVG text. Organization generated Scenes and TreeView/Flowchart output now consume the dedicated
   bounded organization identity/parent plan.
+- Packet numeric publication now uses one field-local association across native output, same-slot
+  Flowchart fallback, and semantic repair. Only candidate-authorized, field-cited OCR/vector observations
+  with positive image-bounded bboxes fully contained by the field can bind its label and bit range;
+  source-wide OCR text cannot provide that authority. Exact bindings score `1.0`, bound wrong or extra
+  numbers score `0.0` and require review, while overlapping fields, broad/shared/same-position ambiguous
+  observations, invalid geometry or authority, and exhausted budgets make the metric unavailable. Exact
+  normalized text+bbox OCR/vector duplicates count once, spatially distinct repeats remain, and single-bit
+  fields require one endpoint occurrence. Other numeric types retain global occurrence-multiset scoring.
 - Serializer-visible Scene text now includes Architecture group labels, excludes hidden
   Deployment/Component relation labels, and mirrors Use-case Flowchart relation type-over-label
   precedence; hidden role/shape/style/semantic metadata cannot enter the projected Scene, and

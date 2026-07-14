@@ -70,9 +70,19 @@ token별 최대 occurrence로 병합합니다. 따라서 위치가 다른 반복
 세지 않습니다. Source에 없는 숫자나 횟수 불일치는 precision/recall을 낮춥니다. Typed chart value나 그
 record의 `evidence_ids`만으로 source 숫자 관측을 대체할 수 없습니다. Typed/Scene 후보는 semantic type으로
 gate를 유지하고, direct 후보만 parse/render validation으로 확정한 emitted/runtime type을 사용합니다.
-결과 type이 Gantt/Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn/Packet이면 source OCR/vector numeric evidence가
+결과 type이 Gantt/Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn이면 source OCR/vector numeric evidence가
 하나도 없을 때 syntax/render가 성공해도 `U` 등급 review 대상으로 남고, 일치도가 threshold보다 낮아도 자동
 게시되지 않습니다.
+
+Packet은 이 전역 occurrence multiset의 예외입니다. Native Packet, Flowchart runtime fallback, semantic
+repair proposal 모두 candidate-authorized field-local association을 다시 계산합니다. Field가 직접 인용한
+OCR/vector evidence의 bbox 전체가 양의 면적의 field bbox 안에 있고 둘 다 실제 image bounds 안에 있을 때만
+label과 bit range를 결합하며 source-wide `ocr_texts`는 binding에 사용할 수 없습니다. Exact label+range는
+`1.0`, 결합된 잘못된 range나 추가 숫자는 `0.0`과 review입니다. Single-bit `start == end`는 endpoint 숫자
+한 번을 요구합니다. 동일 normalized text+bbox의 OCR/vector 중복은 한 번만 세고 공간적으로 다른 반복은
+유지합니다. 겹치는 field, broad/shared/같은 위치의 모호한 관측, 누락되거나 잘못된 authority·bbox·image
+bounds, association budget 소진은 unavailable/review이며 전역 multiset이나 게시 threshold로 우회하지
+않습니다. 다른 numeric type의 multiset 계산은 그대로입니다.
 
 Generated numeric projection은 Mermaid `%%` comment를 제외하고, detected grammar가 지원할 때만 native
 `title ...`, colon `title: ...`, `accTitle: ...`, 한 줄 `accDescr: ...`, block `accDescr { ... }`를

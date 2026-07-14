@@ -74,6 +74,15 @@ numeric, provenance, edge, arrow, layout, path, type fitness를 모두 다시 �
 - non-runtime semantic score가 감소하지 않는다.
 - 기존 numeric/provenance publication gate를 그대로 통과한다.
 
+Packet proposal이 이 평가 경로에 들어오면 native/fallback 여부와 관계없이 새 typed IR의 field-local numeric
+association을 다시 계산합니다. Candidate publication authority 안에서 field가 인용한 OCR/vector evidence와
+양의 면적·image-bounded field/evidence bbox만 사용하며 evidence bbox 전체가 해당 field 안에 있어야 합니다.
+Source-wide `ocr_texts`는 field binding을 만들지 않습니다. Exact label+range는 `1.0`, 결합된 잘못된 range나
+추가 숫자는 `0.0`과 review이고, `start == end`는 endpoint 숫자 한 번을 요구합니다. 동일 normalized
+text+bbox OCR/vector 중복은 한 번만 세되 공간적으로 다른 반복은 유지합니다. Field overlap, broad box,
+shared/같은 위치의 모호한 관측, authority·geometry·budget 불충분은 metric 전체를 unavailable로 둡니다.
+따라서 proposal이 field와 range를 바꾸면서 전역 숫자 multiset만 유지해도 gate를 통과할 수 없습니다.
+
 따라서 `aggregate_score=None`인 held candidate를 semantic repair만으로 게시 가능하게 만들 수 없습니다. 원본
 baseline candidate는 변경하지 않고 alternative에 남으며 repair candidate에는 구조화된 correction,
 before/after score, 채택 여부가 기록됩니다.

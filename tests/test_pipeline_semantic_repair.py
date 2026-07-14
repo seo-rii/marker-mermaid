@@ -27,6 +27,7 @@ from marker_mermaid.models import (
 from marker_mermaid.pipeline import ReconstructionPipeline
 from marker_mermaid.protocols import RepairProposal, RuntimeResult
 from marker_mermaid.semantic_repair import EvidenceBackedFlowchartRepair
+from marker_mermaid.serializers import serialize_typed_ir_result
 from marker_mermaid.validation import CandidateValidator
 
 
@@ -160,6 +161,41 @@ class RecordingRepair:
     def repair(self, context, candidate):
         self.conflicted_connector_pairs.append(set(context.conflicted_connector_pairs))
         return EvidenceBackedFlowchartRepair().repair(context, candidate)
+
+
+class PacketRangeSwapRepair:
+    name = "packet_range_swap"
+
+    def repair(self, context, candidate):
+        typed_ir = copy.deepcopy(candidate.typed_ir)
+        typed_ir["fields"] = [
+            {
+                "id": "ihl",
+                "start": 0,
+                "end": 3,
+                "label": "IHL",
+                "bbox": (0, 0, 40, 20),
+                "evidence_ids": ["ocr-ihl"],
+            },
+            {
+                "id": "version",
+                "start": 4,
+                "end": 7,
+                "label": "Version",
+                "bbox": (50, 0, 90, 20),
+                "evidence_ids": ["ocr-version"],
+            },
+        ]
+        serialized = serialize_typed_ir_result(
+            "packet",
+            typed_ir,
+            experimental=True,
+        )
+        return RepairProposal(
+            code=serialized.code,
+            operation=self.name,
+            typed_ir=typed_ir,
+        )
 
 
 def repair_observation(
@@ -569,6 +605,94 @@ def test_semantic_repair_cannot_unlock_a_provenance_gated_candidate():
     assert result.selected.aggregate_score is None
     assert not result.selected.repair_history[-1].accepted
     assert result.selected.typed_ir["nodes"][0]["label"] == "Paymant"
+
+
+def test_semantic_repair_cannot_bypass_packet_field_range_association() -> None:
+    class PacketRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="packet",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["packet"], scores=[0.9]),
+        typed_candidates=[
+            TypedIRCandidate(
+                diagram_type="packet",
+                ir={
+                    "fields": [
+                        {
+                            "id": "version",
+                            "start": 0,
+                            "end": 3,
+                            "label": "Version",
+                            "bbox": (0, 0, 40, 20),
+                            "evidence_ids": ["ocr-version"],
+                        },
+                        {
+                            "id": "ihl",
+                            "start": 4,
+                            "end": 7,
+                            "label": "IHL",
+                            "bbox": (50, 0, 90, 20),
+                            "evidence_ids": ["ocr-ihl"],
+                        },
+                    ]
+                },
+            )
+        ],
+        evidence=[
+            VisualEvidence(
+                id="ocr-version",
+                kind="ocr_token",
+                text="Version 0 3",
+                bbox=(5, 5, 35, 15),
+            ),
+            VisualEvidence(
+                id="ocr-ihl",
+                kind="vector_text",
+                text="IHL 4 7",
+                bbox=(55, 5, 85, 15),
+            ),
+        ],
+    )
+    config = MermaidConfig(
+        candidate_count=1,
+        enable_fusion=False,
+        enable_generic_scene_ir=False,
+        max_repair_iterations=1,
+    )
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(PacketRuntime(), config.security_profile),
+        repair_engine=PacketRangeSwapRepair(),
+    ).reconstruct(
+        "packet-source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        ocr_texts=["Version 0 3 IHL 4 7"],
+    )
+
+    assert result.selected is not None
+    assert result.selected.scores["numeric_consistency"] == 1
+    assert result.selected.aggregate_score is not None
+    assert [
+        (field["label"], field["start"], field["end"])
+        for field in result.selected.typed_ir["fields"]
+    ] == [("Version", 0, 3), ("IHL", 4, 7)]
+    event = result.selected.repair_history[-1]
+    assert event.operation == "packet_range_swap"
+    assert not event.accepted
+    assert event.before_score is not None
+    assert event.after_score is None
 
 
 def test_semantic_repair_refuses_self_declared_vlm_label_evidence():

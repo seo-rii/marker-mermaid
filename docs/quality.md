@@ -175,6 +175,23 @@ generated Scene attribution에서 제외합니다.
   `quadrant-1`~`quadrant-4` slot index도 문법 토큰으로 제외하지만 directive label과 point 좌표 안의 실제
   숫자는 보존합니다. Block metadata 뒤 같은 줄의 statement는 다시 평가하며 bounded suffix budget이
   소진되면 부분 점수 대신 `0.0`으로 fail closed합니다.
+- Packet은 위 전역 숫자 occurrence multiset을 사용하지 않고 field-local association으로 대체합니다.
+  Native Packet과 같은 candidate slot의 Flowchart fallback, semantic repair proposal은 모두 동일한
+  field plan과 평가 경로를 사용합니다. 각 field가 candidate publication authority 안의 `ocr_token` 또는
+  `vector_text` evidence를 명시적으로 참조하고, field/evidence bbox가 양의 면적이며 실제 source image
+  안에 있고 evidence bbox 전체가 해당 field bbox 안에 들어갈 때만 label과 `start`/`end`를 결합합니다.
+  Source 전체의 `ocr_texts`는 어떤 field에도 숫자나 label을 귀속할 권한이 없습니다.
+- 모든 field의 label과 range 숫자가 field-local evidence와 정확히 결합되면 Packet numeric consistency는
+  `1.0`입니다. Label은 결합됐지만 range 숫자가 다르거나 관계없는 숫자가 더 있으면 `0.0`으로 두고
+  threshold와 관계없이 review로 보냅니다. `start == end`인 single-bit field는 range endpoint 숫자 한 번을
+  요구합니다. 동일 field에서 OCR/vector가 같은 normalized text+bbox를 중복 보고하면 한 관측으로 세지만,
+  공간적으로 다른 반복 관측은 합치지 않습니다.
+- Field bbox가 겹치거나, evidence bbox가 여러 field에 걸치는 broad box이거나, 같은 evidence ID 또는 같은
+  위치의 모호한 관측을 여러 field가 주장하거나, candidate authority·bbox·image bounds·association work
+  budget을 확인할 수 없으면 일부 field만 평가하지 않고 Packet metric 전체를 unavailable로 두어 review를
+  요구합니다. Candidate authority 안의 같은 bbox에 서로 다른 normalized OCR/vector text가 있으면 field가
+  유리한 관측 하나만 인용했더라도 상충 관측을 숨길 수 없도록 unavailable로 처리합니다. 이 Packet 전용
+  binding만 전역 multiset을 대체하며 다른 numeric type의 계산은 바뀌지 않습니다.
 - visual entailment precision은 생성된 node를 source node ID, collision-free portable ID alias 또는
   유일한 정규화 label로 정렬한 collision-free evidence coverage proxy입니다. Node 근거로
   인정하는 kind는 `ocr_token`, `vector_text`, `contour`, `vlm_observation`, `user_edit`로
@@ -221,5 +238,7 @@ Label repair도 trusted Marker OCR/built-in Vector origin, source block, bbox co
 재직렬화 결과와 정확히 일치해야 평가 단계로 진입합니다.
 
 Typed/Scene semantic type 또는 direct 후보의 validated emitted/runtime type이
-Gantt/Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn/Packet이면 OCR/vector numeric evidence가 하나도 없거나
+Gantt/Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn이면 OCR/vector numeric evidence가 하나도 없거나
 numeric consistency가 게시 threshold보다 낮을 때 aggregate를 `None`으로 두어 자동 게시하지 않습니다.
+Packet은 candidate-authorized field-local association이 unavailable이거나 `0.0`이면 전역 숫자 multiset이나
+설정된 게시 threshold로 우회하지 않고 aggregate를 `None`으로 둡니다.
