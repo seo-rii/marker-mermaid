@@ -514,6 +514,26 @@ class _ComponentIR(_TypedIRRoot):
     edges: list[_ArchitectureFallbackEdge] = Field(default_factory=list)
 
 
+class _UsecaseNode(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+    name: str | None = None
+
+
+class _UsecaseRelation(_TypedIRRecord):
+    id: str | None = None
+    source: str | None = None
+    target: str | None = None
+    type: str | None = None
+    label: str | None = None
+
+
+class _UsecaseIR(_TypedIRRoot):
+    actors: list[_UsecaseNode]
+    use_cases: list[_UsecaseNode]
+    relations: list[_UsecaseRelation] = Field(default_factory=list)
+
+
 @dataclass(frozen=True, slots=True)
 class TypedIRContract:
     required: tuple[tuple[str, RootKind], ...]
@@ -728,6 +748,14 @@ TYPED_IR_CONTRACTS: dict[str, TypedIRContract] = {
         (("actors", "list"), ("use_cases", "list")),
         ("relations",),
         "actors and use cases",
+        _UsecaseIR,
+        (
+            "actors[]: {id:string,label:string,name:string,bbox:number[4],evidence_ids:string[]}",
+            "use_cases[]: {id:string,label:string,name:string,bbox:number[4],"
+            "evidence_ids:string[]}",
+            "relations[]: {id:string,source:string,target:string,type:string,label:string,"
+            "bbox:number[4],evidence_ids:string[]}",
+        ),
     ),
     "mindmap": TypedIRContract(
         (("root", "object"),),
@@ -820,7 +848,7 @@ if set(TYPED_IR_CONTRACTS) != set(ALL_TYPES):  # pragma: no cover - import-time 
 PHASE_ONE_NESTED_TYPES = PHASE_ONE_TYPES | {"generic_network"}
 CORE_UML_NESTED_TYPES = frozenset({"state", "class", "er"})
 PHASE_TWO_NATIVE_NESTED_TYPES = frozenset({"requirement", "block"})
-PHASE_TWO_FALLBACK_NESTED_TYPES = frozenset({"c4", "component", "deployment"})
+PHASE_TWO_FALLBACK_NESTED_TYPES = frozenset({"c4", "component", "deployment", "usecase"})
 NESTED_TYPED_IR_TYPES = (
     PHASE_ONE_NESTED_TYPES
     | CORE_UML_NESTED_TYPES

@@ -26,7 +26,7 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 | Generic Network | `flowchart` | portable node/edge 표현 |
 | C4 | `c4 → architecture → flowchart` | native C4 SVG가 strict gate의 data/xlink 정책과 불일치하며 Architecture runtime 거부 시 nested fallback |
 | Deployment, Component | `deployment/component → architecture → flowchart` | primary/secondary record를 service로 평탄화; Architecture runtime 거부 시 nested fallback, 특수 notation/relation label은 typed IR에 유지 |
-| Use-case | `flowchart` | actor glyph와 system boundary는 typed IR에 유지 |
+| Use-case | `flowchart` | stadium actor/round use-case proxy와 typed relation label; actor glyph, system boundary, group/style/bidirectional metadata는 typed IR에 유지 |
 | Pie, XY, Quadrant | 동일 | explicit finite values/axis/coordinates 필수 |
 | Sankey | `sankey` 또는 `flowchart` | native-safe positive DAG, 그 외 exact-weight fallback |
 | Radar | `radar` 또는 `flowchart` | non-negative native domain, 음수 domain은 tabular fallback |
@@ -99,8 +99,7 @@ Architecture/Flowchart 후보를 불필요하게 거부하지 않기 위한 호�
 `bbox`·string evidence list 및 `extra="allow"` 보존 규칙을 따릅니다. 검증 model은 입력 dict를
 재작성하지 않습니다. Non-empty element, normalized ID collision, boundary reference/membership, endpoint와
 Scene budget은 nested model이 추측하지 않고 아래의 공용 bounded C4-to-Architecture plan이 계속
-판정합니다. Use-case는 아직 이 nested Phase 2 fallback 계약의 적용 대상이 아니라 root contract만
-사용합니다.
+판정합니다.
 
 `serialize_c4_native`는 pinned Mermaid의 native macro를 확인하는 trusted diagnostic 경로이며 자동 C4
 게시·평가의 구조 기준이 아닙니다. 자동 경로는 C4 element를 Architecture service로, boundary를 group으로,
@@ -152,3 +151,29 @@ service 목록의 non-empty 조건, normalized ID/group collision, unknown group
 기존 record ID planner와 Architecture structure plan이 계속 fail closed로 처리합니다. 빈 group은
 Architecture에는 보존되지만 portable Flowchart가 안전하게 표현하지 못하므로 해당 runtime retry에서 후보
 단위로 거부됩니다. Deployment/Component 전용 native serializer나 특수 notation을 복원했다는 뜻이 아닙니다.
+
+### Use-case의 portable Flowchart projection
+
+Use-case는 `actors: list`와 `use_cases: list`가 모두 필수이고 `relations`가 선택인 strict nested contract를
+사용합니다. Actor/use-case record는 `id`·`label`·`name`·bbox/evidence, relation은
+`id`·`source`·`target`·open string `type`/`label`·bbox/evidence의 known 형을 검사합니다. Model은 이
+known field를 coercion하지 않고, partial record와 선택 evidence, 미등록 extra metadata 및 원본 dict를
+그대로 보존합니다.
+
+Serializer와 generated Scene은 `plan_usecase_fallback`의 같은 node/relation projection을 소비합니다. Actor와
+use case는 하나의 collision-safe namespace를 공유하고 `label` → `name` → source ID 순서의 text를 사용합니다.
+Actor는 stadium proxy, use case는 구별되는 round node이며 둘 다 Mermaid Flowchart shape입니다. 입력 group과
+UML system boundary, actor glyph, raw role/shape/text metadata는 자동 구조에 넣지 않습니다. Serializer가
+명시적으로 빈 `groups`를 사용하므로 unsupported group extra가 Scene에서 되살아나지도 않습니다.
+
+Relation label은 닫힌 UML enum이 아니라 `type` 우선, 없으면 `label`을 사용하는 open text입니다. 둘 다
+없으면 unlabeled edge가 됩니다. Raw relation ID, `bidirectional`, arrow/style/semantic metadata는 무시하고
+일반 단방향 Flowchart connector만 방출합니다. Generated Scene도 같은 endpoint·label·순서와 deterministic
+relation ID를 사용하고, node/relation evidence를 attribution에 유지합니다. Node bbox는 Scene source 위치이지
+Mermaid layout 지시가 아니며 relation bbox는 typed IR/review metadata에만 남습니다.
+
+Nested contract가 object/container와 known scalar/bbox/evidence 형을 확인한 뒤에도 두 root list의 non-empty,
+Actor/UseCase source ID 분리, normalized ID와 `usecase_` prefix 이후의 2차 collision, unknown endpoint,
+node/relation cap은 공용 plan과 serializer가 계속 fail closed로 판정합니다. 기본 direction은 `LR`이고
+허용되지 않은 값은 serializer와 Scene 모두 `TB`를 사용합니다. 이 계약으로 모든 Phase 2 type이 nested
+검증을 갖지만, provider envelope는 계속 generic `TypedIRCandidate.ir: dict`입니다.

@@ -108,6 +108,9 @@
   validated, non-advertised compatibility alias; open icon strings, exact ports/booleans, extra
   notation metadata, and the original dictionary preserve the existing Architecture-to-Flowchart
   fallback behavior while semantic references remain serializer-owned.
+- Use-case fallback typed IR now has a strict nested actor/use-case/relation contract with open
+  type-over-label relation text, optional evidence, and original extra metadata preservation, while
+  non-empty, collision, endpoint, and resource-cap semantics remain owned by the shared fallback plan.
 - Serializer-visible Scene text now includes Architecture group labels, excludes hidden
   Deployment/Component relation labels, and mirrors Use-case Flowchart relation type-over-label
   precedence; hidden role/shape/style/semantic metadata cannot enter the projected Scene, and

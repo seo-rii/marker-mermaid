@@ -1305,6 +1305,148 @@ def test_generic_candidate_envelopes_apply_architecture_fallback_nested_contract
         )
 
 
+@pytest.mark.parametrize(
+    ("ir", "location"),
+    [
+        ({"actors": ["not-an-object"], "use_cases": []}, "actors[0]"),
+        ({"actors": [], "use_cases": ["not-an-object"]}, "use_cases[0]"),
+        ({"actors": [], "use_cases": [], "relations": {"source": "actor"}}, "relations"),
+        ({"actors": [], "use_cases": [], "relations": None}, "relations"),
+        ({"actors": [], "use_cases": [], "relations": ["not-an-object"]}, "relations[0]"),
+        ({"actors": [{"id": 1}], "use_cases": []}, "actors[0].id"),
+        ({"actors": [{"label": ["Shopper"]}], "use_cases": []}, "actors[0].label"),
+        ({"actors": [{"name": {"text": "Shopper"}}], "use_cases": []}, "actors[0].name"),
+        ({"actors": [{"bbox": [0, 0, 10]}], "use_cases": []}, "actors[0].bbox"),
+        (
+            {"actors": [{"evidence_ids": [1]}], "use_cases": []},
+            "actors[0].evidence_ids[0]",
+        ),
+        ({"actors": [], "use_cases": [{"id": 1}]}, "use_cases[0].id"),
+        ({"actors": [], "use_cases": [{"label": ["Checkout"]}]}, "use_cases[0].label"),
+        ({"actors": [], "use_cases": [{"name": {"text": "Checkout"}}]}, "use_cases[0].name"),
+        ({"actors": [], "use_cases": [{"bbox": [0, False, 10, 10]}]}, "use_cases[0].bbox"),
+        (
+            {"actors": [], "use_cases": [{"evidence_ids": [1]}]},
+            "use_cases[0].evidence_ids[0]",
+        ),
+        ({"actors": [], "use_cases": [], "relations": [{"id": 1}]}, "relations[0].id"),
+        (
+            {"actors": [], "use_cases": [], "relations": [{"source": ["actor"]}]},
+            "relations[0].source",
+        ),
+        (
+            {"actors": [], "use_cases": [], "relations": [{"target": 1}]},
+            "relations[0].target",
+        ),
+        (
+            {"actors": [], "use_cases": [], "relations": [{"type": ["association"]}]},
+            "relations[0].type",
+        ),
+        (
+            {"actors": [], "use_cases": [], "relations": [{"label": {"text": "uses"}}]},
+            "relations[0].label",
+        ),
+        (
+            {"actors": [], "use_cases": [], "relations": [{"bbox": [0, 0, "10", 10]}]},
+            "relations[0].bbox",
+        ),
+        (
+            {"actors": [], "use_cases": [], "relations": [{"evidence_ids": [1]}]},
+            "relations[0].evidence_ids[0]",
+        ),
+    ],
+)
+def test_usecase_nested_contract_rejects_wrong_shapes_with_exact_locations(
+    ir: dict[str, object],
+    location: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TypedIRCandidate(diagram_type="usecase", ir=ir)
+
+    message = str(exc_info.value)
+    assert "violates its nested contract" in message
+    assert location in message
+
+
+def test_usecase_nested_contract_preserves_partial_open_relation_and_extra_ir() -> None:
+    ir = {
+        "direction": "sideways",
+        "actors": [
+            {
+                "name": "Shopper",
+                "bbox": [0, 0, 10, 10],
+                "evidence_ids": ["ocr-shopper"],
+                "stereotype": "primary actor",
+            }
+        ],
+        "use_cases": [
+            {
+                "label": "Checkout",
+                "bbox": [20, 0, 30, 10],
+                "evidence_ids": ["ocr-checkout"],
+                "system_boundary": "checkout-system",
+            }
+        ],
+        "relations": [
+            {
+                "source": "unknown",
+                "target": "also-unknown",
+                "type": "CUSTOM_INCLUDE",
+                "label": "Preserved alias",
+                "bbox": [10, 0, 20, 10],
+                "evidence_ids": ["arrow-include"],
+                "future_metadata": {"kept": True},
+            }
+        ],
+        "groups": [{"id": "hidden-system", "member_ids": ["Checkout"]}],
+        "future_root_metadata": {"kept": True},
+    }
+
+    candidate = TypedIRCandidate(diagram_type="usecase", ir=ir)
+
+    assert candidate.ir == ir
+
+
+def test_canonical_key_revalidates_mutated_usecase_nested_contract() -> None:
+    candidate = TypedIRCandidate(
+        diagram_type="usecase",
+        ir={
+            "actors": [{"id": "actor"}],
+            "use_cases": [{"id": "case"}],
+            "relations": [{"type": "association"}],
+        },
+    )
+    candidate.ir["relations"][0]["type"] = ["association"]
+
+    with pytest.raises(ValidationError, match=r"relations\[0\]\.type"):
+        candidate.canonical_key()
+
+
+def test_generic_candidate_envelopes_apply_usecase_nested_contract() -> None:
+    with pytest.raises(ValidationError, match=r"actors\[0\]\.name"):
+        EngineObservation(
+            prediction=DiagramTypePrediction(candidates=["usecase"], scores=[1.0]),
+            typed_candidates=[
+                {
+                    "diagram_type": "usecase",
+                    "ir": {"actors": [{"name": ["Shopper"]}], "use_cases": []},
+                }
+            ],
+        )
+
+    with pytest.raises(ValidationError, match=r"relations\[0\]\.label"):
+        MermaidCandidate(
+            candidate_id="candidate-usecase",
+            generation_method="typed_ir",
+            diagram_type="usecase",
+            typed_ir={
+                "actors": [],
+                "use_cases": [],
+                "relations": [{"label": {"text": "uses"}}],
+            },
+        )
+
+
 @pytest.mark.parametrize("bbox", [[0, 0, 10], [0, 0, True, 10], ["0", 0, 10, 10]])
 def test_phase_one_nested_contracts_require_four_strict_finite_bbox_numbers(bbox) -> None:
     with pytest.raises(ValidationError, match="bbox"):

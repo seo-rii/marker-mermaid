@@ -842,7 +842,7 @@ def test_usecase_scene_uses_serializer_relation_label_precedence() -> None:
                 "id": "raw-association",
                 "source": "shopper",
                 "target": "checkout",
-                "type": "association",
+                "type": "CUSTOM_INCLUDE",
                 "label": "Hidden relation alias",
                 "bidirectional": True,
                 "arrow_at_end": False,
@@ -869,7 +869,7 @@ def test_usecase_scene_uses_serializer_relation_label_precedence() -> None:
     assert 'shopper(["Shopper"])' in code
     assert 'checkout("Checkout")' in code
     assert 'refund("Refund")' in code
-    assert "shopper -->|association| checkout" in code
+    assert "shopper -->|CUSTOM_INCLUDE| checkout" in code
     assert "shopper -->|requests| refund" in code
     assert "<-->" not in code and "-.->" not in code
     assert "raw-association" not in code and "raw-request" not in code
@@ -878,7 +878,7 @@ def test_usecase_scene_uses_serializer_relation_label_precedence() -> None:
         "generated-relation-1",
         "generated-relation-2",
     ]
-    assert [relation.label for relation in scene.relations] == ["association", "requests"]
+    assert [relation.label for relation in scene.relations] == ["CUSTOM_INCLUDE", "requests"]
     assert [relation.evidence_ids for relation in scene.relations] == [
         ["arrow-checkout"],
         ["arrow-refund"],
@@ -893,7 +893,7 @@ def test_usecase_scene_uses_serializer_relation_label_precedence() -> None:
         for relation in scene.relations
     )
     texts = list(typed_ir_semantic_texts("usecase", ir, scene))
-    assert ocr_recall(["association requests"], "", generated_texts=texts) == 1
+    assert ocr_recall(["CUSTOM_INCLUDE requests"], "", generated_texts=texts) == 1
     assert ocr_recall(["Hidden relation alias"], "", generated_texts=texts) == 0
 
 
@@ -1034,6 +1034,7 @@ def test_usecase_scene_reuses_cross_family_ids_names_and_defaults() -> None:
     }
 
     scene = typed_ir_to_scene("usecase", ir)
+    code = serialize_phase2("usecase", ir)[0]
 
     assert scene is not None
     assert [(element.id, element.text) for element in scene.elements] == [
@@ -1046,6 +1047,11 @@ def test_usecase_scene_reuses_cross_family_ids_names_and_defaults() -> None:
         "shared_id",
         "usecase_shared_id",
     )
+    assert 'shared_id(["Shopper"])' in code
+    assert 'Actor2(["Operator"])' in code
+    assert 'usecase_shared_id("Checkout")' in code
+    assert 'usecase_UseCase2("Refund")' in code
+    assert "shared_id -->|association| usecase_shared_id" in code
     texts = list(typed_ir_semantic_texts("usecase", ir, scene))
     assert (
         ocr_recall(["Shopper Operator Checkout Refund association"], "", generated_texts=texts) == 1

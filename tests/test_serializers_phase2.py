@@ -351,15 +351,15 @@ def test_phase_two_nested_contract_leaves_semantic_validation_to_serializer(
 
 
 def test_overlapping_semantic_ids_fail_instead_of_rerouting_relations() -> None:
+    ir = {
+        "actors": [{"id": "shared"}],
+        "use_cases": [{"id": "shared"}],
+        "relations": [],
+    }
+    assert TypedIRCandidate(diagram_type="usecase", ir=ir).ir == ir
+
     with pytest.raises(SerializationError, match="source ids must be distinct"):
-        serialize_phase2(
-            "usecase",
-            {
-                "actors": [{"id": "shared"}],
-                "use_cases": [{"id": "shared"}],
-                "relations": [],
-            },
-        )
+        serialize_phase2("usecase", ir)
 
 
 def test_usecase_final_ids_avoid_second_order_actor_namespace_collisions() -> None:
@@ -420,15 +420,33 @@ def test_usecase_fallback_rejects_malformed_or_dangling_relations(
     relation: object,
     message: str,
 ) -> None:
+    ir = {
+        "actors": [{"id": "actor"}],
+        "use_cases": [{"id": "case"}],
+        "relations": [relation],
+    }
+    if isinstance(relation, dict):
+        assert TypedIRCandidate(diagram_type="usecase", ir=ir).ir == ir
+
     with pytest.raises(SerializationError, match=message):
-        serialize_phase2(
-            "usecase",
-            {
-                "actors": [{"id": "actor"}],
-                "use_cases": [{"id": "case"}],
-                "relations": [relation],
-            },
-        )
+        serialize_phase2("usecase", ir)
+
+
+@pytest.mark.parametrize(
+    ("ir", "message"),
+    [
+        ({"actors": [], "use_cases": [{"id": "case"}]}, "non-empty list"),
+        ({"actors": [{"id": "actor"}], "use_cases": []}, "non-empty list"),
+    ],
+)
+def test_usecase_nested_contract_leaves_nonempty_semantics_to_serializer(
+    ir: dict[str, object],
+    message: str,
+) -> None:
+    assert TypedIRCandidate(diagram_type="usecase", ir=ir).ir == ir
+
+    with pytest.raises(SerializationError, match=message):
+        serialize_phase2("usecase", ir)
 
 
 def test_c4_architecture_rejection_preserves_boundary_as_flowchart_subgraph() -> None:

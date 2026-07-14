@@ -3,9 +3,9 @@
 Structured VLM은 `diagram_type`만 맞춘 임의 JSON을 내보내지 않습니다. 활성화된 Mermaid 유형마다
 root 필드와 container 종류를 고정한 `TypedIRContract`를 prompt로 받고, 응답은 Pydantic 모델 생성
 시점에 같은 registry로 다시 검사됩니다. Phase 1 유형, stable Core UML 유형(State, Class, ER),
-native Phase 2의 Requirement·Block과 C4·Deployment·Component fallback은 record 내부의 알려진 필드와
-recursive container도 전용 Pydantic model로 검사합니다. serializer의 세부 의미 검사는 그 다음 단계에서
-수행합니다.
+native Phase 2의 Requirement·Block과 C4·Deployment·Component·Use-case fallback은 record 내부의 알려진
+필드와 recursive container도 전용 Pydantic model로 검사합니다. serializer의 세부 의미 검사는 그 다음
+단계에서 수행합니다.
 
 이 경계는 두 문제를 분리합니다.
 
@@ -37,6 +37,7 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | Block | block/edge record, shape token, `columns` scalar 형식 |
 | C4 fallback | element/boundary/relation record, level·kind token, Architecture port side |
 | Deployment / Component fallback | service-like primary/secondary record, group, canonical relation과 Architecture port side |
+| Use-case fallback | actor/use-case/relation record와 portable Flowchart projection |
 
 ### Requirement·Block record 계약
 
@@ -164,6 +165,38 @@ resource cap은 record ID planner와 공용 Architecture structure plan이 최�
 generated Scene은 이 planner의 emitted identity/topology를 따르지만 별도의 Deployment/Component native
 notation을 만들지는 않습니다.
 
+### Use-case Flowchart fallback 계약
+
+Use-case root는 `actors: list`와 `use_cases: list`가 모두 필수이고 `relations`가 선택입니다. Canonical
+prompt는 다음 record만 공개합니다.
+
+| Prompt record | 공개 field |
+| --- | --- |
+| `actors[]` | `id`, `label`, `name`, `bbox`, `evidence_ids` |
+| `use_cases[]` | `id`, `label`, `name`, `bbox`, `evidence_ids` |
+| `relations[]` | `id`, `source`, `target`, `type`, `label`, `bbox`, `evidence_ids` |
+
+Actor와 use-case record는 공용 bounded plan에서 하나의 collision-safe namespace를 얻습니다. 표시 label은
+`label` → `name` → source ID 순서이며, actor는 portable stadium proxy, use case는 별개의 round node로
+방출됩니다. 이것은 Mermaid 11.16 Flowchart 표현이지 UML actor glyph나 native Use-case notation이 아닙니다.
+입력 `groups`와 system boundary metadata는 원본 typed IR/extra metadata에 남더라도 serializer와 generated
+Scene에서 명시적으로 억제됩니다.
+
+Relation `type`과 `label`은 닫힌 UML enum이 아닌 open string입니다. `type`이 비어 있지 않으면 이를 edge
+label로 사용하고, 없을 때만 `label`을 사용하며 둘 다 없으면 unlabeled edge를 만듭니다. Raw relation ID,
+`bidirectional`, arrow hint, style과 semantic metadata는 자동 Flowchart에 반영하지 않습니다. 모든 relation은
+공용 plan의 정확한 source/target을 갖는 일반 단방향 connector이고 generated Scene도 같은 deterministic
+relation 순서·label·endpoint를 사용합니다. Node bbox는 generated Scene의 source 위치로 유지되지만 Mermaid
+layout을 지시하지 않고, relation bbox는 typed IR/review metadata에만 남습니다. `evidence_ids`는 visible
+node/relation의 generated Scene attribution에 유지됩니다.
+
+Nested contract는 actor/use-case/relation이 object이고 위 known scalar, strict bbox와 string evidence list의
+형을 갖는지만 검사합니다. 각 record field와 evidence는 partial/legacy reconstruction을 위해 선택이고
+미등록 field는 `extra="allow"`로 원본 dict에 보존됩니다. 두 root list의 non-empty 조건, actor와 use-case
+source ID 분리, normalization 및 `usecase_` prefix 뒤의 2차 collision, relation endpoint, node/relation cap은
+`plan_usecase_fallback`과 serializer가 최종 판정합니다. 기본 방향은 `LR`이고 허용되지 않은 값은 portable
+Flowchart와 generated Scene에서 `TB`로 정규화됩니다.
+
 알려진 scalar field에는 object/list를 넣을 수 없고, record와 child container의 종류도 고정합니다. `bbox`는
 정확히 네 개의 finite number, `evidence_ids`와 membership은 string list여야 합니다. `extra="allow"`를
 사용하므로 style, geometry, plugin 또는 향후 Mermaid field 같은 미등록 metadata는 삭제하지 않습니다.
@@ -200,11 +233,10 @@ message만 serializer와 Scene에 함께 전달하고, raw message ID와 무관�
 부여합니다. 따라서 Mermaid에서 합쳐진 actor나 생략된 message를 평가 Scene이 별도 구조로 세지 않습니다.
 
 현재 Marker `response_schema`의 외부 envelope는 여전히 `TypedIRCandidate.ir: dict`입니다. 따라서 이 단계는
-활성화된 Requirement·Block·C4·Deployment·Component의 prompt와 응답 후 검증을 중첩 구조까지 확장하지만,
-provider에 모든
+모든 Phase 2 type의 prompt와 응답 후 검증을 중첩 구조까지 확장하지만 provider에 모든
 Mermaid 유형을 하나의 discriminated JSON Schema로 직접 노출하거나 generic envelope reserve를
-늘리지는 않습니다. Phase 2 fallback 중 Use-case만 아직 root contract이며, 그 밖의 later-phase 유형을 포함한
-전용 model과 envelope-level discriminated schema는 후속 작업이므로 `ARCH-001`은 여전히 부분 완화 상태입니다.
+늘리지는 않습니다. 더 뒤의 planning/chart/special type 전용 model과 envelope-level discriminated schema는
+후속 작업이므로 Phase 2에 root-only type이 남지 않아도 `ARCH-001`은 여전히 부분 완화 상태입니다.
 
 Marker 1.10.2의 stock Ollama service는 원래 schema의 최상위 `properties`와 `required`만 복사해 `$defs`를
 버립니다. 이 adapter를 감지하면 local `#/$defs/*` 참조를 재귀적으로 inline한 schema-only

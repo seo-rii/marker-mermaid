@@ -1519,11 +1519,35 @@ def test_architecture_fallback_nested_prompts_are_exact_and_enabled_type_only():
     assert "  deployment.nodes[]" not in component
 
 
+def test_usecase_fallback_nested_prompt_is_exact_and_enabled_type_only() -> None:
+    first = typed_ir_contract_prompt({"usecase"})
+    second = typed_ir_contract_prompt({"usecase"})
+
+    assert first == second
+    assert (
+        "  usecase.actors[]: {id:string,label:string,name:string,bbox:number[4],"
+        "evidence_ids:string[]}"
+    ) in first
+    assert (
+        "  usecase.use_cases[]: {id:string,label:string,name:string,bbox:number[4],"
+        "evidence_ids:string[]}"
+    ) in first
+    assert (
+        "  usecase.relations[]: {id:string,source:string,target:string,type:string,"
+        "label:string,bbox:number[4],evidence_ids:string[]}"
+    ) in first
+    assert "usecase.groups[]" not in first
+    assert "system_boundary" not in first
+    assert "usecase.relations[]" in first
+    assert "deployment.nodes[]" not in first
+
+
 def test_every_phase_two_fallback_type_has_exact_nested_prompt_records():
     expected_records = {
         "c4": ("level", "elements[]", "boundaries[]", "relations[]"),
         "component": ("components[]", "interfaces[]", "groups[]", "dependencies[]"),
         "deployment": ("nodes[]", "artifacts[]", "groups[]", "links[]"),
+        "usecase": ("actors[]", "use_cases[]", "relations[]"),
     }
 
     assert set(expected_records) == PHASE_TWO_FALLBACK_NESTED_TYPES
