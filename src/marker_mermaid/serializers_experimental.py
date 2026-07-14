@@ -17,8 +17,10 @@ from decimal import Decimal
 from typing import Any
 
 from marker_mermaid.accessibility import enrich_accessibility_ir, resolve_accessibility
+from marker_mermaid.models import MAX_ID_CHARS
 from marker_mermaid.serialization import SerializationResult
 from marker_mermaid.serializers import SerializationError, serialize_flowchart
+from marker_mermaid.serializers_special import _neutralize_active_text
 
 MAX_ITEMS = 500
 MAX_DEPTH = 20
@@ -54,6 +56,10 @@ _ENTITY_LITERAL = re.compile(
 _ENTITY_COMPATIBILITY_WARNING = (
     "Entity-like literal text uses visible fullwidth ampersand and number-sign glyphs "
     "(＆ and ＃) because Mermaid 11.16 cannot preserve every literal entity form."
+)
+_ZENUML_COMPATIBILITY_WARNING = (
+    "ZenUML sequence fallback uses visible compatibility glyphs for "
+    "grammar-conflicting label characters."
 )
 
 
@@ -151,11 +157,47 @@ class CynefinRuntimeItemPlan:
     implicit: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class ZenUMLParticipantPlan:
+    """One sequence-fallback participant with a grammar-safe emitted identity."""
+
+    source_record: Mapping[str, Any] | None
+    source_id: str
+    emitted_id: str
+    label: str
+    semantic_label: str
+
+
+@dataclass(frozen=True, slots=True)
+class ZenUMLMessagePlan:
+    """One ordered message resolved to exact sequence-fallback endpoints."""
+
+    source_record: Mapping[str, Any]
+    emitted_id: str
+    source_id: str
+    target_id: str
+    source_emitted_id: str
+    target_emitted_id: str
+    label: str
+    semantic_label: str
+
+
+@dataclass(frozen=True, slots=True)
+class ZenUMLPlan:
+    """Validated ZenUML evidence shared by sequence serialization and Scene projection."""
+
+    participants: tuple[ZenUMLParticipantPlan, ...]
+    messages: tuple[ZenUMLMessagePlan, ...]
+    compatibility_substituted: bool
+
+
 def _text(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise SerializationError(f"{field} must be a non-empty string")
-    if any(unicodedata.category(char) in {"Cc", "Cf", "Zl", "Zp"} for char in value):
-        raise SerializationError(f"{field} contains unsupported control or format characters")
+    if any(unicodedata.category(char) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for char in value):
+        raise SerializationError(
+            f"{field} contains unsupported control or format characters, including surrogates"
+        )
     normalized = " ".join(value.strip().split())
     if len(normalized) > MAX_TEXT_LENGTH:
         raise SerializationError(f"{field} exceeds the safe text limit")
@@ -188,6 +230,21 @@ def _entity_compatibility_text(text: str) -> tuple[str, bool]:
         ),
         substituted,
     )
+
+
+def _zenuml_visible_text(
+    value: Any, field: str, *, sequence_statement: bool = True
+) -> tuple[str, str, bool]:
+    """Return normalized evidence and the exact glyphs visible in sequence SVG text."""
+
+    semantic = _text(value, field)
+    compatible, entity_substituted = _entity_compatibility_text(semantic)
+    visible = compatible.replace("#", "＃")
+    if sequence_statement:
+        visible = visible.replace(";", "⁏")
+    else:
+        visible = visible.replace("<", "〈").replace(">", "〉")
+    return semantic, visible, entity_substituted or visible != semantic
 
 
 def _accessibility(ir: Mapping[str, Any], diagram_type: str, *, experimental: bool) -> list[str]:
@@ -581,10 +638,10 @@ def serialize_railroad(ir: Mapping[str, Any], *, experimental: bool = False) -> 
     return SerializationResult.native("railroad", "\n".join(lines) + "\n", stability="experimental")
 
 
-def plan_zenuml_records(
+def plan_zenuml_structure(
     ir: Mapping[str, Any],
-) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    """Validate and normalize the participant/message records the fallback emits."""
+) -> ZenUMLPlan:
+    """Validate exact sequence-fallback actors and messages without mutating source IR."""
 
     participants = ir.get("participants")
     messages = ir.get("messages")
@@ -594,51 +651,140 @@ def plan_zenuml_records(
         raise SerializationError("zenuml IR requires messages")
     if len(participants) + len(messages) > MAX_ITEMS:
         raise SerializationError("zenuml IR exceeds the item limit")
-    participant_ids: set[str] = set()
-    normalized_participants: list[dict[str, str]] = []
+    emitted_by_source: dict[str, str] = {}
+    normalized_participants: list[ZenUMLParticipantPlan] = []
+    compatibility_substituted = False
     for index, participant in enumerate(participants):
         if isinstance(participant, Mapping):
-            participant_id = _identifier(participant.get("id"), f"participants[{index}].id")
+            source_participant_id = participant.get("id")
+            participant_id = _identifier(source_participant_id, f"participants[{index}].id")
             label = participant.get("label", participant_id)
+            source_record: Mapping[str, Any] | None = participant
         else:
-            participant_id = _identifier(participant, f"participants[{index}]")
+            source_participant_id = participant
+            participant_id = _identifier(source_participant_id, f"participants[{index}]")
             label = participant
-        if participant_id in participant_ids:
+            source_record = None
+        if participant_id != source_participant_id:
+            raise SerializationError(
+                f"participants[{index}].id must not require whitespace normalization"
+            )
+        if participant_id in emitted_by_source:
             raise SerializationError(f"duplicate ZenUML participant: {participant_id}")
-        participant_ids.add(participant_id)
-        normalized_participants.append(
-            {"id": participant_id, "label": _text(label, "participant label")}
+        semantic_label, visible_label, label_substituted = _zenuml_visible_text(
+            label, f"participants[{index}].label"
         )
-    normalized_messages: list[dict[str, str]] = []
-    for index, message in enumerate(messages):
+        compatibility_substituted = compatibility_substituted or label_substituted
+        emitted_id = f"zenuml_participant_{participant_id}"
+        if len(emitted_id) > MAX_ID_CHARS:
+            raise SerializationError(
+                f"participants[{index}].id exceeds the emitted identifier limit"
+            )
+        emitted_by_source[participant_id] = emitted_id
+        normalized_participants.append(
+            ZenUMLParticipantPlan(
+                source_record=source_record,
+                source_id=participant_id,
+                emitted_id=emitted_id,
+                label=visible_label,
+                semantic_label=semantic_label,
+            )
+        )
+    normalized_messages: list[ZenUMLMessagePlan] = []
+    for index, message in enumerate(messages, start=1):
         if not isinstance(message, Mapping):
             raise SerializationError("zenuml messages must be objects")
-        source = _identifier(message.get("source"), f"messages[{index}].source")
-        target = _identifier(message.get("target"), f"messages[{index}].target")
-        if source not in participant_ids or target not in participant_ids:
+        source_value = message.get("source")
+        target_value = message.get("target")
+        source = _identifier(source_value, f"messages[{index - 1}].source")
+        target = _identifier(target_value, f"messages[{index - 1}].target")
+        if source != source_value or target != target_value:
+            raise SerializationError(
+                f"messages[{index - 1}] endpoints must not require whitespace normalization"
+            )
+        source_emitted_id = emitted_by_source.get(source)
+        target_emitted_id = emitted_by_source.get(target)
+        if source_emitted_id is None or target_emitted_id is None:
             raise SerializationError(f"ZenUML message {source}->{target} is unresolved")
-        label = _text(message.get("label"), f"messages[{index}].label")
-        normalized_messages.append({"source": source, "target": target, "label": label})
-    return normalized_participants, normalized_messages
+        semantic_label, label, label_substituted = _zenuml_visible_text(
+            message.get("label"), f"messages[{index - 1}].label"
+        )
+        compatibility_substituted = compatibility_substituted or label_substituted
+        normalized_messages.append(
+            ZenUMLMessagePlan(
+                source_record=message,
+                emitted_id=f"zenuml_message_{index}",
+                source_id=source,
+                target_id=target,
+                source_emitted_id=source_emitted_id,
+                target_emitted_id=target_emitted_id,
+                label=label,
+                semantic_label=semantic_label,
+            )
+        )
+    return ZenUMLPlan(
+        participants=tuple(normalized_participants),
+        messages=tuple(normalized_messages),
+        compatibility_substituted=compatibility_substituted,
+    )
+
+
+def plan_zenuml_records(
+    ir: Mapping[str, Any],
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """Return the exact legacy semantic tuple-of-dicts view for existing callers."""
+
+    plan = plan_zenuml_structure(ir)
+    participants = [
+        {"id": participant.source_id, "label": participant.semantic_label}
+        for participant in plan.participants
+    ]
+    messages = [
+        {
+            "source": message.source_id,
+            "target": message.target_id,
+            "label": message.semantic_label,
+        }
+        for message in plan.messages
+    ]
+    return participants, messages
 
 
 def serialize_zenuml(ir: Mapping[str, Any], *, experimental: bool = False) -> SerializationResult:
     """Emit sequence-like ZenUML evidence through the bundled sequence grammar."""
 
-    participants, messages = plan_zenuml_records(ir)
-    lines = ["sequenceDiagram", *_accessibility(ir, "zenuml", experimental=experimental)]
+    plan = plan_zenuml_structure(ir)
+    accessibility = resolve_accessibility(ir, "zenuml", experimental=experimental)
+    _semantic_title, title, title_substituted = _zenuml_visible_text(
+        accessibility.title, "accessible title", sequence_statement=False
+    )
+    _semantic_description, description, description_substituted = _zenuml_visible_text(
+        accessibility.description, "accessible description", sequence_statement=False
+    )
+    accessibility_substituted = title_substituted or description_substituted
+    lines = [
+        "sequenceDiagram",
+        f"accTitle: {_neutralize_active_text(title)}",
+        f"accDescr: {_neutralize_active_text(description)}",
+    ]
     lines.extend(
-        f"    participant {participant['id']} as {participant['label']}"
-        for participant in participants
+        f"    participant {participant.emitted_id} as {_neutralize_active_text(participant.label)}"
+        for participant in plan.participants
     )
     lines.extend(
-        f"    {message['source']}->>{message['target']}: {message['label']}" for message in messages
+        f"    {message.source_emitted_id}->>{message.target_emitted_id}: "
+        f"{_neutralize_active_text(message.label)}"
+        for message in plan.messages
     )
+    code = _preflight_experimental_code("\n".join(lines) + "\n", diagram_type="zenuml")
+    warnings = ["ZenUML is unavailable in Mermaid 11.16 and was emitted as sequence."]
+    if plan.compatibility_substituted or accessibility_substituted:
+        warnings.append(_ZENUML_COMPATIBILITY_WARNING)
     return SerializationResult.fallback(
         "zenuml",
         "sequence",
-        "\n".join(lines) + "\n",
-        warnings=("ZenUML is unavailable in Mermaid 11.16 and was emitted as sequence.",),
+        code,
+        warnings=tuple(warnings),
         stability="experimental",
     )
 

@@ -7,15 +7,18 @@ from xml.etree import ElementTree
 
 import pytest
 
+import marker_mermaid.serializers_special as special_serializers
 from marker_mermaid.config import SecurityProfile
 from marker_mermaid.security import MermaidSecurityScanner
 from marker_mermaid.serializers import SerializationError
 from marker_mermaid.serializers_special import (
     MAX_SPECIAL_OUTPUT_CHARS,
     SPECIAL_TYPES,
+    EventModelingPlan,
     PacketFieldPlan,
     PacketPlan,
     SpecialHierarchyNodePlan,
+    plan_eventmodeling_records,
     plan_ishikawa_hierarchy,
     plan_packet_fields,
     plan_treeview_hierarchy,
@@ -175,6 +178,41 @@ def test_public_hierarchy_plans_preserve_parentage_and_reserved_word_safe_ids() 
     assert treeview[1].parent_emitted_id == "treeview_node_end"
     with pytest.raises(FrozenInstanceError):
         treeview[0].depth = 4
+
+
+def test_eventmodeling_plan_preserves_records_and_exact_fallback_projection() -> None:
+    ir = deepcopy(EVENTMODELING_IR)
+    lane = ir["lanes"][0]
+    frame = lane["frames"][0]
+    relation = ir["relations"][0]
+    lane["unused"] = {"label": "must not leak"}
+    lane["name"] = "not an Event Modeling label alias"
+    frame["label"] = 'Open &#35; "quoted" \\ path'
+    frame["text"] = "not an Event Modeling label alias"
+    relation["label"] = "continue | retry; later"
+    relation["style"] = "dashed"
+    snapshot = repr(ir)
+
+    plan = plan_eventmodeling_records(ir)
+
+    assert isinstance(plan, EventModelingPlan)
+    assert plan.lanes[0].source_record is lane
+    assert plan.lanes[0].emitted_id == "eventmodeling_lane_customer"
+    assert plan.frames[0].source_record is frame
+    assert plan.frames[0].emitted_id == "eventmodeling_frame_open"
+    assert plan.frames[0].label == "Open ＆＃35; ″quoted″ ∖ path"
+    assert plan.frames[0].semantic_label == 'Open &#35; "quoted" \\ path'
+    assert plan.frames[0].rendered_label == "T0 — [ui] Open ＆＃35; ″quoted″ ∖ path"
+    assert plan.relations[0].source_record is relation
+    assert plan.relations[0].emitted_id == "eventmodeling_relation_1"
+    assert plan.relations[0].source_emitted_id == "eventmodeling_frame_open"
+    assert plan.relations[0].target_emitted_id == "eventmodeling_frame_submit"
+    assert plan.relations[0].label == "continue ∣ retry⁏ later"
+    assert plan.compatibility_substituted
+    assert "not an Event Modeling label alias" not in serialize_special("eventmodeling", ir).code
+    assert repr(ir) == snapshot
+    with pytest.raises(FrozenInstanceError):
+        plan.frames[0].label = "mutated"
 
 
 def test_special_plans_resolve_label_name_alias_without_hiding_conflicts() -> None:
@@ -511,20 +549,20 @@ def test_eventmodeling_uses_lane_aware_loss_disclosed_fallback() -> None:
     assert result.requested_type == "eventmodeling"
     assert result.emitted_type == "flowchart"
     assert result.fallback_chain == ("eventmodeling", "flowchart")
-    assert 'subgraph lane_customer["Customer"]' in result.code
-    assert 'open["T0 — [ui] Open checkout"]' in result.code
-    assert "submit --> placed" in result.code
+    assert 'subgraph eventmodeling_lane_customer["Customer"]' in result.code
+    assert 'eventmodeling_frame_open["T0 — [ui] Open checkout"]' in result.code
+    assert "eventmodeling_frame_submit --> eventmodeling_frame_placed" in result.code
     assert any("not reliable" in warning for warning in result.warnings)
     assert any("Time/reset-frame notation" in warning for warning in result.warnings)
 
 
 def test_eventmodeling_edge_label_delimiters_are_encoded() -> None:
     ir = deepcopy(EVENTMODELING_IR)
-    ir["relations"][0]["label"] = "continue | retry"
+    ir["relations"][0]["label"] = "continue | retry; later"
 
     result = serialize_special("eventmodeling", ir)
 
-    assert "|continue ∣ retry|" in result.code
+    assert "|continue ∣ retry⁏ later|" in result.code
 
 
 @pytest.mark.parametrize(
@@ -582,11 +620,11 @@ def test_all_special_serializers_apply_the_common_source_character_budget(diagra
         serialize_special(diagram_type, ir)
 
 
-def test_special_serializer_applies_the_common_source_line_budget() -> None:
+def test_special_serializer_applies_the_common_source_line_budget(monkeypatch) -> None:
     ir = deepcopy(EVENTMODELING_IR)
-    ir["relations"] = [{"source": "open", "target": "submit"} for _index in range(5_000)]
+    monkeypatch.setattr(special_serializers, "MAX_SPECIAL_OUTPUT_LINES", 10)
 
-    with pytest.raises(SerializationError, match="source-line limit of 5000"):
+    with pytest.raises(SerializationError, match="source-line limit of 10"):
         serialize_special("eventmodeling", ir)
 
 
@@ -631,6 +669,27 @@ def test_special_entity_literals_use_disclosed_visible_compatibility_glyphs(
     assert normalized_report.safe, normalized_report.findings
 
 
+def test_eventmodeling_entity_and_edge_delimiters_use_visible_compatibility_glyphs() -> None:
+    ir = deepcopy(EVENTMODELING_IR)
+    ir["lanes"][0]["label"] = "Customer &#35;"
+    ir["lanes"][0]["frames"][0]["label"] = "Open &amp; ready"
+    ir["relations"][0]["label"] = "continue | retry; later"
+
+    result = serialize_special("eventmodeling", ir)
+
+    assert "Customer ＆＃35;" in result.code
+    assert "Open ＆amp; ready" in result.code
+    assert "continue ∣ retry⁏ later" in result.code
+    assert "&#35;" not in result.code
+    assert any("compatibility glyphs" in warning for warning in result.warnings)
+    assert MermaidSecurityScanner(SecurityProfile.STRICT).scan(result.code).safe
+    assert (
+        MermaidSecurityScanner(SecurityProfile.STRICT)
+        .scan(unicodedata.normalize("NFKC", result.code))
+        .safe
+    )
+
+
 @pytest.mark.integration
 def test_eventmodeling_neutralized_tokens_render_as_visible_labels() -> None:
     ir = deepcopy(EVENTMODELING_IR)
@@ -638,7 +697,7 @@ def test_eventmodeling_neutralized_tokens_render_as_visible_labels() -> None:
     ir["lanes"][0]["frames"][0]["label"] = (
         "style #checkout &amp; &quot; &lt;script&gt; &NewLine; ready"
     )
-    ir["relations"][0]["label"] = "continue | retry"
+    ir["relations"][0]["label"] = "continue | retry; later"
     code = serialize_special("eventmodeling", ir).code
     runtime = NodeMermaidRuntime()
     validator = CandidateValidator(runtime, SecurityProfile.STRICT)
@@ -653,10 +712,10 @@ def test_eventmodeling_neutralized_tokens_render_as_visible_labels() -> None:
     visible_text = " ".join(ElementTree.fromstring(outcome.runtime.svg or "").itertext())
     visible_text = " ".join(visible_text.replace("\u200b", "").split())
     assert (
-        "https://clock — [ui] style #checkout &amp; &quot; &lt;script&gt; &NewLine; ready"
-        in visible_text
+        "https://clock — [ui] style #checkout ＆amp; ＆quot; ＆lt;script＆gt; "
+        "＆NewLine; ready" in visible_text
     )
-    assert "continue ∣ retry" in visible_text
+    assert "continue ∣ retry⁏ later" in visible_text
     assert not any(entity in visible_text for entity in ("&#8203;", "&#35;", "&#58;", "&#124;"))
 
 
@@ -812,6 +871,7 @@ def test_special_text_rejects_source_control_and_format_characters() -> None:
         "bad\u200blabel",
         "bad\u2028label",
         "bad\u2029label",
+        "bad\ud800label",
     ):
         ir = deepcopy(EVENTMODELING_IR)
         ir["lanes"][0]["frames"][0]["label"] = label
@@ -827,8 +887,8 @@ def test_eventmodeling_discloses_flowchart_compatibility_glyph_replacement() -> 
 
     result = serialize_special("eventmodeling", ir)
 
-    assert 'subgraph lane_customer["Customer ″quoted″"]' in result.code
-    assert 'open["T∖0 — [ui] Open checkout"]' in result.code
+    assert 'subgraph eventmodeling_lane_customer["Customer ″quoted″"]' in result.code
+    assert 'eventmodeling_frame_open["T∖0 — [ui] Open checkout"]' in result.code
     assert "continue ″now″" in result.code
     assert any("compatibility glyphs" in warning for warning in result.warnings)
 
@@ -862,12 +922,65 @@ def test_eventmodeling_rejects_unknown_types_references_and_id_collisions() -> N
         "lanes": [
             {
                 "id": "customer",
-                "frames": [{"id": "lane_customer", "type": "ui", "label": "Open"}],
+                "frames": [
+                    {"id": "frame-a", "type": "ui", "label": "Open"},
+                    {"id": "frame_a", "type": "event", "label": "Opened"},
+                ],
             }
         ]
     }
-    with pytest.raises(SerializationError, match="collides after Mermaid normalization"):
+    with pytest.raises(SerializationError, match="ambiguous after Mermaid normalization"):
         serialize_special("eventmodeling", collision)
+
+
+def test_eventmodeling_direct_contract_rejects_coercion_and_noncanonical_references() -> None:
+    for field, value, message in (
+        ("id", 7, "id must be a string"),
+        ("label", 7, "must be a string"),
+        ("type", 7, "type must be a string"),
+        ("type", " event ", "noncanonical type"),
+    ):
+        ir = deepcopy(EVENTMODELING_IR)
+        ir["lanes"][0]["frames"][0][field] = value
+        with pytest.raises(SerializationError, match=message):
+            serialize_special("eventmodeling", ir)
+
+    for endpoint in (" open ", "open\u200b", 7):
+        ir = deepcopy(EVENTMODELING_IR)
+        ir["relations"][0]["source"] = endpoint
+        with pytest.raises(SerializationError, match="id must match|endpoints must be strings"):
+            serialize_special("eventmodeling", ir)
+
+    missing_type = deepcopy(EVENTMODELING_IR)
+    missing_type["lanes"][0]["frames"][0]["type"] = ""
+    assert plan_eventmodeling_records(missing_type).frames[0].frame_type == "unknown"
+
+
+def test_eventmodeling_preserves_parallel_relations_with_distinct_provenance_slots() -> None:
+    ir = deepcopy(EVENTMODELING_IR)
+    ir["relations"] = [
+        {"source": "open", "target": "submit", "label": "continues"},
+        {"source": "open", "target": "submit", "label": "continues"},
+    ]
+
+    plan = plan_eventmodeling_records(ir)
+    result = serialize_special("eventmodeling", ir)
+
+    assert [relation.emitted_id for relation in plan.relations] == [
+        "eventmodeling_relation_1",
+        "eventmodeling_relation_2",
+    ]
+    assert (
+        result.code.count("eventmodeling_frame_open -->|continues| eventmodeling_frame_submit") == 2
+    )
+
+
+def test_eventmodeling_edge_budget_fails_before_unbounded_fallback_output() -> None:
+    ir = deepcopy(EVENTMODELING_IR)
+    ir["relations"] = [{"source": "open", "target": "submit"} for _index in range(501)]
+
+    with pytest.raises(SerializationError, match="Mermaid edge limit of 500"):
+        serialize_special("eventmodeling", ir)
 
 
 def test_labels_are_neutralized_before_strict_security_scanning() -> None:

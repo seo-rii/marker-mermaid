@@ -43,6 +43,16 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 | Organization | `treeview` | reporting hierarchy 보존, organization 전용 notation 없음 |
 | Data Lineage | `flowchart` | dataset/process endpoint를 모두 확인한 portable graph |
 
+Event Modeling은 lane/frame/relation을 하나의 frozen plan에서 검증한 뒤
+`eventmodeling_lane_*`·`eventmodeling_frame_*` emitted ID로 Flowchart fallback을 만듭니다.
+Lane은 subgraph membership, frame은 node, relation은 ID 문법 없는 단방향 end-arrow로
+표현하고 `eventmodeling_relation_*`는 Scene/provenance slot에만 부여합니다.
+ZenUML도 `zenuml_participant_*`는 Sequence participant ID로 방출하지만,
+ID 문법이 없는 message의 `zenuml_message_*`는 Scene/provenance slot에만 쓰고 source에는
+namespaced endpoint만 방출합니다. 두 plan은 raw role/shape/style/direction/bidirectional/relation ID 같은
+fallback이 표현하지 않는 metadata를 node·edge로 승격하지 않으며, generated Scene과
+OCR projection이 같은 code-visible identity·Scene relation slot·화면 label·topology를 재사용합니다.
+
 State/Class/ER serializer는 provenance 없는 구조를 문법적으로 만들 수 있어도 거부합니다. unknown
 endpoint, 추측 cardinality, ER의 identifying flag 누락도 `SerializationError`입니다. Requirement/Block과
 fallback serializer 역시 unknown relation endpoint를 임의 node로 만들지 않습니다.

@@ -37,6 +37,7 @@ from marker_mermaid.typed_contracts import (
     PHASE_TWO_FALLBACK_NESTED_TYPES,
     PHASE_TWO_NATIVE_NESTED_TYPES,
     PLANNING_NESTED_TYPES,
+    SPECIAL_FALLBACK_NESTED_TYPES,
     SPECIAL_NATIVE_NESTED_TYPES,
     TYPED_IR_CONTRACTS,
     typed_ir_contract_prompt,
@@ -1371,6 +1372,7 @@ def test_every_core_uml_type_has_nested_prompt_records():
         | PLANNING_NESTED_TYPES
         | SPECIAL_NATIVE_NESTED_TYPES
         | EXPERIMENTAL_NATIVE_NESTED_TYPES
+        | SPECIAL_FALLBACK_NESTED_TYPES
     )
     assert {
         diagram_type
@@ -1443,6 +1445,7 @@ def test_every_phase_two_native_type_has_exact_nested_prompt_records():
         | PLANNING_NESTED_TYPES
         | SPECIAL_NATIVE_NESTED_TYPES
         | EXPERIMENTAL_NATIVE_NESTED_TYPES
+        | SPECIAL_FALLBACK_NESTED_TYPES
     )
     assert {
         diagram_type
@@ -1576,6 +1579,7 @@ def test_every_phase_two_fallback_type_has_exact_nested_prompt_records():
         | PLANNING_NESTED_TYPES
         | SPECIAL_NATIVE_NESTED_TYPES
         | EXPERIMENTAL_NATIVE_NESTED_TYPES
+        | SPECIAL_FALLBACK_NESTED_TYPES
     )
     assert {
         diagram_type
@@ -1628,6 +1632,7 @@ def test_phase_three_core_chart_nested_prompts_are_exact_and_enabled_type_only()
         | PLANNING_NESTED_TYPES
         | SPECIAL_NATIVE_NESTED_TYPES
         | EXPERIMENTAL_NATIVE_NESTED_TYPES
+        | SPECIAL_FALLBACK_NESTED_TYPES
     )
     assert {
         diagram_type
@@ -1691,6 +1696,7 @@ def test_phase_three_extended_chart_nested_prompts_are_exact_and_enabled_type_on
         | PLANNING_NESTED_TYPES
         | SPECIAL_NATIVE_NESTED_TYPES
         | EXPERIMENTAL_NATIVE_NESTED_TYPES
+        | SPECIAL_FALLBACK_NESTED_TYPES
     )
     assert {
         diagram_type
@@ -1755,6 +1761,7 @@ def test_planning_nested_prompts_are_exact_deterministic_and_enabled_type_only()
         | PLANNING_NESTED_TYPES
         | SPECIAL_NATIVE_NESTED_TYPES
         | EXPERIMENTAL_NATIVE_NESTED_TYPES
+        | SPECIAL_FALLBACK_NESTED_TYPES
     )
     assert {
         diagram_type
@@ -1820,6 +1827,7 @@ def test_special_native_nested_prompts_are_exact_deterministic_and_enabled_type_
         | PLANNING_NESTED_TYPES
         | SPECIAL_NATIVE_NESTED_TYPES
         | EXPERIMENTAL_NATIVE_NESTED_TYPES
+        | SPECIAL_FALLBACK_NESTED_TYPES
     )
     assert {
         diagram_type
@@ -1877,6 +1885,7 @@ def test_experimental_native_nested_prompts_are_exact_and_enabled_type_only() ->
         | PLANNING_NESTED_TYPES
         | SPECIAL_NATIVE_NESTED_TYPES
         | EXPERIMENTAL_NATIVE_NESTED_TYPES
+        | SPECIAL_FALLBACK_NESTED_TYPES
     )
     assert {
         diagram_type
@@ -1901,6 +1910,66 @@ def test_experimental_native_nested_prompts_are_exact_and_enabled_type_only() ->
         assert all(
             f"  {other_type}." not in prompt
             for other_type in EXPERIMENTAL_NATIVE_NESTED_TYPES - {diagram_type}
+        )
+
+
+def test_special_fallback_nested_prompts_are_exact_and_enabled_type_only() -> None:
+    expected_records = {
+        "eventmodeling": (
+            "lanes[]: {id:string,label:string,bbox:number[4],evidence_ids:string[],frames:frame[]}",
+            "lanes[].frames[]: {id:string,"
+            "type:command|event|readmodel|processor|ui|unknown,"
+            "label:string,time:string,bbox:number[4],evidence_ids:string[]}",
+            "relations[]: {source:string,target:string,label:string,bbox:number[4],"
+            "evidence_ids:string[]}",
+        ),
+        "zenuml": (
+            "participants[]: {id:string,label:string,bbox:number[4],evidence_ids:string[]}",
+            "messages[]: {source:string,target:string,label:string,bbox:number[4],"
+            "evidence_ids:string[]}",
+        ),
+    }
+
+    assert set(expected_records) == SPECIAL_FALLBACK_NESTED_TYPES
+    assert NESTED_TYPED_IR_TYPES == (
+        PHASE_ONE_NESTED_TYPES
+        | CORE_UML_NESTED_TYPES
+        | PHASE_TWO_NATIVE_NESTED_TYPES
+        | PHASE_TWO_FALLBACK_NESTED_TYPES
+        | PHASE_THREE_CORE_NESTED_TYPES
+        | PHASE_THREE_EXTENDED_NESTED_TYPES
+        | PLANNING_NESTED_TYPES
+        | SPECIAL_NATIVE_NESTED_TYPES
+        | EXPERIMENTAL_NATIVE_NESTED_TYPES
+        | SPECIAL_FALLBACK_NESTED_TYPES
+    )
+    assert {
+        diagram_type
+        for diagram_type, contract in TYPED_IR_CONTRACTS.items()
+        if contract.nested_model is not None
+    } == NESTED_TYPED_IR_TYPES
+
+    combined = typed_ir_contract_prompt(set(SPECIAL_FALLBACK_NESTED_TYPES))
+    assert combined == typed_ir_contract_prompt({"zenuml", "eventmodeling"})
+    assert combined.index("- eventmodeling:") < combined.index("- zenuml:")
+    assert "eventmodeling.swimlanes[]" not in combined
+    assert "eventmodeling.lanes[].nodes[]" not in combined
+    assert "name:string" not in combined
+    assert "timestamp:string" not in combined
+    assert "type:cmd|" not in combined
+    assert "zenuml.participants[]: string|" not in combined
+    assert "zenuml.messages[]: {id:string" not in combined
+    assert "style:string" not in combined
+    assert "railroad.rules[]" not in combined
+
+    for diagram_type, records in expected_records.items():
+        contract = TYPED_IR_CONTRACTS[diagram_type]
+        prompt = typed_ir_contract_prompt({diagram_type})
+        assert contract.prompt_records == records
+        assert all(f"  {diagram_type}.{record}" in prompt for record in records)
+        assert all(
+            f"  {other_type}." not in prompt
+            for other_type in SPECIAL_FALLBACK_NESTED_TYPES - {diagram_type}
         )
 
 

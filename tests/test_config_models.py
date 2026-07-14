@@ -3192,6 +3192,307 @@ def test_generic_candidate_envelopes_apply_experimental_native_nested_contracts(
         )
 
 
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "location"),
+    [
+        ("eventmodeling", {"lanes": ["lane"]}, "lanes[0]"),
+        ("eventmodeling", {"lanes": [{"id": 1}]}, "lanes[0].id"),
+        (
+            "eventmodeling",
+            {"lanes": [{"frames": "frame"}]},
+            "lanes[0].frames",
+        ),
+        (
+            "eventmodeling",
+            {"lanes": [{"frames": [{"label": False}]}]},
+            "lanes[0].frames[0].label",
+        ),
+        (
+            "eventmodeling",
+            {"lanes": [{"frames": [{"time": 1}]}]},
+            "lanes[0].frames[0].time",
+        ),
+        (
+            "eventmodeling",
+            {"lanes": [{"frames": [{"bbox": [0, 0, 10]}]}]},
+            "lanes[0].frames[0].bbox",
+        ),
+        (
+            "eventmodeling",
+            {"lanes": [], "relations": [{"source": 1}]},
+            "relations[0].source",
+        ),
+        (
+            "eventmodeling",
+            {"lanes": [], "relations": [{"evidence_ids": [1]}]},
+            "relations[0].evidence_ids[0]",
+        ),
+        ("zenuml", {"participants": [1], "messages": []}, "participants[0]"),
+        (
+            "zenuml",
+            {"participants": [{"id": False}], "messages": []},
+            "participants[0].id",
+        ),
+        (
+            "zenuml",
+            {"participants": [{"bbox": [0, False, 10, 10]}], "messages": []},
+            "participants[0].bbox",
+        ),
+        (
+            "zenuml",
+            {"participants": [], "messages": ["message"]},
+            "messages[0]",
+        ),
+        (
+            "zenuml",
+            {"participants": [], "messages": [{"target": []}]},
+            "messages[0].target",
+        ),
+        (
+            "zenuml",
+            {"participants": [], "messages": [{"label": False}]},
+            "messages[0].label",
+        ),
+        (
+            "zenuml",
+            {"participants": [], "messages": [{"evidence_ids": [1]}]},
+            "messages[0].evidence_ids[0]",
+        ),
+    ],
+)
+def test_special_fallback_nested_contracts_reject_strict_known_types(
+    diagram_type: str,
+    ir: dict[str, object],
+    location: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    message = str(exc_info.value)
+    assert "violates its nested contract" in message
+    assert location in message
+
+
+@pytest.mark.parametrize("frame_type", ["cmd", "evt", "read_model", "aggregate", " event "])
+def test_eventmodeling_contract_rejects_noncanonical_closed_frame_types(
+    frame_type: str,
+) -> None:
+    with pytest.raises(ValidationError, match=r"lanes\[0\]\.frames\[0\]\.type"):
+        TypedIRCandidate(
+            diagram_type="eventmodeling",
+            ir={"lanes": [{"frames": [{"type": frame_type}]}]},
+        )
+
+
+@pytest.mark.parametrize(
+    "frame_type",
+    ["command", "event", "readmodel", "processor", "ui", "unknown", "UI", ""],
+)
+def test_eventmodeling_contract_accepts_closed_frame_types_without_rewriting(
+    frame_type: str,
+) -> None:
+    ir = {"lanes": [{"frames": [{"type": frame_type}]}]}
+
+    candidate = TypedIRCandidate(diagram_type="eventmodeling", ir=ir)
+
+    assert candidate.ir == ir
+    assert candidate.ir["lanes"][0]["frames"][0]["type"] == frame_type
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "eventmodeling",
+            {
+                "lanes": [
+                    {
+                        "id": "customer",
+                        "label": "Customer",
+                        "bbox": [0, 0, 10, 10],
+                        "evidence_ids": ["lane-box"],
+                        "frames": [
+                            {
+                                "id": "checkout",
+                                "type": "event",
+                                "label": "Checkout",
+                                "time": "T1",
+                                "bbox": [1, 1, 2, 2],
+                                "evidence_ids": ["frame-box"],
+                                "text": "legacy extra",
+                                "future_metadata": {"kept": True},
+                            }
+                        ],
+                        "name": "legacy extra",
+                    }
+                ],
+                "relations": [
+                    {
+                        "source": "checkout",
+                        "target": "done",
+                        "label": "next",
+                        "style": "legacy extra",
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+        (
+            "zenuml",
+            {
+                "participants": [
+                    "LegacyScalar",
+                    {
+                        "id": "API",
+                        "label": "Payment API",
+                        "bbox": [0, 0, 10, 10],
+                        "evidence_ids": ["api-box"],
+                        "text": "legacy extra",
+                        "future_metadata": {"kept": True},
+                    },
+                ],
+                "messages": [
+                    {
+                        "source": "LegacyScalar",
+                        "target": "API",
+                        "label": "authorize",
+                        "id": "legacy extra",
+                        "style": "legacy extra",
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+    ],
+)
+def test_special_fallback_contracts_preserve_legacy_extra_and_original_ir(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    assert candidate.ir == ir
+    assert candidate.ir is not ir
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "root_field"),
+    [
+        ("eventmodeling", {"swimlanes": []}, "lanes"),
+        ("zenuml", {"actors": [], "calls": []}, "participants"),
+    ],
+)
+def test_special_fallback_aliases_do_not_replace_canonical_roots(
+    diagram_type: str,
+    ir: dict[str, object],
+    root_field: str,
+) -> None:
+    with pytest.raises(ValidationError, match=rf"requires root field '{root_field}'"):
+        TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        ("eventmodeling", {"lanes": []}),
+        ("eventmodeling", {"lanes": [{}]}),
+        ("eventmodeling", {"lanes": [{"frames": [{}]}]}),
+        (
+            "eventmodeling",
+            {
+                "lanes": [{"frames": [{"id": "frame"}]}],
+                "relations": [{"source": "frame", "target": "missing"}],
+            },
+        ),
+        ("zenuml", {"participants": [], "messages": []}),
+        ("zenuml", {"participants": [{}], "messages": [{}]}),
+        (
+            "zenuml",
+            {
+                "participants": [{"id": "User"}, {"id": "User"}],
+                "messages": [{"source": "User", "target": "missing"}],
+            },
+        ),
+    ],
+)
+def test_special_fallback_contracts_leave_semantic_requiredness_to_serializer(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    assert candidate.ir == ir
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "mutation", "location"),
+    [
+        (
+            "eventmodeling",
+            {"lanes": [{"frames": [{"type": "event"}]}]},
+            lambda ir: ir["lanes"][0]["frames"][0].__setitem__("type", 1),
+            r"lanes\[0\]\.frames\[0\]\.type",
+        ),
+        (
+            "zenuml",
+            {"participants": ["User"], "messages": [{"target": "User"}]},
+            lambda ir: ir["messages"][0].__setitem__("target", []),
+            r"messages\[0\]\.target",
+        ),
+    ],
+)
+def test_canonical_key_revalidates_mutated_special_fallback_contracts(
+    diagram_type: str,
+    ir: dict[str, object],
+    mutation,
+    location: str,
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+    mutation(candidate.ir)
+
+    with pytest.raises(ValidationError, match=location):
+        candidate.canonical_key()
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "invalid_ir", "location"),
+    [
+        (
+            "eventmodeling",
+            {"lanes": [{"frames": [{"evidence_ids": [1]}]}]},
+            r"lanes\[0\]\.frames\[0\]\.evidence_ids\[0\]",
+        ),
+        (
+            "zenuml",
+            {"participants": [{"bbox": [0, 0, False, 10]}], "messages": []},
+            r"participants\[0\]\.bbox",
+        ),
+    ],
+)
+def test_generic_candidate_envelopes_apply_special_fallback_nested_contracts(
+    diagram_type: str,
+    invalid_ir: dict[str, object],
+    location: str,
+) -> None:
+    prediction = DiagramTypePrediction(candidates=[diagram_type], scores=[1.0])
+
+    with pytest.raises(ValidationError, match=location):
+        EngineObservation(
+            prediction=prediction,
+            typed_candidates=[{"diagram_type": diagram_type, "ir": invalid_ir}],
+        )
+
+    with pytest.raises(ValidationError, match=location):
+        MermaidCandidate(
+            candidate_id=f"candidate-{diagram_type}",
+            generation_method="typed_ir",
+            diagram_type=diagram_type,
+            typed_ir=invalid_ir,
+        )
+
+
 def test_canonical_key_uses_a_bounded_digest_without_model_dump(
     monkeypatch,
 ) -> None:

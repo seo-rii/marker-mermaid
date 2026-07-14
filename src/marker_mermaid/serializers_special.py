@@ -61,6 +61,10 @@ _ENTITY_COMPATIBILITY_WARNING = (
     "Entity-like literal text uses visible fullwidth ampersand and number-sign glyphs "
     "(＆ and ＃) because Mermaid 11.16 cannot preserve every literal entity form."
 )
+_EVENTMODELING_COMPATIBILITY_WARNING = (
+    "Event Modeling flowchart fallback uses visible compatibility glyphs for "
+    "grammar-conflicting label characters."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,16 +100,74 @@ class SpecialHierarchyNodePlan:
     parent_emitted_id: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class EventModelingFramePlan:
+    """One exact frame declaration shared by fallback and Scene consumers."""
+
+    source_record: Mapping[str, Any]
+    source_id: str
+    emitted_id: str
+    frame_type: str
+    label: str
+    semantic_label: str
+    time: str | None
+    semantic_time: str | None
+    rendered_label: str
+    semantic_rendered_label: str
+
+
+@dataclass(frozen=True, slots=True)
+class EventModelingLanePlan:
+    """One lane and its ordered, explicitly observed frames."""
+
+    source_record: Mapping[str, Any]
+    source_id: str
+    emitted_id: str
+    label: str
+    semantic_label: str
+    frames: tuple[EventModelingFramePlan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EventModelingRelationPlan:
+    """One resolved relation using the exact emitted Flowchart endpoints."""
+
+    source_record: Mapping[str, Any]
+    emitted_id: str
+    source_id: str
+    target_id: str
+    source_emitted_id: str
+    target_emitted_id: str
+    label: str | None
+    semantic_label: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class EventModelingPlan:
+    """Validated Event Modeling evidence and its loss-disclosed projection."""
+
+    lanes: tuple[EventModelingLanePlan, ...]
+    frames: tuple[EventModelingFramePlan, ...]
+    relations: tuple[EventModelingRelationPlan, ...]
+    compatibility_substituted: bool
+
+
 def _semantic_text(value: Any, *, context: str) -> str:
     if value is None:
         raise SerializationError(f"{context} requires a label")
     source = str(value)
-    if any(unicodedata.category(char) in {"Cc", "Cf", "Zl", "Zp"} for char in source):
-        raise SerializationError(f"{context} contains unsupported control characters")
+    if any(unicodedata.category(char) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for char in source):
+        raise SerializationError(f"{context} contains unsupported control characters or surrogates")
     text = " ".join(source.split())
     if not text:
         raise SerializationError(f"{context} requires a label")
     return text
+
+
+def _strict_semantic_text(value: Any, *, context: str) -> str:
+    if not isinstance(value, str):
+        raise SerializationError(f"{context} must be a string")
+    return _semantic_text(value, context=context)
 
 
 def _record_label(record: Mapping[str, Any], *, context: str) -> str:
@@ -139,6 +201,22 @@ def _entity_compatibility_text(text: str) -> tuple[str, bool]:
         ),
         substituted,
     )
+
+
+def _eventmodeling_visible_text(
+    value: Any,
+    *,
+    context: str,
+    edge_label: bool = False,
+) -> tuple[str, str, bool]:
+    """Return source semantics and the exact glyphs visible in the fallback SVG."""
+
+    semantic = _strict_semantic_text(value, context=context)
+    compatible, entity_substituted = _entity_compatibility_text(semantic)
+    visible = compatible.replace('"', "″").replace("\\", "∖")
+    if edge_label:
+        visible = visible.replace("|", "∣").replace(";", "⁏")
+    return semantic, visible, entity_substituted or visible != semantic
 
 
 def _special_directive_text(value: Any, *, context: str) -> str:
@@ -298,7 +376,16 @@ def _safe_accessibility_values(
             "Unsafe accessible description remained in typed IR and was replaced by a generic "
             "SVG description."
         )
-    if diagram_type in {"packet", "ishikawa", "treeview"}:
+    if diagram_type == "eventmodeling":
+        _semantic_title, title, title_substituted = _eventmodeling_visible_text(
+            title, context="accessible title"
+        )
+        _semantic_description, description, description_substituted = _eventmodeling_visible_text(
+            description, context="accessible description"
+        )
+        if title_substituted or description_substituted:
+            warnings.append(_EVENTMODELING_COMPATIBILITY_WARNING)
+    elif diagram_type in {"packet", "ishikawa", "treeview"}:
         title, title_substituted = _entity_compatibility_text(title)
         description, description_substituted = _entity_compatibility_text(description)
         if title_substituted or description_substituted:
@@ -325,10 +412,6 @@ def _integer(value: Any, *, context: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise SerializationError(f"{context} requires an explicit non-negative integer")
     return value
-
-
-def _edge_text(value: Any, *, context: str) -> str:
-    return _flowchart_code_text(value, context=context).replace("|", "∣")
 
 
 def _flowchart_compatibility_warnings(texts: Iterable[Any]) -> tuple[str, ...]:
@@ -772,209 +855,292 @@ def _serialize_treeview(
     )
 
 
-def plan_eventmodeling_frames(
-    ir: dict[str, Any],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, str]]:
-    """Validate and normalize the lane/frame records emitted by the fallback."""
+def plan_eventmodeling_records(ir: Mapping[str, Any]) -> EventModelingPlan:
+    """Validate the exact lane-aware Flowchart projection without mutating source IR."""
 
     lanes = ir.get("lanes")
     if not isinstance(lanes, list) or not lanes:
         raise SerializationError("eventmodeling IR requires non-empty lanes")
-    normalized_lanes: list[dict[str, Any]] = []
-    frames: list[dict[str, Any]] = []
-    source_ids: set[str] = set()
-    output_ids: set[str] = set()
-    frame_map: dict[str, str] = {}
-    lane_ids: set[str] = set()
-    lane_output_ids: set[str] = set()
-    all_mermaid_ids: set[str] = set()
+    lane_source_ids: set[str] = set()
+    lane_emitted_ids: set[str] = set()
+    frame_source_ids: set[str] = set()
+    frame_emitted_ids: set[str] = set()
+    emitted_by_source: dict[str, str] = {}
+    planned_lanes: list[EventModelingLanePlan] = []
+    planned_frames: list[EventModelingFramePlan] = []
+    compatibility_substituted = False
     for lane_index, lane in enumerate(lanes, start=1):
         if lane_index > 128:
             raise SerializationError("eventmodeling lanes exceed deterministic resource limits")
-        if not isinstance(lane, dict):
+        if not isinstance(lane, Mapping):
             raise SerializationError("eventmodeling lanes must be objects")
+        raw_lane_id = lane.get("id")
+        if raw_lane_id is not None and not isinstance(raw_lane_id, str):
+            raise SerializationError(f"eventmodeling lane {lane_index} id must be a string")
         lane_id = _source_id(
-            lane.get("id"),
+            raw_lane_id,
             fallback=f"lane_{lane_index}",
             context=f"eventmodeling lane {lane_index}",
         )
-        lane_output_id = _register_id(
-            lane_id, lane_ids, lane_output_ids, context="eventmodeling lane"
+        lane_emitted_id = _register_prefixed_id(
+            lane_id,
+            "eventmodeling_lane_",
+            lane_source_ids,
+            lane_emitted_ids,
+            context="eventmodeling lane",
         )
-        lane_output_id = f"lane_{lane_output_id}"
-        if lane_output_id in all_mermaid_ids:
-            raise SerializationError(
-                f"eventmodeling lane id collides after Mermaid normalization: {lane_id!r}"
-            )
-        all_mermaid_ids.add(lane_output_id)
+        semantic_lane_label, lane_label, label_substituted = _eventmodeling_visible_text(
+            lane.get("label", lane_id),
+            context=f"eventmodeling lane {lane_id!r}",
+        )
+        compatibility_substituted = compatibility_substituted or label_substituted
         lane_frames = lane.get("frames")
         if not isinstance(lane_frames, list) or not lane_frames:
             raise SerializationError(f"eventmodeling lane {lane_id!r} requires non-empty frames")
-        normalized_lane = {
-            "id": lane_id,
-            "output_id": lane_output_id,
-            "label": _flowchart_code_text(
-                lane.get("label", lane_id), context=f"eventmodeling lane {lane_id!r}"
-            ),
-            "semantic_label": _semantic_text(
-                lane.get("label", lane_id), context=f"eventmodeling lane {lane_id!r}"
-            ),
-            "frame_ids": [],
-        }
+        planned_lane_frames: list[EventModelingFramePlan] = []
         for frame_index, frame in enumerate(lane_frames, start=1):
-            if len(frames) >= 2_000:
+            if len(planned_frames) >= 2_000:
                 raise SerializationError(
                     "eventmodeling frames exceed deterministic resource limits"
                 )
-            if not isinstance(frame, dict):
+            if not isinstance(frame, Mapping):
                 raise SerializationError("eventmodeling frames must be objects")
+            raw_frame_id = frame.get("id")
+            if raw_frame_id is not None and not isinstance(raw_frame_id, str):
+                raise SerializationError(f"eventmodeling frame {frame_index} id must be a string")
             frame_id = _source_id(
-                frame.get("id"),
+                raw_frame_id,
                 fallback=f"frame_{lane_index}_{frame_index}",
                 context=f"eventmodeling frame {frame_index}",
             )
-            output_id = _register_id(
-                frame_id, source_ids, output_ids, context="eventmodeling frame"
+            emitted_id = _register_prefixed_id(
+                frame_id,
+                "eventmodeling_frame_",
+                frame_source_ids,
+                frame_emitted_ids,
+                context="eventmodeling frame",
             )
-            if output_id in all_mermaid_ids:
-                raise SerializationError(
-                    f"eventmodeling frame id collides after Mermaid normalization: {frame_id!r}"
+            raw_frame_type = frame.get("type")
+            if raw_frame_type is None or raw_frame_type == "":
+                frame_type = "unknown"
+            elif isinstance(raw_frame_type, str):
+                normalized_frame_type = _strict_semantic_text(
+                    raw_frame_type,
+                    context=f"eventmodeling frame {frame_id!r} type",
                 )
-            all_mermaid_ids.add(output_id)
-            frame_type = str(frame.get("type") or "unknown").casefold()
+                if normalized_frame_type != raw_frame_type:
+                    raise SerializationError(
+                        f"eventmodeling frame {frame_id!r} has noncanonical type {raw_frame_type!r}"
+                    )
+                frame_type = raw_frame_type.casefold()
+            else:
+                raise SerializationError(f"eventmodeling frame {frame_id!r} type must be a string")
             if frame_type not in _FRAME_TYPES:
                 raise SerializationError(
                     f"eventmodeling frame {frame_id!r} has unsupported type {frame_type!r}"
                 )
-            label = _flowchart_code_text(
+            semantic_label, label, label_substituted = _eventmodeling_visible_text(
                 frame.get("label"), context=f"eventmodeling frame {frame_id!r}"
             )
-            semantic_label = _semantic_text(
-                frame.get("label"), context=f"eventmodeling frame {frame_id!r}"
-            )
+            compatibility_substituted = compatibility_substituted or label_substituted
             time = frame.get("time")
-            safe_time = (
-                _flowchart_code_text(time, context=f"eventmodeling frame {frame_id!r} time")
-                if time is not None
-                else None
-            )
-            semantic_time = (
-                _semantic_text(time, context=f"eventmodeling frame {frame_id!r} time")
-                if time is not None
-                else None
-            )
+            visible_time: str | None = None
+            semantic_time: str | None = None
+            if time is not None:
+                semantic_time, visible_time, time_substituted = _eventmodeling_visible_text(
+                    time, context=f"eventmodeling frame {frame_id!r} time"
+                )
+                compatibility_substituted = compatibility_substituted or time_substituted
             rendered_label = f"[{frame_type}] {label}"
             semantic_rendered_label = f"[{frame_type}] {semantic_label}"
-            if safe_time is not None:
-                rendered_label = f"{safe_time} — {rendered_label}"
+            if visible_time is not None:
+                rendered_label = f"{visible_time} — {rendered_label}"
             if semantic_time is not None:
                 semantic_rendered_label = f"{semantic_time} — {semantic_rendered_label}"
-            normalized = {
-                "source_id": frame_id,
-                "output_id": output_id,
-                "label": rendered_label,
-                "semantic_label": semantic_rendered_label,
-            }
-            frame_map[frame_id] = output_id
-            frames.append(normalized)
-            normalized_lane["frame_ids"].append(output_id)
-        normalized_lanes.append(normalized_lane)
-    return normalized_lanes, frames, frame_map
+            planned_frame = EventModelingFramePlan(
+                source_record=frame,
+                source_id=frame_id,
+                emitted_id=emitted_id,
+                frame_type=frame_type,
+                label=label,
+                semantic_label=semantic_label,
+                time=visible_time,
+                semantic_time=semantic_time,
+                rendered_label=rendered_label,
+                semantic_rendered_label=semantic_rendered_label,
+            )
+            emitted_by_source[frame_id] = emitted_id
+            planned_frames.append(planned_frame)
+            planned_lane_frames.append(planned_frame)
+        planned_lanes.append(
+            EventModelingLanePlan(
+                source_record=lane,
+                source_id=lane_id,
+                emitted_id=lane_emitted_id,
+                label=lane_label,
+                semantic_label=semantic_lane_label,
+                frames=tuple(planned_lane_frames),
+            )
+        )
+
+    relations = ir.get("relations", [])
+    if not isinstance(relations, list):
+        raise SerializationError("eventmodeling relations must be a list")
+    if len(relations) > _MAX_FLOWCHART_EDGES:
+        raise SerializationError(
+            f"eventmodeling relations exceed Mermaid edge limit of {_MAX_FLOWCHART_EDGES}"
+        )
+    planned_relations: list[EventModelingRelationPlan] = []
+    for relation_index, relation in enumerate(relations, start=1):
+        if not isinstance(relation, Mapping):
+            raise SerializationError("eventmodeling relations must be objects")
+        source_value = relation.get("source")
+        target_value = relation.get("target")
+        if not isinstance(source_value, str) or not isinstance(target_value, str):
+            raise SerializationError("eventmodeling relation endpoints must be strings")
+        source_id = _source_id(
+            source_value,
+            fallback="source",
+            context=f"eventmodeling relation {relation_index} source",
+        )
+        target_id = _source_id(
+            target_value,
+            fallback="target",
+            context=f"eventmodeling relation {relation_index} target",
+        )
+        source_emitted_id = emitted_by_source.get(source_id)
+        target_emitted_id = emitted_by_source.get(target_id)
+        if source_emitted_id is None or target_emitted_id is None:
+            raise SerializationError(
+                "eventmodeling relation references unknown endpoint: "
+                f"{source_id!r} -> {target_id!r}"
+            )
+        label: str | None = None
+        semantic_label: str | None = None
+        if relation.get("label") is not None:
+            semantic_label, label, label_substituted = _eventmodeling_visible_text(
+                relation.get("label"),
+                context=f"eventmodeling relation {relation_index}",
+                edge_label=True,
+            )
+            compatibility_substituted = compatibility_substituted or label_substituted
+        planned_relations.append(
+            EventModelingRelationPlan(
+                source_record=relation,
+                emitted_id=f"eventmodeling_relation_{relation_index}",
+                source_id=source_id,
+                target_id=target_id,
+                source_emitted_id=source_emitted_id,
+                target_emitted_id=target_emitted_id,
+                label=label,
+                semantic_label=semantic_label,
+            )
+        )
+    return EventModelingPlan(
+        lanes=tuple(planned_lanes),
+        frames=tuple(planned_frames),
+        relations=tuple(planned_relations),
+        compatibility_substituted=compatibility_substituted,
+    )
+
+
+def plan_eventmodeling_frames(
+    ir: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, str]]:
+    """Compatibility view of :func:`plan_eventmodeling_records`."""
+
+    plan = plan_eventmodeling_records(ir)
+    lanes = [
+        {
+            "id": lane.source_id,
+            "output_id": lane.emitted_id,
+            "label": lane.label,
+            "semantic_label": lane.semantic_label,
+            "frame_ids": [frame.emitted_id for frame in lane.frames],
+        }
+        for lane in plan.lanes
+    ]
+    frames = [
+        {
+            "source_id": frame.source_id,
+            "output_id": frame.emitted_id,
+            "label": frame.rendered_label,
+            "semantic_label": frame.semantic_rendered_label,
+        }
+        for frame in plan.frames
+    ]
+    return lanes, frames, {frame.source_id: frame.emitted_id for frame in plan.frames}
 
 
 def plan_eventmodeling_relations(
     ir: dict[str, Any], frame_map: dict[str, str]
 ) -> list[dict[str, str | None]]:
-    """Validate and normalize the relations emitted by the fallback."""
+    """Compatibility view of the shared relation plan with endpoint parity checks."""
 
-    relations = ir.get("relations", [])
-    if not isinstance(relations, list):
-        raise SerializationError("eventmodeling relations must be a list")
-    normalized: list[dict[str, str | None]] = []
-    for relation in relations:
-        if not isinstance(relation, dict):
-            raise SerializationError("eventmodeling relations must be objects")
-        source_key = str(relation.get("source"))
-        target_key = str(relation.get("target"))
-        source = frame_map.get(source_key)
-        target = frame_map.get(target_key)
-        if source is None or target is None:
-            raise SerializationError(
-                "eventmodeling relation references unknown endpoint: "
-                f"{source_key!r} -> {target_key!r}"
-            )
-        label = relation.get("label")
-        normalized.append(
-            {
-                "source": source,
-                "target": target,
-                "label": (
-                    _edge_text(label, context="eventmodeling relation")
-                    if label is not None
-                    else None
-                ),
-                "semantic_label": (
-                    _semantic_text(label, context="eventmodeling relation")
-                    if label is not None
-                    else None
-                ),
-            }
-        )
-    return normalized
+    plan = plan_eventmodeling_records(ir)
+    expected_map = {frame.source_id: frame.emitted_id for frame in plan.frames}
+    if frame_map != expected_map:
+        raise SerializationError("eventmodeling frame map does not match the canonical plan")
+    return [
+        {
+            "source": relation.source_emitted_id,
+            "target": relation.target_emitted_id,
+            "label": relation.label,
+            "semantic_label": relation.semantic_label,
+        }
+        for relation in plan.relations
+    ]
 
 
 def _serialize_eventmodeling(ir: dict[str, Any], *, experimental: bool) -> SerializationResult:
-    lanes, frames, frame_map = plan_eventmodeling_frames(ir)
-    relations = plan_eventmodeling_relations(ir, frame_map)
+    plan = plan_eventmodeling_records(ir)
     edge_lines: list[str] = []
-    for relation in relations:
-        source = relation["source"]
-        target = relation["target"]
-        label = relation["label"]
+    for relation in plan.relations:
         connector = "-->"
-        if label is not None:
-            connector = f"-->|{label}|"
-        edge_lines.append(f"    {source} {connector} {target}")
+        if relation.label is not None:
+            safe_label = _flowchart_source_text(relation.label, context="eventmodeling relation")
+            connector = f"-->|{safe_label}|"
+        edge_lines.append(
+            f"    {relation.source_emitted_id} {connector} {relation.target_emitted_id}"
+        )
 
     title, description, accessibility_warnings = _safe_accessibility_values(
         ir, "eventmodeling", experimental=experimental
     )
-    compatibility_warnings = _flowchart_compatibility_warnings(
-        (
-            title,
-            description,
-            *(lane["semantic_label"] for lane in lanes),
-            *(frame["semantic_label"] for frame in frames),
-            *(
-                relation["semantic_label"]
-                for relation in relations
-                if relation["semantic_label"] is not None
-            ),
-        )
+    compatibility_warnings = (
+        (_EVENTMODELING_COMPATIBILITY_WARNING,) if plan.compatibility_substituted else ()
     )
     lines = [
         "flowchart LR",
         f"    accTitle: {_flowchart_source_text(title, context='accessible title')}",
         f"    accDescr: {_flowchart_source_text(description, context='accessible description')}",
     ]
-    frames_by_id = {frame["output_id"]: frame for frame in frames}
-    for lane in lanes:
-        lines.append(f'    subgraph {lane["output_id"]}["{lane["label"]}"]')
-        for frame_id in lane["frame_ids"]:
-            frame = frames_by_id[frame_id]
-            lines.append(f'        {frame_id}["{frame["label"]}"]')
+    for lane in plan.lanes:
+        safe_lane_label = _flowchart_source_text(
+            lane.label, context=f"eventmodeling lane {lane.source_id!r}"
+        )
+        lines.append(f'    subgraph {lane.emitted_id}["{safe_lane_label}"]')
+        for frame in lane.frames:
+            safe_frame_label = _flowchart_source_text(
+                frame.rendered_label, context=f"eventmodeling frame {frame.source_id!r}"
+            )
+            lines.append(f'        {frame.emitted_id}["{safe_frame_label}"]')
         lines.append("    end")
     lines.extend(edge_lines)
     return SerializationResult.fallback(
         "eventmodeling",
         "flowchart",
         "\n".join(lines) + "\n",
-        warnings=(
-            "Mermaid 11.16 Event Modeling rendering is not reliable in the pinned runtime.",
-            "Time/reset-frame notation was reduced to lane subgraphs, typed labels, and "
-            "observed relations.",
-            *accessibility_warnings,
-            *compatibility_warnings,
+        warnings=tuple(
+            dict.fromkeys(
+                (
+                    "Mermaid 11.16 Event Modeling rendering is not reliable in the pinned runtime.",
+                    "Time/reset-frame notation was reduced to lane subgraphs, typed labels, "
+                    "and observed relations.",
+                    *accessibility_warnings,
+                    *compatibility_warnings,
+                )
+            )
         ),
         stability="experimental",
     )

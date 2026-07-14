@@ -1507,39 +1507,58 @@ def test_requirement_semantic_texts_mirror_normalized_native_fields_and_defaults
     )
 
 
-def test_eventmodeling_semantic_texts_mirror_lane_typed_frame_and_relation_labels():
+def test_eventmodeling_scene_matches_flowchart_fallback_without_source_extras():
     ir = {
+        "direction": "RL",
         "title": "Hidden accessibility title",
         "lanes": [
             {
-                "id": "customer",
-                "label": "Customer lane",
+                "id": "customer-lane",
+                "label": 'Customer "lane";',
+                "bbox": [1, 2, 30, 40],
+                "role": "raw lane role",
+                "evidence_ids": ["lane-only"],
                 "frames": [
                     {
-                        "id": "source_internal",
+                        "id": "open-checkout",
                         "type": "UI",
-                        "time": "https://clock",
-                        "label": "style #checkout",
+                        "time": "T0;",
+                        "label": 'Open "checkout"\\screen;',
                         "text": "Hidden frame text",
+                        "bbox": [5, 6, 20, 22],
+                        "role": "raw frame role",
+                        "shape": "diamond",
+                        "style": "dashed",
+                        "evidence_ids": ["ocr-open"],
                     }
                 ],
             },
             {
                 "id": "operations",
+                "bbox": [50, 2, 90, 40],
                 "frames": [
                     {
-                        "id": "target_internal",
+                        "id": "order-placed",
                         "label": "Order placed",
+                        "bbox": [55, 6, 80, 22],
+                        "evidence_ids": ["ocr-placed"],
                     }
                 ],
             },
         ],
         "relations": [
             {
-                "source": "source_internal",
-                "target": "target_internal",
-                "label": "continue | retry",
+                "id": "raw-relation-id",
+                "source": "open-checkout",
+                "target": "order-placed",
+                "label": "continue | retry;",
                 "text": "Hidden relation text",
+                "style": "dashed",
+                "bidirectional": True,
+                "arrow_at_start": True,
+                "arrow_at_end": False,
+                "semantic_relation": "causal",
+                "evidence_ids": ["line-continue"],
             }
         ],
     }
@@ -1547,26 +1566,66 @@ def test_eventmodeling_semantic_texts_mirror_lane_typed_frame_and_relation_label
 
     assert scene is not None
     assert [(element.id, element.text) for element in scene.elements] == [
-        ("source_internal", "https://clock — [ui] style #checkout"),
-        ("target_internal", "[unknown] Order placed"),
+        (
+            "eventmodeling_frame_open_checkout",
+            "T0; — [ui] Open ″checkout″∖screen;",
+        ),
+        ("eventmodeling_frame_order_placed", "[unknown] Order placed"),
+    ]
+    assert [element.role for element in scene.elements] == ["node", "node"]
+    assert [element.bbox for element in scene.elements] == [
+        (0.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0),
+    ]
+    assert [element.shape for element in scene.elements] == [None, None]
+    assert [element.evidence_ids for element in scene.elements] == [
+        ["ocr-open"],
+        ["ocr-placed"],
     ]
     assert [(group.id, group.label, group.member_ids) for group in scene.groups] == [
-        ("lane_customer", "Customer lane", ["source_internal"]),
-        ("lane_operations", "operations", ["target_internal"]),
+        (
+            "eventmodeling_lane_customer_lane",
+            "Customer ″lane″;",
+            ["eventmodeling_frame_open_checkout"],
+        ),
+        (
+            "eventmodeling_lane_operations",
+            "operations",
+            ["eventmodeling_frame_order_placed"],
+        ),
     ]
+    assert [group.role for group in scene.groups] == ["lane", "lane"]
+    assert [group.bbox for group in scene.groups] == [
+        (0.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0),
+    ]
+    assert len(scene.relations) == 1
+    relation = scene.relations[0]
+    assert relation.id == "eventmodeling_relation_1"
+    assert relation.source_id == "eventmodeling_frame_open_checkout"
+    assert relation.target_id == "eventmodeling_frame_order_placed"
+    assert relation.label == "continue ∣ retry⁏"
+    assert relation.relation_type == "generated_connector"
+    assert relation.semantic_relation == "sequence"
+    assert not relation.arrow_at_start and relation.arrow_at_end
+    assert relation.polyline == []
+    assert relation.line_style is None
+    assert relation.evidence_ids == ["line-continue"]
     assert scene.reading_direction == "LR"
+    assert scene.diagram_type_candidates == ["eventmodeling"]
+    assert scene.coordinate_space == "pixels"
     texts = list(typed_ir_semantic_texts("eventmodeling", ir, scene))
     assert texts == [
-        "Customer lane",
-        "https://clock — [ui] style #checkout",
+        "Customer ″lane″;",
+        "T0; — [ui] Open ″checkout″∖screen;",
         "operations",
         "[unknown] Order placed",
-        "continue | retry",
+        "continue ∣ retry⁏",
     ]
     assert (
         ocr_recall(
             [
-                "Customer lane operations https clock ui style checkout unknown "
+                "Customer lane T0 ui Open checkout screen operations unknown "
                 "Order placed continue retry"
             ],
             "",
@@ -1577,7 +1636,10 @@ def test_eventmodeling_semantic_texts_mirror_lane_typed_frame_and_relation_label
     assert ocr_recall(["8203 35 58 124"], "", generated_texts=texts) == 0
     assert (
         ocr_recall(
-            ["Concealed accessibility heading payload connector source_internal target_internal"],
+            [
+                "Hidden accessibility title concealed payload metadata dashed diamond "
+                "raw-relation-id"
+            ],
             "",
             generated_texts=texts,
         )
@@ -1951,30 +2013,44 @@ def test_wardley_and_cynefin_scene_planning_failures_are_isolated(
     assert typed_ir_to_scene(diagram_type, ir) is None
 
 
-def test_zenuml_semantic_texts_follow_sequence_fallback_aliases_and_messages():
+def test_zenuml_scene_matches_sequence_fallback_without_source_extras():
     ir = {
+        "direction": "RL",
         "title": "Hidden accessibility title",
         "participants": [
-            {"id": "InternalUser", "label": "Customer", "text": "Hidden participant text"},
+            {
+                "id": "InternalUser",
+                "label": "Customer #1; payer",
+                "text": "Hidden participant text",
+                "bbox": [1, 2, 10, 12],
+                "role": "raw participant role",
+                "shape": "diamond",
+                "style": "dashed",
+                "evidence_ids": ["ocr-user"],
+            },
             UserDict(
                 {
                     "id": "PaymentAPI",
                     "text": "Hidden default participant text",
+                    "bbox": [20, 2, 30, 12],
                     "evidence_ids": ["ocr-api"],
                 }
             ),
         ],
         "messages": [
             {
+                "id": "raw-message-id",
                 "source": "InternalUser",
                 "target": "PaymentAPI",
-                "label": "Authorize payment",
+                "label": "Authorize #card; now",
                 "text": "Hidden message text",
-            },
-            {
-                "source": "InternalUser",
-                "target": "PaymentAPI",
-                "label": "Authorize payment",
+                "bbox": [10, 4, 20, 6],
+                "style": "dashed",
+                "bidirectional": True,
+                "arrow_at_start": True,
+                "arrow_at_end": False,
+                "semantic_relation": "causal",
+                "evidence_ids": ["arrow-message"],
             },
         ],
     }
@@ -1982,15 +2058,40 @@ def test_zenuml_semantic_texts_follow_sequence_fallback_aliases_and_messages():
 
     assert scene is not None
     assert [(element.id, element.text) for element in scene.elements] == [
-        ("InternalUser", "Customer"),
-        ("PaymentAPI", "PaymentAPI"),
+        ("zenuml_participant_InternalUser", "Customer ＃1⁏ payer"),
+        ("zenuml_participant_PaymentAPI", "PaymentAPI"),
     ]
-    assert scene.elements[1].evidence_ids == ["ocr-api"]
+    assert [element.role for element in scene.elements] == ["participant", "participant"]
+    assert [element.bbox for element in scene.elements] == [
+        (0.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0),
+    ]
+    assert [element.shape for element in scene.elements] == [None, None]
+    assert [element.evidence_ids for element in scene.elements] == [
+        ["ocr-user"],
+        ["ocr-api"],
+    ]
+    assert scene.groups == []
+    assert len(scene.relations) == 1
+    relation = scene.relations[0]
+    assert relation.id == "zenuml_message_1"
+    assert relation.source_id == "zenuml_participant_InternalUser"
+    assert relation.target_id == "zenuml_participant_PaymentAPI"
+    assert relation.label == "Authorize ＃card⁏ now"
+    assert relation.relation_type == "message"
+    assert relation.semantic_relation == "message"
+    assert not relation.arrow_at_start and relation.arrow_at_end
+    assert relation.polyline == []
+    assert relation.line_style is None
+    assert relation.evidence_ids == ["arrow-message"]
+    assert scene.reading_direction == "LR"
+    assert scene.diagram_type_candidates == ["zenuml"]
+    assert scene.coordinate_space == "pixels"
     texts = list(typed_ir_semantic_texts("zenuml", ir, scene))
-    assert texts == ["Customer", "PaymentAPI", "Authorize payment", "Authorize payment"]
+    assert texts == ["Customer ＃1⁏ payer", "PaymentAPI", "Authorize ＃card⁏ now"]
     assert (
         ocr_recall(
-            ["Customer PaymentAPI Authorize payment Authorize payment"],
+            ["Customer 1 payer PaymentAPI Authorize card now"],
             "",
             generated_texts=texts,
         )
@@ -1998,12 +2099,60 @@ def test_zenuml_semantic_texts_follow_sequence_fallback_aliases_and_messages():
     )
     assert (
         ocr_recall(
-            ["Hidden accessibility title participant message InternalUser"],
+            [
+                "Hidden accessibility title participant message InternalUser raw-message-id "
+                "dashed diamond causal"
+            ],
             "",
             generated_texts=texts,
         )
         == 0
     )
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "eventmodeling",
+            {
+                "lanes": [{"frames": [{"id": "known", "label": "Known"}]}],
+                "relations": [{"source": "known", "target": "missing"}],
+            },
+        ),
+        (
+            "eventmodeling",
+            {
+                "lanes": [
+                    {
+                        "id": f"lane_{index}",
+                        "frames": [{"id": f"frame_{index}", "label": "Frame"}],
+                    }
+                    for index in range(129)
+                ]
+            },
+        ),
+        (
+            "zenuml",
+            {
+                "participants": ["A", "B"],
+                "messages": [{"source": "A", "target": "missing", "label": "Call"}],
+            },
+        ),
+        (
+            "zenuml",
+            {
+                "participants": [f"P{index}" for index in range(500)],
+                "messages": [{"source": "P0", "target": "P1", "label": "Call"}],
+            },
+        ),
+    ],
+)
+def test_eventmodeling_and_zenuml_scene_planning_failures_are_isolated(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    assert typed_ir_to_scene(diagram_type, ir) is None
 
 
 def test_planning_and_event_modeling_scenes_preserve_emitted_elements_and_evidence():

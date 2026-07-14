@@ -28,9 +28,13 @@ layout을 추측하지 않습니다. Scene IR portable fallback은 deterministic
 있습니다. raw/direct Mermaid는 아직 일반 AST→Scene 변환이 없으므로 구조 점수가 unavailable일 수 있습니다.
 평가 Scene adapter는 sequence/ZenUML, hierarchy/organization, planning/event, Packet/Ishikawa/TreeView,
 Wardley/Cynefin, data-lineage, Venn까지 포함하며 typed record의 evidence ID를 보존합니다.
-Event Modeling의 generated Scene은 fallback serializer와 같은 normalized frame ID, typed/time label,
-lane subgraph membership, `LR` 방향을 사용합니다. Wardley의 label 없는 component와 ZenUML의 label 없는
-participant도 임의 `text`가 아니라 serializer가 실제 표시하는 safe source ID를 사용합니다.
+Event Modeling의 generated Scene은 fallback serializer와 같은 namespaced frame/relation ID,
+화면에 보이는 typed/time label, lane subgraph membership, `LR` 방향, end-arrow만 사용합니다.
+ZenUML도 Sequence fallback의 namespaced participant/message ID, alias label, endpoint와 end-arrow를
+공유합니다. 두 adapter는 raw bbox·direction·role·shape·style·bidirectional metadata를
+방출 구조로 복사하지 않고 zero geometry를 써서 layout score를 위조하지 않습니다.
+Wardley의 label 없는 component와 ZenUML의 label 없는 participant도 임의 `text`가 아니라
+serializer가 실제 표시하는 safe source ID를 사용합니다.
 Wardley Scene은 raw record bbox 대신 native 좌표를 화면에 맞게 바꾼 `(x, 1-y)`만
 `normalized` explicit position으로 씁니다. IR의 수평/수직 `x`/`y`는 native에 `[y, x]`로
 방출하고 token 반올림을 Scene 값에도 적용합니다. `->` link는 실제 SVG에 marker가 없으므로
@@ -40,7 +44,8 @@ runtime이 항상 만드는 고정 domain/practice/response/disorder text를 무
 추가합니다. `confusion` item은 처음 세 개와 `+N more`만 실제 렌더에 맞게 투영합니다.
 Native placement가 없어 zero geometry를 쓰므로 layout similarity는 unavailable이며, 고정 template의
 source provenance 계약이 없는 현재 Cynefin은 aggregate와 무관하게 review를 요구합니다.
-Wardley·Cynefin의 entity-like 원문을 Mermaid 11.16 호환 glyph로 표시하는 경우 OCR projection도
+Event Modeling·ZenUML·Wardley·Cynefin의 grammar/entity-like 원문을 Mermaid 11.16 호환
+glyph로 표시하는 경우 OCR projection도
 해당 호환 label이 실제 SVG에 보이는 text를 사용합니다. 원문을 projection에 넣어 렌더러 손실을
 숨기지 않습니다. Wardley 축·evolution stage처럼 grammar 고정 chrome을 전체 source label로
 간주하지는 않습니다.

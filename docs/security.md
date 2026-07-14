@@ -57,7 +57,9 @@ quoted-label 상태를 시작합니다. `class`, `direction`, Gantt title과 접
 Specialized typed serializer의 label에 위 token이 관찰돼도 active statement로 방출하지 않습니다.
 keyword와 URL-like token 내부의 zero-width separator는 scanner와 parser 양쪽에서 동작을 비활성화하고,
 Flowchart label의 source `&`도 entity로 재해석되지 않도록 같은 방식으로 분리합니다. Event Modeling edge의
-`|`는 NFKC로 delimiter가 되돌아오지 않는 `∣`로 표시합니다. source가 제공한 control/format 문자와
+`|`·`;`는 NFKC로 delimiter/statement가 되돌아오지 않는 `∣`·`⁏`로 표시합니다.
+Quote·backslash·entity-like literal도 pinned Flowchart SVG가 실제 보존하는
+`″`·`∖`·`＆`/`＃` glyph로 바꾸고 warning을 남깁니다. source가 제공한 control/format 문자와
 line/paragraph separator는 공백 정규화 전에 거부하므로 invisible character를 이용해 검사 규칙을 우회할
 수 없습니다. Packet,
 TreeView, Ishikawa는 각 native grammar의 실제 SVG text 동작에 맞춘 encoder를 사용하며 보존할 수 없는
@@ -65,11 +67,24 @@ TreeView, Ishikawa는 각 native grammar의 실제 SVG text 동작에 맞춘 enc
 typed IR/review metadata에만 유지하고 자동 SVG에는 generic 문구를 넣습니다. native/fallback label과
 SVG title/description은 pinned Mermaid integration test로 검사합니다.
 
+ZenUML Sequence fallback은 participant의 source ID를 예약어와 분리된
+`zenuml_participant_*` namespace로 방출하고 message에는 이 namespaced endpoint만 씁니다.
+Mermaid message에 ID 문법이 없으므로 `zenuml_message_*`는 Scene/provenance slot에만 부여합니다.
+Alias/message text의
+`#`·`;`·entity-like literal은 각각 `＃`·`⁏`·`＆`/`＃`로 표시하고,
+active keyword·URL·callback·config token은 source 안에서만 invisible separator로
+분리합니다. `accTitle`·`accDescr`도 active token·entity·`#` 규칙을 공유하지만,
+Sequence accessibility SVG가 angle bracket을 double-escape하므로 `<`·`>`는 NFKC-stable
+`〈`·`〉`로 표시합니다. 한 줄 accessibility grammar에서 text로 입증된 `;`는 원문 glyph를
+유지합니다. 대체 사실은
+compatibility warning으로 남습니다.
+
 Wardley·Cynefin native serializer도 control/format/line separator를 정규화 전에 거부하고,
 entity-like literal을 renderer가 손실시키는 자리에 보이는 `＆`/`＃` compatibility glyph를 사용합니다.
 대체 사실은 warning에 남고 원문은 typed IR/sidecar에 보존됩니다. Strict nested 계약은
 Wardley `x`/`y`에 boolean·NaN·infinity를, `anchor`에 integer/string coercion을 허용하지
-않으며 Cynefin domain을 닫힌 official token 집합으로 검증합니다. 두 serializer의 생성 source는
+않으며 Cynefin domain을 닫힌 official token 집합으로 검증합니다.
+Wardley·Cynefin·Event Modeling·ZenUML serializer의 생성 source는
 security scanner에 넘기기 전에도 50,000자·5,000줄을 넘으면 전체 후보 단위로 거부됩니다.
 
 Style recovery는 Scene IR 값을 그대로 CSS로 복사하지 않습니다. Node와 edge는 exact built-in PDF vector

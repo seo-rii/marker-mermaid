@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import FrozenInstanceError
 from xml.etree import ElementTree as ET
 
@@ -7,10 +8,13 @@ import pytest
 
 import marker_mermaid.serializers_experimental as experimental_serializers
 from marker_mermaid.config import SecurityProfile
+from marker_mermaid.security import MermaidSecurityScanner
 from marker_mermaid.serializers import SerializationError
 from marker_mermaid.serializers_experimental import (
     plan_cynefin_records,
     plan_wardley_records,
+    plan_zenuml_records,
+    plan_zenuml_structure,
     serialize_cynefin,
     serialize_data_lineage,
     serialize_organization,
@@ -352,9 +356,20 @@ def test_wardley_and_cynefin_disclose_entity_compatibility_once_without_mutating
             serialize_cynefin,
             {"domains": [{"name": "complex", "items": ["C" * 500 for _ in range(100)]}]},
         ),
+        (
+            serialize_zenuml,
+            {
+                "title": "Zen",
+                "description": "Observed messages.",
+                "participants": [
+                    {"id": f"P{index}", "label": f"{index:03d}" + "Z" * 497} for index in range(100)
+                ],
+                "messages": [{"source": "P0", "target": "P1", "label": "call"}],
+            },
+        ),
     ],
 )
-def test_wardley_and_cynefin_reject_output_above_source_character_budget(serializer, ir):
+def test_spatial_and_zenuml_serializers_reject_output_above_source_character_budget(serializer, ir):
     with pytest.raises(SerializationError, match="source-character limit of 50000"):
         serializer(ir)
 
@@ -370,9 +385,18 @@ def test_wardley_and_cynefin_reject_output_above_source_character_budget(seriali
             serialize_cynefin,
             {"domains": [{"name": "complex", "items": ["Emergent"]}]},
         ),
+        (
+            serialize_zenuml,
+            {
+                "participants": ["User", "API"],
+                "messages": [{"source": "User", "target": "API", "label": "call"}],
+            },
+        ),
     ],
 )
-def test_wardley_and_cynefin_apply_source_line_budget_before_return(monkeypatch, serializer, ir):
+def test_spatial_and_zenuml_serializers_apply_source_line_budget_before_return(
+    monkeypatch, serializer, ir
+):
     monkeypatch.setattr(experimental_serializers, "MAX_EXPERIMENTAL_OUTPUT_LINES", 4)
     with pytest.raises(SerializationError, match="source-line limit of 4"):
         serializer(ir)
@@ -465,7 +489,154 @@ def test_zenuml_is_an_explicit_sequence_fallback():
     assert result.warnings == (
         "ZenUML is unavailable in Mermaid 11.16 and was emitted as sequence.",
     )
-    assert "User->>API: 결제" in result.code
+    assert "zenuml_participant_User->>zenuml_participant_API: 결제" in result.code
+
+
+def test_zenuml_plan_preserves_records_legacy_scalar_and_exact_visible_labels() -> None:
+    participant = {
+        "id": "end",
+        "label": "User #1; participant X as X",
+        "bbox": [1, 2, 3, 4],
+        "evidence_ids": ["ocr-user"],
+        "style": "must not leak",
+    }
+    message = {
+        "source": "end",
+        "target": "API",
+        "label": "call &#35;; retry",
+        "evidence_ids": ["arrow-1"],
+    }
+    ir = {"participants": [participant, "API"], "messages": [message]}
+    snapshot = repr(ir)
+
+    plan = plan_zenuml_structure(ir)
+
+    assert plan.participants[0].source_record is participant
+    assert plan.participants[0].source_id == "end"
+    assert plan.participants[0].emitted_id == "zenuml_participant_end"
+    assert plan.participants[0].label == "User ＃1⁏ participant X as X"
+    assert plan.participants[0].semantic_label == "User #1; participant X as X"
+    assert plan.participants[1].source_record is None
+    assert plan.participants[1].emitted_id == "zenuml_participant_API"
+    assert plan.messages[0].source_record is message
+    assert plan.messages[0].emitted_id == "zenuml_message_1"
+    assert plan.messages[0].source_emitted_id == "zenuml_participant_end"
+    assert plan.messages[0].target_emitted_id == "zenuml_participant_API"
+    assert plan.messages[0].label == "call ＆＃35⁏⁏ retry"
+    assert plan.messages[0].semantic_label == "call &#35;; retry"
+    assert plan.compatibility_substituted
+    assert repr(ir) == snapshot
+    assert "must not leak" not in serialize_zenuml(ir).code
+    with pytest.raises(FrozenInstanceError):
+        plan.participants[0].label = "mutated"
+
+
+def test_zenuml_legacy_record_planner_preserves_exact_tuple_of_dicts_contract() -> None:
+    participants, messages = plan_zenuml_records(
+        {
+            "participants": [
+                {"id": "User", "label": "User #1; literal", "bbox": [1, 2, 3, 4]},
+                "API",
+            ],
+            "messages": [
+                {
+                    "source": "User",
+                    "target": "API",
+                    "label": "call &#35;; literal",
+                    "evidence_ids": ["arrow-1"],
+                }
+            ],
+        }
+    )
+
+    assert participants == [
+        {"id": "User", "label": "User #1; literal"},
+        {"id": "API", "label": "API"},
+    ]
+    assert messages == [{"source": "User", "target": "API", "label": "call &#35;; literal"}]
+
+
+def test_zenuml_allows_duplicate_visible_aliases_because_endpoints_are_namespaced() -> None:
+    ir = {
+        "participants": [
+            {"id": "User-A", "label": "User"},
+            {"id": "User_B", "label": "User"},
+        ],
+        "messages": [{"source": "User-A", "target": "User_B", "label": "call"}],
+    }
+
+    plan = plan_zenuml_structure(ir)
+    result = serialize_zenuml(ir)
+
+    assert [participant.label for participant in plan.participants] == ["User", "User"]
+    assert "zenuml_participant_User-A->>zenuml_participant_User_B: call" in result.code
+
+
+def test_zenuml_rejects_duplicate_ids_coercion_and_control_characters() -> None:
+    valid_message = {"source": "User", "target": "API", "label": "call"}
+    with pytest.raises(SerializationError, match="duplicate ZenUML participant"):
+        plan_zenuml_structure(
+            {"participants": ["User", {"id": "User"}], "messages": [valid_message]}
+        )
+    for value in (7, True, "bad\u200bvalue", "bad\nvalue", "bad\ud800value"):
+        with pytest.raises(SerializationError, match="string|control or format|identifier"):
+            plan_zenuml_structure(
+                {
+                    "participants": [{"id": "User", "label": value}, "API"],
+                    "messages": [valid_message],
+                }
+            )
+    with pytest.raises(SerializationError, match="whitespace normalization"):
+        plan_zenuml_structure(
+            {
+                "participants": [" User ", "API"],
+                "messages": [{"source": " User ", "target": "API", "label": "call"}],
+            }
+        )
+    with pytest.raises(SerializationError, match="whitespace normalization"):
+        plan_zenuml_structure(
+            {
+                "participants": ["User", "API"],
+                "messages": [{"source": " User ", "target": "API", "label": "call"}],
+            }
+        )
+
+
+def test_zenuml_neutralizes_active_text_and_discloses_visible_grammar_glyphs() -> None:
+    ir = {
+        "title": "Zen &#35;",
+        "description": "See https://docs.invalid <guide>",
+        "participants": [
+            {"id": "end", "label": "User #1; participant X as X"},
+            {"id": "API", "label": "API &amp; service"},
+        ],
+        "messages": [
+            {
+                "source": "end",
+                "target": "API",
+                "label": "style https://x.invalid <script> #tag; A->>A: inject",
+            }
+        ],
+    }
+
+    result = serialize_zenuml(ir)
+
+    assert "participant zenuml_participant_end as User ＃1⁏ participant X as X" in result.code
+    assert "API ＆amp⁏ service" in result.code
+    assert "＃tag⁏ A->>A: inject" in result.code
+    assert "https://" not in result.code
+    assert "<script>" not in result.code
+    assert result.warnings == (
+        "ZenUML is unavailable in Mermaid 11.16 and was emitted as sequence.",
+        "ZenUML sequence fallback uses visible compatibility glyphs for "
+        "grammar-conflicting label characters.",
+    )
+    assert MermaidSecurityScanner(SecurityProfile.STRICT).scan(result.code).safe
+    assert (
+        MermaidSecurityScanner(SecurityProfile.STRICT)
+        .scan(unicodedata.normalize("NFKC", result.code))
+        .safe
+    )
 
 
 def test_zenuml_rejects_unresolved_messages():
@@ -614,6 +785,53 @@ def test_experimental_serializers_pass_strict_mermaid_11_16_parse_and_render():
             assert outcome.runtime.diagram_type.casefold() == expected_type
     finally:
         runtime.close()
+
+
+@pytest.mark.integration
+def test_zenuml_sequence_fallback_preserves_namespaced_ids_and_visible_safe_text() -> None:
+    result = serialize_zenuml(
+        {
+            "title": "Zen &#35;",
+            "description": "See https://docs.invalid <guide>",
+            "participants": [
+                {"id": "end", "label": "User #1; participant X as X"},
+                {"id": "A-B", "label": "API &amp; service"},
+            ],
+            "messages": [
+                {
+                    "source": "end",
+                    "target": "A-B",
+                    "label": 'style https://x.invalid <script> #tag; inject "Q" \\ path',
+                }
+            ],
+        }
+    )
+    assert "participant zenuml_participant_end" in result.code
+    assert "participant zenuml_participant_A-B" in result.code
+    assert "zenuml_participant_end->>zenuml_participant_A-B" in result.code
+
+    runtime = NodeMermaidRuntime()
+    validator = CandidateValidator(runtime, SecurityProfile.STRICT)
+    try:
+        outcome = validator.validate(result.code, 20)
+    finally:
+        runtime.close()
+
+    assert outcome.runtime.syntax_valid, outcome.runtime.error
+    assert outcome.runtime.render_valid, outcome.runtime.error
+    assert outcome.runtime.diagram_type.casefold() == "sequence"
+    root = ET.fromstring(outcome.runtime.svg or "")
+    visible_texts = [
+        " ".join("".join(element.itertext()).replace("\u200b", "").split())
+        for element in root.iter()
+        if element.tag.rsplit("}", 1)[-1] in {"title", "desc", "text"}
+    ]
+    assert "Zen ＆＃35;" in visible_texts
+    assert "See https://docs.invalid 〈guide〉" in visible_texts
+    assert visible_texts.count("User ＃1⁏ participant X as X") == 2
+    assert visible_texts.count("API ＆amp⁏ service") == 2
+    assert 'style https://x.invalid <script> ＃tag⁏ inject "Q" \\ path' in visible_texts
+    assert "X" not in visible_texts
 
 
 @pytest.mark.integration

@@ -837,6 +837,58 @@ class _CynefinIR(_TypedIRRoot):
     transitions: list[_CynefinTransition] = Field(default_factory=list)
 
 
+_EVENTMODELING_FRAME_TYPES = frozenset(
+    {"command", "event", "readmodel", "processor", "ui", "unknown"}
+)
+
+
+class _EventModelingFrame(_TypedIRRecord):
+    id: str | None = None
+    type: str | None = None
+    label: str | None = None
+    time: str | None = None
+
+    @field_validator("type")
+    @classmethod
+    def type_is_supported(cls, value: str | None) -> str | None:
+        if value not in {None, ""} and value.casefold() not in _EVENTMODELING_FRAME_TYPES:
+            raise ValueError("Event Modeling frame type has an unsupported token")
+        return value
+
+
+class _EventModelingLane(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+    frames: list[_EventModelingFrame] | None = None
+
+
+class _EventModelingRelation(_TypedIRRecord):
+    source: str | None = None
+    target: str | None = None
+    label: str | None = None
+
+
+class _EventModelingIR(_TypedIRRoot):
+    lanes: list[_EventModelingLane]
+    relations: list[_EventModelingRelation] = Field(default_factory=list)
+
+
+class _ZenUMLParticipant(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+
+
+class _ZenUMLMessage(_TypedIRRecord):
+    source: str | None = None
+    target: str | None = None
+    label: str | None = None
+
+
+class _ZenUMLIR(_TypedIRRoot):
+    participants: list[str | _ZenUMLParticipant]
+    messages: list[_ZenUMLMessage]
+
+
 @dataclass(frozen=True, slots=True)
 class TypedIRContract:
     required: tuple[tuple[str, RootKind], ...]
@@ -1258,10 +1310,27 @@ TYPED_IR_CONTRACTS: dict[str, TypedIRContract] = {
         ),
     ),
     "eventmodeling": TypedIRContract(
-        (("lanes", "list"),), ("relations",), "lanes with command/event frames"
+        (("lanes", "list"),),
+        ("relations",),
+        "lanes with command/event frames",
+        _EventModelingIR,
+        (
+            "lanes[]: {id:string,label:string,bbox:number[4],evidence_ids:string[],frames:frame[]}",
+            "lanes[].frames[]: {id:string,type:command|event|readmodel|processor|ui|unknown,"
+            "label:string,time:string,bbox:number[4],evidence_ids:string[]}",
+            "relations[]: {source:string,target:string,label:string,bbox:number[4],"
+            "evidence_ids:string[]}",
+        ),
     ),
     "zenuml": TypedIRContract(
-        (("participants", "list"), ("messages", "list")), guidance="sequence-like messages"
+        (("participants", "list"), ("messages", "list")),
+        guidance="sequence-like messages",
+        nested_model=_ZenUMLIR,
+        prompt_records=(
+            "participants[]: {id:string,label:string,bbox:number[4],evidence_ids:string[]}",
+            "messages[]: {source:string,target:string,label:string,bbox:number[4],"
+            "evidence_ids:string[]}",
+        ),
     ),
     "railroad": TypedIRContract((("rules", "list"),), guidance="grammar rule AST"),
     "organization": TypedIRContract((("root", "object"),), guidance="organization hierarchy"),
@@ -1286,6 +1355,7 @@ PHASE_THREE_EXTENDED_NESTED_TYPES = frozenset({"sankey", "radar", "treemap", "ve
 PLANNING_NESTED_TYPES = frozenset({"journey", "kanban", "gitgraph"})
 SPECIAL_NATIVE_NESTED_TYPES = frozenset({"packet", "ishikawa", "treeview"})
 EXPERIMENTAL_NATIVE_NESTED_TYPES = frozenset({"wardley", "cynefin"})
+SPECIAL_FALLBACK_NESTED_TYPES = frozenset({"eventmodeling", "zenuml"})
 NESTED_TYPED_IR_TYPES = (
     PHASE_ONE_NESTED_TYPES
     | CORE_UML_NESTED_TYPES
@@ -1296,6 +1366,7 @@ NESTED_TYPED_IR_TYPES = (
     | PLANNING_NESTED_TYPES
     | SPECIAL_NATIVE_NESTED_TYPES
     | EXPERIMENTAL_NATIVE_NESTED_TYPES
+    | SPECIAL_FALLBACK_NESTED_TYPES
 )
 
 for _diagram_type in NESTED_TYPED_IR_TYPES:  # pragma: no cover - import-time invariant

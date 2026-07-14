@@ -8,7 +8,8 @@ Pie·XY·Quadrant·Sankey·Radar·Treemap·Venn과 planning 유형인 Journey·K
 알려진 필드와 recursive container도 전용 Pydantic model로 검사합니다. Packet·Ishikawa·TreeView도
 bit-range record와 effect/category/cause 또는 root/children 계층을 같은 경계에서 후검증합니다.
 Wardley·Cynefin의 positioned component/link·domain/item/transition record도 strict nested
-contract 대상입니다.
+contract 대상입니다. Event Modeling의 lane/frame/relation과 ZenUML의
+participant/message fallback record도 같은 nested 경계를 통과합니다.
 serializer의 세부 의미 검사는 그 다음 단계에서 수행합니다.
 
 이 경계는 두 문제를 분리합니다.
@@ -57,6 +58,34 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | TreeView | 재귀 root/children hierarchy |
 | Wardley | positioned component와 explicit link |
 | Cynefin | official domain, evidence-bearing item, domain transition |
+| Event Modeling fallback | lane, lane 안의 frame, relation endpoint/label |
+| ZenUML fallback | participant object·message; legacy string participant는 입력 호환만 지원 |
+
+### Event Modeling·ZenUML fallback record 계약
+
+Event Modeling은 `lanes: list`를, ZenUML은 `participants: list`와 `messages: list`를
+필수 root로 사용합니다. Provider prompt에는 다음 canonical record만 공개합니다.
+
+| Type | Record | Prompt에 공개하고 형을 검사하는 field |
+| --- | --- | --- |
+| Event Modeling | `lanes[]` | `id`, `label`, `bbox`, `evidence_ids`, `frames` |
+| Event Modeling | `lanes[].frames[]` | `id`, `type`, `label`, `time`, `bbox`, `evidence_ids` |
+| Event Modeling | `relations[]` | `source`, `target`, `label`, `bbox`, `evidence_ids` |
+| ZenUML | `participants[]` | `id`, `label`, `bbox`, `evidence_ids` |
+| ZenUML | `messages[]` | `source`, `target`, `label`, `bbox`, `evidence_ids` |
+
+Event Modeling frame `type`은 serializer가 수용하는 `command`, `event`, `readmodel`,
+`processor`, `ui`, `unknown`만 허용합니다. 대소문자는 구분하지 않고 검사하지만
+입력 문자열은 재작성하지 않습니다. `swimlanes`·`nodes`, frame `name`·`timestamp`,
+`cmd`·`evt` 같은 alias는 canonical prompt에 넣지 않습니다.
+
+ZenUML의 기존 string participant는 기존 sidecar/fixture 호환을 위해 응답 후 검증에서
+받지만, bbox/evidence를 연결할 수 없으므로 provider에는 object record만 요청합니다.
+Message의 raw `id`·`style`과 participant의 `text` 같은 미등록 metadata는 원본 IR에
+보존되어도 fallback node/relation 구조로 승격하지 않습니다. 두 유형 모두 field를
+partial로 검증하며 non-empty label, ID 충돌과 endpoint 해결은 공유 serializer plan이
+판정합니다. 50,000자·5,000줄 source budget은 코드 생성 후 serializer 반환 경계에서
+최종 판정합니다.
 
 ### Requirement·Block record 계약
 
@@ -433,12 +462,23 @@ Swimlane/BPMN, Mindmap node는 내부 ID가 아니라 `[unreadable]`로 기록�
 message만 serializer와 Scene에 함께 전달하고, raw message ID와 무관한 고유 emitted relation ID를 순서대로
 부여합니다. 따라서 Mermaid에서 합쳐진 actor나 생략된 message를 평가 Scene이 별도 구조로 세지 않습니다.
 
+Event Modeling·ZenUML adapter도 requested type은 각각 `eventmodeling`·`zenuml`로
+유지하면서 실제 Flowchart·Sequence fallback plan의 identity와 topology를 Scene으로
+옮깁니다. 작성자가 넣은 role/shape/style/direction/bidirectional·raw relation ID를
+복사하지 않고, frame/participant element와 relation/message record 자체의 evidence만
+연결합니다. `SceneGroup`에는 evidence field가 없으므로 lane record evidence를 group에
+부여했다고 가장하지 않습니다.
+Fallback이 source 좌표를 재현하지 않으므로 generated element/group bbox는 0으로 두어
+layout 일치를 위조하지 않습니다. 두 Scene은 `LR`이고 relation/message는 end-arrow만 가지며,
+화면에 보이는 compatibility label을 OCR projection과 한 번만 공유합니다.
+
 현재 Marker `response_schema`의 외부 envelope는 여전히 `TypedIRCandidate.ir: dict`입니다. 따라서 이 단계는
 모든 Phase 2 type, Phase 3 chart(Pie·XY·Quadrant·Sankey·Radar·Treemap·Venn),
-Journey·Kanban·GitGraph와 Packet·Ishikawa·TreeView·Wardley·Cynefin의 prompt와 응답 후 검증을 중첩 구조까지
+Journey·Kanban·GitGraph와 Packet·Ishikawa·TreeView·Wardley·Cynefin·Event Modeling·ZenUML의
+prompt와 응답 후 검증을 중첩 구조까지
 확장하지만 provider에 모든 Mermaid 유형을 하나의 discriminated JSON Schema로 직접 노출하거나 generic
 envelope reserve를 늘리지는 않습니다. 나머지 special type인
-Event Modeling·ZenUML·Railroad·Organization·Data Lineage는
+Railroad·Organization·Data Lineage는
 아직 schema-light root contract입니다. Envelope-level discriminated
 schema도 후속 작업이므로 Phase 2에 root-only type이 남지 않아도 `ARCH-001`은 여전히 부분 완화
 상태입니다.

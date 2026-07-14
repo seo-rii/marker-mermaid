@@ -11,7 +11,7 @@ origin so layout scoring remains unavailable.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from typing import Any
 
 from marker_mermaid.flowchart_structure import (
@@ -31,7 +31,7 @@ from marker_mermaid.serializers_experimental import (
     plan_cynefin_records,
     plan_cynefin_runtime_items,
     plan_wardley_records,
-    plan_zenuml_records,
+    plan_zenuml_structure,
 )
 from marker_mermaid.serializers_phase2 import (
     REQUIREMENT_TYPE_TOKENS,
@@ -42,8 +42,7 @@ from marker_mermaid.serializers_phase2 import (
 )
 from marker_mermaid.serializers_planning import plan_gitgraph_records, plan_kanban_records
 from marker_mermaid.serializers_special import (
-    plan_eventmodeling_frames,
-    plan_eventmodeling_relations,
+    plan_eventmodeling_records,
     plan_ishikawa_hierarchy,
     plan_packet_fields,
     plan_treeview_hierarchy,
@@ -294,26 +293,38 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
         node_records = list(ir.get("nodes") or [])
         edge_records = list(ir.get("flows") or ir.get("links") or [])
     elif diagram_type == "zenuml":
-        participants, messages = plan_zenuml_records(ir)
-        source_participants = [
-            participant
-            for participant in ir.get("participants") or []
-            if isinstance(participant, (Mapping, str))
-        ]
+        try:
+            zenuml_plan = plan_zenuml_structure(ir)
+        except SerializationError:
+            return None
         node_records = [
             {
-                **(source if isinstance(source, Mapping) else {}),
-                "id": participant["id"],
-                "label": participant["label"],
+                "id": participant.emitted_id,
+                "label": participant.label,
+                "role": "participant",
+                "evidence_ids": list(
+                    participant.source_record.get("evidence_ids") or []
+                    if participant.source_record is not None
+                    else []
+                ),
             }
-            for source, participant in zip(source_participants, participants, strict=True)
-        ]
-        source_messages = [
-            message for message in ir.get("messages") or [] if isinstance(message, Mapping)
+            for participant in zenuml_plan.participants
         ]
         edge_records = [
-            {**source, **message} for source, message in zip(source_messages, messages, strict=True)
+            {
+                "id": message.emitted_id,
+                "source": message.source_emitted_id,
+                "target": message.target_emitted_id,
+                "label": message.label,
+                "relation_type": "message",
+                "semantic_relation": "message",
+                "arrow_at_start": False,
+                "arrow_at_end": True,
+                "evidence_ids": list(message.source_record.get("evidence_ids") or []),
+            }
+            for message in zenuml_plan.messages
         ]
+        scene_direction_override = "LR"
     elif diagram_type == "sequence":
         try:
             structure = plan_sequence_structure(
@@ -496,46 +507,43 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
         ]
         scene_direction_override = gitgraph_plan.direction or "LR"
     elif diagram_type == "eventmodeling":
-        lanes, frames, frame_map = plan_eventmodeling_frames(ir)
-        planned_relations = plan_eventmodeling_relations(ir, frame_map)
-        source_frames = [
-            frame
-            for lane in ir.get("lanes") or []
-            if isinstance(lane, dict)
-            for frame in lane.get("frames") or []
-            if isinstance(frame, dict)
-        ]
+        try:
+            eventmodeling_plan = plan_eventmodeling_records(ir)
+        except SerializationError:
+            return None
         node_records = [
             {
-                **source,
-                "id": frame["output_id"],
-                "label": frame["semantic_label"],
+                "id": frame.emitted_id,
+                "label": frame.rendered_label,
+                "role": "node",
+                "evidence_ids": list(frame.source_record.get("evidence_ids") or []),
             }
-            for source, frame in zip(source_frames, frames, strict=True)
-        ]
-        source_relations = [
-            relation for relation in ir.get("relations") or [] if isinstance(relation, dict)
+            for frame in eventmodeling_plan.frames
         ]
         edge_records = [
             {
-                **source,
-                "source": relation["source"],
-                "target": relation["target"],
-                "label": relation["semantic_label"],
+                "id": relation.emitted_id,
+                "source": relation.source_emitted_id,
+                "target": relation.target_emitted_id,
+                "label": relation.label,
+                "relation_type": "generated_connector",
+                "semantic_relation": "sequence",
+                "arrow_at_start": False,
+                "arrow_at_end": True,
+                "evidence_ids": list(relation.source_record.get("evidence_ids") or []),
             }
-            for source, relation in zip(source_relations, planned_relations, strict=True)
+            for relation in eventmodeling_plan.relations
         ]
-        source_lanes = [lane for lane in ir.get("lanes") or [] if isinstance(lane, dict)]
         group_records = [
             {
-                **source,
-                "id": lane["output_id"],
-                "label": lane["semantic_label"],
+                "id": lane.emitted_id,
+                "label": lane.label,
                 "role": "lane",
-                "member_ids": lane["frame_ids"],
+                "member_ids": [frame.emitted_id for frame in lane.frames],
             }
-            for source, lane in zip(source_lanes, lanes, strict=True)
+            for lane in eventmodeling_plan.lanes
         ]
+        scene_direction_override = "LR"
     elif diagram_type == "wardley":
         try:
             wardley_plan = plan_wardley_records(ir)
@@ -1127,16 +1135,14 @@ def typed_ir_semantic_texts(
                 yield str(relation.get("type") or "traces")
         return
     if diagram_type == "eventmodeling":
-        lanes, frames, frame_map = plan_eventmodeling_frames(ir)
-        relations = plan_eventmodeling_relations(ir, frame_map)
-        frames_by_id = {frame["output_id"]: frame for frame in frames}
-        for lane in lanes:
-            yield str(lane["semantic_label"])
-            for frame_id in lane["frame_ids"]:
-                yield str(frames_by_id[frame_id]["semantic_label"])
-        for relation in relations:
-            if relation["semantic_label"] is not None:
-                yield str(relation["semantic_label"])
+        plan = plan_eventmodeling_records(ir)
+        for lane in plan.lanes:
+            yield lane.label
+            for frame in lane.frames:
+                yield frame.rendered_label
+        for relation in plan.relations:
+            if relation.label is not None:
+                yield relation.label
         return
     if diagram_type == "wardley":
         plan = plan_wardley_records(ir)
@@ -1161,11 +1167,11 @@ def typed_ir_semantic_texts(
                 yield transition.label
         return
     if diagram_type == "zenuml":
-        participants, messages = plan_zenuml_records(ir)
-        for participant in participants:
-            yield participant["label"]
-        for message in messages:
-            yield message["label"]
+        plan = plan_zenuml_structure(ir)
+        for participant in plan.participants:
+            yield participant.label
+        for message in plan.messages:
+            yield message.label
         return
 
     for element in scene.elements:

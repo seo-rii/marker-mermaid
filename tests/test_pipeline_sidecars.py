@@ -1078,6 +1078,142 @@ def test_experimental_typed_pipeline_scores_emitted_visible_text(
     assert result.selected.scores["ocr_recall"] == 1
 
 
+@pytest.mark.parametrize("attributed", [True, False])
+@pytest.mark.parametrize(
+    (
+        "diagram_type",
+        "runtime_type",
+        "emitted_type",
+        "fallback_chain",
+        "expected_element_ids",
+        "expected_relation_id",
+    ),
+    [
+        (
+            "eventmodeling",
+            "flowchart-v2",
+            "flowchart",
+            ["eventmodeling", "flowchart"],
+            ["eventmodeling_frame_open", "eventmodeling_frame_placed"],
+            "eventmodeling_relation_1",
+        ),
+        (
+            "zenuml",
+            "sequence",
+            "sequence",
+            ["zenuml", "sequence"],
+            ["zenuml_participant_User", "zenuml_participant_API"],
+            "zenuml_message_1",
+        ),
+    ],
+)
+def test_eventmodeling_and_zenuml_generated_scene_controls_provenance_and_sidecar(
+    tmp_path,
+    attributed,
+    diagram_type,
+    runtime_type,
+    emitted_type,
+    fallback_chain,
+    expected_element_ids,
+    expected_relation_id,
+):
+    class FallbackRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type=runtime_type,
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    attribution = {"evidence_ids": ["ocr-scene"]} if attributed else {}
+    if diagram_type == "eventmodeling":
+        ir = {
+            "direction": "RL",
+            "lanes": [
+                {
+                    "id": "customer",
+                    "label": "Customer",
+                    "frames": [
+                        {"id": "open", "label": "Open", **attribution},
+                        {"id": "placed", "label": "Placed", **attribution},
+                    ],
+                }
+            ],
+            "relations": [{"source": "open", "target": "placed", "label": "next"}],
+        }
+        visible_text = "Customer unknown Open unknown Placed next"
+    else:
+        ir = {
+            "direction": "RL",
+            "participants": [
+                {"id": "User", "label": "Customer", **attribution},
+                {"id": "API", "label": "Payment API", **attribution},
+            ],
+            "messages": [{"source": "User", "target": "API", "label": "Authorize"}],
+        }
+        visible_text = "Customer Payment API Authorize"
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=[diagram_type], scores=[1.0]),
+        typed_candidates=[TypedIRCandidate(diagram_type=diagram_type, ir=ir)],
+        evidence=[
+            VisualEvidence(
+                id="ocr-scene",
+                kind="ocr_token",
+                text=visible_text,
+                bbox=(0, 0, 80, 10),
+            )
+        ],
+    )
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(FallbackRuntime(), config.security_profile),
+    ).reconstruct(
+        f"{diagram_type}-source-{'attributed' if attributed else 'unattributed'}",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+    )
+
+    assert result.selected is not None
+    selected = result.selected
+    assert selected.diagram_type == diagram_type
+    assert selected.emitted_diagram_type == emitted_type
+    assert selected.fallback_chain == fallback_chain
+    assert selected.generated_scene_ir is not None
+    generated_scene = selected.generated_scene_ir
+    assert generated_scene.diagram_type_candidates == [diagram_type]
+    assert generated_scene.reading_direction == "LR"
+    assert [element.id for element in generated_scene.elements] == expected_element_ids
+    assert all(element.bbox == (0, 0, 0, 0) for element in generated_scene.elements)
+    assert [relation.id for relation in generated_scene.relations] == [expected_relation_id]
+    assert all(
+        not relation.arrow_at_start and relation.arrow_at_end
+        for relation in generated_scene.relations
+    )
+    assert selected.scores["ocr_recall"] == 1
+    assert selected.scores["visual_entailment_precision"] == (1 if attributed else 0)
+    assert result.publish is attributed
+    assert result.review_required is not attributed
+    assert (selected.aggregate_score is not None) is attributed
+    assert any("provenance gate" in warning for warning in selected.warnings) is not attributed
+
+    relative = SidecarStore(tmp_path).write(result)
+    bundle = tmp_path / relative
+    manifest = json.loads((bundle / "manifest.json").read_text())
+    assert manifest["requested_diagram_type"] == diagram_type
+    assert manifest["emitted_diagram_type"] == emitted_type
+    assert manifest["fallback_chain"] == fallback_chain
+    sidecar_scene = json.loads((bundle / "generated-scene-ir.json").read_text())
+    assert sidecar_scene == generated_scene.model_dump(mode="json")
+    assert sidecar_scene["diagram_type_candidates"] == [diagram_type]
+
+
 def test_wardley_layout_score_uses_native_xy_instead_of_source_bbox_metadata():
     class WardleyRuntime:
         def validate_and_render(self, code, timeout_seconds):

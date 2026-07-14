@@ -31,6 +31,15 @@
 - Same-origin review API with CSRF, body limits, path confinement, and strict revalidation.
 - Evidence-strict Journey, Kanban, GitGraph, Packet, Ishikawa, TreeView, and Event Modeling serializers.
 - Native Wardley, Cynefin, and Railroad serializers plus explicit ZenUML, organization, and lineage fallbacks.
+- Strict nested Event Modeling lane/frame/relation and ZenUML participant/message extraction contracts,
+  with canonical object-only prompts, case-insensitive closed Event frame types, preserved legacy scalar
+  ZenUML participants, extra metadata, and original IR. Shared frozen fallback plans now assign
+  reserved-safe lane/frame/participant emitted identities plus Scene/provenance-only relation/message
+  slots, resolve only explicit endpoints, and project the exact Flowchart/Sequence-visible compatibility
+  glyphs through serialization, OCR, and generated Scenes. The serializer paths enforce validator-sized
+  source budgets before returning code. The Scenes retain requested types while using the actual
+  `LR`/end-arrow topology, zero geometry, and record-local element/relation provenance instead of copying
+  raw bbox, direction, shape, style, bidirectional, or relation-ID metadata.
 - Strict nested Wardley component/link and Cynefin domain/item/transition extraction contracts with shared
   bounded serializer/Scene/OCR plans. Wardley maps horizontal/vertical IR coordinates to the native
   `[visibility, evolution]` order as `[y, x]`, canonicalizes the Scene to the rendered token values and

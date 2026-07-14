@@ -56,13 +56,17 @@ accessible title/description에 동일하게 적용되며 실제 SVG text integr
 - Ishikawa와 TreeView는 effect/category/cause 또는 root/children을 strict recursive contract로
   후검증합니다. 공유 hierarchy planner가 ID, normalized collision, cycle, 같은 dict
   object 재사용, 최대 depth/node 예산을 한 번만 판정합니다.
-- Event Modeling은 lane/frame/relation을 확인한 뒤 lane-aware Flowchart로 출력합니다. pinned renderer가
-  현재 native AST error를 반환하므로 native 성공으로 표시하지 않습니다. strict scanner가 금지하는
-  keyword·URL-like token이 label 안에 있을 때는 실제 동작 문법이 되지 않도록 zero-width separator를
-  삽입하되 화면의 단어와 문장부호를 보존합니다. source의 `&name;` 형태도 Mermaid HTML entity로
-  재해석되지 않도록 `&` 뒤를 비활성 분리합니다. Flowchart edge label의 literal `|`만 grammar delimiter와
-  NFKC 이후에도 구분되는 `∣`로 출력하고 semantic OCR에는 원문을 유지합니다. quote/backslash를
-  `″`/`∖`로 바꿀 때는 Event Modeling도 다른 Flowchart fallback과 같은 compatibility warning을 남깁니다.
+- Event Modeling은 strict nested lane/frame/relation 계약을 통과한 뒤 lane-aware Flowchart로
+  출력합니다. Pinned renderer가 현재 native AST error를 반환하므로 native 성공으로
+  표시하지 않습니다. 공유 frozen plan은 fallback에 방출하는 `eventmodeling_lane_*`·
+  `eventmodeling_frame_*` ID와 lane membership, typed/time label, 명시 relation을 고정합니다.
+  Mermaid edge에는 ID 문법이 없으므로 `eventmodeling_relation_*`는 Scene/provenance slot에만
+  부여하고, topology·label·evidence는 fallback·Scene·OCR에 공통 적용합니다. strict scanner가
+  금지하는 keyword·URL-like
+  token은 source에서만 zero-width separator로 비활성화하고, 실제 SVG에 보이는
+  compatibility label에서 quote·backslash·entity-like literal은 `″`·`∖`·`＆`/`＃`로,
+  relation label의 `|`·`;`는 추가로 `∣`·`⁏`로 손실을 공개합니다. OCR projection도 원문으로
+  성공을 가장하지 않고 이 화면 label을 사용합니다.
 - Wardley는 strict nested component/link 계약에서 각 component의 0~1 범위 `x`/`y`와
   strict boolean `anchor`를 검증하며 누락 좌표를 배치 알고리즘으로 추정하지 않습니다. 공유
   plan은 component ID·표시 label 충돌, endpoint, self/duplicate link와 record 예산을
@@ -74,7 +78,15 @@ accessible title/description에 동일하게 적용되며 실제 SVG text integr
   domain·item·transition ID와 표시 text, membership을 고정합니다.
 - Railroad는 terminal/nonterminal/sequence/choice/optional/repetition AST를 bounded recursion으로
   직렬화하고 모든 nonterminal reference가 rule에 존재하는지 검사합니다.
-- ZenUML은 pinned runtime에 extension이 없어 Sequence fallback을 사용합니다.
+- ZenUML은 pinned runtime에 extension이 없어 Sequence fallback을 사용합니다. Strict nested
+  participant/message 계약과 공유 plan이 `zenuml_participant_*` emitted ID, alias, endpoint,
+  단방향 message만 방출합니다. Mermaid message에는 ID 문법이 없으므로
+  `zenuml_message_*`는 Scene/provenance slot에만 부여합니다. Sequence grammar에서 statement·actor
+  주입을 막기 위해 visible `#`·`;`·entity-like literal은 `＃`·`⁏`·`＆`/`＃`로
+  대체 사실을 warning으로 남기고, active keyword·URL token은 화면 text를 유지한 채
+  source에서만 비활성화합니다. Sequence accessibility에서만 double-escape되는
+  `<`·`>`는 화면에 보이는 `〈`·`〉` glyph로 공개하며 participant/message의 angle bracket는
+  원문으로 렌더됩니다.
 - Organization과 Data Lineage는 각각 TreeView와 Flowchart fallback으로 hierarchy/endpoint를 보존합니다.
   Organization의 TreeView가 runtime validation에서 거절되면 같은 candidate slot에서 다시
   `organization → treeview → flowchart` chain으로 검증합니다. Organization generated Scene도
@@ -100,7 +112,7 @@ fallback과 generated Scene만 예약어 안전 namespace `packet_field_`, `ishi
 만듭니다. Packet도 generated-node provenance 80% 게이트의 대상이며 별도 source
 OCR/vector numeric gate를 계속 적용합니다.
 
-엄격한 source preflight가 구현된 Packet·Ishikawa·TreeView·Event Modeling·Wardley·Cynefin
+엄격한 source preflight가 구현된 Packet·Ishikawa·TreeView·Event Modeling·Wardley·Cynefin·ZenUML
 serializer는 native/fallback과 무관하게 50,000자·5,000줄 hard budget을 반환 전에
 검사합니다. Entity-like literal을 Mermaid 11.16이 정확히
 보존하지 못하는 문법에서는 보이는 `＆`/`＃` compatibility glyph를 사용하고 warning을
@@ -112,6 +124,12 @@ Wardley source는 `[visibility, evolution]` 순서이므로 serializer는 `[y, x
 소수 token 반올림도 plan 좌표에 동일하게 반영하며, typed record의 별도 bbox나 임의 extra
 geometry가 layout 점수를 오염시키지 않습니다. Wardley `->`는 Mermaid 11.16에서 화살촉 없는
 일반 link이므로 generated Scene에서도 무방향 relation으로 평가합니다.
+
+Event Modeling·ZenUML generated Scene은 requested type을 유지하면서 실제
+Flowchart·Sequence fallback의 namespaced ID, `LR` 방향, end-arrow topology, visible label만
+재구성합니다. Source bbox·shape·style·direction·bidirectional extra를 재현한 것처럼
+복사하지 않고 zero geometry를 사용하며, frame/participant/relation/message의 evidence는
+각 source record에서만 가져옵니다.
 
 Cynefin native grammar은 item의 명시적 배치를 제공하지 않으므로 layout metric을
 unavailable로 남겨 둡니다. 또한 입력하지 않은 다섯 domain·practice/response 고정
