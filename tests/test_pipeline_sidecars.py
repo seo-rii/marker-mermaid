@@ -14,6 +14,7 @@ from marker_mermaid.fusion import FusionEngine
 from marker_mermaid.geometry import ContourObservation, GeometryEngine, GeometryObservation
 from marker_mermaid.markdown import standalone_document_markdown
 from marker_mermaid.models import (
+    MAX_EVIDENCE_REFS,
     DiagramSceneIR,
     DiagramTypePrediction,
     DirectMermaidCandidate,
@@ -118,6 +119,61 @@ def test_pipeline_selects_valid_candidate_and_respects_budget(fake_runtime):
     assert "layout_similarity" not in result.selected.scores
     assert result.selected.typed_ir["acc_title"] == "Process"
     assert "Start" in result.selected.typed_ir["acc_description"]
+
+
+def test_pipeline_publishes_the_exact_per_record_evidence_reference_limit(fake_runtime):
+    evidence_ids = [f"prior-{index}" for index in range(MAX_EVIDENCE_REFS)]
+    prior_evidence = [
+        VisualEvidence(
+            id=evidence_id,
+            kind="vlm_observation",
+            score=1,
+            source_block_ids=["source"],
+        )
+        for evidence_id in evidence_ids
+    ]
+    generated = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1]),
+        typed_candidates=[
+            TypedIRCandidate(
+                diagram_type="flowchart",
+                ir={
+                    "nodes": [
+                        {
+                            "id": "A",
+                            "label": "Start",
+                            "evidence_ids": evidence_ids,
+                        }
+                    ],
+                    "edges": [],
+                },
+            )
+        ],
+    )
+    config = MermaidConfig(
+        candidate_count=1,
+        enable_fusion=False,
+        enable_generic_scene_ir=False,
+        enable_direct_mermaid=False,
+    )
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(generated)],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (20, 20), "white"),
+        evidence=prior_evidence,
+    )
+
+    assert result.publish
+    assert result.selected is not None
+    assert result.selected.aggregate_score == 1
+    assert result.selected.generated_scene_ir is not None
+    assert result.selected.generated_scene_ir.elements[0].evidence_ids == evidence_ids
+    assert not result.failures
 
 
 def test_pipeline_ocr_recall_uses_generated_labels_and_spatial_occurrence_max(fake_runtime):

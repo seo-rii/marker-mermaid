@@ -14,6 +14,7 @@ from marker_mermaid.geometry import (
     LineObservation,
 )
 from marker_mermaid.models import (
+    MAX_EVIDENCE_REFS,
     DiagramSceneIR,
     DiagramTypePrediction,
     EngineObservation,
@@ -952,7 +953,7 @@ def test_fused_mapping_budget_filters_non_predicted_typed_candidates_before_slic
     assert result.selected.node_id_mappings
 
 
-@pytest.mark.parametrize("mutation", ["nested_label", "set", "nan"])
+@pytest.mark.parametrize("mutation", ["nested_label", "evidence_overflow", "set", "nan"])
 def test_pipeline_revalidates_mutated_typed_candidates_without_losing_valid_siblings(
     mutation,
 ) -> None:
@@ -961,6 +962,10 @@ def test_pipeline_revalidates_mutated_typed_candidates_without_losing_valid_sibl
     invalid = observation.typed_candidates[0]
     if mutation == "nested_label":
         invalid.ir["nodes"][0]["label"] = {"parent_id": "A"}
+    elif mutation == "evidence_overflow":
+        invalid.ir["nodes"][0]["evidence_ids"] = [
+            f"evidence-{index}" for index in range(MAX_EVIDENCE_REFS + 1)
+        ]
     elif mutation == "set":
         invalid.ir["mutated"] = {"unordered"}
     else:

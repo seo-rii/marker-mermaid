@@ -231,7 +231,8 @@ hook-free walker로 mapping을 다시 고정하고, snapshot 도중 live mapping
 
 `typed-ir.json`과 alternative candidate JSON에는 sink 직전에 다시 canonicalized된 typed IR만 기록합니다.
 각 IR은 UTF-8 text 1,000,000 bytes와 compact escaped JSON 4,000,000 bytes 이하이며 exact plain JSON
-container/scalar, depth/item/field/numeric/cycle 계약을 통과해야 합니다. Writer는 selected와 alternatives를
+container/scalar, depth/item/field/numeric/cycle 계약 및 알려진 record별 256개 `evidence_ids` 상한을
+통과해야 합니다. Writer는 selected와 alternatives를
 `model_dump`, JSON serialization 또는 deep copy하기 전에 안전한 shallow candidate에 이 snapshot을
 교체합니다. Live candidate가 생성 뒤 바뀌었거나 snapshot 도중 다시 바뀌면 임시 bundle을 publish하지
 않습니다.

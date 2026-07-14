@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator,
 from marker_mermaid.config import PublishPolicy, QualityGrade, SecurityProfile
 from marker_mermaid.mapping_validation import bbox_iou
 from marker_mermaid.render_artifacts import MAX_RENDER_BYTES, png_inspection_error
+from marker_mermaid.resource_limits import MAX_EVIDENCE_REFS
 from marker_mermaid.typed_contracts import validate_typed_ir_contract
 
 BBox = tuple[float, float, float, float]
@@ -35,7 +36,6 @@ MAX_TYPED_IR_CANDIDATE_FIELDS = 3
 MAX_ID_CHARS = 256
 MAX_TEXT_CHARS = 50_000
 MAX_WARNING_CHARS = 4_096
-MAX_EVIDENCE_REFS = 256
 NODE_ID_MAPPING_MIN_IOU = 0.45
 _NODE_ID_MAPPING_SEAL_KEY = secrets.token_bytes(32)
 _VALIDATION_RECEIPT_SEAL_KEY = secrets.token_bytes(32)

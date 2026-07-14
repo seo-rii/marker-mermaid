@@ -231,6 +231,10 @@
 
 ### Changed
 
+- Known typed semantic records now share the Scene model's 256-reference `evidence_ids` cap in
+  Structured VLM prompts and local nested schemas. Exact-boundary provenance remains publishable,
+  while oversized or post-construction-mutated records are isolated before fusion, pipeline
+  serialization, or atomic sidecar publication without dropping valid sibling candidates.
 - Automatic C4 publication and evaluation Scenes now use the shared bounded
   Architecture-to-Flowchart fallback identity, group, and topology plan instead of diagnostic
   native C4 structure, aligning emitted labels, memberships, and endpoints while preserving

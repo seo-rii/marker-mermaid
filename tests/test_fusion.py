@@ -9,6 +9,7 @@ import pytest
 import marker_mermaid.fusion as fusion_module
 from marker_mermaid.fusion import FusionEngine, FusionInput
 from marker_mermaid.models import (
+    MAX_EVIDENCE_REFS,
     DiagramSceneIR,
     DiagramTypePrediction,
     DirectMermaidCandidate,
@@ -1295,8 +1296,10 @@ def test_rejects_empty_or_untyped_inputs() -> None:
         raise AssertionError("untyped fusion input should fail")
 
 
+@pytest.mark.parametrize("mutation", ["nested_label", "evidence_overflow"])
 def test_fusion_isolates_invalid_typed_ir_without_live_model_dump(
     monkeypatch,
+    mutation: str,
 ) -> None:
     valid = TypedIRCandidate(
         diagram_type="flowchart",
@@ -1306,7 +1309,12 @@ def test_fusion_isolates_invalid_typed_ir_without_live_model_dump(
         prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0]),
         typed_candidates=[valid.model_copy(deep=True), valid],
     )
-    observation.typed_candidates[0].ir["nodes"][0]["label"] = {"invalid": "nested label"}
+    if mutation == "nested_label":
+        observation.typed_candidates[0].ir["nodes"][0]["label"] = {"invalid": "nested label"}
+    else:
+        observation.typed_candidates[0].ir["nodes"][0]["evidence_ids"] = [
+            f"evidence-{index}" for index in range(MAX_EVIDENCE_REFS + 1)
+        ]
 
     def forbidden_model_dump(*_args, **_kwargs):
         raise AssertionError("live typed candidate model_dump must not be used")

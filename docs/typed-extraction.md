@@ -24,6 +24,8 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 실패합니다. Prompt에는 현재 `enabled_types`만 들어가므로 비활성 유형의 schema가 token budget을
 소비하지 않습니다. 공통 선택 필드는 `title`, `description`, `acc_title`, `acc_description`,
 `direction`이며 semantic node/relation record에는 prior에서 얻은 `evidence_ids`를 요구합니다.
+알려진 모든 record의 `evidence_ids`는 prompt와 local nested schema에서 같은 record별 최대 256개
+상한을 사용합니다.
 
 ## 중첩 계약 적용 범위
 
@@ -542,7 +544,9 @@ cardinality, Requirement·Block 및 C4의 위 token과 Deployment/Component port
 필드 존재, non-empty, 표시 text, ID 중복, endpoint 참조 같은 의미 조건은 계속 serializer가
 판정합니다.
 `evidence_ids`도 prompt에서는 필수지만 legacy/partial candidate 호환을 위해 model에서는 선택 사항이며,
-실제 자동 게시 여부는 provenance gate가 결정합니다.
+생략·`null`·빈 목록은 계속 허용합니다. 값이 있으면 strict string list이면서 record별 256개 이하여야
+하고, 초과 후보는 serializer에 도달하기 전 nested post-validation에서 격리됩니다. 실제 자동 게시
+여부는 provenance gate가 결정합니다.
 
 평가 Scene은 serializer-visible fallback을 그대로 사용합니다. label이 없는 Flowchart/Generic Network,
 Swimlane/BPMN, Mindmap node는 내부 ID가 아니라 `[unreadable]`로 기록합니다. Sequence participant는 serializer와
@@ -661,6 +665,9 @@ Candidate envelope는 `diagram_type`, `ir`, `confidence` 세 공개 field만 허
 exact-string field name을 검사하고 bounded copy합니다. Validation error는 원본 input 표현을 포함하지
 않습니다. Fusion도 모든 observation에서 선택한 unique candidate에 64개/8,000,000 bytes 전역 상한을
 다시 적용하고 deterministic bounded prefix를 유지합니다.
+알려진 semantic record의 evidence reference는 Scene model과 같은 공용 상수로 256개까지 허용됩니다.
+정확한 경계값은 generated Scene과 게시 후보에 그대로 보존하고, 생성 뒤 257개 이상으로 변조된 IR은
+canonical key, fusion, pipeline 및 sidecar 소비 경계의 재검증에서 후보 단위로 거부합니다.
 Observation candidate, evidence, warning 수와 Scene IR element/relation/group, polygon/polyline, ID, bbox도
 별도 상한과 finite-number 검사를 거칩니다. `NaN`/무한 좌표와 범위를 벗어난 confidence는 sidecar에
 도달하기 전에 거부됩니다. JSON sidecar는 `allow_nan=false`로 직렬화합니다.

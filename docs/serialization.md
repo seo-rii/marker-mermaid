@@ -76,7 +76,8 @@ type과 Block `shape`는 serializer가 이미 수용하는 닫힌 token을 대�
 검증하지만 provider prompt에는 canonical `verify_method`만 보입니다.
 
 Root list를 제외한 개별 field와 `evidence_ids`는 partial/legacy candidate 호환을 위해 model에서
-선택으로 남겨 둡니다. 추가 metadata는 `extra="allow"`로 보존하고, validation result로 IR을
+선택으로 남겨 둡니다. `evidence_ids`가 존재하면 strict string list와 record별 최대 256개 상한을
+적용합니다. 추가 metadata는 `extra="allow"`로 보존하고, validation result로 IR을
 대체하지 않아 serializer와 sidecar에 원본 dict를 그대로 전달합니다. 따라서 non-empty,
 필수 label, ID/endpoint 정합성과 provenance 게시 여부는 각각 serializer와 publication gate가
 계속 판정합니다. Block `columns` 계약은 provider에 `auto|integer`를 요구하고 nested

@@ -331,6 +331,9 @@ field를 넘기면 `dict.copy` 전에 거부하며, fusion은 여러 observation
 상한을 다시 적용해 한 입력 초과가 전체 fusion 실패로 번지지 않게 합니다. Envelope field name은 exact
 built-in string인지 bounded copy에서 먼저 확인하며 Pydantic validation error는 원본 hostile input을 숨겨
 오류 문자열 생성도 equality/repr hook을 실행하지 않습니다.
+알려진 typed semantic record의 `evidence_ids`는 Scene과 공유하는 256-reference 상한을 prompt와 nested
+post-validation에 모두 노출합니다. 생략·`null`·빈 목록은 호환을 위해 유지하되, 초과 목록은 fusion,
+pipeline, accessibility/repair 및 sidecar sink의 현재-payload 재검증에서도 후보 단위로 격리됩니다.
 
 ## SVG 검사
 

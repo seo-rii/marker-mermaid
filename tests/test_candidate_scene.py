@@ -2732,6 +2732,33 @@ def test_railroad_scene_fails_closed_with_invalid_or_over_budget_plan(
     assert typed_ir_to_scene("railroad", ir) is None
 
 
+def test_railroad_scene_uses_the_shared_per_record_evidence_reference_cap() -> None:
+    evidence_ids = [f"ocr-{index}" for index in range(MAX_EVIDENCE_REFS)]
+    ir = {
+        "rules": [
+            {
+                "name": "entry",
+                "definition": {
+                    "type": "terminal",
+                    "value": "token",
+                    "evidence_ids": evidence_ids,
+                },
+            }
+        ]
+    }
+
+    scene = typed_ir_to_scene("railroad", ir)
+
+    assert scene is not None
+    assert scene.elements[-1].evidence_ids == evidence_ids
+
+    ir["rules"][0]["definition"]["evidence_ids"] = [
+        *evidence_ids,
+        "ocr-overflow",
+    ]
+    assert typed_ir_to_scene("railroad", ir) is None
+
+
 @pytest.mark.parametrize(
     "malformed_evidence_ids",
     ["ocr-token", {"ocr-token": 1}, 7, [7], [{"ocr-token": 1}]],

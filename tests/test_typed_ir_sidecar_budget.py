@@ -6,6 +6,7 @@ import pytest
 
 import marker_mermaid.sidecars as sidecar_module
 from marker_mermaid.models import (
+    MAX_EVIDENCE_REFS,
     MAX_ID_CHARS,
     MAX_IR_TEXT_CHARS,
     MermaidCandidate,
@@ -127,6 +128,26 @@ def test_sidecar_revalidates_mutated_nested_typed_ir_contract(tmp_path):
         SidecarStore(tmp_path).write(result)
 
     assert not (tmp_path / "diagrams" / "invalid-contract").exists()
+
+
+def test_sidecar_rejects_mutated_per_record_evidence_overflow(tmp_path):
+    result = _result("evidence-overflow", selected=_candidate("selected"))
+    assert result.selected is not None
+    result.selected.typed_ir = {
+        "nodes": [
+            {
+                "id": "A",
+                "label": "Start",
+                "evidence_ids": [f"evidence-{index}" for index in range(MAX_EVIDENCE_REFS + 1)],
+            }
+        ],
+        "edges": [],
+    }
+
+    with pytest.raises(ValueError, match="invalid typed IR"):
+        SidecarStore(tmp_path).write(result)
+
+    assert not (tmp_path / "diagrams" / "evidence-overflow").exists()
 
 
 def test_sidecar_rejects_non_plain_diagram_type_without_running_hooks(tmp_path):

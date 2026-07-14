@@ -555,6 +555,103 @@ def test_typed_candidate_rejects_another_diagram_familys_root_shape():
         )
 
 
+def test_typed_evidence_reference_cap_covers_flat_and_recursive_records() -> None:
+    cases = [
+        (
+            "flowchart",
+            lambda evidence_ids: {
+                "nodes": [{"id": "A", "evidence_ids": evidence_ids}],
+            },
+            "nodes[0].evidence_ids",
+        ),
+        (
+            "class",
+            lambda evidence_ids: {
+                "classes": [
+                    {
+                        "id": "A",
+                        "members": [{"name": "value", "evidence_ids": evidence_ids}],
+                    }
+                ],
+            },
+            "classes[0].members[0].evidence_ids",
+        ),
+        (
+            "railroad",
+            lambda evidence_ids: {
+                "rules": [
+                    {
+                        "name": "root",
+                        "definition": {
+                            "type": "optional",
+                            "element": {
+                                "type": "terminal",
+                                "value": "x",
+                                "evidence_ids": evidence_ids,
+                            },
+                        },
+                    }
+                ],
+            },
+            "rules[0].definition.optional.element.terminal.evidence_ids",
+        ),
+        (
+            "organization",
+            lambda evidence_ids: {
+                "root": {
+                    "id": "ceo",
+                    "children": [{"id": "cto", "evidence_ids": evidence_ids}],
+                }
+            },
+            "root.children[0].evidence_ids",
+        ),
+    ]
+    accepted_ids = [f"evidence-{index}" for index in range(models.MAX_EVIDENCE_REFS)]
+    rejected_ids = [*accepted_ids, "evidence-overflow"]
+
+    for diagram_type, ir_factory, location in cases:
+        accepted_ir = ir_factory(accepted_ids)
+        accepted = TypedIRCandidate(diagram_type=diagram_type, ir=accepted_ir)
+        assert accepted.ir == accepted_ir
+        assert accepted.ir is not accepted_ir
+
+        with pytest.raises(ValidationError) as exc_info:
+            TypedIRCandidate(diagram_type=diagram_type, ir=ir_factory(rejected_ids))
+
+        message = str(exc_info.value)
+        assert location in message
+        assert f"at most {models.MAX_EVIDENCE_REFS} items" in message
+
+
+def test_evidence_reference_cap_is_rechecked_at_typed_candidate_consumption() -> None:
+    candidate = TypedIRCandidate(
+        diagram_type="flowchart",
+        ir={"nodes": [{"id": "A", "evidence_ids": []}]},
+    )
+    candidate.ir["nodes"][0]["evidence_ids"] = [
+        f"evidence-{index}" for index in range(models.MAX_EVIDENCE_REFS + 1)
+    ]
+    prediction = DiagramTypePrediction(candidates=["flowchart"], scores=[1.0])
+
+    with pytest.raises(ValidationError, match="evidence_ids"):
+        candidate.canonical_key()
+
+    observation = EngineObservation(prediction=prediction, typed_candidates=[candidate])
+    with pytest.raises(ValidationError, match="evidence_ids"):
+        observation.typed_candidates[0].canonical_key()
+
+    with pytest.raises(ValidationError, match="evidence_ids"):
+        EngineObservation(
+            prediction=prediction,
+            typed_candidates=[
+                {
+                    "diagram_type": "flowchart",
+                    "ir": candidate.ir,
+                }
+            ],
+        )
+
+
 @pytest.mark.parametrize(
     ("diagram_type", "ir", "location"),
     [

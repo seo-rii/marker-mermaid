@@ -15,6 +15,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, ValidationError, field_validator
 
 from marker_mermaid.config import ALL_TYPES, PHASE_ONE_TYPES
+from marker_mermaid.resource_limits import MAX_EVIDENCE_REFS
 
 RootKind = Literal["list", "object", "string"]
 BBoxList = Annotated[list[FiniteFloat], Field(min_length=4, max_length=4)]
@@ -27,7 +28,7 @@ class _TypedIRRecord(BaseModel):
 
     model_config = ConfigDict(extra="allow", strict=True)
 
-    evidence_ids: list[str] | None = None
+    evidence_ids: list[str] | None = Field(default=None, max_length=MAX_EVIDENCE_REFS)
     bbox: BBoxValue | None = None
 
 
@@ -1571,6 +1572,7 @@ def typed_ir_contract_prompt(enabled_types: set[str]) -> str:
         "Typed IR root contracts (use these exact field names):",
         "Common optional fields: title, description, acc_title, acc_description, direction.",
         "Every semantic node/relation record must include evidence_ids from Prior evidence.",
+        f"Each evidence_ids list contains at most {MAX_EVIDENCE_REFS} strings.",
         "Nested record fields below are type constraints when present; serializer guidance "
         "still decides semantic requiredness.",
     ]

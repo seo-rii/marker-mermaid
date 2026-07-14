@@ -1297,7 +1297,37 @@ def test_nested_contract_prompt_is_deterministic_and_enabled_type_only():
     ) in first
     assert "architecture.services[]" not in first
     assert "packet.fields[]" not in first
+    assert f"Each evidence_ids list contains at most {MAX_EVIDENCE_REFS} strings." in first
     assert first.index("- flowchart:") < first.index("- timeline:")
+
+
+def test_every_nested_contract_schema_uses_the_shared_evidence_reference_cap() -> None:
+    for diagram_type in NESTED_TYPED_IR_TYPES:
+        model = TYPED_IR_CONTRACTS[diagram_type].nested_model
+        assert model is not None
+        pending: list[object] = [model.model_json_schema()]
+        caps: list[int] = []
+        while pending:
+            value = pending.pop()
+            if isinstance(value, dict):
+                properties = value.get("properties")
+                if isinstance(properties, dict) and "evidence_ids" in properties:
+                    evidence_schema = properties["evidence_ids"]
+                    assert isinstance(evidence_schema, dict)
+                    choices = evidence_schema.get("anyOf", [evidence_schema])
+                    arrays = [
+                        choice
+                        for choice in choices
+                        if isinstance(choice, dict) and choice.get("type") == "array"
+                    ]
+                    assert len(arrays) == 1
+                    caps.append(arrays[0]["maxItems"])
+                pending.extend(value.values())
+            elif isinstance(value, list):
+                pending.extend(value)
+
+        assert caps, diagram_type
+        assert set(caps) == {MAX_EVIDENCE_REFS}, diagram_type
 
 
 def test_every_phase_one_type_and_alias_has_nested_prompt_records():
