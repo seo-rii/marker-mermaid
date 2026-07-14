@@ -14,6 +14,7 @@ from collections.abc import Callable
 from typing import Any, TypeAlias
 
 from marker_mermaid.accessibility import resolve_accessibility
+from marker_mermaid.models import MAX_SCENE_ELEMENTS, MAX_SCENE_RELATIONS
 from marker_mermaid.serializers import (
     SerializationError,
     serialize_architecture,
@@ -160,6 +161,55 @@ def plan_requirement_records(
         ]
         element_ids = {source_id: output_id for _, source_id, output_id in elements}
     return requirements, elements, {**requirement_ids, **element_ids}
+
+
+def plan_usecase_records(
+    ir: dict[str, Any],
+) -> tuple[
+    list[tuple[dict[str, Any], str, str]],
+    list[tuple[dict[str, Any], str, str]],
+    dict[str, str],
+]:
+    """Return the collision-free Actor/UseCase IDs used by the Flowchart fallback."""
+
+    relations = ir.get("relations", [])
+    if not isinstance(relations, list):
+        raise SerializationError("use-case relations must be a list")
+    if len(relations) > MAX_SCENE_RELATIONS:
+        raise SerializationError("use-case relation count exceeds the Scene relation limit")
+    raw_actors = ir.get("actors")
+    raw_use_cases = ir.get("use_cases")
+    if (
+        isinstance(raw_actors, list)
+        and isinstance(raw_use_cases, list)
+        and len(raw_actors) + len(raw_use_cases) > MAX_SCENE_ELEMENTS
+    ):
+        raise SerializationError("use-case node count exceeds the Scene element limit")
+    actors, actor_ids = plan_phase2_record_ids(
+        ir.get("actors"), field="use-case actors", fallback_prefix="Actor"
+    )
+    use_cases, use_case_ids = plan_phase2_record_ids(
+        ir.get("use_cases"), field="use-case cases", fallback_prefix="UseCase"
+    )
+    if set(actor_ids) & set(use_case_ids):
+        raise SerializationError("use-case actor and case source ids must be distinct")
+    if not set(actor_ids.values()) & set(use_case_ids.values()):
+        return actors, use_cases, {**actor_ids, **use_case_ids}
+
+    occupied_ids = set(actor_ids.values())
+    remapped_use_cases: list[tuple[dict[str, Any], str, str]] = []
+    remapped_use_case_ids: dict[str, str] = {}
+    for record, source_id, output_id in use_cases:
+        emitted_id = f"usecase_{output_id}"
+        base = emitted_id
+        suffix = 2
+        while emitted_id in occupied_ids:
+            emitted_id = f"{base}_{suffix}"
+            suffix += 1
+        occupied_ids.add(emitted_id)
+        remapped_use_cases.append((record, source_id, emitted_id))
+        remapped_use_case_ids.setdefault(source_id, emitted_id)
+    return actors, remapped_use_cases, {**actor_ids, **remapped_use_case_ids}
 
 
 def _resolve_relation(
@@ -555,21 +605,7 @@ def serialize_component(
 
 
 def serialize_usecase(ir: dict[str, Any], *, experimental: bool = False) -> Phase2Serialization:
-    actors, actor_ids = plan_phase2_record_ids(
-        ir.get("actors"), field="use-case actors", fallback_prefix="Actor"
-    )
-    use_cases, use_case_ids = plan_phase2_record_ids(
-        ir.get("use_cases"), field="use-case cases", fallback_prefix="UseCase"
-    )
-    if set(actor_ids) & set(use_case_ids):
-        raise SerializationError("use-case actor and case source ids must be distinct")
-    if set(actor_ids.values()) & set(use_case_ids.values()):
-        use_cases = [
-            (record, source_id, f"usecase_{output_id}")
-            for record, source_id, output_id in use_cases
-        ]
-        use_case_ids = {source_id: output_id for _, source_id, output_id in use_cases}
-    id_map = {**actor_ids, **use_case_ids}
+    actors, use_cases, id_map = plan_usecase_records(ir)
     nodes = [
         {
             "id": output_id,

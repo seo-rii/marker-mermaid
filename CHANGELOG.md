@@ -94,6 +94,16 @@
 - Stable State, Class, and ER typed IR now has strict nested extraction and post-validation
   contracts for serializer-visible records and closed token sets, with records advertised only when
   those diagram types are enabled and without changing the generic provider response envelope.
+- Serializer-visible Scene text now includes Architecture group labels, excludes hidden
+  Deployment/Component relation labels, and mirrors Use-case Flowchart relation type-over-label
+  precedence; hidden role/shape/style/semantic metadata cannot enter the projected Scene, and
+  label-less Architecture groups use one portable label across native and runtime fallback output.
+- Native Architecture, its portable runtime fallback, and generated Scene now share one bounded
+  service/group/edge identity plan with collision-free service suffixes and fail-closed group or
+  endpoint ambiguity.
+- Use-case serialization and Scene projection now share a bounded, collision-free Actor/UseCase
+  namespace, including second-order prefix collisions, deterministic relation IDs, and exact
+  Flowchart direction and arrow behavior.
 
 ### Changed
 

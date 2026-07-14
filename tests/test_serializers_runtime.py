@@ -7,12 +7,14 @@ from marker_mermaid.config import SecurityProfile
 from marker_mermaid.models import (
     MAX_ID_CHARS,
     MAX_SCENE_ELEMENTS,
+    MAX_SCENE_GROUPS,
     MAX_SCENE_RELATIONS,
     MAX_TEXT_CHARS,
 )
 from marker_mermaid.serializers import (
     SerializationError,
     serialize_architecture,
+    serialize_architecture_flowchart_fallback,
     serialize_flowchart,
     serialize_gantt,
     serialize_mindmap,
@@ -97,6 +99,106 @@ def test_bpmn_swimlane_is_explicit_flowchart_fallback():
 
 def test_flowchart_groups_are_emitted_as_subgraphs():
     assert 'subgraph phase["Phase"]' in CASES[0]
+
+
+def test_architecture_grammars_share_collision_free_service_and_group_ids() -> None:
+    ir = {
+        "groups": [{"id": "core services"}],
+        "services": [
+            {"id": "A-B", "name": "Primary", "group": "core services"},
+            {"id": "A B", "name": "Secondary", "group": "core services"},
+        ],
+        "edges": [{"source": "A-B", "target": "A B"}],
+    }
+
+    native = serialize_architecture(ir)
+    fallback = serialize_architecture_flowchart_fallback(ir)
+
+    assert 'group core_services(cloud)["core_services"]' in native
+    assert 'service A_B(server)["Primary"] in core_services' in native
+    assert 'service A_B_2(server)["Secondary"] in core_services' in native
+    assert "A_B:R --> L:A_B_2" in native
+    assert 'subgraph core_services["core_services"]' in fallback
+    assert 'A_B["Primary"]' in fallback
+    assert 'A_B_2["Secondary"]' in fallback
+    assert "A_B --> A_B_2" in fallback
+
+
+@pytest.mark.parametrize(
+    "ir",
+    [
+        {
+            "groups": [{"id": "A-B"}, {"id": "A B"}],
+            "services": [
+                {"id": "one", "group": "A-B"},
+                {"id": "two", "group": "A B"},
+            ],
+        },
+        {
+            "groups": [{"id": "A-B"}],
+            "services": [{"id": "A B", "group": "A-B"}],
+        },
+    ],
+)
+def test_architecture_rejects_normalized_group_identity_collisions(
+    ir: dict[str, object],
+) -> None:
+    with pytest.raises(SerializationError, match="collides|unique after normalization"):
+        serialize_architecture(ir)
+    with pytest.raises(SerializationError, match="collides|unique after normalization"):
+        serialize_architecture_flowchart_fallback(ir)
+
+
+def test_architecture_empty_groups_are_native_only_and_bounded() -> None:
+    ir = {
+        "groups": [{"id": "external zone"}],
+        "services": [{"id": "api", "label": "API"}],
+    }
+
+    assert 'group external_zone(cloud)["external_zone"]' in serialize_architecture(ir)
+    with pytest.raises(SerializationError, match="has no services"):
+        serialize_architecture_flowchart_fallback(ir)
+    with pytest.raises(SerializationError, match="group count exceeds"):
+        serialize_architecture(
+            {
+                "groups": [{"id": f"group-{index}"} for index in range(MAX_SCENE_GROUPS + 1)],
+                "services": [{"id": "api"}],
+            }
+        )
+
+
+def test_architecture_planner_preserves_forward_compatible_group_metadata() -> None:
+    ir = {
+        "groups": [
+            {
+                "id": "core",
+                "label": "Core",
+                "parent": None,
+                "children": ["future-extension"],
+            }
+        ],
+        "services": [{"id": "api", "group": "core"}],
+    }
+
+    native = serialize_architecture(ir)
+    fallback = serialize_architecture_flowchart_fallback(ir)
+
+    assert 'group core(cloud)["Core"]' in native
+    assert 'subgraph core["Core"]' in fallback
+
+
+def test_architecture_preserves_non_string_falsey_group_references() -> None:
+    ir = {
+        "groups": [{"id": "0"}],
+        "services": [{"id": "api", "group": 0}],
+    }
+
+    native = serialize_architecture(ir)
+    fallback = serialize_architecture_flowchart_fallback(ir)
+
+    assert 'group n_0(cloud)["n_0"]' in native
+    assert 'service api(server)["api"] in n_0' in native
+    assert 'subgraph n_0["n_0"]' in fallback
 
 
 def test_sequence_participant_ids_are_collision_free_and_unambiguous():

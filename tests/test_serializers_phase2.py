@@ -194,6 +194,23 @@ def test_overlapping_semantic_ids_fail_instead_of_rerouting_relations() -> None:
         )
 
 
+def test_usecase_final_ids_avoid_second_order_actor_namespace_collisions() -> None:
+    code = serialize_phase2(
+        "usecase",
+        {
+            "actors": [{"id": "a-b"}, {"id": "usecase_y"}],
+            "use_cases": [{"id": "a b"}, {"id": "y"}],
+            "relations": [{"source": "usecase_y", "target": "y", "type": "association"}],
+        },
+    )[0]
+
+    assert 'a_b(["a-b"])' in code
+    assert 'usecase_y(["usecase_y"])' in code
+    assert 'usecase_a_b(["a b"])' in code
+    assert 'usecase_y_2(["y"])' in code
+    assert "usecase_y -->|association| usecase_y_2" in code
+
+
 def test_c4_architecture_rejection_preserves_boundary_as_flowchart_subgraph() -> None:
     result = serialize_runtime_fallback_result("c4", CASES["c4"], experimental=True)
 

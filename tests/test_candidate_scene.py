@@ -1,7 +1,16 @@
 from collections import UserDict
 
+import pytest
+
 from marker_mermaid.candidate_scene import typed_ir_semantic_texts, typed_ir_to_scene
+from marker_mermaid.models import MAX_SCENE_ELEMENTS, MAX_SCENE_RELATIONS
 from marker_mermaid.scoring import ocr_recall
+from marker_mermaid.serializers import (
+    SerializationError,
+    serialize_architecture,
+    serialize_architecture_flowchart_fallback,
+)
+from marker_mermaid.serializers_phase2 import serialize_phase2
 
 
 def test_flowchart_typed_ir_preserves_explicit_direction_and_arrows():
@@ -386,6 +395,430 @@ def test_phase_one_semantic_texts_exclude_unrendered_aliases_and_relation_labels
         == 0
     )
     assert ocr_recall(["Concealed caller payload"], "", generated_texts=sequence_texts) == 0
+
+
+def test_architecture_group_scene_matches_native_and_flowchart_visible_label() -> None:
+    ir = {
+        "groups": [{"id": "core services", "role": "hidden-group-role"}],
+        "services": [
+            {
+                "id": "api",
+                "label": "API",
+                "group": "core services",
+                "bbox": [10, 20, 30, 40],
+            },
+            {
+                "id": "db",
+                "label": "Database",
+                "group": "core services",
+                "bbox": [50, 60, 80, 90],
+            },
+        ],
+        "edges": [{"source": "api", "target": "db"}],
+    }
+
+    scene = typed_ir_to_scene("architecture", ir)
+    native = serialize_architecture(ir)
+    fallback = serialize_architecture_flowchart_fallback(ir)
+
+    assert scene is not None
+    assert [(group.id, group.label, group.member_ids, group.bbox) for group in scene.groups] == [
+        ("core_services", "core_services", ["api", "db"], (10, 20, 80, 90))
+    ]
+    assert scene.groups[0].role == "group"
+    assert 'group core_services(cloud)["core_services"]' in native
+    assert 'subgraph core_services["core_services"]' in fallback
+    texts = list(typed_ir_semantic_texts("architecture", ir, scene))
+    assert texts == ["API", "Database", "core_services"]
+    assert ocr_recall(["core_services"], "", generated_texts=texts) == 1
+    assert ocr_recall(["core services"], "", generated_texts=texts) == 0
+
+
+def test_architecture_scene_does_not_invent_missing_groups_or_members() -> None:
+    no_groups = typed_ir_to_scene(
+        "architecture",
+        {
+            "services": [
+                {"id": "api", "label": "API"},
+            ]
+        },
+    )
+    unknown_group = typed_ir_to_scene(
+        "architecture",
+        {"services": [{"id": "api", "label": "API", "group": "undeclared"}]},
+    )
+    empty_group = typed_ir_to_scene(
+        "architecture",
+        {
+            "groups": [{"id": "external zone", "bbox": [1, 2, 3, 4]}],
+            "services": [{"id": "api", "label": "API"}],
+        },
+    )
+
+    assert no_groups is not None and no_groups.groups == []
+    assert unknown_group is None
+    assert empty_group is not None
+    assert [
+        (group.id, group.label, group.member_ids, group.bbox) for group in empty_group.groups
+    ] == [("external_zone", "external_zone", [], (1, 2, 3, 4))]
+
+
+def test_architecture_edge_plan_is_bounded_for_serializer_and_scene() -> None:
+    ir = {
+        "services": [{"id": "api"}, {"id": "db"}],
+        "edges": [{"source": "api", "target": "db"} for _index in range(MAX_SCENE_RELATIONS + 1)],
+    }
+
+    with pytest.raises(SerializationError, match="edge count exceeds"):
+        serialize_architecture(ir)
+    assert typed_ir_to_scene("architecture", ir) is None
+
+
+def test_architecture_scene_uses_collision_free_serializer_service_ids() -> None:
+    ir = {
+        "services": [
+            {
+                "id": "A-B",
+                "name": "Primary",
+                "text": "Concealed alpha payload",
+                "role": "hidden-service-role",
+                "shape": "diamond",
+            },
+            {"id": "A B", "name": "Secondary", "text": "Concealed beta payload"},
+            {"name": "Generated", "text": "Concealed gamma payload"},
+        ],
+        "edges": [{"source": "A-B", "target": "A B"}],
+    }
+
+    scene = typed_ir_to_scene("architecture", ir)
+    native = serialize_architecture(ir)
+    fallback = serialize_architecture_flowchart_fallback(ir)
+
+    assert scene is not None
+    assert [(element.id, element.text) for element in scene.elements] == [
+        ("A_B", "Primary"),
+        ("A_B_2", "Secondary"),
+        ("S3", "Generated"),
+    ]
+    assert all(element.role == "node" and element.shape is None for element in scene.elements)
+    assert (scene.relations[0].source_id, scene.relations[0].target_id) == (
+        "A_B",
+        "A_B_2",
+    )
+    assert 'service A_B(server)["Primary"]' in native
+    assert 'service A_B_2(server)["Secondary"]' in native
+    assert "A_B:R --> L:A_B_2" in native
+    assert 'A_B["Primary"]' in fallback
+    assert 'A_B_2["Secondary"]' in fallback
+    texts = list(typed_ir_semantic_texts("architecture", ir, scene))
+    assert ocr_recall(["Concealed alpha beta gamma payload"], "", generated_texts=texts) == 0
+
+
+def test_architecture_fallback_relation_texts_match_visible_mermaid_only() -> None:
+    cases = [
+        (
+            "deployment",
+            {
+                "groups": [{"id": "runtime zone"}],
+                "nodes": [
+                    {
+                        "id": "app-node",
+                        "name": "App",
+                        "group": "runtime zone",
+                        "role": "hidden-node-role",
+                        "shape": "diamond",
+                    },
+                    {"id": "app node", "name": "DB", "group": "runtime zone"},
+                ],
+                "artifacts": [{"name": "Binary"}],
+                "links": [
+                    {
+                        "source": "app-node",
+                        "target": "app node",
+                        "label": "Hidden JDBC",
+                        "arrow_at_start": True,
+                        "arrow_at_end": False,
+                        "style": "dashed",
+                        "relation_type": "hidden_type",
+                        "semantic_relation": "causal",
+                    }
+                ],
+            },
+            "Hidden JDBC",
+            [("app_node", "App"), ("app_node_2", "DB"), ("S3", "Binary")],
+            ("app_node", "app_node_2"),
+            ["app_node", "app_node_2"],
+        ),
+        (
+            "component",
+            {
+                "groups": [{"id": "component zone"}],
+                "components": [
+                    {"id": "web", "label": "Web", "group": "component zone"},
+                    {"id": "auth", "label": "Auth", "group": "component zone"},
+                ],
+                "interfaces": [{"name": "Port"}],
+                "dependencies": [{"source": "web", "target": "auth", "label": "Hidden OAuth"}],
+            },
+            "Hidden OAuth",
+            [("web", "Web"), ("auth", "Auth"), ("S3", "Port")],
+            ("web", "auth"),
+            ["web", "auth"],
+        ),
+    ]
+
+    for (
+        diagram_type,
+        ir,
+        hidden_label,
+        expected_elements,
+        expected_endpoints,
+        expected_group_members,
+    ) in cases:
+        scene = typed_ir_to_scene(diagram_type, ir)
+
+        assert scene is not None
+        assert [(element.id, element.text) for element in scene.elements] == expected_elements
+        assert all(element.role == "node" and element.shape is None for element in scene.elements)
+        assert len(scene.relations) == 1 and scene.relations[0].label is None
+        assert (scene.relations[0].source_id, scene.relations[0].target_id) == (expected_endpoints)
+        assert (
+            scene.relations[0].arrow_at_start,
+            scene.relations[0].arrow_at_end,
+        ) == (False, True)
+        assert scene.relations[0].line_style is None
+        assert scene.relations[0].relation_type == "generated_connector"
+        assert scene.relations[0].semantic_relation == "unknown"
+        assert len(scene.groups) == 1
+        assert scene.groups[0].label.endswith("_zone")
+        assert scene.groups[0].member_ids == expected_group_members
+        texts = list(typed_ir_semantic_texts(diagram_type, ir, scene))
+        assert ocr_recall([hidden_label], "", generated_texts=texts) == 0
+
+
+def test_architecture_fallback_scene_does_not_revive_legacy_edges() -> None:
+    deployment = typed_ir_to_scene(
+        "deployment",
+        {
+            "nodes": [{"id": "app"}, {"id": "db"}],
+            "artifacts": [],
+            "links": [],
+            "edges": [{"source": "app", "target": "db"}],
+        },
+    )
+    component = typed_ir_to_scene(
+        "component",
+        {
+            "components": [{"id": "web"}, {"id": "auth"}],
+            "interfaces": [],
+            "dependencies": [],
+            "edges": [{"source": "web", "target": "auth"}],
+        },
+    )
+
+    assert deployment is not None and deployment.relations == []
+    assert component is not None and component.relations == []
+
+
+def test_software_fallback_scenes_ignore_non_emitted_duplicate_relation_ids() -> None:
+    cases = [
+        (
+            "architecture",
+            {
+                "services": [{"id": "a"}, {"id": "b"}],
+                "edges": [
+                    {"id": "same", "source": "a", "target": "b"},
+                    {"id": "same", "source": "b", "target": "a"},
+                ],
+            },
+        ),
+        (
+            "deployment",
+            {
+                "nodes": [{"id": "a"}, {"id": "b"}],
+                "artifacts": [],
+                "links": [
+                    {"id": "same", "source": "a", "target": "b"},
+                    {"id": "same", "source": "b", "target": "a"},
+                ],
+            },
+        ),
+        (
+            "component",
+            {
+                "components": [{"id": "a"}, {"id": "b"}],
+                "interfaces": [],
+                "dependencies": [
+                    {"id": "same", "source": "a", "target": "b"},
+                    {"id": "same", "source": "b", "target": "a"},
+                ],
+            },
+        ),
+        (
+            "usecase",
+            {
+                "actors": [{"id": "a"}],
+                "use_cases": [{"id": "b"}],
+                "relations": [
+                    {"id": "same", "source": "a", "target": "b"},
+                    {"id": "same", "source": "b", "target": "a"},
+                ],
+            },
+        ),
+    ]
+
+    for diagram_type, ir in cases:
+        scene = typed_ir_to_scene(diagram_type, ir)
+
+        assert scene is not None
+        assert [relation.id for relation in scene.relations] == [
+            "generated-relation-1",
+            "generated-relation-2",
+        ]
+
+
+def test_usecase_scene_uses_serializer_relation_label_precedence() -> None:
+    ir = {
+        "actors": [
+            {
+                "id": "shopper",
+                "label": "Shopper",
+                "role": "hidden-actor-role",
+                "shape": "diamond",
+            }
+        ],
+        "use_cases": [
+            {"id": "checkout", "label": "Checkout"},
+            {"id": "refund", "label": "Refund"},
+        ],
+        "relations": [
+            {
+                "source": "shopper",
+                "target": "checkout",
+                "type": "association",
+                "label": "Hidden relation alias",
+                "bidirectional": True,
+                "arrow_at_end": False,
+                "style": "dashed",
+            },
+            {"source": "shopper", "target": "refund", "label": "requests"},
+        ],
+    }
+
+    scene = typed_ir_to_scene("usecase", ir)
+
+    assert scene is not None
+    assert scene.reading_direction == "LR"
+    assert scene.elements[0].role == "node" and scene.elements[0].shape == "stadium"
+    assert [relation.label for relation in scene.relations] == ["association", "requests"]
+    assert [(relation.arrow_at_start, relation.arrow_at_end) for relation in scene.relations] == [
+        (False, True),
+        (False, True),
+    ]
+    assert all(relation.line_style is None for relation in scene.relations)
+    assert all(
+        relation.relation_type == "generated_connector" and relation.semantic_relation == "unknown"
+        for relation in scene.relations
+    )
+    texts = list(typed_ir_semantic_texts("usecase", ir, scene))
+    assert ocr_recall(["association requests"], "", generated_texts=texts) == 1
+    assert ocr_recall(["Hidden relation alias"], "", generated_texts=texts) == 0
+
+
+@pytest.mark.parametrize("direction", [None, "sideways"])
+def test_usecase_scene_matches_flowchart_invalid_direction_fallback(direction) -> None:
+    scene = typed_ir_to_scene(
+        "usecase",
+        {
+            "direction": direction,
+            "actors": [{"id": "actor"}],
+            "use_cases": [{"id": "case"}],
+            "relations": [],
+        },
+    )
+
+    assert scene is not None and scene.reading_direction == "TB"
+
+
+def test_usecase_relation_plan_is_bounded_for_serializer_and_scene() -> None:
+    ir = {
+        "actors": [{"id": "actor"}],
+        "use_cases": [{"id": "case"}],
+        "relations": [
+            {"source": "actor", "target": "case"} for _index in range(MAX_SCENE_RELATIONS + 1)
+        ],
+    }
+
+    with pytest.raises(SerializationError, match="relation count exceeds"):
+        serialize_phase2("usecase", ir)
+    assert typed_ir_to_scene("usecase", ir) is None
+
+
+def test_usecase_node_plan_is_bounded_for_serializer_and_scene() -> None:
+    ir = {
+        "actors": [{"id": f"actor-{index}"} for index in range(MAX_SCENE_ELEMENTS)],
+        "use_cases": [{"id": "case"}],
+        "relations": [],
+    }
+
+    with pytest.raises(SerializationError, match="node count exceeds"):
+        serialize_phase2("usecase", ir)
+    assert typed_ir_to_scene("usecase", ir) is None
+
+
+def test_usecase_scene_reuses_cross_family_ids_names_and_defaults() -> None:
+    ir = {
+        "actors": [
+            {"id": "shared-id", "name": "Shopper", "text": "Hidden actor text"},
+            {"name": "Operator"},
+        ],
+        "use_cases": [
+            {"id": "shared id", "name": "Checkout", "text": "Hidden case text"},
+            {"name": "Refund"},
+        ],
+        "relations": [{"source": "shared-id", "target": "shared id", "type": "association"}],
+    }
+
+    scene = typed_ir_to_scene("usecase", ir)
+
+    assert scene is not None
+    assert [(element.id, element.text) for element in scene.elements] == [
+        ("shared_id", "Shopper"),
+        ("Actor2", "Operator"),
+        ("usecase_shared_id", "Checkout"),
+        ("usecase_UseCase2", "Refund"),
+    ]
+    assert (scene.relations[0].source_id, scene.relations[0].target_id) == (
+        "shared_id",
+        "usecase_shared_id",
+    )
+    texts = list(typed_ir_semantic_texts("usecase", ir, scene))
+    assert (
+        ocr_recall(["Shopper Operator Checkout Refund association"], "", generated_texts=texts) == 1
+    )
+    assert ocr_recall(["Hidden actor case text"], "", generated_texts=texts) == 0
+
+
+def test_usecase_scene_avoids_second_order_actor_namespace_collisions() -> None:
+    ir = {
+        "actors": [{"id": "a-b"}, {"id": "usecase_y"}],
+        "use_cases": [{"id": "a b"}, {"id": "y"}],
+        "relations": [{"source": "usecase_y", "target": "y", "type": "association"}],
+    }
+
+    scene = typed_ir_to_scene("usecase", ir)
+
+    assert scene is not None
+    assert [element.id for element in scene.elements] == [
+        "a_b",
+        "usecase_y",
+        "usecase_a_b",
+        "usecase_y_2",
+    ]
+    assert (scene.relations[0].source_id, scene.relations[0].target_id) == (
+        "usecase_y",
+        "usecase_y_2",
+    )
 
 
 def test_c4_semantic_texts_follow_architecture_fallback_visible_labels_only():

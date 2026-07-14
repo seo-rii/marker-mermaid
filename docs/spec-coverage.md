@@ -21,19 +21,19 @@
 | Direct Mermaid | 구현 | extended/maximal, 동일 hard gate |
 | Fusion engine | 구현 | source-explicit Scene consensus; prior payload의 bbox/text 정합 source evidence와 owner-local spatial contour, 최소 IoU 0.45, noncolliding provenance를 요구하는 flat Flowchart/Generic Network full/injective node-ID remap, atomic refusal, direction-conflict 전파와 hash-bound mapping/provenance sidecar. nested/non-flow remap은 후속 |
 | Flowchart | 구현 | typed serializer, validated flat/disjoint group→subgraph emission과 SceneGroup round-trip + real render fixture |
-| Architecture | 구현 | `architecture-beta` 우선 serializer, runtime 거부 시 동일 candidate slot의 nested Flowchart fallback, 양쪽 full-gate render fixture |
+| Architecture | 구현 | native·generated Scene·runtime Flowchart fallback 공용 bounded service/group/edge identity plan, `architecture-beta` 우선 serializer, runtime 거부 시 동일 candidate slot의 nested fallback, 양쪽 full-gate render fixture |
 | Sequence | 구현 | typed serializer + real render fixture |
 | Mindmap | 구현 | typed serializer; Mermaid 11.16 accessibility 제한 문서화 |
 | Timeline/Gantt | 구현 | typed serializer + real render fixture |
 | BPMN/Swimlane | 구현 | portable flowchart subgraph fallback |
-| Phase 2 software types | 구현 | State/Class/ER/Requirement/Block native; C4/Deployment/Component는 Architecture를 거쳐 runtime 거부 시 nested Flowchart, Use-case는 Flowchart 명시 fallback |
+| Phase 2 software types | 구현 | State/Class/ER/Requirement/Block native; C4/Deployment/Component는 Architecture를 거쳐 runtime 거부 시 nested Flowchart, Use-case는 bounded collision-free Actor/UseCase plan을 공유하는 Flowchart 명시 fallback |
 | Phase 3 charts | 구현 | Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn typed native/fallback, 일부 runtime fallback과 numeric gate |
 | Planning types | 구현 | Journey→Timeline fallback, native Kanban/GitGraph와 evidence-strict reference 검사 |
 | Phase 5 special types | 구현 | Packet/Ishikawa/TreeView native+runtime fallback, Wardley/Cynefin/Railroad native, EventModeling/ZenUML fallback |
 | Organization/Data Lineage | 구현 | TreeView/Flowchart portable fallback과 endpoint 검증; Organization TreeView runtime rejection은 중첩 Flowchart fallback으로 재검증 |
 | AST repair/mermaid-ast | 기반 | pre-validation bounded repair, event/history, AST adapter seam; mermaid-ast package adapter 후속 |
 | style recovery | 기반 | trusted PDF vector origin 기반 Flowchart node/group fill·border, bold label, edge color/style와 attribution 구현; raster group/lane과 chart series 후속 |
-| OCR recall | 구현 | bounded occurrence multisets, spatial/bbox-less dedup, structural/Gantt/Class/ER/Timeline 및 emitted C4·Requirement·EventModeling·Wardley·ZenUML serializer-visible labels, invalid/error/over-budget review gate |
+| OCR recall | 구현 | bounded occurrence multisets, spatial/bbox-less dedup, structural/Gantt/Class/ER/Timeline 및 emitted Architecture group·C4·Requirement·Deployment/Component·Use-case·EventModeling·Wardley·ZenUML serializer-visible labels, invalid/error/over-budget review gate |
 | numeric consistency | 구현 | source에 존재하는 숫자만 비교 |
 | edge agreement | 구현 | aligned topology F1, 불가 시 source/render edge IoU fallback |
 | visual entailment | 기반 | 생성 node evidence coverage proxy와 게시 gate; model scorer 후속 |

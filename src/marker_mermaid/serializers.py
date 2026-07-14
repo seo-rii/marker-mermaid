@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from marker_mermaid.accessibility import (
@@ -13,6 +13,8 @@ from marker_mermaid.accessibility import (
     supports_accessibility_directives,
 )
 from marker_mermaid.flowchart_structure import (
+    FlowchartGroupPlacement,
+    FlowchartNodePlacement,
     FlowchartStructureError,
     MindmapStructureError,
     SequenceStructureError,
@@ -22,12 +24,156 @@ from marker_mermaid.flowchart_structure import (
     portable_identifier,
     prepare_swimlane_structure,
 )
-from marker_mermaid.models import DiagramSceneIR
+from marker_mermaid.models import (
+    MAX_ID_CHARS,
+    MAX_SCENE_GROUPS,
+    MAX_SCENE_RELATIONS,
+    MAX_TEXT_CHARS,
+    DiagramSceneIR,
+)
 from marker_mermaid.serialization import SerializationResult, registry_from_string_serializers
 
 
 class SerializationError(ValueError):
     """Raised when an IR cannot be represented without inventing information."""
+
+
+@dataclass(frozen=True, slots=True)
+class ArchitectureStructurePlan:
+    """Canonical service/group identities shared by both Architecture grammars."""
+
+    services: tuple[dict[str, Any], ...]
+    groups: tuple[dict[str, Any], ...]
+    edges: tuple[dict[str, Any], ...]
+    nodes: tuple[FlowchartNodePlacement, ...]
+    group_placements: tuple[FlowchartGroupPlacement, ...]
+
+
+def plan_architecture_structure(ir: dict[str, Any]) -> ArchitectureStructurePlan:
+    """Plan the exact bounded identities visible in native and fallback output."""
+
+    raw_services = ir.get("services")
+    if not isinstance(raw_services, list) or not raw_services:
+        raise SerializationError("architecture IR requires services")
+    raw_groups = ir.get("groups", [])
+    if not isinstance(raw_groups, list):
+        raise SerializationError("architecture groups must be a list")
+    if len(raw_groups) > MAX_SCENE_GROUPS:
+        raise SerializationError("architecture group count exceeds the Scene group limit")
+
+    group_records: list[dict[str, Any]] = []
+    group_members: dict[str, list[str]] = {}
+    for index, group in enumerate(raw_groups, start=1):
+        if not isinstance(group, dict):
+            raise SerializationError("architecture groups must be objects")
+        group_id = str(group.get("id") or f"G{index}")
+        if group_id in group_members:
+            raise SerializationError("architecture group ids must be unique")
+        emitted_group_id = portable_identifier(group_id, f"G{index}")
+        label = group.get("label") or emitted_group_id
+        if not isinstance(label, str) or len(label) > MAX_TEXT_CHARS:
+            raise SerializationError("architecture group label must be a bounded string")
+        group_records.append(
+            {
+                **group,
+                "id": group_id,
+                "label": label,
+                "member_ids": group_members.setdefault(group_id, []),
+            }
+        )
+
+    services: list[dict[str, Any]] = []
+    service_ids: set[str] = set()
+    for index, service in enumerate(raw_services, start=1):
+        if not isinstance(service, dict):
+            raise SerializationError("architecture services must be objects")
+        service_id = str(service.get("id") or f"S{index}")
+        if service_id in service_ids:
+            raise SerializationError("architecture service ids must be unique")
+        service_ids.add(service_id)
+        services.append(
+            {
+                **service,
+                "id": service_id,
+                "label": service.get("label") or service.get("name") or service_id,
+            }
+        )
+        group_id = service.get("group")
+        if group_id is not None and group_id != "":
+            source_group_id = str(group_id)
+            if source_group_id not in group_members:
+                raise SerializationError(
+                    f"architecture service references unknown group {source_group_id!r}"
+                )
+            group_members[source_group_id].append(service_id)
+
+    nonempty_groups = [
+        {
+            "id": group["id"],
+            "label": group["label"],
+            "member_ids": list(group["member_ids"]),
+        }
+        for group in group_records
+        if group["member_ids"]
+    ]
+    try:
+        flowchart_plan = plan_flowchart_structure(services, nonempty_groups)
+    except FlowchartStructureError as exc:
+        raise SerializationError(str(exc)) from exc
+    nonempty_placements = {group.source_id: group for group in flowchart_plan.groups}
+    occupied_ids = {node.emitted_id for node in flowchart_plan.nodes}
+    occupied_group_ids: set[str] = set()
+    group_placements: list[FlowchartGroupPlacement] = []
+    emitted_node_by_source = {node.source_id: node.emitted_id for node in flowchart_plan.nodes}
+    for index, group in enumerate(group_records, start=1):
+        group_id = str(group["id"])
+        placement = nonempty_placements.get(group_id)
+        if placement is None:
+            emitted_group_id = portable_identifier(group_id, f"G{index}")
+            if not group_id or len(group_id) > MAX_ID_CHARS:
+                raise SerializationError("architecture group requires a bounded non-empty id")
+            if len(emitted_group_id) > MAX_ID_CHARS:
+                raise SerializationError(
+                    "architecture emitted group id exceeds the identifier limit"
+                )
+            placement = FlowchartGroupPlacement(
+                source_id=group_id,
+                emitted_id=emitted_group_id,
+                label=str(group["label"]),
+                member_source_ids=(),
+                member_emitted_ids=(),
+            )
+        if placement.emitted_id in occupied_ids:
+            raise SerializationError("architecture group id collides with a service id")
+        if placement.emitted_id in occupied_group_ids:
+            raise SerializationError("architecture group ids must be unique after normalization")
+        occupied_group_ids.add(placement.emitted_id)
+        group_placements.append(placement)
+
+    raw_edges = ir.get("edges", [])
+    if not isinstance(raw_edges, list):
+        raise SerializationError("architecture edges must be a list")
+    if len(raw_edges) > MAX_SCENE_RELATIONS:
+        raise SerializationError("architecture edge count exceeds the Scene relation limit")
+    edges: list[dict[str, Any]] = []
+    for edge in raw_edges:
+        if not isinstance(edge, dict):
+            raise SerializationError("architecture edges must be objects")
+        source = str(edge.get("source"))
+        target = str(edge.get("target"))
+        if source not in emitted_node_by_source or target not in emitted_node_by_source:
+            raise SerializationError(
+                f"architecture edge references unknown endpoint: {source!r} -> {target!r}"
+            )
+        edges.append({**edge, "source": source, "target": target})
+
+    return ArchitectureStructurePlan(
+        tuple(services),
+        tuple(group_records),
+        tuple(edges),
+        flowchart_plan.nodes,
+        tuple(group_placements),
+    )
 
 
 def _identifier(value: str, fallback: str = "node") -> str:
@@ -233,35 +379,36 @@ def serialize_gantt(ir: dict[str, Any], *, experimental: bool = False) -> str:
 
 
 def serialize_architecture(ir: dict[str, Any], *, experimental: bool = False) -> str:
-    services = ir.get("services")
-    if not isinstance(services, list) or not services:
-        raise SerializationError("architecture IR requires services")
+    structure = plan_architecture_structure(ir)
     lines = [
         "architecture-beta",
         *_accessibility(ir, experimental, diagram_type="architecture"),
     ]
-    ids: set[str] = set()
-    for index, group in enumerate(ir.get("groups", []), start=1):
-        group_id = _identifier(str(group.get("id") or f"G{index}"))
-        ids.add(group_id)
+    emitted_group_by_source = {
+        group.source_id: group.emitted_id for group in structure.group_placements
+    }
+    for group, placement in zip(
+        structure.groups,
+        structure.group_placements,
+        strict=True,
+    ):
         icon = _identifier(str(group.get("icon") or "cloud"))
-        lines.append(f'    group {group_id}({icon})["{_text(group.get("label") or group_id)}"]')
-    id_map: dict[str, str] = {}
-    for index, service in enumerate(services, start=1):
-        source_id = str(service.get("id") or f"S{index}")
-        service_id = _identifier(source_id, f"S{index}")
-        id_map[source_id] = service_id
-        ids.add(service_id)
+        lines.append(f'    group {placement.emitted_id}({icon})["{_text(placement.label)}"]')
+    emitted_service_by_source = {node.source_id: node.emitted_id for node in structure.nodes}
+    for service, placement in zip(structure.services, structure.nodes, strict=True):
+        source_id = placement.source_id
         icon = _identifier(str(service.get("icon") or "server"))
         group = service.get("group")
-        suffix = f" in {_identifier(str(group))}" if group else ""
+        suffix = (
+            f" in {emitted_group_by_source[str(group)]}"
+            if group is not None and group != ""
+            else ""
+        )
         label = _text(service.get("label") or service.get("name") or source_id)
-        lines.append(f'    service {service_id}({icon})["{label}"]{suffix}')
-    for edge in ir.get("edges", []):
-        source = id_map.get(str(edge.get("source")))
-        target = id_map.get(str(edge.get("target")))
-        if source is None or target is None:
-            continue
+        lines.append(f'    service {placement.emitted_id}({icon})["{label}"]{suffix}')
+    for edge in structure.edges:
+        source = emitted_service_by_source[str(edge["source"])]
+        target = emitted_service_by_source[str(edge["target"])]
         source_side = edge.get("source_side", "R")
         target_side = edge.get("target_side", "L")
         if source_side not in {"L", "R", "T", "B"} or target_side not in {"L", "R", "T", "B"}:
@@ -285,84 +432,28 @@ def serialize_architecture_flowchart_fallback(
     connector ports, and relation labels remain in typed IR and review metadata.
     """
 
-    services = ir.get("services")
-    if not isinstance(services, list) or not services:
-        raise SerializationError("architecture IR requires services")
-    raw_groups = ir.get("groups", [])
-    if not isinstance(raw_groups, list):
-        raise SerializationError("architecture groups must be a list")
-
-    group_records: list[tuple[dict[str, Any], str]] = []
-    group_members: dict[str, list[str]] = {}
-    for index, group in enumerate(raw_groups, start=1):
-        if not isinstance(group, dict):
-            raise SerializationError("architecture groups must be objects")
-        group_id = str(group.get("id") or f"G{index}")
-        if group_id in group_members:
-            raise SerializationError("architecture group ids must be unique")
-        group_records.append((group, group_id))
-        group_members[group_id] = []
-
-    nodes: list[dict[str, Any]] = []
-    service_ids: set[str] = set()
-    for index, service in enumerate(services, start=1):
-        if not isinstance(service, dict):
-            raise SerializationError("architecture services must be objects")
-        service_id = str(service.get("id") or f"S{index}")
-        if service_id in service_ids:
-            raise SerializationError("architecture service ids must be unique")
-        service_ids.add(service_id)
-        nodes.append(
-            {
-                **service,
-                "id": service_id,
-                "label": service.get("label") or service.get("name") or service_id,
-            }
-        )
-        group_id = service.get("group")
-        if group_id is not None and group_id != "":
-            source_group_id = str(group_id)
-            if source_group_id not in group_members:
-                raise SerializationError(
-                    f"architecture service references unknown group {source_group_id!r}"
-                )
-            group_members[source_group_id].append(service_id)
-
+    structure = plan_architecture_structure(ir)
     groups: list[dict[str, Any]] = []
-    for group, group_id in group_records:
-        members = group_members[group_id]
-        if not members:
+    for placement in structure.group_placements:
+        if not placement.member_source_ids:
             raise SerializationError(
-                f"architecture group {group_id!r} has no services for Flowchart fallback"
+                f"architecture group {placement.source_id!r} has no services for Flowchart fallback"
             )
         groups.append(
             {
-                "id": group_id,
-                "label": group.get("label") or group_id,
-                "member_ids": members,
+                "id": placement.source_id,
+                "label": placement.label,
+                "member_ids": list(placement.member_source_ids),
             }
         )
-
-    raw_edges = ir.get("edges", [])
-    if not isinstance(raw_edges, list):
-        raise SerializationError("architecture edges must be a list")
-    edges: list[dict[str, Any]] = []
-    for edge in raw_edges:
-        if not isinstance(edge, dict):
-            raise SerializationError("architecture edges must be objects")
-        source = str(edge.get("source"))
-        target = str(edge.get("target"))
-        if source not in service_ids or target not in service_ids:
-            raise SerializationError(
-                f"architecture edge references unknown endpoint: {source!r} -> {target!r}"
-            )
-        edges.append(
-            {
-                "source": source,
-                "target": target,
-                "bidirectional": bool(edge.get("bidirectional")),
-            }
-        )
+    edges = [
+        {
+            "source": edge["source"],
+            "target": edge["target"],
+            "bidirectional": bool(edge.get("bidirectional")),
+        }
+        for edge in structure.edges
+    ]
 
     accessibility = resolve_accessibility(
         ir,
@@ -378,7 +469,14 @@ def serialize_architecture_flowchart_fallback(
             "acc_title": accessibility.title,
             "acc_description": accessibility.description,
             "direction": direction,
-            "nodes": nodes,
+            "nodes": [
+                {"id": placement.source_id, "label": service["label"]}
+                for service, placement in zip(
+                    structure.services,
+                    structure.nodes,
+                    strict=True,
+                )
+            ],
             "groups": groups,
             "edges": edges,
         },

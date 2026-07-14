@@ -68,8 +68,16 @@ participant도 임의 `text`가 아니라 serializer가 실제 표시하는 safe
 - Requested type이 fallback으로 방출되는 경우 projection은 요청 문법이 아니라 실제 emitted serializer를
   따릅니다. C4의 `architecture` 또는 nested Flowchart 결과는 같은 projection을 사용해 boundary와
   service label만 세고 technology, relation label, description은 제외합니다. Architecture도 native와
-  nested Flowchart에서 service `label`/`name` alias와 label 없는 topology를 동일하게 평가합니다. Flowchart에 표시되는
-  Architecture group label의 별도 Scene projection은 후속 범위입니다. Requirement는 serializer와 같은 normalized/collision-safe output ID,
+  nested Flowchart에서 service `label`/`name` alias, group label과 label 없는 topology를 동일하게
+  평가합니다. label 없는 Architecture group은 두 serializer가 같은 portable emitted ID를 표시합니다.
+  Deployment와 Component fallback에서 보존만 되는 relation label은 세지 않으며, Use-case Flowchart
+  relation은 serializer와 같은 `type` 우선, `label` fallback 순서로 셉니다. 이 세 software fallback의
+  Scene node도 serializer의 record planner를 공유해 missing/colliding ID, `label`/`name` alias와 endpoint를
+  실제 방출 결과와 같은 공간으로 정규화합니다. Use-case planner는 Actor와 UseCase의 최종 namespace를
+  함께 할당해 prefix 뒤의 2차 collision도 suffix로 분리합니다. serializer가 소비하지 않는 raw
+  `text`/`role`/`shape`/style/semantic metadata와 relation ID는 의미 구조로 승격하지 않으며, node와 relation
+  수가 Scene budget을 넘으면 serializer와 projection이 같은 경계에서 거부합니다.
+  Requirement는 serializer와 같은 normalized/collision-safe output ID,
   requirement type·ID·text·risk·verification, element type·docref, relation type을 셉니다. 접근성 metadata와
   serializer가 무시한 대체 label은 포함하지 않습니다. Event Modeling은 lane label과 실제 fallback의
   time·frame type·label 조합 및 relation label, Wardley는 native title·component·link label, ZenUML은
