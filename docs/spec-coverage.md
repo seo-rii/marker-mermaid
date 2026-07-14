@@ -26,14 +26,14 @@
 | Mindmap | 구현 | typed serializer; Mermaid 11.16 accessibility 제한 문서화 |
 | Timeline/Gantt | 구현 | typed serializer + real render fixture |
 | BPMN/Swimlane | 구현 | portable flowchart subgraph fallback |
-| Phase 2 software types | 구현 | State/Class/ER/Requirement/Block native; C4/Deployment/Component는 Architecture를 거쳐 runtime 거부 시 nested Flowchart, Use-case는 bounded collision-free Actor/UseCase plan을 공유하는 Flowchart 명시 fallback |
+| Phase 2 software types | 구현 | State/Class/ER/Requirement/Block native; C4 자동 게시·평가 Scene은 공용 bounded Architecture service/group/edge plan을 사용하고 runtime 거부 시 같은 plan으로 nested Flowchart 재시도, 진단용 native C4는 publication metric에서 분리; Deployment/Component도 Architecture fallback, Use-case는 bounded collision-free Actor/UseCase plan을 공유하는 Flowchart 명시 fallback |
 | Phase 3 charts | 구현 | Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn typed native/fallback, 일부 runtime fallback과 numeric gate |
 | Planning types | 구현 | Journey→Timeline fallback, native Kanban/GitGraph와 evidence-strict reference 검사 |
 | Phase 5 special types | 구현 | Packet/Ishikawa/TreeView native+runtime fallback, Wardley/Cynefin/Railroad native, EventModeling/ZenUML fallback |
 | Organization/Data Lineage | 구현 | TreeView/Flowchart portable fallback과 endpoint 검증; Organization TreeView runtime rejection은 중첩 Flowchart fallback으로 재검증 |
 | AST repair/mermaid-ast | 기반 | pre-validation bounded repair, event/history, AST adapter seam; mermaid-ast package adapter 후속 |
 | style recovery | 기반 | trusted PDF vector origin 기반 Flowchart node/group fill·border, bold label, edge color/style와 attribution 구현; raster group/lane과 chart series 후속 |
-| OCR recall | 구현 | bounded occurrence multisets, spatial/bbox-less dedup, structural/Gantt/Class/ER/Timeline 및 emitted Architecture group·C4·Requirement·Deployment/Component·Use-case·EventModeling·Wardley·ZenUML serializer-visible labels, invalid/error/over-budget review gate |
+| OCR recall | 구현 | bounded occurrence multisets, spatial/bbox-less dedup, structural/Gantt/Class/ER/Timeline 및 emitted Architecture group·C4 fallback boundary/service·Requirement·Deployment/Component·Use-case·EventModeling·Wardley·ZenUML serializer-visible labels, non-emitted C4 metadata 배제, invalid/error/over-budget review gate |
 | numeric consistency | 구현 | source에 존재하는 숫자만 비교 |
 | edge agreement | 구현 | aligned topology F1, 불가 시 source/render edge IoU fallback |
 | visual entailment | 기반 | 생성 node evidence coverage proxy와 게시 gate; model scorer 후속 |

@@ -69,3 +69,25 @@ budget은 증가하지 않습니다. 성공하면 requested type은 유지하되
 `runtime_diagram_type`은 `flowchart`가 되고, `fallback_chain`은 `architecture → flowchart` 또는
 `c4|deployment|component → architecture → flowchart` 전체 경로를 기록합니다. 전환은 warning과
 `runtime_portable_fallback` repair history에도 남습니다.
+
+### C4 자동 후보와 진단용 native C4
+
+`serialize_c4_native`는 pinned Mermaid의 native macro를 확인하는 trusted diagnostic 경로이며 자동 C4
+게시·평가의 구조 기준이 아닙니다. 자동 경로는 C4 element를 Architecture service로, boundary를 group으로,
+relation을 unlabeled service edge로 변환한 뒤 Architecture native와 nested Flowchart가 공유하는 bounded
+identity/group/topology plan을 사용합니다. generated Scene과 OCR projection도 이 plan의 collision-safe
+emitted service/group ID, 실제 표시 label, membership, endpoint 및 bidirectional connector를 그대로
+사용합니다. 따라서 runtime이 Architecture를 받아들이거나 Flowchart로 재시도해도 평가 구조는 게시된
+의미 표현과 같은 ID 공간에 있습니다.
+
+원 element의 bbox/`evidence_ids`, relation evidence와 boundary bbox는 attribution을 위해 유지합니다.
+relation polyline, technology, description, relation label, exact C4 boundary notation처럼 fallback이
+표시하지 않는 raw metadata는 generated node/edge/group label이나 topology로 승격하지 않고 typed IR에만
+남깁니다. 잘못된 형식이거나 reference 예산을 초과한 `evidence_ids`는 이전과 같은 Mermaid 출력을
+유지하기 위해 attribution에서만 제외합니다. `reading_direction`도 runtime grammar를 추측하지 않고 IR
+값 또는 `unknown`을 유지합니다. 이 손실은 기존 `c4 → architecture → flowchart` chain, limitation warning과
+runtime fallback repair history에서
+계속 공개됩니다. native C4가 표현할 수 있다는 이유만으로 자동 품질 점수를 높이거나 warning을 제거하지
+않습니다. Service가 없는 C4 boundary는 Architecture group과 generated Scene에는 보존하지만 portable
+Flowchart가 empty subgraph를 안전하게 표현하지 못하므로, 해당 nested retry는 기존처럼 후보 단위로
+실패하고 다른 후보 처리를 계속합니다.

@@ -224,6 +224,57 @@ def test_c4_architecture_rejection_preserves_boundary_as_flowchart_subgraph() ->
     assert "api --> db" in result.code
 
 
+def test_c4_architecture_and_nested_flowchart_share_planned_identity_and_topology() -> None:
+    ir = {
+        "level": "container",
+        "elements": [
+            {
+                "id": "A-B",
+                "label": "API",
+                "kind": "container",
+                "boundary": "결제 영역",
+            },
+            {
+                "id": "A B",
+                "name": "Database",
+                "kind": "container_database",
+                "boundary": "결제 영역",
+            },
+            {"id": "same", "label": "First duplicate", "boundary": "결제 영역"},
+            {"id": "same", "label": "Second duplicate", "boundary": "결제 영역"},
+            {"kind": "person", "boundary": "결제 영역"},
+        ],
+        "boundaries": [{"id": "결제 영역"}],
+        "relations": [
+            {"source": "A-B", "target": "A B", "bidirectional": True},
+            {"source": "same", "target": "A-B"},
+        ],
+    }
+
+    architecture_code, architecture_type, _reason = serialize_phase2("c4", ir)
+    flowchart_code, flowchart_type, _reason = serialize_phase2("c4", ir, native_runtime_valid=False)
+
+    assert architecture_type == "architecture"
+    assert 'group group_1(cloud)["G1"]' in architecture_code
+    assert 'service A_B(server)["API"] in group_1' in architecture_code
+    assert 'service A_B_2(database)["Database"] in group_1' in architecture_code
+    assert 'service same(server)["First duplicate"] in group_1' in architecture_code
+    assert 'service same_2(server)["Second duplicate"] in group_1' in architecture_code
+    assert 'service S5(internet)["S5"] in group_1' in architecture_code
+    assert "A_B:R <--> L:A_B_2" in architecture_code
+    assert "same:R --> L:A_B" in architecture_code
+
+    assert flowchart_type == "flowchart"
+    assert 'subgraph group_1["G1"]' in flowchart_code
+    assert 'A_B["API"]' in flowchart_code
+    assert 'A_B_2["Database"]' in flowchart_code
+    assert 'same["First duplicate"]' in flowchart_code
+    assert 'same_2["Second duplicate"]' in flowchart_code
+    assert 'S5["S5"]' in flowchart_code
+    assert "A_B <--> A_B_2" in flowchart_code
+    assert "same --> A_B" in flowchart_code
+
+
 @pytest.mark.parametrize(
     ("ir", "message"),
     [

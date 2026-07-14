@@ -3,7 +3,12 @@ from collections import UserDict
 import pytest
 
 from marker_mermaid.candidate_scene import typed_ir_semantic_texts, typed_ir_to_scene
-from marker_mermaid.models import MAX_SCENE_ELEMENTS, MAX_SCENE_RELATIONS
+from marker_mermaid.models import (
+    MAX_EVIDENCE_REFS,
+    MAX_SCENE_ELEMENTS,
+    MAX_SCENE_GROUPS,
+    MAX_SCENE_RELATIONS,
+)
 from marker_mermaid.scoring import ocr_recall
 from marker_mermaid.serializers import (
     SerializationError,
@@ -865,6 +870,230 @@ def test_c4_semantic_texts_follow_architecture_fallback_visible_labels_only():
         )
         == 0
     )
+
+
+def test_c4_scene_matches_fallback_identity_topology_and_visible_evidence() -> None:
+    ir = {
+        "level": "container",
+        "boundaries": [
+            {
+                "id": "결제 영역",
+                "name": "Hidden boundary name",
+                "description": "Hidden boundary description",
+                "role": "hidden-boundary-role",
+                "bbox": [1, 2, 99, 100],
+            }
+        ],
+        "elements": [
+            {
+                "id": "A-B",
+                "label": "API",
+                "name": "Hidden API name",
+                "kind": "container",
+                "boundary": "결제 영역",
+                "text": "Hidden API text",
+                "technology": "Hidden Python runtime",
+                "description": "Hidden API description",
+                "role": "hidden-node-role",
+                "shape": "diamond",
+                "bbox": [10, 20, 30, 40],
+                "evidence_ids": ["ocr-api", "contour-api"],
+            },
+            {
+                "id": "A B",
+                "name": "Database",
+                "kind": "container_database",
+                "boundary": "결제 영역",
+                "bbox": [50, 60, 70, 80],
+            },
+            {"id": "same", "label": "First duplicate", "boundary": "결제 영역"},
+            {"id": "same", "label": "Second duplicate", "boundary": "결제 영역"},
+            {"kind": "person", "boundary": "결제 영역"},
+        ],
+        "relations": [
+            {
+                "id": "raw-duplicate-id",
+                "source": "A-B",
+                "target": "A B",
+                "label": "Hidden relation label",
+                "technology": "Hidden HTTPS protocol",
+                "bidirectional": True,
+                "style": "dashed",
+                "semantic_relation": "dependency",
+                "relation_type": "hidden-relation-type",
+                "evidence_ids": ["arrow-ab"],
+            },
+            {
+                "id": "raw-duplicate-id",
+                "source": "same",
+                "target": "A-B",
+            },
+        ],
+    }
+
+    scene = typed_ir_to_scene("c4", ir)
+
+    assert scene is not None
+    assert [(element.id, element.text) for element in scene.elements] == [
+        ("A_B", "API"),
+        ("A_B_2", "Database"),
+        ("same", "First duplicate"),
+        ("same_2", "Second duplicate"),
+        ("S5", "S5"),
+    ]
+    assert all(element.role == "node" and element.shape is None for element in scene.elements)
+    assert scene.elements[0].bbox == (10, 20, 30, 40)
+    assert scene.elements[0].evidence_ids == ["ocr-api", "contour-api"]
+    assert [(group.id, group.label, group.member_ids, group.bbox) for group in scene.groups] == [
+        (
+            "group_1",
+            "G1",
+            ["A_B", "A_B_2", "same", "same_2", "S5"],
+            (1, 2, 99, 100),
+        )
+    ]
+    assert scene.groups[0].role == "group"
+    assert [relation.id for relation in scene.relations] == [
+        "generated-relation-1",
+        "generated-relation-2",
+    ]
+    assert [(relation.source_id, relation.target_id) for relation in scene.relations] == [
+        ("A_B", "A_B_2"),
+        ("same", "A_B"),
+    ]
+    assert [(relation.arrow_at_start, relation.arrow_at_end) for relation in scene.relations] == [
+        (True, True),
+        (False, True),
+    ]
+    assert scene.relations[0].evidence_ids == ["arrow-ab"]
+    assert all(
+        relation.label is None
+        and relation.line_style is None
+        and relation.semantic_relation == "unknown"
+        and relation.relation_type == "generated_connector"
+        for relation in scene.relations
+    )
+    texts = list(typed_ir_semantic_texts("c4", ir, scene))
+    assert texts == ["G1", "API", "Database", "First duplicate", "Second duplicate", "S5"]
+    assert ocr_recall(["G1 API Database First duplicate Second S5"], "", generated_texts=texts) == 1
+    assert (
+        ocr_recall(
+            [
+                "Hidden boundary name description text Python runtime HTTPS "
+                "protocol relation label",
+            ],
+            "",
+            generated_texts=texts,
+        )
+        == 0
+    )
+
+
+@pytest.mark.parametrize(
+    "ir",
+    [
+        {"level": "landscape", "elements": [{"id": "api"}]},
+        {"elements": [{"id": "api", "kind": "unsupported"}]},
+        {
+            "elements": [{"id": "api", "boundary": "missing"}],
+            "boundaries": [{"id": "known"}],
+        },
+        {
+            "elements": [{"id": "A-B", "boundary": "A B"}],
+            "boundaries": [{"id": "A B"}],
+        },
+        {
+            "elements": [
+                {"id": "one", "boundary": "core-zone"},
+                {"id": "two", "boundary": "core zone"},
+            ],
+            "boundaries": [{"id": "core-zone"}, {"id": "core zone"}],
+        },
+    ],
+)
+def test_c4_scene_and_serializer_reject_the_same_invalid_structure(
+    ir: dict[str, object],
+) -> None:
+    with pytest.raises(SerializationError):
+        serialize_phase2("c4", ir)
+    assert typed_ir_to_scene("c4", ir) is None
+
+
+@pytest.mark.parametrize("resource", ["elements", "relations", "boundaries"])
+def test_c4_scene_and_serializer_share_resource_caps(resource: str) -> None:
+    ir: dict[str, object] = {
+        "elements": [{"id": "api"}, {"id": "db"}],
+        "boundaries": [],
+        "relations": [],
+    }
+    if resource == "elements":
+        ir["elements"] = [{"id": f"service-{index}"} for index in range(MAX_SCENE_ELEMENTS + 1)]
+    elif resource == "relations":
+        ir["relations"] = [
+            {"source": "api", "target": "db"} for _index in range(MAX_SCENE_RELATIONS + 1)
+        ]
+    else:
+        ir["boundaries"] = [{"id": f"boundary-{index}"} for index in range(MAX_SCENE_GROUPS + 1)]
+
+    with pytest.raises(SerializationError, match="exceeds.*limit|count exceeds"):
+        serialize_phase2("c4", ir)
+    assert typed_ir_to_scene("c4", ir) is None
+
+
+def test_c4_empty_boundary_is_native_only_and_preserved_in_scene() -> None:
+    ir = {
+        "elements": [{"label": "Ungrouped", "bbox": [10, 20, 30, 40]}],
+        "boundaries": [{"bbox": [1, 2, 3, 4]}],
+        "relations": [],
+    }
+
+    code, emitted_type, _reason = serialize_phase2("c4", ir)
+    scene = typed_ir_to_scene("c4", ir)
+
+    assert emitted_type == "architecture"
+    assert 'group G1(cloud)["G1"]' in code
+    assert 'service S1(server)["Ungrouped"]' in code
+    assert scene is not None
+    assert [(element.id, element.text) for element in scene.elements] == [("S1", "Ungrouped")]
+    assert [(group.id, group.label, group.member_ids, group.bbox) for group in scene.groups] == [
+        ("G1", "G1", [], (1, 2, 3, 4))
+    ]
+    with pytest.raises(SerializationError, match="has no services"):
+        serialize_phase2("c4", ir, native_runtime_valid=False)
+
+
+@pytest.mark.parametrize(
+    ("record_type", "evidence_ids"),
+    [
+        ("element", 1),
+        ("element", "ocr-api"),
+        ("element", [f"ocr-{index}" for index in range(MAX_EVIDENCE_REFS + 1)]),
+        ("relation", 1),
+        ("relation", "arrow-api-db"),
+        ("relation", [f"arrow-{index}" for index in range(MAX_EVIDENCE_REFS + 1)]),
+    ],
+)
+def test_c4_invalid_provenance_does_not_break_publication_or_scene(
+    record_type: str,
+    evidence_ids: object,
+) -> None:
+    ir = {
+        "elements": [{"id": "api", "label": "API"}, {"id": "db", "label": "DB"}],
+        "relations": [{"source": "api", "target": "db"}],
+    }
+    record = ir["elements"][0] if record_type == "element" else ir["relations"][0]
+    record["evidence_ids"] = evidence_ids
+
+    code, emitted_type, _reason = serialize_phase2("c4", ir)
+    scene = typed_ir_to_scene("c4", ir)
+
+    assert emitted_type == "architecture"
+    assert 'service api(server)["API"]' in code
+    assert scene is not None
+    if record_type == "element":
+        assert scene.elements[0].evidence_ids == []
+    else:
+        assert scene.relations[0].evidence_ids == []
 
 
 def test_requirement_semantic_texts_mirror_normalized_native_fields_and_defaults():

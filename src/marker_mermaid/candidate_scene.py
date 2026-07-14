@@ -21,7 +21,6 @@ from marker_mermaid.flowchart_structure import (
     plan_flowchart_structure,
     plan_mindmap_nodes,
     plan_sequence_structure,
-    portable_identifier,
     prepare_swimlane_structure,
 )
 from marker_mermaid.models import DiagramSceneIR, SceneElement, SceneGroup, SceneRelation
@@ -29,6 +28,7 @@ from marker_mermaid.serializers import plan_architecture_structure
 from marker_mermaid.serializers_experimental import plan_wardley_records, plan_zenuml_records
 from marker_mermaid.serializers_phase2 import (
     REQUIREMENT_TYPE_TOKENS,
+    plan_c4_architecture_fallback,
     plan_phase2_record_ids,
     plan_requirement_records,
     plan_usecase_records,
@@ -118,51 +118,57 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
         ]
         edge_records = list(ir.get("edges") or [])
         group_records = list(swimlane_structure.groups)
-    elif diagram_type in {"architecture", "deployment", "component"}:
+    elif diagram_type in {"architecture", "c4", "deployment", "component"}:
         architecture_ir = ir
-        if diagram_type in {"deployment", "component"}:
-            if diagram_type == "deployment":
-                source_records = [*(ir.get("nodes") or []), *(ir.get("artifacts") or [])]
-                raw_edges = ir.get("links", ir.get("edges", []))
-            else:
-                source_records = [*(ir.get("components") or []), *(ir.get("interfaces") or [])]
-                raw_edges = ir.get("dependencies", ir.get("edges", []))
-            if not isinstance(raw_edges, list):
-                return None
+        if diagram_type == "c4":
             try:
-                records, id_map = plan_phase2_record_ids(
-                    source_records,
-                    field=f"{diagram_type} IR",
-                    fallback_prefix="S",
-                )
+                architecture_structure = plan_c4_architecture_fallback(ir).structure
             except ValueError:
                 return None
-            services = [
-                {
-                    **record,
-                    "id": output_id,
-                    "label": record.get("label") or record.get("name") or source_id,
+        else:
+            if diagram_type in {"deployment", "component"}:
+                if diagram_type == "deployment":
+                    source_records = [*(ir.get("nodes") or []), *(ir.get("artifacts") or [])]
+                    raw_edges = ir.get("links", ir.get("edges", []))
+                else:
+                    source_records = [*(ir.get("components") or []), *(ir.get("interfaces") or [])]
+                    raw_edges = ir.get("dependencies", ir.get("edges", []))
+                if not isinstance(raw_edges, list):
+                    return None
+                try:
+                    records, id_map = plan_phase2_record_ids(
+                        source_records,
+                        field=f"{diagram_type} IR",
+                        fallback_prefix="S",
+                    )
+                except ValueError:
+                    return None
+                services = [
+                    {
+                        **record,
+                        "id": output_id,
+                        "label": record.get("label") or record.get("name") or source_id,
+                    }
+                    for record, source_id, output_id in records
+                ]
+                architecture_edges = [
+                    {
+                        **edge,
+                        "source": id_map.get(str(edge.get("source"))),
+                        "target": id_map.get(str(edge.get("target"))),
+                    }
+                    for edge in raw_edges
+                    if isinstance(edge, dict)
+                ]
+                architecture_ir = {
+                    **ir,
+                    "services": services,
+                    "edges": architecture_edges,
                 }
-                for record, source_id, output_id in records
-            ]
-            architecture_edges = [
-                {
-                    **edge,
-                    "source": id_map.get(str(edge.get("source"))),
-                    "target": id_map.get(str(edge.get("target"))),
-                }
-                for edge in raw_edges
-                if isinstance(edge, dict)
-            ]
-            architecture_ir = {
-                **ir,
-                "services": services,
-                "edges": architecture_edges,
-            }
-        try:
-            architecture_structure = plan_architecture_structure(architecture_ir)
-        except ValueError:
-            return None
+            try:
+                architecture_structure = plan_architecture_structure(architecture_ir)
+            except ValueError:
+                return None
         node_records = [
             {
                 "id": placement.emitted_id,
@@ -224,9 +230,6 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
     elif diagram_type == "block":
         node_records = list(ir.get("blocks") or [])
         edge_records = list(ir.get("edges") or [])
-    elif diagram_type == "c4":
-        node_records = list(ir.get("elements") or [])
-        edge_records = list(ir.get("relations") or [])
     elif diagram_type == "usecase":
         try:
             actors, use_cases, id_map = plan_usecase_records(ir)
@@ -547,7 +550,7 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
         target = emitted_id_by_source.get(raw_target, raw_target)
         if source not in known_ids or target not in known_ids:
             continue
-        if diagram_type in {"architecture", "deployment", "component", "usecase"}:
+        if diagram_type in {"architecture", "c4", "deployment", "component", "usecase"}:
             semantic_relation = "unknown"
             relation_type = "generated_connector"
         else:
@@ -561,6 +564,7 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
             "swimlane",
             "bpmn",
             "architecture",
+            "c4",
             "deployment",
             "component",
             "usecase",
@@ -573,7 +577,7 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
         else:
             arrow_at_start = bool(edge.get("bidirectional") or edge.get("arrow_at_start"))
             arrow_at_end = bool(edge.get("arrow_at_end", diagram_type not in {"class", "er"}))
-        if diagram_type in {"architecture", "deployment", "component"}:
+        if diagram_type in {"architecture", "c4", "deployment", "component"}:
             relation_label = None
         elif diagram_type == "usecase":
             visible_label = edge.get("type") or edge.get("label")
@@ -584,7 +588,7 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
             SceneRelation(
                 id=(
                     f"generated-relation-{index}"
-                    if diagram_type in {"architecture", "deployment", "component", "usecase"}
+                    if diagram_type in {"architecture", "c4", "deployment", "component", "usecase"}
                     else str(edge.get("id") or f"generated-relation-{index}")
                 ),
                 source_id=source,
@@ -596,7 +600,7 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
                 arrow_at_end=arrow_at_end,
                 line_style=(
                     None
-                    if diagram_type in {"architecture", "deployment", "component", "usecase"}
+                    if diagram_type in {"architecture", "c4", "deployment", "component", "usecase"}
                     else str(edge.get("style"))
                     if edge.get("style")
                     else None
@@ -643,7 +647,7 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
         )
         known_group_ids.add(group_id)
         grouped_members.update(member_ids)
-    if diagram_type in {"architecture", "deployment", "component"}:
+    if diagram_type in {"architecture", "c4", "deployment", "component"}:
         for group_record in group_records:
             group_id = str(group_record["id"])
             member_ids = [str(member_id) for member_id in group_record["member_ids"]]
@@ -825,17 +829,12 @@ def typed_ir_semantic_texts(
                     yield str(task.get("label") or f"Task {task_index}")
         return
     if diagram_type == "c4":
-        for boundary_index, boundary in enumerate(ir.get("boundaries") or [], start=1):
-            if not isinstance(boundary, dict):
-                continue
-            source_id = str(boundary.get("id") or f"G{boundary_index}")
-            emitted_id = portable_identifier(source_id)
-            yield str(boundary.get("label") or emitted_id)
-        elements, _id_map = plan_phase2_record_ids(
-            ir.get("elements"), field="c4 IR", fallback_prefix="S"
-        )
-        for record, source_id, _output_id in elements:
-            yield str(record.get("label") or record.get("name") or source_id)
+        for group in scene.groups:
+            if group.label:
+                yield group.label
+        for element in scene.elements:
+            if element.text:
+                yield element.text
         return
     if diagram_type == "requirement":
         requirements, elements, _id_map = plan_requirement_records(ir)

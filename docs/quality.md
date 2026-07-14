@@ -32,6 +32,17 @@ Event Modeling의 generated Scene은 fallback serializer와 같은 normalized fr
 lane subgraph membership, `LR` 방향을 사용합니다. Wardley의 label 없는 component와 ZenUML의 label 없는
 participant도 임의 `text`가 아니라 serializer가 실제 표시하는 safe source ID를 사용합니다.
 
+C4 자동 후보의 generated Scene은 진단용 native C4 macro를 재구성하지 않습니다. 자동 serializer가 실제
+게시 대상으로 만드는 Architecture와 필요 시 nested Flowchart fallback을 따라, C4 element·boundary·relation을
+공용 bounded Architecture service/group/edge plan에 넣습니다. 따라서 collision-safe emitted ID, boundary
+membership, 표시 label, endpoint와 arrow semantics는 두 fallback grammar 및 OCR projection에서
+동일합니다. element bbox/evidence, relation evidence, boundary bbox는 원 record에서 보존하지만,
+relation polyline, technology, description, relation label, native boundary notation과 기타 fallback이
+표시하지 않는 raw metadata는 구조나 OCR label로 승격하지 않습니다. `reading_direction`은 runtime의
+Architecture→Flowchart 선택을 generated Scene이 미리 알 수 없으므로 IR 값 또는 `unknown`을 유지합니다.
+형식이 잘못됐거나 reference 예산을 넘은 C4 `evidence_ids`는 기존 Mermaid 게시를 막지 않고 해당
+generated Scene attribution에서 제외합니다.
+
 ## 기존 metric과 결합
 
 - syntax/render는 게시 hard gate이면서 score input입니다.
@@ -66,7 +77,7 @@ participant도 임의 `text`가 아니라 serializer가 실제 표시하는 safe
   ER attribute type/name/key/comment, Timeline period/title/모든 event label을 OCR 비교에 추가합니다.
   이 projection도 생성 label 예산 안에서 소비되므로 큰 typed IR이 제한을 우회하지 못합니다.
 - Requested type이 fallback으로 방출되는 경우 projection은 요청 문법이 아니라 실제 emitted serializer를
-  따릅니다. C4의 `architecture` 또는 nested Flowchart 결과는 같은 projection을 사용해 boundary와
+  따릅니다. C4의 `architecture` 또는 nested Flowchart 결과는 위 공용 plan의 emitted boundary group과
   service label만 세고 technology, relation label, description은 제외합니다. Architecture도 native와
   nested Flowchart에서 service `label`/`name` alias, group label과 label 없는 topology를 동일하게
   평가합니다. label 없는 Architecture group은 두 serializer가 같은 portable emitted ID를 표시합니다.

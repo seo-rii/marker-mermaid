@@ -11,12 +11,21 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, TypeAlias
 
 from marker_mermaid.accessibility import resolve_accessibility
-from marker_mermaid.models import MAX_SCENE_ELEMENTS, MAX_SCENE_RELATIONS
+from marker_mermaid.models import (
+    MAX_EVIDENCE_REFS,
+    MAX_ID_CHARS,
+    MAX_SCENE_ELEMENTS,
+    MAX_SCENE_GROUPS,
+    MAX_SCENE_RELATIONS,
+)
 from marker_mermaid.serializers import (
+    ArchitectureStructurePlan,
     SerializationError,
+    plan_architecture_structure,
     serialize_architecture,
     serialize_architecture_flowchart_fallback,
     serialize_flowchart,
@@ -78,6 +87,14 @@ BLOCK_ACCESSIBILITY_LIMITATION = (
     "Mermaid 11.16 block grammar rejects accTitle and accDescr; accessibility text "
     "must remain in typed IR and review metadata."
 )
+
+
+@dataclass(frozen=True, slots=True)
+class C4ArchitectureFallbackPlan:
+    """Bounded C4 projection shared by Architecture serialization and scoring."""
+
+    architecture_ir: dict[str, Any]
+    structure: ArchitectureStructurePlan
 
 
 def _identifier(value: Any, fallback: str) -> str:
@@ -210,6 +227,130 @@ def plan_usecase_records(
         remapped_use_cases.append((record, source_id, emitted_id))
         remapped_use_case_ids.setdefault(source_id, emitted_id)
     return actors, remapped_use_cases, {**actor_ids, **remapped_use_case_ids}
+
+
+def plan_c4_architecture_fallback(ir: dict[str, Any]) -> C4ArchitectureFallbackPlan:
+    """Project C4 evidence into the exact bounded Architecture fallback structure."""
+
+    level = str(ir.get("level") or "context").lower()
+    if level not in _C4_HEADERS:
+        raise SerializationError("C4 level must be context, container, or component")
+    elements_raw = ir.get("elements")
+    if not isinstance(elements_raw, list):
+        raise SerializationError("C4 elements must be a list")
+    boundaries_raw = ir.get("boundaries", [])
+    if not isinstance(boundaries_raw, list):
+        raise SerializationError("C4 boundaries must be a list")
+    relations_raw = ir.get("relations", [])
+    if not isinstance(relations_raw, list):
+        raise SerializationError("C4 relations must be a list")
+    if len(elements_raw) > MAX_SCENE_ELEMENTS:
+        raise SerializationError("C4 element count exceeds the Scene element limit")
+    if len(boundaries_raw) > MAX_SCENE_GROUPS:
+        raise SerializationError("C4 boundary count exceeds the Scene group limit")
+    if len(relations_raw) > MAX_SCENE_RELATIONS:
+        raise SerializationError("C4 relation count exceeds the Scene relation limit")
+
+    boundary_ids = {
+        str(boundary.get("id"))
+        for boundary in boundaries_raw
+        if isinstance(boundary, dict) and boundary.get("id") is not None
+    }
+    elements, id_map = plan_phase2_record_ids(
+        elements_raw,
+        field="c4 IR",
+        fallback_prefix="S",
+    )
+    services: list[dict[str, Any]] = []
+    for record, source_id, output_id in elements:
+        kind = str(record.get("kind") or record.get("type") or "system").lower()
+        if kind not in _C4_KINDS:
+            raise SerializationError(f"unsupported C4 element kind {kind!r}")
+        boundary = record.get("boundary")
+        if boundary is not None and str(boundary) not in boundary_ids:
+            raise SerializationError(f"C4 element references unknown boundary {boundary!r}")
+        if "database" in kind:
+            icon = "database"
+        elif "queue" in kind:
+            icon = "disk"
+        elif "person" in kind:
+            icon = "internet"
+        else:
+            icon = "server"
+        element_evidence_ids = record.get("evidence_ids")
+        if not (
+            isinstance(element_evidence_ids, list)
+            and len(element_evidence_ids) <= MAX_EVIDENCE_REFS
+            and all(
+                type(evidence_id) is str
+                and 0 < len(evidence_id) <= MAX_ID_CHARS
+                and not any(0xD800 <= ord(character) <= 0xDFFF for character in evidence_id)
+                for evidence_id in element_evidence_ids
+            )
+        ):
+            element_evidence_ids = []
+        services.append(
+            {
+                "id": output_id,
+                "label": record.get("label") or record.get("name") or source_id,
+                "icon": icon,
+                "group": boundary,
+                "bbox": record.get("bbox"),
+                "evidence_ids": list(element_evidence_ids),
+            }
+        )
+
+    groups: list[dict[str, Any]] = []
+    for boundary in boundaries_raw:
+        if not isinstance(boundary, dict):
+            raise SerializationError("C4 boundaries must be objects")
+        groups.append(
+            {
+                "id": boundary.get("id"),
+                "label": boundary.get("label"),
+                "icon": "cloud",
+                "bbox": boundary.get("bbox"),
+            }
+        )
+
+    edges: list[dict[str, Any]] = []
+    for relation in relations_raw:
+        if not isinstance(relation, dict):
+            raise SerializationError("C4 relations must be objects")
+        source, target = _resolve_relation(relation, id_map, field="C4")
+        relation_evidence_ids = relation.get("evidence_ids")
+        if not (
+            isinstance(relation_evidence_ids, list)
+            and len(relation_evidence_ids) <= MAX_EVIDENCE_REFS
+            and all(
+                type(evidence_id) is str
+                and 0 < len(evidence_id) <= MAX_ID_CHARS
+                and not any(0xD800 <= ord(character) <= 0xDFFF for character in evidence_id)
+                for evidence_id in relation_evidence_ids
+            )
+        ):
+            relation_evidence_ids = []
+        edges.append(
+            {
+                "source": source,
+                "target": target,
+                "bidirectional": bool(relation.get("bidirectional")),
+                "source_side": relation.get("source_side", "R"),
+                "target_side": relation.get("target_side", "L"),
+                "evidence_ids": list(relation_evidence_ids),
+            }
+        )
+
+    architecture_ir = {
+        **ir,
+        "services": services,
+        "groups": groups,
+        "edges": edges,
+    }
+    return C4ArchitectureFallbackPlan(
+        architecture_ir=architecture_ir,
+        structure=plan_architecture_structure(architecture_ir),
+    )
 
 
 def _resolve_relation(
@@ -431,6 +572,30 @@ def serialize_c4_native(ir: dict[str, Any], *, experimental: bool = False) -> Ph
     return "\n".join(lines) + "\n", "c4", None
 
 
+def _emit_architecture_fallback(
+    requested_type: str,
+    architecture_ir: dict[str, Any],
+    *,
+    experimental: bool,
+    native_runtime_valid: bool,
+    limitation: str,
+) -> Phase2Serialization:
+    if native_runtime_valid:
+        code = serialize_architecture(architecture_ir, experimental=experimental)
+        return code, "architecture", limitation
+    code = serialize_architecture_flowchart_fallback(
+        architecture_ir,
+        experimental=experimental,
+        accessibility_type=requested_type,
+    )
+    return (
+        code,
+        "flowchart",
+        f"{limitation}; CandidateValidator rejected architecture-beta, so service/group "
+        "labels and unlabeled endpoint topology were emitted as portable Flowchart",
+    )
+
+
 def _architecture_fallback(
     requested_type: str,
     ir: dict[str, Any],
@@ -474,19 +639,12 @@ def _architecture_fallback(
             }
         )
     architecture_ir = {**ir, "services": services, "edges": architecture_edges}
-    if native_runtime_valid:
-        code = serialize_architecture(architecture_ir, experimental=experimental)
-        return code, "architecture", limitation
-    code = serialize_architecture_flowchart_fallback(
+    return _emit_architecture_fallback(
+        requested_type,
         architecture_ir,
         experimental=experimental,
-        accessibility_type=requested_type,
-    )
-    return (
-        code,
-        "flowchart",
-        f"{limitation}; CandidateValidator rejected architecture-beta, so service/group "
-        "labels and unlabeled endpoint topology were emitted as portable Flowchart",
+        native_runtime_valid=native_runtime_valid,
+        limitation=limitation,
     )
 
 
@@ -496,50 +654,10 @@ def serialize_c4(
     experimental: bool = False,
     native_runtime_valid: bool = True,
 ) -> Phase2Serialization:
-    level = str(ir.get("level") or "context").lower()
-    if level not in _C4_HEADERS:
-        raise SerializationError("C4 level must be context, container, or component")
-    elements = ir.get("elements")
-    if not isinstance(elements, list):
-        raise SerializationError("C4 elements must be a list")
-    boundaries = ir.get("boundaries", [])
-    if not isinstance(boundaries, list):
-        raise SerializationError("C4 boundaries must be a list")
-    boundary_ids = {
-        str(boundary.get("id"))
-        for boundary in boundaries
-        if isinstance(boundary, dict) and boundary.get("id") is not None
-    }
-    records: list[dict[str, Any]] = []
-    for element in elements:
-        if not isinstance(element, dict):
-            raise SerializationError("C4 elements must be objects")
-        kind = str(element.get("kind") or element.get("type") or "system").lower()
-        if kind not in _C4_KINDS:
-            raise SerializationError(f"unsupported C4 element kind {kind!r}")
-        boundary = element.get("boundary")
-        if boundary is not None and str(boundary) not in boundary_ids:
-            raise SerializationError(f"C4 element references unknown boundary {boundary!r}")
-        if "database" in kind:
-            icon = "database"
-        elif "queue" in kind:
-            icon = "disk"
-        elif "person" in kind:
-            icon = "internet"
-        else:
-            icon = "server"
-        records.append({**element, "icon": icon, "group": boundary})
-    groups: list[dict[str, Any]] = []
-    for boundary in boundaries:
-        if not isinstance(boundary, dict):
-            raise SerializationError("C4 boundaries must be objects")
-        groups.append({**boundary, "icon": "cloud"})
-    fallback_ir = {**ir, "groups": groups}
-    return _architecture_fallback(
+    plan = plan_c4_architecture_fallback(ir)
+    return _emit_architecture_fallback(
         "c4",
-        fallback_ir,
-        records,
-        ir.get("relations", []),
+        plan.architecture_ir,
         experimental=experimental,
         native_runtime_valid=native_runtime_valid,
         limitation=(

@@ -110,6 +110,11 @@
 
 ### Changed
 
+- Automatic C4 publication and evaluation Scenes now use the shared bounded
+  Architecture-to-Flowchart fallback identity, group, and topology plan instead of diagnostic
+  native C4 structure, aligning emitted labels, memberships, and endpoints while preserving
+  valid bounded provenance and existing fallback-loss warnings; malformed provenance is omitted
+  from attribution without breaking the previously valid Mermaid publication path.
 - Candidate budgets are distributed round-robin across successful engines.
 - Fused direct Mermaid candidates retain only their selected owner's closed publication-evidence
   authority instead of inheriting unrelated fusion input authority.
