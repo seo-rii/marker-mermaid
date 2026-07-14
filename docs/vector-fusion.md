@@ -140,8 +140,9 @@ initial/custom-engine collection, reconstruction-global whole-new-ID admission, 
 publication/Markdown/sidecar/output 경계도 같은 상수를 사용합니다. Vector의 prospective fan-out 검사는
 Scene/evidence allocation 전에 실행하는 더 이른 최적화 경계이지만 상한은 이 generic runtime 계약과
 공유합니다. 공개 config나 sidecar schema/manifest version은 바뀌지 않습니다. Marker OCR adapter와
-Review provenance read/replacement/structured-add도 같은 공용 경계에 연결되어 있으며 evaluation
-prediction ingestion은 후속입니다.
+Review provenance read/replacement/structured-add도 같은 공용 경계에 연결됩니다. Evaluation prediction
+ingress는 같은 source-block aggregate 상한을 쓰면서 공개 100,000-record/64 MiB artifact 한도를
+명시적으로 유지하는 raw-record snapshot을 사용합니다.
 
 Scene node는 동일 ID 또는 정규화된 bbox IoU로 cluster합니다. relation endpoint와 group member는 fused
 Scene node ID로 다시 매핑하며 provenance와 source block ID를 합칩니다. 서로 다른 값이 경쟁하면

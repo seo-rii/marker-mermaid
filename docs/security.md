@@ -146,7 +146,12 @@ content digest/commit, structured `user_edit` 추가 전에 raw dict/model 입�
 canonical record로 바꿉니다. Standalone Structured VLM adapter도 전체 prior evidence에 이 snapshot을
 먼저 적용하고 나서만 view 검증, prompt selection, provider 호출을 수행합니다. 따라서 선택되지 않을
 tail의 duplicate source-block fan-out이나 capture 중 nested-list 변경도 provider 경계를 넘지 못합니다.
-Evaluation prediction importer 적용은 후속입니다.
+Evaluation prediction importer는 hash-verified plain JSON array를 `VisualEvidence` model로 만들기 전에
+같은 raw-record admission을 수행합니다. Duplicate를 포함한 source-block occurrence 20,000개와 해당
+Python 문자 8,000,000자 exact boundary를 허용하고 `+1`은 manifest error로 원자적으로 거부해 report
+writer를 호출하지 않습니다. 공개 prediction `0.1`의 100,000-record와 64 MiB artifact 계약을 유지하기
+위해 evaluation의 full-evidence character limit은 artifact byte limit을 사용합니다. JSON parser 자체가
+만드는 bounded raw object tree는 이 validator보다 앞서며, 완전한 streaming parse는 별도 격리 과제입니다.
 
 PDF vector provider도 신뢰하는 collection이 아닙니다. Vector source와 raw text/drawing,
 PyMuPDF drawing command는 전체를 먼저 materialize하지 않고 각 상한보다 한 개만 더 읽어

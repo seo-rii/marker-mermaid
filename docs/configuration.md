@@ -178,7 +178,10 @@ initial/custom-engine collection, reconstruction-global 신규 ID batch, fusion 
 sidecar schema와 manifest version도 바꾸지 않습니다. Marker OCR 생산과 Review provenance
 read/replacement/structured-add 경계 및 standalone Structured VLM prior-evidence ingress도 같은 고정
 budget을 사용합니다. Structured VLM은 prompt에 포함할 item을 고르기 전에 전체 collection을 검사하므로
-`max_vlm_evidence_items`를 낮춰도 초과 tail이 우회되지 않습니다. Evaluation ingestion 적용만 후속입니다.
+`max_vlm_evidence_items`를 낮춰도 초과 tail이 우회되지 않습니다. Evaluation prediction도 source-block
+occurrence/문자 budget을 공유하지만, 공개 `mmx-eval-prediction-0.1`의 100,000-record/64 MiB artifact
+계약을 유지하므로 일반 runtime의 20,000 evidence-item/8,000,000 full-evidence-character 상한과는
+독립적입니다. 이 evaluation 예외에도 설정 key는 없습니다.
 
 `max_image_dimension`과 `tile_size`의 상한은 4,096px입니다. View는 `original`이 첫 항목인 RGB Pillow
 image여야 합니다. 이름, 개수, 한 변 4,096px, view당

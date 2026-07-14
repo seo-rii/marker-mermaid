@@ -49,6 +49,22 @@ Prediction은 `VisualEvidence[]` registry도 포함합니다. Generated node의 
 그 ID는 모든 claimant에서 revoke합니다. 이 충돌 계산은 case-local이므로 다른 corpus case의
 같은 로컬 ID는 서로 충돌하지 않으며, relation/group 참조도 node claim 충돌에 포함하지 않습니다.
 
+Prediction evidence registry는 최대 100,000 record를 계속 허용합니다. 이 item capacity는 일반
+reconstruction runtime의 20,000 evidence-item limit과 독립적이며, source-block reference가 없는 작은
+registry는 20,000개를 넘어도 유효합니다. 대신 registry 전체의 `source_block_ids`는 중복을 포함해
+20,000 occurrence, 해당 ID의 Python `len()` 합계는 8,000,000자로 제한합니다. Exact boundary는
+허용하고 `+1`은 hash가 맞더라도 invalid prediction artifact로 처리합니다. Loader는 plain JSON record를
+`VisualEvidence`로 만들기 전에 detached canonical snapshot을 생성하므로 over-budget prefix만 평가에
+남지 않습니다. Manifest error의 CLI 종료 코드는 `2`이며 기존 또는 새 report directory를 쓰지 않습니다.
+
+Prediction `0.1`의 100,000-record와 JSON artifact당 64 MiB 계약을 보존하기 위해 evaluation은 일반
+runtime의 8,000,000 full-evidence-character limit 대신 검증된 artifact byte limit을 사용합니다. 따라서
+이번 제한은 schema field/version을 바꾸지 않고 provenance fan-out dimension만 강화합니다. JSON parser가
+만드는 64 MiB 이하 raw object tree 자체는 pre-field snapshot보다 먼저 materialize되며, 완전한 streaming
+ingestion은 별도 process-isolation 과제입니다. Prediction 0.1에서 기존 Pydantic parser가 무시하던
+evidence object의 unknown field도 계속 무시하며, canonical registry에는 공개 `VisualEvidence` field만
+남깁니다. 다른 runtime/Review raw ingress의 unknown-field strict rejection은 바뀌지 않습니다.
+
 ## Manifest contract
 
 최상위 schema는 `mmx-eval-manifest-0.1`입니다.
@@ -92,7 +108,8 @@ Ground truth schema `mmx-eval-ground-truth-0.1`은 positive case에 독립 Scene
 Negative case는 `expected_reconstruction=false`, `type_stability=negative`이며 type/Scene/label/number를
 가질 수 없습니다. Prediction schema는 `mmx-eval-prediction-0.1`입니다. 게시 결과의
 `syntax_valid`/`render_valid`가 false 또는 null인 위반 사례도 artifact 자체는 유효하며, hard gate가
-이를 `fail`로 보고합니다.
+이를 `fail`로 보고합니다. Aggregate provenance resource violation은 품질 실패가 아니라 artifact/manifest
+오류이므로 report 집계 전에 거부됩니다.
 
 Positive Scene은 node가 하나 이상이어야 하며 text-bearing node의 token multiset을 `ocr_labels`가 모두
 포함해야 합니다. 숫자 유형은 `numeric_applicable=true`와 하나 이상의 유한 Decimal 값, 또는

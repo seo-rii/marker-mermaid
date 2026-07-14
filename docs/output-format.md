@@ -250,7 +250,9 @@ result를 deep-copy하거나 JSON을 만들기 전에 hook-free detached snapsho
 이는 저장 순서와 메모리 경계를 강화하는 내부 runtime 변경이며 `provenance.json` record shape,
 `manifest.json`, `mmx-sidecar-0.5` schema version을 바꾸지 않습니다. Marker OCR 생산과 Review의
 root/revision read, trusted replacement, digest/commit, structured-add 경계도 같은 aggregate gate를
-사용합니다. Evaluation prediction artifact 적용은 후속입니다.
+사용합니다. Evaluation prediction artifact도 hash 검증 뒤 같은 source-block aggregate gate를 통과해야
+하며, 실패하면 evaluation report tree를 만들거나 교체하지 않습니다. Prediction/report schema는
+`mmx-eval-prediction-0.1`/`mmx-eval-report-0.1`을 유지합니다.
 
 `include_rendered_preview`를 켠 Marker Markdown 출력은 validation receipt의 PNG SHA-256과 exact bytes가
 일치하는 runtime PNG만 `images/`에 추가합니다.

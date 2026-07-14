@@ -250,8 +250,13 @@
   or writing. The standalone Structured VLM adapter now snapshots its complete prior-evidence collection
   through that contract before view, prompt-selection, or provider work, so prompt item limits cannot hide
   an over-budget tail and direct callers receive the same source-block occurrence/character protection as
-  the pipeline. These internal guards add no public configuration or schema/manifest version change;
-  evaluation prediction ingestion remains a follow-up.
+  the pipeline. Hash-bound evaluation prediction JSON now applies the same detached raw-record admission
+  before `VisualEvidence` model construction. Evaluation preserves the public 100,000-record and 64 MiB
+  artifact contract while enforcing the shared 20,000 source-block occurrence and 8,000,000 Python-character
+  source-block limits; aggregate-invalid artifacts are rejected before the overflow record is modeled and
+  cannot reach report writing. Prediction 0.1's previously ignored unknown evidence fields remain ignored,
+  while the retained registry contains only canonical public fields.
+  These internal guards add no public configuration or schema/manifest version change.
 - Generated-node provenance scoring and the release evaluator now share a collision-free attribution
   policy. Only `ocr_token`, `vector_text`, `contour`, `vlm_observation`, and `user_edit` evidence can
   support a node; `source_crop`, `line_segment`, and `arrowhead` cannot. If multiple generated nodes

@@ -455,13 +455,33 @@ def canonical_evidence_collection_snapshot(
     )
 
 
-def canonical_evidence_input_snapshot(evidence: object) -> EvidenceCollectionSnapshot:
-    """Normalize bounded JSON evidence records through the aggregate snapshot contract."""
+def canonical_evidence_input_snapshot(
+    evidence: object,
+    *,
+    item_limit: int | None = None,
+    character_limit: int | None = None,
+    ignore_unknown_fields: bool = False,
+) -> EvidenceCollectionSnapshot:
+    """Normalize bounded JSON evidence through the aggregate snapshot contract.
+
+    Caller-specific item/full-character limits leave the shared source-block limits intact.
+    Unknown fields remain strict unless a versioned permissive ingress opts into ignoring them.
+    """
 
     if type(evidence) is not list:
         raise TypeError("evidence input must be an exact plain list")
+    resolved_item_limit = MAX_OBSERVATION_EVIDENCE if item_limit is None else item_limit
+    resolved_character_limit = (
+        MAX_EVIDENCE_INPUT_CHARS if character_limit is None else character_limit
+    )
+    if type(resolved_item_limit) is not int or resolved_item_limit < 0:
+        raise ValueError("evidence input item limit must be a non-negative exact integer")
+    if type(resolved_character_limit) is not int or resolved_character_limit < 0:
+        raise ValueError("evidence input character limit must be a non-negative exact integer")
+    if type(ignore_unknown_fields) is not bool:
+        raise ValueError("ignore_unknown_fields must be an exact boolean")
     item_count = list.__len__(evidence)
-    if item_count > MAX_OBSERVATION_EVIDENCE:
+    if item_count > resolved_item_limit:
         raise ValueError("evidence exceeds the observation item limit")
     items = list.__getitem__(evidence, slice(0, item_count))
     if list.__len__(evidence) != item_count or list.__len__(items) != item_count:
@@ -474,52 +494,98 @@ def canonical_evidence_input_snapshot(evidence: object) -> EvidenceCollectionSna
             record = item
         elif type(item) is dict:
             field_count = dict.__len__(item)
-            if field_count > len(_VISUAL_EVIDENCE_FIELDS):
+            if not ignore_unknown_fields and field_count > len(_VISUAL_EVIDENCE_FIELDS):
                 raise ValueError("evidence input record exceeds the public field-count limit")
-            field_names: list[object] = []
-            field_iterator = dict.__iter__(item)
-            try:
-                for _ in range(len(_VISUAL_EVIDENCE_FIELDS) + 1):
-                    try:
-                        field_names.append(next(field_iterator))
-                    except StopIteration:
-                        break
-            except RuntimeError as exc:
-                raise ValueError("evidence input record changed while it was captured") from exc
-            if len(field_names) != field_count or dict.__len__(item) != field_count:
-                raise ValueError("evidence input record changed while it was captured")
-            for field_name in field_names:
-                if type(field_name) is not str or field_name not in _VISUAL_EVIDENCE_FIELDS:
-                    raise ValueError("evidence input record contains an unknown public field")
-            try:
-                payload = {
-                    field_name: dict.__getitem__(item, field_name) for field_name in field_names
-                }
-            except KeyError as exc:
-                raise ValueError("evidence input record changed while it was captured") from exc
-            after_field_names: list[object] = []
-            after_field_iterator = dict.__iter__(item)
-            try:
-                for _ in range(len(_VISUAL_EVIDENCE_FIELDS) + 1):
-                    try:
-                        after_field_names.append(next(after_field_iterator))
-                    except StopIteration:
-                        break
-            except RuntimeError as exc:
-                raise ValueError("evidence input record changed while it was captured") from exc
-            try:
-                record_unchanged = (
-                    dict.__len__(item) == field_count
-                    and after_field_names == field_names
-                    and all(
-                        dict.__getitem__(item, field_name) is payload[field_name]
-                        for field_name in field_names
+            if ignore_unknown_fields:
+                payload: dict[str, object] = {}
+                observed_fields = 0
+                field_iterator = dict.__iter__(item)
+                try:
+                    for _ in range(field_count + 1):
+                        try:
+                            field_name = next(field_iterator)
+                        except StopIteration:
+                            break
+                        observed_fields += 1
+                        if type(field_name) is str and field_name in _VISUAL_EVIDENCE_FIELDS:
+                            payload[field_name] = dict.__getitem__(item, field_name)
+                except (KeyError, RuntimeError) as exc:
+                    raise ValueError("evidence input record changed while it was captured") from exc
+                if observed_fields != field_count or dict.__len__(item) != field_count:
+                    raise ValueError("evidence input record changed while it was captured")
+                after_known_fields: list[str] = []
+                after_observed_fields = 0
+                after_field_iterator = dict.__iter__(item)
+                try:
+                    for _ in range(field_count + 1):
+                        try:
+                            field_name = next(after_field_iterator)
+                        except StopIteration:
+                            break
+                        after_observed_fields += 1
+                        if type(field_name) is str and field_name in _VISUAL_EVIDENCE_FIELDS:
+                            after_known_fields.append(field_name)
+                            if (
+                                field_name not in payload
+                                or dict.__getitem__(item, field_name) is not payload[field_name]
+                            ):
+                                raise ValueError(
+                                    "evidence input record changed while it was captured"
+                                )
+                except (KeyError, RuntimeError) as exc:
+                    raise ValueError("evidence input record changed while it was captured") from exc
+                if (
+                    after_observed_fields != field_count
+                    or dict.__len__(item) != field_count
+                    or len(after_known_fields) != len(payload)
+                    or any(field_name not in payload for field_name in after_known_fields)
+                ):
+                    raise ValueError("evidence input record changed while it was captured")
+            else:
+                field_names: list[object] = []
+                field_iterator = dict.__iter__(item)
+                try:
+                    for _ in range(len(_VISUAL_EVIDENCE_FIELDS) + 1):
+                        try:
+                            field_names.append(next(field_iterator))
+                        except StopIteration:
+                            break
+                except RuntimeError as exc:
+                    raise ValueError("evidence input record changed while it was captured") from exc
+                if len(field_names) != field_count or dict.__len__(item) != field_count:
+                    raise ValueError("evidence input record changed while it was captured")
+                for field_name in field_names:
+                    if type(field_name) is not str or field_name not in _VISUAL_EVIDENCE_FIELDS:
+                        raise ValueError("evidence input record contains an unknown public field")
+                try:
+                    payload = {
+                        field_name: dict.__getitem__(item, field_name) for field_name in field_names
+                    }
+                except KeyError as exc:
+                    raise ValueError("evidence input record changed while it was captured") from exc
+                after_field_names: list[object] = []
+                after_field_iterator = dict.__iter__(item)
+                try:
+                    for _ in range(len(_VISUAL_EVIDENCE_FIELDS) + 1):
+                        try:
+                            after_field_names.append(next(after_field_iterator))
+                        except StopIteration:
+                            break
+                except RuntimeError as exc:
+                    raise ValueError("evidence input record changed while it was captured") from exc
+                try:
+                    record_unchanged = (
+                        dict.__len__(item) == field_count
+                        and after_field_names == field_names
+                        and all(
+                            dict.__getitem__(item, field_name) is payload[field_name]
+                            for field_name in field_names
+                        )
                     )
-                )
-            except KeyError as exc:
-                raise ValueError("evidence input record changed while it was captured") from exc
-            if not record_unchanged:
-                raise ValueError("evidence input record changed while it was captured")
+                except KeyError as exc:
+                    raise ValueError("evidence input record changed while it was captured") from exc
+                if not record_unchanged:
+                    raise ValueError("evidence input record changed while it was captured")
             live_source_block_ids = dict.get(payload, "source_block_ids", [])
             if type(live_source_block_ids) is not list:
                 raise TypeError("evidence source_block_ids must be an exact plain list")
@@ -570,12 +636,80 @@ def canonical_evidence_input_snapshot(evidence: object) -> EvidenceCollectionSna
                     payload["bbox"] = tuple(bbox)
                 elif type(live_bbox) is not tuple or tuple.__len__(live_bbox) != 4:
                     raise TypeError("evidence bbox must be a canonical four-coordinate sequence")
+            item_id = dict.get(payload, "id")
+            kind = dict.get(payload, "kind")
+            text = dict.get(payload, "text")
+            font_weight = dict.get(payload, "font_weight")
+            score = dict.get(payload, "score")
+            bbox = dict.get(payload, "bbox")
+            if type(item_id) is not str or not item_id or len(item_id) > MAX_ID_CHARS:
+                raise TypeError("evidence contains an invalid bounded id")
+            _require_utf8_text(item_id, "evidence id")
+            if (
+                type(kind) is not str
+                or len(kind) > _MAX_VISUAL_EVIDENCE_KIND_CHARS
+                or kind not in _VISUAL_EVIDENCE_KINDS
+            ):
+                raise TypeError("evidence contains a non-canonical kind")
+            _require_utf8_text(kind, "evidence kind")
+            if text is not None:
+                if type(text) is not str or len(text) > MAX_TEXT_CHARS:
+                    raise TypeError("evidence contains invalid bounded text")
+                _require_utf8_text(text, "evidence text")
+            if font_weight is not None:
+                if (
+                    type(font_weight) is not str
+                    or len(font_weight) > _MAX_VISUAL_EVIDENCE_FONT_WEIGHT_CHARS
+                    or font_weight not in _VISUAL_EVIDENCE_FONT_WEIGHTS
+                ):
+                    raise TypeError("evidence contains a non-canonical font weight")
+                _require_utf8_text(font_weight, "evidence font weight")
+            if bbox is not None and (
+                type(bbox) is not tuple
+                or len(bbox) != 4
+                or any(type(value) not in {int, float} for value in bbox)
+                or not all(math.isfinite(value) for value in bbox)
+                or bbox[2] < bbox[0]
+                or bbox[3] < bbox[1]
+            ):
+                raise TypeError("evidence contains a non-canonical bbox")
+            if score is not None and (
+                type(score) not in {int, float} or not math.isfinite(score) or not 0 <= score <= 1
+            ):
+                raise TypeError("evidence contains a non-canonical score")
+
+            previous_usage = usage or EvidenceBudgetUsage()
+            if (
+                previous_usage.source_block_references + source_block_count
+                > MAX_EVIDENCE_SOURCE_BLOCK_REFS
+            ):
+                raise ValueError("evidence source-block references exceed the aggregate limit")
+            source_block_characters = 0
+            for block_id in source_block_ids:
+                if type(block_id) is not str or not block_id or len(block_id) > MAX_ID_CHARS:
+                    raise TypeError("evidence source_block_ids contains an invalid identifier")
+                _require_utf8_text(block_id, "evidence source block id")
+                source_block_characters += len(block_id)
+                if (
+                    previous_usage.source_block_characters + source_block_characters
+                    > MAX_EVIDENCE_SOURCE_BLOCK_CHARS
+                ):
+                    raise ValueError("evidence source-block characters exceed the aggregate limit")
+            characters = len(item_id) + len(kind) + source_block_characters
+            if text is not None:
+                characters += len(text)
+            if font_weight is not None:
+                characters += len(font_weight)
+            if previous_usage.characters + characters > resolved_character_limit:
+                raise ValueError("evidence characters exceed the aggregate limit")
             record = VisualEvidence.model_validate(payload)
         else:
             raise TypeError("evidence input must contain plain objects or VisualEvidence records")
         snapshot = canonical_evidence_collection_snapshot(
             [record],
             base=usage,
+            item_limit=resolved_item_limit,
+            character_limit=resolved_character_limit,
         )
         usage = snapshot.usage
         canonical.extend(snapshot.evidence)

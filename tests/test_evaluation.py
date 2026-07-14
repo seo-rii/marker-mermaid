@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
+import marker_mermaid.cli as cli_module
 import marker_mermaid.evaluation as evaluation_module
+import marker_mermaid.models as models_module
 from marker_mermaid.evaluation import (
     EvaluationManifestError,
     evaluate_manifest,
@@ -175,6 +177,122 @@ def test_hash_bound_manifest_computes_micro_metrics_and_writes_report(tmp_path):
     write_evaluation_report(report, output, evaluation=loaded)
     assert not (output / "stale.txt").exists()
     assert not list(tmp_path.glob(".report-previous-*"))
+
+
+def test_prediction_evidence_preserves_100k_item_and_artifact_contract(tmp_path, monkeypatch):
+    schema = evaluation_module.EvaluationPrediction.model_json_schema()
+    assert schema["properties"]["evidence"]["maxItems"] == 100_000
+    assert "additionalProperties" not in schema["$defs"]["VisualEvidence"]
+    assert evaluation_module.MANIFEST_SCHEMA_VERSION == "mmx-eval-manifest-0.1"
+    assert evaluation_module.PREDICTION_SCHEMA_VERSION == "mmx-eval-prediction-0.1"
+
+    manifest_path = _write_manifest(tmp_path)
+    prediction = json.loads((tmp_path / "prediction.json").read_text())
+    prediction["evidence"] = [
+        {"id": f"evidence-{index}", "kind": "contour"} for index in range(20_001)
+    ]
+    prediction["evidence"][0]["legacy_extra"] = {"ignored": [1, 2, 3]}
+    prediction_hash = _write_json(tmp_path / "prediction.json", prediction)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["cases"][0]["prediction"]["sha256"] = prediction_hash
+    _write_json(manifest_path, manifest)
+    monkeypatch.setattr(models_module, "MAX_OBSERVATION_EVIDENCE", 1)
+    monkeypatch.setattr(models_module, "MAX_EVIDENCE_INPUT_CHARS", 1)
+
+    loaded = load_evaluation_manifest(manifest_path)
+
+    assert len(loaded.cases[0].prediction.evidence) == 20_001
+    assert not hasattr(loaded.cases[0].prediction.evidence[0], "legacy_extra")
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "accepted_refs", "overflow_tail_refs", "error_pattern"),
+    [
+        (
+            "MAX_EVIDENCE_SOURCE_BLOCK_REFS",
+            ["shared", "shared"],
+            ["shared"],
+            "source-block references exceed the aggregate limit",
+        ),
+        (
+            "MAX_EVIDENCE_SOURCE_BLOCK_CHARS",
+            ["가나"],
+            ["다"],
+            "source-block characters exceed the aggregate limit",
+        ),
+    ],
+)
+def test_prediction_evidence_aggregate_provenance_exact_and_plus_one_are_atomic(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    limit_name,
+    accepted_refs,
+    overflow_tail_refs,
+    error_pattern,
+):
+    monkeypatch.setattr(models_module, limit_name, 2)
+    manifest_path = _write_manifest(tmp_path)
+    prediction = json.loads((tmp_path / "prediction.json").read_text())
+    prediction["evidence"][0]["source_block_ids"] = accepted_refs
+    prediction_hash = _write_json(tmp_path / "prediction.json", prediction)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["cases"][0]["prediction"]["sha256"] = prediction_hash
+    _write_json(manifest_path, manifest)
+
+    loaded = load_evaluation_manifest(manifest_path)
+    assert loaded.cases[0].prediction.evidence[0].source_block_ids == accepted_refs
+
+    prediction["evidence"][1]["source_block_ids"] = overflow_tail_refs
+    prediction_hash = _write_json(tmp_path / "prediction.json", prediction)
+    manifest["cases"][0]["prediction"]["sha256"] = prediction_hash
+    _write_json(manifest_path, manifest)
+    output = tmp_path / "existing-report"
+    output.mkdir()
+    sentinel = output / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    writer_called = False
+
+    def forbidden_writer(*_args, **_kwargs):
+        nonlocal writer_called
+        writer_called = True
+        raise AssertionError("aggregate-invalid prediction must not reach the report writer")
+
+    original_validate = models_module.VisualEvidence.model_validate
+
+    def reject_overflow_record_construction(cls, value, *args, **kwargs):
+        if type(value) is dict and value.get("id") == "ocr-b":
+            raise AssertionError("aggregate overflow must precede evidence model construction")
+        return original_validate(value, *args, **kwargs)
+
+    monkeypatch.setattr(
+        models_module.VisualEvidence,
+        "model_validate",
+        classmethod(reject_overflow_record_construction),
+    )
+    monkeypatch.setattr(cli_module, "write_evaluation_report", forbidden_writer)
+    with pytest.raises(EvaluationManifestError, match=error_pattern):
+        load_evaluation_manifest(manifest_path)
+    status = cli_module.main(["evaluate", str(manifest_path), "--output", str(output)])
+
+    assert status == 2
+    assert error_pattern in capsys.readouterr().err
+    assert not writer_called
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    assert list(output.iterdir()) == [sentinel]
+
+
+def test_prediction_evidence_malformed_container_is_a_manifest_error(tmp_path):
+    manifest_path = _write_manifest(tmp_path)
+    prediction = json.loads((tmp_path / "prediction.json").read_text())
+    prediction["evidence"] = {"id": "not-an-array", "kind": "contour"}
+    prediction_hash = _write_json(tmp_path / "prediction.json", prediction)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["cases"][0]["prediction"]["sha256"] = prediction_hash
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(EvaluationManifestError, match="evidence input must be an exact plain list"):
+        load_evaluation_manifest(manifest_path)
 
 
 def test_report_writer_refuses_unowned_or_protected_output(tmp_path):

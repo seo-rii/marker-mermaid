@@ -127,7 +127,10 @@ directory 생성 전에, document output은 image 쓰기 전에 같은 final-res
 record를 append하기 전에 누적 budget에 admission하고, 초과 시 evidence와 OCR text context 전체를
 격리하되 source reconstruction은 계속합니다. Review의 root/revision read, trusted replacement,
 digest/commit 및 structured `user_edit` 추가도 raw JSON/model record를 한 건씩 detached canonical
-snapshot으로 바꾼 뒤 같은 경계를 적용합니다. Evaluation prediction ingestion은 후속입니다.
+snapshot으로 바꾼 뒤 같은 경계를 적용합니다. Evaluation prediction은 hash-verified JSON array를
+`VisualEvidence` model로 만들기 전에 같은 raw-record snapshot을 적용하되, 공개 `0.1` 계약의
+100,000-record/64 MiB artifact 상한을 유지합니다. 따라서 일반 runtime과 source-block occurrence/문자
+상한은 공유하지만 full-evidence 문자 상한은 artifact byte 상한을 사용합니다.
 
 fused observation의 `flowchart`와 `generic_network` typed 후보만 별도 ID 정합화 gate를 거칩니다. typed
 node가 같은 owner Scene element ID를 정확히 재사용하고, 그 element가 독립 vector/geometry node 하나와

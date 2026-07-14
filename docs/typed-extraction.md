@@ -684,7 +684,10 @@ sink도 같은 snapshot을 재사용합니다. JSON/dict ingress는 record별 ca
 read/replacement/structured-add 및 standalone Structured VLM prior-evidence ingress도 이 경계를 공유합니다.
 Structured VLM은 prompt item selection보다 먼저 whole-input snapshot을 만들며 provider에는 detached
 record만 전달합니다. 이 runtime 계약은 provider response schema, public config, sidecar manifest를
-변경하지 않으며 evaluation ingestion은 후속입니다.
+변경하지 않습니다. Evaluation prediction JSON ingress도 `VisualEvidence` model 생성 전에 같은
+raw-record snapshot을 사용하되, `mmx-eval-prediction-0.1`의 100,000-record/64 MiB artifact 계약을
+보존하기 위해 item/full-character limit만 evaluation 값으로 명시합니다. Source-block occurrence와
+source-block character limit은 runtime과 동일합니다.
 
 Canonical candidate key는 이 bounded snapshot의 SHA-256 digest를 사용하므로 multi-megabyte IR을 key로
 보유하지 않습니다. set, bytes 같은 비결정적·비 JSON 값도 dedup이나 private mapping lookup에 들어가기

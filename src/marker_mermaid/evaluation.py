@@ -26,7 +26,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from marker_mermaid.config import ALL_TYPES, CORE_TYPES
-from marker_mermaid.models import DiagramSceneIR, VisualEvidence
+from marker_mermaid.models import (
+    DiagramSceneIR,
+    VisualEvidence,
+    canonical_evidence_input_snapshot,
+)
 from marker_mermaid.quality import SceneAlignment, injective_node_provenance_counts
 
 MANIFEST_SCHEMA_VERSION = "mmx-eval-manifest-0.1"
@@ -41,6 +45,7 @@ MAX_SOURCE_BYTES = 512 * 1024 * 1024
 MAX_CORPUS_BYTES = 64 * 1024 * 1024 * 1024
 MAX_PATHS = 10_000
 MAX_PATH_STATES = 100_000
+MAX_PREDICTION_EVIDENCE = 100_000
 OUTPUT_MARKER = ".marker-mermaid-evaluation.json"
 
 FixtureGroup = Literal[
@@ -389,7 +394,10 @@ class EvaluationPrediction(BaseModel):
     reconstruction_present: bool
     diagram_type: str | None = Field(default=None, max_length=128)
     generated_scene_ir: DiagramSceneIR | None = None
-    evidence: list[VisualEvidence] = Field(default_factory=list, max_length=100_000)
+    evidence: list[VisualEvidence] = Field(
+        default_factory=list,
+        max_length=MAX_PREDICTION_EVIDENCE,
+    )
     numbers: list[str] = Field(default_factory=list, max_length=20_000)
     published: bool
     syntax_valid: bool | None = None
@@ -408,12 +416,30 @@ class EvaluationPrediction(BaseModel):
             raise ValueError("prediction numbers must be non-empty and bounded")
         return _canonical_numbers(values)
 
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def evidence_has_bounded_provenance(cls, value: object) -> list[VisualEvidence]:
+        try:
+            snapshot = canonical_evidence_input_snapshot(
+                value,
+                item_limit=MAX_PREDICTION_EVIDENCE,
+                character_limit=MAX_JSON_ARTIFACT_BYTES,
+                ignore_unknown_fields=True,
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"prediction evidence failed aggregate provenance preflight: {error}"
+            ) from error
+        return list(snapshot.evidence)
+
     @field_validator("evidence")
     @classmethod
     def evidence_ids_are_unique(cls, values: list[VisualEvidence]) -> list[VisualEvidence]:
-        ids = [item.id for item in values]
-        if len(ids) != len(set(ids)):
-            raise ValueError("prediction evidence ids must be unique")
+        seen: set[str] = set()
+        for item in values:
+            if item.id in seen:
+                raise ValueError("prediction evidence ids must be unique")
+            seen.add(item.id)
         return values
 
     @model_validator(mode="after")
