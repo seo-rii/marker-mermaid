@@ -3,7 +3,7 @@
 Structured VLM은 `diagram_type`만 맞춘 임의 JSON을 내보내지 않습니다. 활성화된 Mermaid 유형마다
 root 필드와 container 종류를 고정한 `TypedIRContract`를 prompt로 받고, 응답은 Pydantic 모델 생성
 시점에 같은 registry로 다시 검사됩니다. Phase 1 유형, stable Core UML 유형(State, Class, ER),
-그리고 native Phase 2 중 Requirement·Block은 record 내부의 알려진 필드와 recursive container도
+native Phase 2의 Requirement·Block과 C4 fallback은 record 내부의 알려진 필드와 recursive container도
 전용 Pydantic model로 검사합니다. serializer의 세부 의미 검사는 그 다음 단계에서 수행합니다.
 
 이 경계는 두 문제를 분리합니다.
@@ -34,6 +34,7 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | ER | entity/attribute/key와 relationship/cardinality field |
 | Requirement | requirement/element/relation record와 닫힌 type·risk·verify·relation token |
 | Block | block/edge record, shape token, `columns` scalar 형식 |
+| C4 fallback | element/boundary/relation record, level·kind token, Architecture port side |
 
 ### Requirement·Block record 계약
 
@@ -74,6 +75,46 @@ string·integer·null이라는 scalar 형을 먼저 검사하고, serializer가 
 명시값이 `auto` 또는 양의 정수로 해석 가능한지 최종 판정합니다. 즉 extraction 계약의
 구조 검사와 serializer의 의미 검사를 혼동하지 않습니다.
 
+### C4 fallback record 계약
+
+C4 root는 `elements: list`가 필수이고 `boundaries`·`relations`·`level`은 선택입니다. Prompt는 다음
+네 record를 이 순서로 광고합니다.
+
+| Record | Prompt에 공개하고 형을 검사하는 field |
+| --- | --- |
+| `level` | `context`, `container`, `component` |
+| `elements[]` | `id`, `label`, `name`, `kind`, `boundary`, `description`, `technology`, `bbox`, `evidence_ids` |
+| `boundaries[]` | `id`, `label`, `type`, `bbox`, `evidence_ids` |
+| `relations[]` | `id`, `source`, `target`, `label`, `technology`, `bidirectional`, `source_side`, `target_side`, `bbox`, `evidence_ids` |
+
+Element `kind`의 canonical token은 `person`, `external_person`, `system`, `external_system`,
+`database`, `external_database`, `queue`, `external_queue`, `container`, `container_database`,
+`container_queue`, `component`, `component_database`, `component_queue`입니다. `level`과 `kind`는
+serializer의 lowercase 해석과 같이 대소문자를 구분하지 않고 검사하되 원본 문자열을 바꾸지 않습니다.
+Legacy element `type`도 `kind`와 같은 집합으로 응답 후 검사하고 serializer fallback을 위해 원본 IR에
+보존하지만 canonical prompt에는 광고하지 않습니다. Relation의 `source_side`와 `target_side`는
+Architecture fallback이 실제 소비하는 대문자 `L`, `R`, `T`, `B`만 허용하며 `bidirectional`은 strict
+boolean입니다.
+
+자동 게시 경로가 실제 소비하는 값은 element ID·`label`/`name`·kind 기반 icon·boundary membership,
+boundary ID·label, relation endpoint·port side·`bidirectional`입니다. Architecture output은 icon과 port
+side를 사용하고, nested Flowchart retry는 같은 ID·label·membership·endpoint·bidirectional topology만
+보존합니다. Element bbox/evidence, boundary bbox와 relation evidence도 attribution에 유지됩니다. Boundary
+`type`은 의도적으로 닫힌 C4 boundary token으로
+제한하지 않고 string 형만 검사합니다. 자동 fallback은 boundary notation 자체를 표시하지 않으므로,
+진단용 native C4가 모르는 boundary type 때문에 안전한 Architecture/Flowchart fallback까지 거부하던 호환성
+축소를 피하기 위함입니다. Element `description`·`technology`, relation `label`·`technology`·bbox와 exact
+boundary notation은 typed IR/review metadata에는 보존되지만 자동 fallback의 node/edge label이나 attribution
+geometry로 승격되지 않습니다. `serialize_c4_native`가 이 metadata를 표현할 수 있어도 해당 함수는 trusted
+diagnostic 전용이며 자동 publication 또는 품질 평가 경로가 아닙니다.
+
+Nested model은 record/container/scalar와 닫힌 token만 검사합니다. 빈 elements list, ID 정규화와 collision,
+boundary membership/reference, relation endpoint, resource cap 같은 의미 조건은 자동 serializer와 generated
+Scene이 공유하는 bounded C4-to-Architecture plan이 계속 판정합니다. 각 record field와 `evidence_ids`는
+partial/legacy 후보를 위해 선택이고, `bbox`·evidence의 strict 형은 공통 record 계약을 따릅니다. 등록하지
+않은 metadata는 `extra="allow"`로 남고 검증 model이 입력을 대체하지 않으므로 casing, legacy `type`, extra
+field를 포함한 원본 dict가 serializer·repair·canonical hash·sidecar로 전달됩니다.
+
 알려진 scalar field에는 object/list를 넣을 수 없고, record와 child container의 종류도 고정합니다. `bbox`는
 정확히 네 개의 finite number, `evidence_ids`와 membership은 string list여야 합니다. `extra="allow"`를
 사용하므로 style, geometry, plugin 또는 향후 Mermaid field 같은 미등록 metadata는 삭제하지 않습니다.
@@ -94,7 +135,7 @@ metadata도 OCR 구조 점수에서는 제외합니다.
 Gantt 날짜와 Mermaid 표현 가능성은 serializer 및 evaluation gate가 계속 판정합니다. Architecture port는
 nested contract에서 `L/R/T/B`만 허용합니다.
 State kind, Class member visibility/kind/classifier 및 relation type, ER attribute key와 relationship
-cardinality, Requirement·Block의 위 token처럼 serializer가 닫힌 집합으로 해석하는 값도
+cardinality, Requirement·Block 및 C4의 위 token처럼 serializer가 닫힌 집합으로 해석하는 값도
 같은 집합으로 제한합니다. Root list 이외의 record field는 partial reconstruction을 위해 선택이며,
 필드 존재, non-empty, 표시 text, ID 중복, endpoint 참조 같은 의미 조건은 계속 serializer가
 판정합니다.
@@ -109,9 +150,10 @@ message만 serializer와 Scene에 함께 전달하고, raw message ID와 무관�
 부여합니다. 따라서 Mermaid에서 합쳐진 actor나 생략된 message를 평가 Scene이 별도 구조로 세지 않습니다.
 
 현재 Marker `response_schema`의 외부 envelope는 여전히 `TypedIRCandidate.ir: dict`입니다. 따라서 이 단계는
-활성화된 Requirement·Block의 prompt와 응답 후 검증을 중첩 구조까지 확장하지만, provider에 모든
+활성화된 Requirement·Block·C4의 prompt와 응답 후 검증을 중첩 구조까지 확장하지만, provider에 모든
 Mermaid 유형을 하나의 discriminated JSON Schema로 직접 노출하거나 generic envelope reserve를
-늘리지는 않습니다. C4·Deployment·Component·Use-case 등 나머지 later-phase 유형의
+늘리지는 않습니다. Deployment·Component·Use-case 등 나머지 Phase 2 fallback은 아직 root contract이며,
+그 밖의 later-phase 유형을 포함한
 전용 model과 envelope-level discriminated schema는 후속 작업이므로 `ARCH-001`은 여전히 부분 완화 상태입니다.
 
 Marker 1.10.2의 stock Ollama service는 원래 schema의 최상위 `properties`와 `required`만 복사해 `$defs`를

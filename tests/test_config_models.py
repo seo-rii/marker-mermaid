@@ -936,6 +936,153 @@ def test_phase_two_native_nested_contracts_preserve_partial_alias_and_forward_ir
     assert candidate.ir == ir
 
 
+@pytest.mark.parametrize(
+    ("ir", "location"),
+    [
+        ({"level": ["context"], "elements": []}, "level"),
+        ({"level": "landscape", "elements": []}, "level"),
+        ({"elements": ["not-an-object"]}, "elements[0]"),
+        ({"elements": [{"id": 1}]}, "elements[0].id"),
+        ({"elements": [{"label": ["API"]}]}, "elements[0].label"),
+        ({"elements": [{"name": {"text": "API"}}]}, "elements[0].name"),
+        ({"elements": [{"kind": "actor"}]}, "elements[0].kind"),
+        ({"elements": [{"type": "service"}]}, "elements[0].type"),
+        ({"elements": [{"boundary": 1}]}, "elements[0].boundary"),
+        ({"elements": [{"description": 1}]}, "elements[0].description"),
+        ({"elements": [{"technology": ["Python"]}]}, "elements[0].technology"),
+        ({"elements": [{"bbox": [0, 0, 10]}]}, "elements[0].bbox"),
+        ({"elements": [{"evidence_ids": [1]}]}, "elements[0].evidence_ids[0]"),
+        ({"elements": [], "boundaries": {"id": "system"}}, "boundaries"),
+        ({"elements": [], "boundaries": ["not-an-object"]}, "boundaries[0]"),
+        ({"elements": [], "boundaries": [{"id": 1}]}, "boundaries[0].id"),
+        ({"elements": [], "boundaries": [{"label": ["System"]}]}, "boundaries[0].label"),
+        ({"elements": [], "boundaries": [{"type": ["system"]}]}, "boundaries[0].type"),
+        ({"elements": [], "boundaries": [{"bbox": [0, False, 10, 10]}]}, "boundaries[0].bbox"),
+        (
+            {"elements": [], "boundaries": [{"evidence_ids": [1]}]},
+            "boundaries[0].evidence_ids[0]",
+        ),
+        ({"elements": [], "relations": {"source": "A"}}, "relations"),
+        ({"elements": [], "relations": ["not-an-object"]}, "relations[0]"),
+        ({"elements": [], "relations": [{"id": 1}]}, "relations[0].id"),
+        ({"elements": [], "relations": [{"source": ["A"]}]}, "relations[0].source"),
+        ({"elements": [], "relations": [{"target": 1}]}, "relations[0].target"),
+        ({"elements": [], "relations": [{"label": {"text": "uses"}}]}, "relations[0].label"),
+        ({"elements": [], "relations": [{"technology": ["HTTPS"]}]}, "relations[0].technology"),
+        ({"elements": [], "relations": [{"bidirectional": 1}]}, "relations[0].bidirectional"),
+        ({"elements": [], "relations": [{"source_side": "r"}]}, "relations[0].source_side"),
+        ({"elements": [], "relations": [{"target_side": "X"}]}, "relations[0].target_side"),
+        ({"elements": [], "relations": [{"bbox": [0, 0, "10", 10]}]}, "relations[0].bbox"),
+        (
+            {"elements": [], "relations": [{"evidence_ids": [1]}]},
+            "relations[0].evidence_ids[0]",
+        ),
+    ],
+)
+def test_c4_nested_contract_rejects_wrong_shapes_scalars_and_closed_tokens(
+    ir: dict[str, object],
+    location: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TypedIRCandidate(diagram_type="c4", ir=ir)
+
+    message = str(exc_info.value)
+    assert "violates its nested contract" in message
+    assert location in message
+
+
+def test_c4_nested_contract_preserves_partial_alias_diagnostic_and_forward_ir() -> None:
+    ir = {
+        "level": "COMPONENT",
+        "elements": [
+            {
+                "type": "EXTERNAL_DATABASE",
+                "description": "Diagnostic description",
+                "technology": "Postgres",
+                "bbox": [0, 0, 10, 10],
+                "evidence_ids": ["vector-db"],
+                "future_metadata": {"kept": True},
+            }
+        ],
+        "boundaries": [
+            {
+                "type": "vendor_specific_boundary",
+                "bbox": [0, 0, 20, 20],
+                "evidence_ids": ["contour-boundary"],
+                "future_metadata": {"kept": True},
+            }
+        ],
+        "relations": [
+            {
+                "source": "unknown",
+                "target": "also-unknown",
+                "label": "Uses",
+                "technology": "HTTPS",
+                "bidirectional": False,
+                "source_side": "T",
+                "target_side": "B",
+                "bbox": [1, 2, 3, 4],
+                "evidence_ids": ["arrow-1"],
+                "future_metadata": {"kept": True},
+            }
+        ],
+        "future_root_metadata": {"kept": True},
+    }
+
+    candidate = TypedIRCandidate(diagram_type="c4", ir=ir)
+
+    assert candidate.ir == ir
+
+
+@pytest.mark.parametrize(
+    "bbox",
+    [[0, 0, 10], [0, 0, True, 10], ["0", 0, 10, 10], [0, 0, math.inf, 10]],
+)
+def test_c4_nested_contract_requires_four_strict_finite_bbox_numbers(bbox) -> None:
+    with pytest.raises(ValidationError, match=r"elements\[0\]\.bbox|finite"):
+        TypedIRCandidate(
+            diagram_type="c4",
+            ir={"elements": [{"id": "api", "bbox": bbox}]},
+        )
+
+
+def test_canonical_key_revalidates_mutated_c4_nested_contract() -> None:
+    candidate = TypedIRCandidate(
+        diagram_type="c4",
+        ir={"elements": [{"kind": "system"}]},
+    )
+    candidate.ir["elements"][0]["kind"] = "actor"
+
+    with pytest.raises(ValidationError, match=r"elements\[0\]\.kind"):
+        candidate.canonical_key()
+
+
+def test_generic_candidate_envelopes_apply_c4_nested_contract() -> None:
+    prediction = DiagramTypePrediction(candidates=["c4"], scores=[1.0])
+
+    with pytest.raises(ValidationError, match=r"elements\[0\]\.kind"):
+        EngineObservation(
+            prediction=prediction,
+            typed_candidates=[
+                {
+                    "diagram_type": "c4",
+                    "ir": {"elements": [{"kind": "actor"}]},
+                }
+            ],
+        )
+
+    with pytest.raises(ValidationError, match=r"relations\[0\]\.source_side"):
+        MermaidCandidate(
+            candidate_id="candidate-c4",
+            generation_method="typed_ir",
+            diagram_type="c4",
+            typed_ir={
+                "elements": [{"id": "api"}],
+                "relations": [{"source": "api", "target": "api", "source_side": "r"}],
+            },
+        )
+
+
 @pytest.mark.parametrize("bbox", [[0, 0, 10], [0, 0, True, 10], ["0", 0, 10, 10]])
 def test_phase_one_nested_contracts_require_four_strict_finite_bbox_numbers(bbox) -> None:
     with pytest.raises(ValidationError, match="bbox"):

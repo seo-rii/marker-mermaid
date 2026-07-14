@@ -98,6 +98,11 @@
   serializer-visible records and case-insensitive closed tokens, while preserving optional partial
   fields, evidence, extra metadata, and the original generic `ir` dictionary; Block column layout
   semantics remain serializer-owned.
+- C4 fallback typed IR now has a strict nested prompt/post-validation contract for level, element,
+  boundary, and relation records, with case-insensitive canonical element kinds, legacy `type`
+  preservation, exact Architecture port sides, and serializer-owned reference/collision semantics.
+  Native-only description, technology, relation labels, and boundary notation remain review metadata;
+  automatic publication still uses the shared bounded Architecture-to-Flowchart fallback path.
 - Serializer-visible Scene text now includes Architecture group labels, excludes hidden
   Deployment/Component relation labels, and mirrors Use-case Flowchart relation type-over-label
   precedence; hidden role/shape/style/semantic metadata cannot enter the projected Scene, and

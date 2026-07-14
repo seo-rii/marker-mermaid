@@ -237,6 +237,25 @@ _BLOCK_SHAPES = frozenset(
         "subroutine",
     }
 )
+_C4_LEVELS = frozenset({"context", "container", "component"})
+_C4_ELEMENT_KINDS = frozenset(
+    {
+        "person",
+        "external_person",
+        "system",
+        "external_system",
+        "database",
+        "external_database",
+        "queue",
+        "external_queue",
+        "container",
+        "container_database",
+        "container_queue",
+        "component",
+        "component_database",
+        "component_queue",
+    }
+)
 
 
 def _validate_casefolded_token(
@@ -333,6 +352,51 @@ class _BlockIR(_TypedIRRoot):
     blocks: list[_BlockNode]
     edges: list[_BlockEdge] = Field(default_factory=list)
     columns: str | int | None = None
+
+
+class _C4Element(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+    name: str | None = None
+    kind: str | None = None
+    type: str | None = None
+    boundary: str | None = None
+    description: str | None = None
+    technology: str | None = None
+
+    @field_validator("kind", "type")
+    @classmethod
+    def kind_is_supported(cls, value: str | None) -> str | None:
+        return _validate_casefolded_token(value, _C4_ELEMENT_KINDS, field="C4 element kind")
+
+
+class _C4Boundary(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+    type: str | None = None
+
+
+class _C4Relation(_TypedIRRecord):
+    id: str | None = None
+    source: str | None = None
+    target: str | None = None
+    label: str | None = None
+    technology: str | None = None
+    bidirectional: bool | None = None
+    source_side: Literal["L", "R", "T", "B"] | None = None
+    target_side: Literal["L", "R", "T", "B"] | None = None
+
+
+class _C4IR(_TypedIRRoot):
+    level: str | None = None
+    elements: list[_C4Element]
+    boundaries: list[_C4Boundary] = Field(default_factory=list)
+    relations: list[_C4Relation] = Field(default_factory=list)
+
+    @field_validator("level")
+    @classmethod
+    def level_is_supported(cls, value: str | None) -> str | None:
+        return _validate_casefolded_token(value, _C4_LEVELS, field="C4 level")
 
 
 class _HierarchyNode(_TypedIRRecord):
@@ -537,7 +601,23 @@ TYPED_IR_CONTRACTS: dict[str, TypedIRContract] = {
         ),
     ),
     "c4": TypedIRContract(
-        (("elements", "list"),), ("boundaries", "relations", "level"), "C4 elements"
+        (("elements", "list"),),
+        ("boundaries", "relations", "level"),
+        "C4 elements",
+        _C4IR,
+        (
+            "level: context|container|component",
+            "elements[]: {id:string,label:string,name:string,kind:person|external_person|"
+            "system|external_system|database|external_database|queue|external_queue|"
+            "container|container_database|container_queue|component|component_database|"
+            "component_queue,boundary:string,description:string,technology:string,"
+            "bbox:number[4],evidence_ids:string[]}",
+            "boundaries[]: {id:string,label:string,type:string,bbox:number[4],"
+            "evidence_ids:string[]}",
+            "relations[]: {id:string,source:string,target:string,label:string,"
+            "technology:string,bidirectional:boolean,source_side:L|R|T|B,"
+            "target_side:L|R|T|B,bbox:number[4],evidence_ids:string[]}",
+        ),
     ),
     "requirement": TypedIRContract(
         (("requirements", "list"),),
@@ -676,8 +756,12 @@ if set(TYPED_IR_CONTRACTS) != set(ALL_TYPES):  # pragma: no cover - import-time 
 PHASE_ONE_NESTED_TYPES = PHASE_ONE_TYPES | {"generic_network"}
 CORE_UML_NESTED_TYPES = frozenset({"state", "class", "er"})
 PHASE_TWO_NATIVE_NESTED_TYPES = frozenset({"requirement", "block"})
+PHASE_TWO_FALLBACK_NESTED_TYPES = frozenset({"c4"})
 NESTED_TYPED_IR_TYPES = (
-    PHASE_ONE_NESTED_TYPES | CORE_UML_NESTED_TYPES | PHASE_TWO_NATIVE_NESTED_TYPES
+    PHASE_ONE_NESTED_TYPES
+    | CORE_UML_NESTED_TYPES
+    | PHASE_TWO_NATIVE_NESTED_TYPES
+    | PHASE_TWO_FALLBACK_NESTED_TYPES
 )
 
 for _diagram_type in NESTED_TYPED_IR_TYPES:  # pragma: no cover - import-time invariant

@@ -87,13 +87,29 @@ budget은 증가하지 않습니다. 성공하면 requested type은 유지하되
 
 ### C4 자동 후보와 진단용 native C4
 
+C4 typed extraction은 `elements: list` root와 선택 `boundaries`·`relations`·`level`을 strict nested
+contract로 검사합니다. Element의 canonical `kind` 14종과 root `level`(`context`, `container`,
+`component`)은 대소문자를 구분하지 않고 검증하며, legacy `type`도 같은 kind 집합으로 검사한 뒤 원본
+field와 casing을 유지합니다. Relation port는 Architecture가 소비하는 대문자 `L/R/T/B`만 허용하고
+`bidirectional`은 strict boolean입니다. Boundary `type`은 string 형만 확인하고 닫힌 native token으로
+제한하지 않습니다. 자동 fallback은 boundary notation을 방출하지 않으므로 진단용 native 문법의 제약으로
+Architecture/Flowchart 후보를 불필요하게 거부하지 않기 위한 호환성 계약입니다.
+
+각 element/boundary/relation field와 evidence는 partial reconstruction을 위해 선택이고, 공통 strict
+`bbox`·string evidence list 및 `extra="allow"` 보존 규칙을 따릅니다. 검증 model은 입력 dict를
+재작성하지 않습니다. Non-empty element, normalized ID collision, boundary reference/membership, endpoint와
+Scene budget은 nested model이 추측하지 않고 아래의 공용 bounded C4-to-Architecture plan이 계속
+판정합니다. Deployment·Component·Use-case는 아직 이 nested Phase 2 fallback 계약의 적용 대상이 아니라
+root contract만 사용합니다.
+
 `serialize_c4_native`는 pinned Mermaid의 native macro를 확인하는 trusted diagnostic 경로이며 자동 C4
 게시·평가의 구조 기준이 아닙니다. 자동 경로는 C4 element를 Architecture service로, boundary를 group으로,
 relation을 unlabeled service edge로 변환한 뒤 Architecture native와 nested Flowchart가 공유하는 bounded
-identity/group/topology plan을 사용합니다. generated Scene과 OCR projection도 이 plan의 collision-safe
-emitted service/group ID, 실제 표시 label, membership, endpoint 및 bidirectional connector를 그대로
-사용합니다. 따라서 runtime이 Architecture를 받아들이거나 Flowchart로 재시도해도 평가 구조는 게시된
-의미 표현과 같은 ID 공간에 있습니다.
+identity/group/topology plan을 사용합니다. Serializer는 이 plan의 kind 기반 icon과 relation port side를
+Architecture output에 사용합니다. Generated Scene과 OCR projection도 같은 collision-safe emitted
+service/group ID, 실제 표시 label, membership, endpoint 및 bidirectional connector를 사용합니다. 따라서
+runtime이 Architecture를 받아들이거나 Flowchart로 재시도해도 평가 구조는 게시된 의미 표현과 같은 ID
+공간에 있습니다.
 
 원 element의 bbox/`evidence_ids`, relation evidence와 boundary bbox는 attribution을 위해 유지합니다.
 relation polyline, technology, description, relation label, exact C4 boundary notation처럼 fallback이

@@ -444,6 +444,148 @@ def test_c4_architecture_and_nested_flowchart_share_planned_identity_and_topolog
 
 
 @pytest.mark.parametrize(
+    ("kind", "icon"),
+    [
+        ("person", "internet"),
+        ("external_person", "internet"),
+        ("system", "server"),
+        ("external_system", "server"),
+        ("database", "database"),
+        ("external_database", "database"),
+        ("queue", "disk"),
+        ("external_queue", "disk"),
+        ("container", "server"),
+        ("container_database", "database"),
+        ("container_queue", "disk"),
+        ("component", "server"),
+        ("component_database", "database"),
+        ("component_queue", "disk"),
+    ],
+)
+def test_c4_nested_contract_tracks_every_serializer_element_kind(kind: str, icon: str) -> None:
+    ir = {"elements": [{"id": "node", "label": "Node", "kind": kind}]}
+
+    assert TypedIRCandidate(diagram_type="c4", ir=ir).ir == ir
+    code, emitted_type, _reason = serialize_phase2("c4", ir)
+    assert emitted_type == "architecture"
+    assert f'service node({icon})["Node"]' in code
+
+
+@pytest.mark.parametrize("level", ["context", "container", "component"])
+def test_c4_nested_contract_tracks_every_serializer_level(level: str) -> None:
+    ir = {"level": level.upper(), "elements": [{"id": "system"}]}
+
+    assert TypedIRCandidate(diagram_type="c4", ir=ir).ir == ir
+    assert serialize_phase2("c4", ir)[1] == "architecture"
+
+
+@pytest.mark.parametrize("field", ["kind", "type"])
+def test_c4_nested_contract_tracks_kind_alias_and_serializer_casefolding(field: str) -> None:
+    ir = {"elements": [{"id": "db", "label": "DB", field: "CONTAINER_DATABASE"}]}
+
+    assert TypedIRCandidate(diagram_type="c4", ir=ir).ir == ir
+    code = serialize_phase2("c4", ir)[0]
+    assert 'service db(database)["DB"]' in code
+
+
+def test_c4_nested_contract_tracks_exact_architecture_ports_and_direction() -> None:
+    ir = {
+        "elements": [{"id": "api"}, {"id": "db"}],
+        "relations": [
+            {
+                "source": "api",
+                "target": "db",
+                "source_side": "T",
+                "target_side": "B",
+                "bidirectional": True,
+            }
+        ],
+    }
+
+    assert TypedIRCandidate(diagram_type="c4", ir=ir).ir == ir
+    code = serialize_phase2("c4", ir)[0]
+    assert "api:T <--> B:db" in code
+
+
+def test_c4_boundary_type_remains_automatic_fallback_compatible_metadata() -> None:
+    ir = {
+        "elements": [{"id": "api", "boundary": "scope"}],
+        "boundaries": [{"id": "scope", "label": "Scope", "type": "vendor_extension"}],
+    }
+
+    assert TypedIRCandidate(diagram_type="c4", ir=ir).ir == ir
+    code, emitted_type, _reason = serialize_phase2("c4", ir)
+    assert emitted_type == "architecture"
+    assert 'group scope(cloud)["Scope"]' in code
+    with pytest.raises(SerializationError, match="unsupported C4 boundary type"):
+        serialize_c4_native(ir)
+
+
+@pytest.mark.parametrize(
+    ("ir", "message"),
+    [
+        ({"elements": []}, "non-empty list"),
+        (
+            {
+                "elements": [{"id": "api"}],
+                "relations": [{"source": "api", "target": "missing"}],
+            },
+            "unknown endpoint",
+        ),
+        (
+            {
+                "elements": [{"id": "api", "boundary": "missing"}],
+                "boundaries": [{"id": "known"}],
+            },
+            "unknown boundary",
+        ),
+        (
+            {
+                "elements": [{"id": "A-B", "boundary": "A B"}],
+                "boundaries": [{"id": "A B"}],
+            },
+            "collides with a.*id",
+        ),
+    ],
+)
+def test_c4_nested_contract_leaves_semantic_validation_to_serializer(
+    ir: dict[str, object],
+    message: str,
+) -> None:
+    assert TypedIRCandidate(diagram_type="c4", ir=ir).ir == ir
+
+    with pytest.raises(SerializationError, match=message):
+        serialize_phase2("c4", ir)
+
+
+def test_c4_nested_contract_preserves_duplicate_identity_and_empty_boundary_semantics() -> None:
+    duplicate_ir = {
+        "elements": [
+            {"id": "same", "label": "First"},
+            {"id": "same", "label": "Second"},
+        ],
+        "relations": [{"source": "same", "target": "same"}],
+    }
+    empty_boundary_ir = {
+        "elements": [{"id": "api"}],
+        "boundaries": [{"id": "empty", "label": "Empty"}],
+    }
+
+    assert TypedIRCandidate(diagram_type="c4", ir=duplicate_ir).ir == duplicate_ir
+    duplicate_code = serialize_phase2("c4", duplicate_ir)[0]
+    assert 'service same(server)["First"]' in duplicate_code
+    assert 'service same_2(server)["Second"]' in duplicate_code
+    assert "same:R --> L:same" in duplicate_code
+
+    assert TypedIRCandidate(diagram_type="c4", ir=empty_boundary_ir).ir == empty_boundary_ir
+    architecture_code, emitted_type, _reason = serialize_phase2("c4", empty_boundary_ir)
+    assert emitted_type == "architecture"
+    assert 'group empty(cloud)["Empty"]' in architecture_code
+    with pytest.raises(SerializationError, match="has no services"):
+        serialize_phase2("c4", empty_boundary_ir, native_runtime_valid=False)
+
+
+@pytest.mark.parametrize(
     ("ir", "message"),
     [
         (

@@ -31,6 +31,7 @@ from marker_mermaid.typed_contracts import (
     CORE_UML_NESTED_TYPES,
     NESTED_TYPED_IR_TYPES,
     PHASE_ONE_NESTED_TYPES,
+    PHASE_TWO_FALLBACK_NESTED_TYPES,
     PHASE_TWO_NATIVE_NESTED_TYPES,
     TYPED_IR_CONTRACTS,
     typed_ir_contract_prompt,
@@ -1356,7 +1357,10 @@ def test_every_core_uml_type_has_nested_prompt_records():
 
     assert set(expected_records) == CORE_UML_NESTED_TYPES
     assert NESTED_TYPED_IR_TYPES == (
-        PHASE_ONE_NESTED_TYPES | CORE_UML_NESTED_TYPES | PHASE_TWO_NATIVE_NESTED_TYPES
+        PHASE_ONE_NESTED_TYPES
+        | CORE_UML_NESTED_TYPES
+        | PHASE_TWO_NATIVE_NESTED_TYPES
+        | PHASE_TWO_FALLBACK_NESTED_TYPES
     )
     assert {
         diagram_type
@@ -1420,7 +1424,10 @@ def test_every_phase_two_native_type_has_exact_nested_prompt_records():
 
     assert set(expected_records) == PHASE_TWO_NATIVE_NESTED_TYPES
     assert NESTED_TYPED_IR_TYPES == (
-        PHASE_ONE_NESTED_TYPES | CORE_UML_NESTED_TYPES | PHASE_TWO_NATIVE_NESTED_TYPES
+        PHASE_ONE_NESTED_TYPES
+        | CORE_UML_NESTED_TYPES
+        | PHASE_TWO_NATIVE_NESTED_TYPES
+        | PHASE_TWO_FALLBACK_NESTED_TYPES
     )
     assert {
         diagram_type
@@ -1437,6 +1444,60 @@ def test_every_phase_two_native_type_has_exact_nested_prompt_records():
             f"  {other_type}." not in prompt
             for other_type in PHASE_TWO_NATIVE_NESTED_TYPES - {diagram_type}
         )
+
+
+def test_c4_fallback_nested_prompt_is_exact_deterministic_and_enabled_type_only():
+    first = typed_ir_contract_prompt({"c4"})
+    second = typed_ir_contract_prompt({"c4"})
+
+    assert first == second
+    assert "  c4.level: context|container|component" in first
+    assert (
+        "  c4.elements[]: {id:string,label:string,name:string,kind:person|external_person|"
+        "system|external_system|database|external_database|queue|external_queue|"
+        "container|container_database|container_queue|component|component_database|"
+        "component_queue,boundary:string,description:string,technology:string,"
+        "bbox:number[4],evidence_ids:string[]}"
+    ) in first
+    assert (
+        "  c4.boundaries[]: {id:string,label:string,type:string,bbox:number[4],"
+        "evidence_ids:string[]}"
+    ) in first
+    assert (
+        "  c4.relations[]: {id:string,source:string,target:string,label:string,"
+        "technology:string,bidirectional:boolean,source_side:L|R|T|B,"
+        "target_side:L|R|T|B,bbox:number[4],evidence_ids:string[]}"
+    ) in first
+    assert "c4.elements[]:" in first
+    assert "type:person" not in first
+    assert "architecture.services[]" not in first
+    assert "requirement.requirements[]" not in first
+
+
+def test_c4_is_the_only_phase_two_fallback_nested_contract():
+    contract = TYPED_IR_CONTRACTS["c4"]
+    prompt = typed_ir_contract_prompt({"c4"})
+
+    assert frozenset({"c4"}) == PHASE_TWO_FALLBACK_NESTED_TYPES
+    assert NESTED_TYPED_IR_TYPES == (
+        PHASE_ONE_NESTED_TYPES
+        | CORE_UML_NESTED_TYPES
+        | PHASE_TWO_NATIVE_NESTED_TYPES
+        | PHASE_TWO_FALLBACK_NESTED_TYPES
+    )
+    assert {
+        diagram_type
+        for diagram_type, registered in TYPED_IR_CONTRACTS.items()
+        if registered.nested_model is not None
+    } == NESTED_TYPED_IR_TYPES
+    assert contract.nested_model is not None
+    assert tuple(record.split(":", 1)[0] for record in contract.prompt_records) == (
+        "level",
+        "elements[]",
+        "boundaries[]",
+        "relations[]",
+    )
+    assert all(f"  c4.{record}" in prompt for record in contract.prompt_records)
 
 
 def test_all_enabled_nested_contract_prompts_fit_minimum_request_budget():
