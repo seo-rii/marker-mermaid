@@ -123,9 +123,11 @@ ID를 모두 더한 기존 full-evidence 8,000,000자 상한도 독립적으로 
 observation과 정렬에 포함되는 `prior_evidence` 누적 입력 및 fused output, 최종
 `ReconstructionResult`와 publication/Markdown snapshot에 적용됩니다. Sidecar는 JSON/deep copy와 임시
 directory 생성 전에, document output은 image 쓰기 전에 같은 final-result snapshot을 preflight합니다.
-공개 config나 sidecar schema/manifest version은 바뀌지 않습니다. Marker adapter가 OCR evidence를 만들기 전
-단계, Review provenance 교체/읽기, evaluation prediction ingestion에 같은 공용 경계를 직접 적용하는 일은
-후속입니다.
+공개 config나 sidecar schema/manifest version은 바뀌지 않습니다. Marker adapter는 source-crop/OCR
+record를 append하기 전에 누적 budget에 admission하고, 초과 시 evidence와 OCR text context 전체를
+격리하되 source reconstruction은 계속합니다. Review의 root/revision read, trusted replacement,
+digest/commit 및 structured `user_edit` 추가도 raw JSON/model record를 한 건씩 detached canonical
+snapshot으로 바꾼 뒤 같은 경계를 적용합니다. Evaluation prediction ingestion은 후속입니다.
 
 fused observation의 `flowchart`와 `generic_network` typed 후보만 별도 ID 정합화 gate를 거칩니다. typed
 node가 같은 owner Scene element ID를 정확히 재사용하고, 그 element가 독립 vector/geometry node 하나와

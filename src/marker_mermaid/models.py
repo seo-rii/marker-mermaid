@@ -73,6 +73,17 @@ _VISUAL_EVIDENCE_KINDS = frozenset(
 _MAX_VISUAL_EVIDENCE_KIND_CHARS = max(len(value) for value in _VISUAL_EVIDENCE_KINDS)
 _VISUAL_EVIDENCE_FONT_WEIGHTS = frozenset({"normal", "bold"})
 _MAX_VISUAL_EVIDENCE_FONT_WEIGHT_CHARS = max(len(value) for value in _VISUAL_EVIDENCE_FONT_WEIGHTS)
+_VISUAL_EVIDENCE_FIELDS = frozenset(
+    {
+        "id",
+        "kind",
+        "bbox",
+        "text",
+        "font_weight",
+        "score",
+        "source_block_ids",
+    }
+)
 
 
 def _sink_safe_diagnostic_text(value: str) -> str:
@@ -123,9 +134,9 @@ def _canonical_runtime_diagram_type(value: str | None) -> str | None:
 
 
 def _bounded_text(value: str | None, field: str, limit: int = MAX_TEXT_CHARS) -> str | None:
-    _require_utf8_text(value, field)
     if value is not None and len(value) > limit:
         raise ValueError(f"{field} exceeds the text size limit")
+    _require_utf8_text(value, field)
     return value
 
 
@@ -134,10 +145,10 @@ def _bounded_references(
 ) -> list[str]:
     if len(values) > limit:
         raise ValueError(f"{field} exceeds the reference count limit")
-    for value in values:
-        _require_utf8_text(value, field)
     if any(not value or len(value) > MAX_ID_CHARS for value in values):
         raise ValueError(f"{field} contains an invalid bounded identifier")
+    for value in values:
+        _require_utf8_text(value, field)
     return values
 
 
@@ -199,9 +210,9 @@ class VisualEvidence(BaseModel):
     @field_validator("id")
     @classmethod
     def id_is_bounded(cls, value: str) -> str:
-        _require_utf8_text(value, "evidence id")
         if not value or len(value) > MAX_ID_CHARS:
             raise ValueError("evidence id must be non-empty and bounded")
+        _require_utf8_text(value, "evidence id")
         return value
 
     @field_validator("text")
@@ -310,15 +321,6 @@ def canonical_evidence_collection_snapshot(
     if list.__len__(evidence) != item_count or list.__len__(items) != item_count:
         raise ValueError("evidence changed while it was captured")
 
-    allowed_fields = {
-        "id",
-        "kind",
-        "bbox",
-        "text",
-        "font_weight",
-        "score",
-        "source_block_ids",
-    }
     payloads: list[dict[str, object]] = []
     source_block_references = base.source_block_references
     source_block_characters = base.source_block_characters
@@ -331,13 +333,13 @@ def canonical_evidence_collection_snapshot(
         if type(fields) is not dict:
             raise TypeError("evidence record fields must be canonical")
         field_count = dict.__len__(fields)
-        if field_count != len(allowed_fields):
+        if field_count != len(_VISUAL_EVIDENCE_FIELDS):
             raise ValueError("evidence record must contain exactly its public fields")
         field_snapshot = dict.copy(fields)
         if dict.__len__(field_snapshot) != field_count or dict.__len__(fields) != field_count:
             raise ValueError("evidence record changed while it was captured")
         for field_name in list(dict.keys(field_snapshot)):
-            if type(field_name) is not str or field_name not in allowed_fields:
+            if type(field_name) is not str or field_name not in _VISUAL_EVIDENCE_FIELDS:
                 raise ValueError("evidence record contains an unknown public field")
 
         item_id = dict.get(field_snapshot, "id", missing)
@@ -419,7 +421,7 @@ def canonical_evidence_collection_snapshot(
         if dict.__len__(after_fields) != field_count or dict.__len__(fields) != field_count:
             raise ValueError("evidence record changed while it was captured")
         for field_name in list(dict.keys(after_fields)):
-            if type(field_name) is not str or field_name not in allowed_fields:
+            if type(field_name) is not str or field_name not in _VISUAL_EVIDENCE_FIELDS:
                 raise ValueError("evidence record contains an unknown public field")
         for field_name, original in field_snapshot.items():
             if dict.get(after_fields, field_name, missing) is not original:
@@ -450,6 +452,141 @@ def canonical_evidence_collection_snapshot(
             source_block_characters=source_block_characters,
             characters=characters,
         ),
+    )
+
+
+def canonical_evidence_input_snapshot(evidence: object) -> EvidenceCollectionSnapshot:
+    """Normalize bounded JSON evidence records through the aggregate snapshot contract."""
+
+    if type(evidence) is not list:
+        raise TypeError("evidence input must be an exact plain list")
+    item_count = list.__len__(evidence)
+    if item_count > MAX_OBSERVATION_EVIDENCE:
+        raise ValueError("evidence exceeds the observation item limit")
+    items = list.__getitem__(evidence, slice(0, item_count))
+    if list.__len__(evidence) != item_count or list.__len__(items) != item_count:
+        raise ValueError("evidence input changed while it was captured")
+
+    canonical: list[VisualEvidence] = []
+    usage: EvidenceBudgetUsage | None = None
+    for item in items:
+        if type(item) is VisualEvidence:
+            record = item
+        elif type(item) is dict:
+            field_count = dict.__len__(item)
+            if field_count > len(_VISUAL_EVIDENCE_FIELDS):
+                raise ValueError("evidence input record exceeds the public field-count limit")
+            field_names: list[object] = []
+            field_iterator = dict.__iter__(item)
+            try:
+                for _ in range(len(_VISUAL_EVIDENCE_FIELDS) + 1):
+                    try:
+                        field_names.append(next(field_iterator))
+                    except StopIteration:
+                        break
+            except RuntimeError as exc:
+                raise ValueError("evidence input record changed while it was captured") from exc
+            if len(field_names) != field_count or dict.__len__(item) != field_count:
+                raise ValueError("evidence input record changed while it was captured")
+            for field_name in field_names:
+                if type(field_name) is not str or field_name not in _VISUAL_EVIDENCE_FIELDS:
+                    raise ValueError("evidence input record contains an unknown public field")
+            try:
+                payload = {
+                    field_name: dict.__getitem__(item, field_name) for field_name in field_names
+                }
+            except KeyError as exc:
+                raise ValueError("evidence input record changed while it was captured") from exc
+            after_field_names: list[object] = []
+            after_field_iterator = dict.__iter__(item)
+            try:
+                for _ in range(len(_VISUAL_EVIDENCE_FIELDS) + 1):
+                    try:
+                        after_field_names.append(next(after_field_iterator))
+                    except StopIteration:
+                        break
+            except RuntimeError as exc:
+                raise ValueError("evidence input record changed while it was captured") from exc
+            try:
+                record_unchanged = (
+                    dict.__len__(item) == field_count
+                    and after_field_names == field_names
+                    and all(
+                        dict.__getitem__(item, field_name) is payload[field_name]
+                        for field_name in field_names
+                    )
+                )
+            except KeyError as exc:
+                raise ValueError("evidence input record changed while it was captured") from exc
+            if not record_unchanged:
+                raise ValueError("evidence input record changed while it was captured")
+            live_source_block_ids = dict.get(payload, "source_block_ids", [])
+            if type(live_source_block_ids) is not list:
+                raise TypeError("evidence source_block_ids must be an exact plain list")
+            source_block_count = list.__len__(live_source_block_ids)
+            if source_block_count > MAX_EVIDENCE_REFS:
+                raise ValueError("evidence source_block_ids exceeds its reference count limit")
+            source_block_ids = list.__getitem__(
+                live_source_block_ids,
+                slice(0, source_block_count),
+            )
+            if (
+                list.__len__(live_source_block_ids) != source_block_count
+                or list.__len__(source_block_ids) != source_block_count
+            ):
+                raise ValueError("evidence source_block_ids changed while they were captured")
+            for field_name, limit in (
+                ("id", MAX_ID_CHARS),
+                ("text", MAX_TEXT_CHARS),
+                ("kind", _MAX_VISUAL_EVIDENCE_KIND_CHARS),
+                ("font_weight", _MAX_VISUAL_EVIDENCE_FONT_WEIGHT_CHARS),
+            ):
+                value = dict.get(payload, field_name)
+                if type(value) is str and len(value) > limit:
+                    raise ValueError(f"evidence {field_name} exceeds its character limit")
+            for block_id in source_block_ids:
+                if type(block_id) is str and len(block_id) > MAX_ID_CHARS:
+                    raise ValueError("evidence source_block_ids contains an oversized identifier")
+            if list.__len__(live_source_block_ids) != source_block_count or any(
+                list.__getitem__(live_source_block_ids, index) is not source_block_ids[index]
+                for index in range(source_block_count)
+            ):
+                raise ValueError("evidence source_block_ids changed while they were captured")
+            payload["source_block_ids"] = source_block_ids
+            live_bbox = dict.get(payload, "bbox")
+            if live_bbox is not None:
+                if type(live_bbox) is list:
+                    bbox_count = list.__len__(live_bbox)
+                    if bbox_count != 4:
+                        raise ValueError("evidence bbox must contain exactly four coordinates")
+                    bbox = list.__getitem__(live_bbox, slice(0, bbox_count))
+                    if list.__len__(live_bbox) != bbox_count or list.__len__(bbox) != bbox_count:
+                        raise ValueError("evidence bbox changed while it was captured")
+                    if any(
+                        list.__getitem__(live_bbox, index) is not bbox[index]
+                        for index in range(bbox_count)
+                    ):
+                        raise ValueError("evidence bbox changed while it was captured")
+                    payload["bbox"] = tuple(bbox)
+                elif type(live_bbox) is not tuple or tuple.__len__(live_bbox) != 4:
+                    raise TypeError("evidence bbox must be a canonical four-coordinate sequence")
+            record = VisualEvidence.model_validate(payload)
+        else:
+            raise TypeError("evidence input must contain plain objects or VisualEvidence records")
+        snapshot = canonical_evidence_collection_snapshot(
+            [record],
+            base=usage,
+        )
+        usage = snapshot.usage
+        canonical.extend(snapshot.evidence)
+
+    if list.__len__(evidence) != item_count or any(
+        list.__getitem__(evidence, index) is not items[index] for index in range(item_count)
+    ):
+        raise ValueError("evidence input changed while it was captured")
+    return EvidenceCollectionSnapshot(
+        evidence=tuple(canonical),
+        usage=usage or EvidenceBudgetUsage(),
     )
 
 

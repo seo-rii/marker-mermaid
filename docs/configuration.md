@@ -175,8 +175,9 @@ Prompt 설정과 별도로 retained runtime evidence에는 설정으로 늘릴 �
 evidence 문자 합계도 독립적으로 8,000,000자를 넘을 수 없습니다. Exact boundary는 허용하고 `+1`은
 initial/custom-engine collection, reconstruction-global 신규 ID batch, fusion 또는 final sink snapshot
 단위로 원자적으로 거부합니다. 이 값에는 `MermaidDiagramProcessor_*` key가 없으며 Python 공개 config,
-sidecar schema와 manifest version도 바꾸지 않습니다. Marker OCR 생산 단계, Review, evaluation ingestion에
-같은 경계를 직접 적용하는 작업은 후속입니다.
+sidecar schema와 manifest version도 바꾸지 않습니다. Marker OCR 생산과 Review provenance
+read/replacement/structured-add 경계도 같은 고정 budget을 사용하며, evaluation ingestion 적용만
+후속입니다.
 
 `max_image_dimension`과 `tile_size`의 상한은 4,096px입니다. View는 `original`이 첫 항목인 RGB Pillow
 image여야 합니다. 이름, 개수, 한 변 4,096px, view당

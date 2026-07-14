@@ -243,8 +243,12 @@
   count before tuple materialization, and document output reuses its preflight evidence snapshot for
   sidecar emission. The optimized vector preflight shares the same constants and remains an earlier
   allocation guard.
-  This internal runtime change adds no public configuration or schema/manifest version change;
-  Marker OCR production, Review provenance, and evaluation prediction ingestion remain follow-ups.
+  Marker OCR source-crop/token production now admits each record against the same cumulative budget;
+  overflow atomically removes OCR evidence/text context, records a bounded source diagnostic, and lets
+  reconstruction continue. Review root/revision reads, trusted replacement, digest/commit sinks, and
+  structured `user_edit` additions normalize detached evidence through the same contract before copying
+  or writing. These internal guards add no public configuration or schema/manifest version change;
+  evaluation prediction ingestion remains a follow-up.
 - Generated-node provenance scoring and the release evaluator now share a collision-free attribution
   policy. Only `ocr_token`, `vector_text`, `contour`, `vlm_observation`, and `user_edit` evidence can
   support a node; `source_crop`, `line_segment`, and `arrowhead` cannot. If multiple generated nodes

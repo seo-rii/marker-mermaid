@@ -24,7 +24,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from marker_mermaid.config import SecurityProfile
 from marker_mermaid.models import (
-    MAX_OBSERVATION_EVIDENCE,
     CandidateValidationReceipt,
     DiagramSceneIR,
     PublicationAuthorizationReceipt,
@@ -32,6 +31,7 @@ from marker_mermaid.models import (
     VisualEvidence,
     _candidate_quality_sha256,
     _canonical_model_sha256,
+    canonical_evidence_input_snapshot,
 )
 from marker_mermaid.render_artifacts import MAX_RENDER_BYTES, png_inspection_error
 from marker_mermaid.review_layout import ReviewLayoutHints
@@ -233,7 +233,13 @@ def _ir_bytes(value: dict[str, Any]) -> bytes:
 
 
 def _provenance_bytes(value: list[VisualEvidence]) -> bytes:
-    return _json_bytes([item.model_dump(mode="json") for item in value])
+    try:
+        snapshot = canonical_evidence_input_snapshot(value)
+    except (TypeError, ValueError) as exc:
+        raise ReviewValidationError(
+            f"provenance contains invalid or over-budget evidence: {exc}"
+        ) from exc
+    return _json_bytes([item.model_dump(mode="json") for item in snapshot.evidence])
 
 
 def _layout_bytes(value: ReviewLayoutHints) -> bytes:
@@ -1002,17 +1008,21 @@ class ReviewStore:
         before: dict[str, Any],
         audit_entry: ReviewHistoryEntry | None = None,
     ) -> ReviewBundle:
+        current_provenance = self._validate_provenance(bundle.provenance)
+        target_provenance = self._validate_provenance(provenance)
         bundle_path = self._bundle_path(bundle.bundle_id)
         next_version = bundle.state.version + 1
         revision = f"r{next_version:06d}"
         timeline = bundle.state.timeline[: bundle.state.cursor + 1] + [revision]
         current_provenance_digest = (
-            _bytes_digest(_provenance_bytes(bundle.provenance))
-            if bundle.provenance is not None
+            _bytes_digest(_provenance_bytes(current_provenance))
+            if current_provenance is not None
             else None
         )
         provenance_digest = (
-            _bytes_digest(_provenance_bytes(provenance)) if provenance is not None else None
+            _bytes_digest(_provenance_bytes(target_provenance))
+            if target_provenance is not None
+            else None
         )
         layout_digest = (
             _bytes_digest(_layout_bytes(layout_hints)) if layout_hints is not None else None
@@ -1036,7 +1046,7 @@ class ReviewStore:
             decision_reason=decision_reason,
             selected_candidate_id=selected_candidate_id,
         )
-        after = self._state_value(state, code, scene_ir, provenance, layout_hints)
+        after = self._state_value(state, code, scene_ir, target_provenance, layout_hints)
         if audit_entry is not None:
             if audit_entry.source != "user":
                 raise ReviewValidationError("review audit entries must have user source")
@@ -1097,10 +1107,10 @@ class ReviewStore:
                 files["versions/r000000.svg"] = bundle.svg.encode("utf-8")
             if bundle.png is not None:
                 files["versions/r000000.png"] = bundle.png
-            if bundle.provenance is not None:
+            if current_provenance is not None:
                 assert current_provenance_digest is not None
                 files[f"versions/provenance/{current_provenance_digest}.json"] = _provenance_bytes(
-                    bundle.provenance
+                    current_provenance
                 )
             if bundle.layout_hints is not None:
                 current_layout_digest = _bytes_digest(_layout_bytes(bundle.layout_hints))
@@ -1120,7 +1130,7 @@ class ReviewStore:
                 "final.svg": svg.encode("utf-8") if svg is not None else None,
                 "final.png": png,
                 "provenance.json": (
-                    _provenance_bytes(provenance) if provenance is not None else None
+                    _provenance_bytes(target_provenance) if target_provenance is not None else None
                 ),
                 "layout-hints.json": (
                     _layout_bytes(layout_hints) if layout_hints is not None else None
@@ -1130,14 +1140,16 @@ class ReviewStore:
         if (
             bundle.state.schema_version == LEGACY_REVIEW_SCHEMA_VERSION
             and legacy_provenance_digest is not None
-            and bundle.provenance is not None
+            and current_provenance is not None
         ):
             files[f"versions/provenance/{legacy_provenance_digest}.json"] = _provenance_bytes(
-                bundle.provenance
+                current_provenance
             )
-        if provenance is not None:
+        if target_provenance is not None:
             assert provenance_digest is not None
-            files[f"versions/provenance/{provenance_digest}.json"] = _provenance_bytes(provenance)
+            files[f"versions/provenance/{provenance_digest}.json"] = _provenance_bytes(
+                target_provenance
+            )
         if layout_hints is not None:
             assert layout_digest is not None
             files[f"versions/layout/{layout_digest}.json"] = _layout_bytes(layout_hints)
@@ -1150,7 +1162,7 @@ class ReviewStore:
         content_changed = (
             code != bundle.mermaid_code
             or scene_ir != bundle.scene_ir
-            or provenance != bundle.provenance
+            or target_provenance != current_provenance
             or layout_hints != bundle.layout_hints
         )
         files["manifest.json"] = self._updated_manifest_bytes(
@@ -1279,14 +1291,15 @@ class ReviewStore:
     ) -> list[VisualEvidence] | None:
         if provenance is None:
             return None
-        if not isinstance(provenance, list):
-            raise ReviewValidationError("provenance must be a JSON array")
-        if len(provenance) > MAX_OBSERVATION_EVIDENCE:
-            raise ReviewValidationError("provenance exceeds the evidence count limit")
+        if type(provenance) is not list:
+            raise ReviewValidationError("provenance must be an exact JSON array")
         try:
-            normalized = [VisualEvidence.model_validate(item) for item in provenance]
-        except ValidationError as exc:
-            raise ReviewValidationError("provenance contains invalid evidence") from exc
+            snapshot = canonical_evidence_input_snapshot(provenance)
+        except (TypeError, ValueError) as exc:
+            raise ReviewValidationError(
+                f"provenance contains invalid or over-budget evidence: {exc}"
+            ) from exc
+        normalized = list(snapshot.evidence)
         ids = [item.id for item in normalized]
         if len(ids) != len(set(ids)):
             raise ReviewValidationError("provenance evidence ids must be unique")
@@ -1629,10 +1642,20 @@ class ReviewStore:
         manifest: dict[str, Any],
     ) -> list[VisualEvidence] | None:
         path = self._artifact_path(bundle, "provenance.json", must_exist=False)
-        if path.exists() and path.stat().st_size > MAX_JSON_BYTES:
-            raise ReviewValidationError("provenance.json exceeds the JSON size limit")
-        raw_digest = _bytes_digest(path.read_bytes()) if path.exists() else None
-        payload = self._read_optional_json(bundle, "provenance.json", expected=list)
+        payload = None
+        raw_digest = None
+        if path.exists():
+            with path.open("rb") as artifact:
+                raw_payload = artifact.read(MAX_JSON_BYTES + 1)
+            if len(raw_payload) > MAX_JSON_BYTES:
+                raise ReviewValidationError("provenance.json exceeds the JSON size limit")
+            raw_digest = _bytes_digest(raw_payload)
+            try:
+                payload = json.loads(raw_payload.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ReviewValidationError("provenance.json is not valid UTF-8 JSON") from exc
+            if type(payload) is not list:
+                raise ReviewValidationError("provenance.json must contain a JSON list")
         provenance = self._validate_provenance(payload)
         files = manifest.get("files")
         expected_digest = files.get("provenance.json") if isinstance(files, dict) else None

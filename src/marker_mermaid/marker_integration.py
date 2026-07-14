@@ -27,12 +27,16 @@ from marker_mermaid.marker_discovery import (
     iter_marker_candidate_blocks,
 )
 from marker_mermaid.models import (
+    MAX_ID_CHARS,
+    EvidenceBudgetUsage,
     ReconstructionResult,
     VisualEvidence,
+    canonical_evidence_collection_snapshot,
     canonical_prompt_budget_notice_json,
 )
 from marker_mermaid.pipeline import ReconstructionPipeline
 from marker_mermaid.render_artifacts import MAX_PREVIEW_DIMENSION, MAX_PREVIEW_PIXELS
+from marker_mermaid.resource_limits import MAX_EVIDENCE_REFS
 from marker_mermaid.semantic_repair import EvidenceBackedFlowchartRepair
 from marker_mermaid.sidecars import safe_artifact_component
 from marker_mermaid.source_assembly import SourceAssemblyMetadata, assemble_discovered_source
@@ -318,12 +322,25 @@ class MermaidDiagramProcessor(BaseProcessor):
                             ),
                             max_pixels=self.mermaid_config.max_virtual_source_pixels,
                         )
-                        evidence, texts = self._ocr_evidence(
-                            source,
-                            assembled.metadata,
-                            blocks,
-                            document,
-                        )
+                        try:
+                            evidence, texts = self._ocr_evidence(
+                                source,
+                                assembled.metadata,
+                                blocks,
+                                document,
+                            )
+                        except (TypeError, ValueError) as exc:
+                            evidence, texts = [], []
+                            error_name = type(exc).__name__[:128]
+                            errors.append(
+                                {
+                                    "source_id": source.source_id,
+                                    "error": (
+                                        "MarkerOCREvidenceError: invalid or oversized OCR evidence "
+                                        f"was isolated atomically ({error_name})"
+                                    ),
+                                }
+                            )
                         source_block_ids = list(
                             dict.fromkeys(
                                 block_id
@@ -423,21 +440,52 @@ class MermaidDiagramProcessor(BaseProcessor):
     def _ocr_evidence(source, assembly: SourceAssemblyMetadata, blocks, document: Document):
         placements = assembly.placement_by_fragment_id()
         evidence: list[VisualEvidence] = []
+        evidence_usage = EvidenceBudgetUsage()
         texts: list[str] = []
         for fragment in source.fragments:
             placement = placements[fragment.fragment_id]
-            evidence.append(
-                VisualEvidence(
-                    id=f"source-{fragment.fragment_id}",
-                    kind="source_crop",
-                    bbox=placement.canvas_bbox,
-                    score=1.0,
-                    source_block_ids=fragment.source_block_ids,
-                )
+            live_source_block_ids = fragment.source_block_ids
+            if type(live_source_block_ids) is not list:
+                raise TypeError("Marker fragment source_block_ids must be an exact plain list")
+            source_block_count = list.__len__(live_source_block_ids)
+            if source_block_count > MAX_EVIDENCE_REFS:
+                raise ValueError("Marker fragment source_block_ids exceeds its reference limit")
+            source_block_ids = list.__getitem__(
+                live_source_block_ids,
+                slice(0, source_block_count),
             )
-            if not fragment.source_block_ids:
+            if (
+                list.__len__(live_source_block_ids) != source_block_count
+                or list.__len__(source_block_ids) != source_block_count
+            ):
+                raise ValueError("Marker fragment source_block_ids changed while captured")
+            for block_id in source_block_ids:
+                if type(block_id) is not str or not block_id or len(block_id) > MAX_ID_CHARS:
+                    raise ValueError(
+                        "Marker fragment source_block_ids contains an invalid bounded identifier"
+                    )
+                block_id.encode("utf-8")
+            if list.__len__(live_source_block_ids) != source_block_count or any(
+                list.__getitem__(live_source_block_ids, index) is not source_block_ids[index]
+                for index in range(source_block_count)
+            ):
+                raise ValueError("Marker fragment source_block_ids changed while captured")
+            source_record = VisualEvidence(
+                id=f"source-{fragment.fragment_id}",
+                kind="source_crop",
+                bbox=placement.canvas_bbox,
+                score=1.0,
+                source_block_ids=source_block_ids,
+            )
+            source_snapshot = canonical_evidence_collection_snapshot(
+                [source_record],
+                base=evidence_usage,
+            )
+            evidence_usage = source_snapshot.usage
+            evidence.append(source_snapshot.evidence[0])
+            if not source_block_ids:
                 continue
-            block = blocks.get(fragment.source_block_ids[0])
+            block = blocks.get(source_block_ids[0])
             if block is None:
                 continue
             block_box = tuple(block.polygon.bbox)
@@ -472,16 +520,20 @@ class MermaidDiagramProcessor(BaseProcessor):
                 canvas_box = _bbox_intersection(canvas_box, placement.canvas_bbox)
                 if canvas_box is None:
                     continue
-                evidence.append(
-                    VisualEvidence(
-                        id=f"ocr-{fragment.fragment_id}-{index}",
-                        kind="ocr_token",
-                        bbox=canvas_box,
-                        text=text,
-                        score=1.0,
-                        source_block_ids=[str(block.id), str(text_block.id)],
-                    )
+                token_record = VisualEvidence(
+                    id=f"ocr-{fragment.fragment_id}-{index}",
+                    kind="ocr_token",
+                    bbox=canvas_box,
+                    text=text,
+                    score=1.0,
+                    source_block_ids=[str(block.id), str(text_block.id)],
                 )
+                token_snapshot = canonical_evidence_collection_snapshot(
+                    [token_record],
+                    base=evidence_usage,
+                )
+                evidence_usage = token_snapshot.usage
+                evidence.append(token_snapshot.evidence[0])
                 if text not in texts:
                     texts.append(text)
                 added_for_fragment = True

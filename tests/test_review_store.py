@@ -4,12 +4,15 @@ import hashlib
 import json
 import os
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 from PIL import Image
 from pydantic import ValidationError
 
+import marker_mermaid.models as models
 import marker_mermaid.review_store as review_store_module
+from marker_mermaid.models import VisualEvidence
 from marker_mermaid.review_store import (
     MAX_JSON_BYTES,
     MAX_RENDER_BYTES,
@@ -91,6 +94,12 @@ def evidence(evidence_id="ocr-1", text="Original"):
         "score": 0.9,
         "source_block_ids": ["block-1"],
     }
+
+
+def evidence_with_blocks(block_ids, evidence_id="ocr-1", text="Original"):
+    payload = evidence(evidence_id, text)
+    payload["source_block_ids"] = block_ids
+    return payload
 
 
 def write_provenance(bundle, items, *, record_manifest_hash=True):
@@ -1181,6 +1190,236 @@ def test_ir_and_render_artifacts_are_revisioned_and_restored_by_undo(tmp_path):
     assert restored.manifest["review_quality_status"] == "automated_baseline"
     hashes = json.loads((bundle_path / "manifest.json").read_text())["files"]
     assert set(hashes) >= {"final.mmd", "scene-ir.json", "final.svg", "final.png"}
+
+
+def test_provenance_load_enforces_aggregate_reference_boundary_without_writing(
+    monkeypatch,
+    tmp_path,
+):
+    bundle_path = make_bundle(tmp_path)
+    monkeypatch.setattr(models, "MAX_EVIDENCE_SOURCE_BLOCK_REFS", 2)
+    write_provenance(
+        bundle_path,
+        [evidence_with_blocks(["shared", "shared"])],
+    )
+    store = ReviewStore(tmp_path)
+
+    loaded = store.load_bundle("diagram-a")
+
+    assert loaded.provenance is not None
+    assert loaded.provenance[0].source_block_ids == ["shared", "shared"]
+
+    write_provenance(
+        bundle_path,
+        [evidence_with_blocks(["shared", "shared", "shared"])],
+    )
+    before = {
+        path.relative_to(bundle_path): path.read_bytes()
+        for path in bundle_path.rglob("*")
+        if path.is_file() and path.name != ".review.lock"
+    }
+
+    with pytest.raises(ReviewValidationError, match="source-block references"):
+        store.load_bundle("diagram-a")
+
+    after = {
+        path.relative_to(bundle_path): path.read_bytes()
+        for path in bundle_path.rglob("*")
+        if path.is_file() and path.name != ".review.lock"
+    }
+    assert after == before
+    assert not (bundle_path / "review-state.json").exists()
+    assert not (bundle_path / "versions").exists()
+
+
+def test_provenance_load_digests_and_parses_one_bounded_byte_snapshot(
+    monkeypatch,
+    tmp_path,
+):
+    bundle_path = make_bundle(tmp_path)
+    write_provenance(bundle_path, [evidence("original", "Original")])
+    provenance_path = bundle_path / "provenance.json"
+    replacement_path = bundle_path / "replacement.json"
+    replacement_path.write_text(
+        json.dumps([evidence("replacement", "Replacement")]),
+        encoding="utf-8",
+    )
+    original_open = Path.open
+    swapped = False
+
+    class SwappingReader:
+        def __init__(self, artifact):
+            self.artifact = artifact
+
+        def __enter__(self):
+            self.artifact.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.artifact.__exit__(*args)
+
+        def read(self, *args, **kwargs):
+            nonlocal swapped
+            payload = self.artifact.read(*args, **kwargs)
+            os.replace(replacement_path, provenance_path)
+            swapped = True
+            return payload
+
+    def swapping_open(self, mode="r", *args, **kwargs):
+        artifact = original_open(self, mode, *args, **kwargs)
+        if self == provenance_path and mode == "rb" and not swapped:
+            return SwappingReader(artifact)
+        return artifact
+
+    monkeypatch.setattr(Path, "open", swapping_open)
+
+    loaded = ReviewStore(tmp_path).load_bundle("diagram-a")
+
+    assert swapped
+    assert loaded.provenance is not None
+    assert [item.id for item in loaded.provenance] == ["original"]
+
+
+def test_provenance_load_counts_source_block_python_characters(monkeypatch, tmp_path):
+    bundle_path = make_bundle(tmp_path)
+    monkeypatch.setattr(models, "MAX_EVIDENCE_SOURCE_BLOCK_CHARS", 2)
+    write_provenance(bundle_path, [evidence_with_blocks(["가나"])])
+    store = ReviewStore(tmp_path)
+
+    loaded = store.load_bundle("diagram-a")
+
+    assert loaded.provenance is not None
+    assert loaded.provenance[0].source_block_ids == ["가나"]
+
+    write_provenance(bundle_path, [evidence_with_blocks(["가나다"])])
+    with pytest.raises(ReviewValidationError, match="source-block characters"):
+        store.load_bundle("diagram-a")
+
+
+def test_provenance_replacement_exact_boundary_and_plus_one_are_atomic(
+    monkeypatch,
+    tmp_path,
+):
+    bundle_path = make_bundle(tmp_path)
+    write_provenance(bundle_path, [evidence_with_blocks(["source-a"])])
+    monkeypatch.setattr(models, "MAX_EVIDENCE_SOURCE_BLOCK_REFS", 2)
+    store = ReviewStore(tmp_path)
+    initial = store.load_bundle("diagram-a")
+
+    exact = store.apply_edit(
+        "diagram-a",
+        initial.mermaid_code,
+        scene_ir=initial.scene_ir,
+        provenance=[evidence_with_blocks(["same", "same"], "exact")],
+        replace_provenance=True,
+        expected_version=initial.state.version,
+        expected_digest=initial.state.code_digest,
+    )
+
+    assert exact.state.schema_version == "mmx-review-0.4.1"
+    assert exact.provenance is not None
+    assert exact.provenance[0].source_block_ids == ["same", "same"]
+    before = {
+        path.relative_to(bundle_path): path.read_bytes()
+        for path in bundle_path.rglob("*")
+        if path.is_file() and path.name != ".review.lock"
+    }
+    validation_calls: list[str] = []
+
+    def forbidden_validator(code):
+        validation_calls.append(code)
+        raise AssertionError("over-budget provenance must fail before render validation")
+
+    replacement = [evidence_with_blocks(["same", "same", "same"], "overflow")]
+    with pytest.raises(ReviewValidationError, match="source-block references"):
+        store.apply_edit(
+            "diagram-a",
+            exact.mermaid_code,
+            scene_ir=exact.scene_ir,
+            provenance=replacement,
+            replace_provenance=True,
+            expected_version=exact.state.version,
+            expected_digest=exact.state.code_digest,
+            validator=forbidden_validator,
+        )
+
+    after = {
+        path.relative_to(bundle_path): path.read_bytes()
+        for path in bundle_path.rglob("*")
+        if path.is_file() and path.name != ".review.lock"
+    }
+    assert validation_calls == []
+    assert replacement[0]["source_block_ids"] == ["same", "same", "same"]
+    assert after == before
+
+
+def test_provenance_digest_snapshot_enforces_budget_without_running_list_hooks(
+    monkeypatch,
+):
+    monkeypatch.setattr(models, "MAX_EVIDENCE_SOURCE_BLOCK_REFS", 2)
+    source = VisualEvidence.model_validate(evidence_with_blocks(["same", "same"], "exact"))
+
+    payload = review_store_module._provenance_bytes([source])
+
+    assert json.loads(payload)[0]["source_block_ids"] == ["same", "same"]
+    source.source_block_ids.append("same")
+    with pytest.raises(ReviewValidationError, match="source-block references"):
+        review_store_module._provenance_bytes([source])
+
+    hook_calls: list[str] = []
+
+    class HookedList(list):
+        def __iter__(self):
+            hook_calls.append("iter")
+            return super().__iter__()
+
+    with pytest.raises(ReviewValidationError, match="exact plain list"):
+        review_store_module._provenance_bytes(HookedList([source]))
+    assert hook_calls == []
+
+
+@pytest.mark.parametrize("overflow", ["current", "target"])
+def test_commit_revalidates_provenance_before_path_or_serialization(
+    monkeypatch,
+    tmp_path,
+    overflow,
+):
+    bundle_path = make_bundle(tmp_path)
+    write_provenance(bundle_path, [evidence_with_blocks(["source-a"])])
+    monkeypatch.setattr(models, "MAX_EVIDENCE_SOURCE_BLOCK_REFS", 2)
+    store = ReviewStore(tmp_path)
+    bundle = store.load_bundle("diagram-a")
+    assert bundle.provenance is not None
+    target = [VisualEvidence.model_validate(evidence_with_blocks(["target"]))]
+    if overflow == "current":
+        bundle.provenance[0].source_block_ids[:] = ["same", "same", "same"]
+    else:
+        target[0].source_block_ids[:] = ["same", "same", "same"]
+    path_calls: list[str] = []
+
+    def forbidden_bundle_path(bundle_id):
+        path_calls.append(bundle_id)
+        raise AssertionError("provenance preflight must run before bundle path access")
+
+    monkeypatch.setattr(store, "_bundle_path", forbidden_bundle_path)
+    with pytest.raises(ReviewValidationError, match="source-block references"):
+        store._commit_new_revision(
+            bundle,
+            code=bundle.mermaid_code,
+            scene_ir=bundle.scene_ir,
+            provenance=target,
+            layout_hints=bundle.layout_hints,
+            svg=bundle.svg,
+            png=bundle.png,
+            decision="pending",
+            decision_reason=None,
+            selected_candidate_id=bundle.state.selected_candidate_id,
+            operation="test_provenance_preflight",
+            reason=None,
+            before={},
+        )
+
+    assert path_calls == []
 
 
 def test_provenance_is_digest_checked_revisioned_and_restored_by_undo_redo(tmp_path):

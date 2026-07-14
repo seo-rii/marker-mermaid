@@ -139,8 +139,11 @@ literal 길이와 allowlist를 확인합니다. Pipeline initial/custom-engine �
 fusion ingress/output, final result 및 publication/Markdown snapshot이 이 경계를 공유합니다. Sidecar는
 JSON/deep copy/directory 생성 전에, output은 image 쓰기 전에 전체 결과를 재검증하므로 사후 mutation도
 부분 artifact를 만들지 못합니다. 이 내부 방어는 공개 config와 sidecar schema/manifest version을
-변경하지 않습니다. Marker OCR adapter의 생산 전 제한, Review provenance, evaluation prediction importer는
-아직 이 공용 경계의 후속 적용 대상입니다.
+변경하지 않습니다. Marker OCR adapter는 각 source-crop/OCR token을 append하기 전에 공용 누적
+budget에 admission하며, 초과 collection의 evidence와 OCR text context를 함께 비우고 bounded error를
+남긴 뒤 source reconstruction을 계속합니다. Review는 root/revision provenance read, trusted replacement,
+content digest/commit, structured `user_edit` 추가 전에 raw dict/model 입력을 한 건씩 detached
+canonical record로 바꿉니다. Evaluation prediction importer 적용은 후속입니다.
 
 PDF vector provider도 신뢰하는 collection이 아닙니다. Vector source와 raw text/drawing,
 PyMuPDF drawing command는 전체를 먼저 materialize하지 않고 각 상한보다 한 개만 더 읽어

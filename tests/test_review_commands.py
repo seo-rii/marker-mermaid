@@ -1,5 +1,8 @@
 from copy import deepcopy
 
+import marker_mermaid.models as models_module
+import marker_mermaid.review_commands as review_commands_module
+from marker_mermaid.models import VisualEvidence
 from marker_mermaid.review_commands import (
     apply_review_command,
     apply_review_operation,
@@ -1019,6 +1022,179 @@ def test_source_anchored_add_creates_node_code_and_user_evidence_transactionally
     assert result.provenance[-1]["source_block_ids"] == ["block-1"]
     assert result.history_entry.operation == "add_node"
     assert result.history_entry.after["evidence_ids"] == ["user-edit-r000001-Review"]
+
+
+def test_structured_adds_accept_exact_aggregate_provenance_budget(monkeypatch) -> None:
+    monkeypatch.setattr(models_module, "MAX_EVIDENCE_SOURCE_BLOCK_REFS", 2)
+    provenance = [
+        VisualEvidence(
+            id="ocr-a",
+            kind="ocr_token",
+            source_block_ids=["block-1"],
+        ).model_dump(mode="json")
+    ]
+    cases = [
+        (
+            {
+                "operation": "add_node",
+                "node_id": "Review",
+                "label": "Manual review",
+                "bbox": [60, 20, 90, 40],
+            },
+            {
+                "user_evidence_id": "user-edit-r000001-Review",
+            },
+        ),
+        (
+            {"operation": "add_edge", "source_id": "API", "target_id": "DB"},
+            {
+                "user_evidence_id": "user-edit-r000001-edge",
+                "user_relation_id": "user-edge-r000001",
+            },
+        ),
+    ]
+
+    for operation, identifiers in cases:
+        result = apply_review_operation(
+            operation,
+            ir=scene_ir(),
+            mermaid_code=flowchart(),
+            provenance=provenance,
+            source_block_ids=["block-2"],
+            reason="confirmed on source image",
+            **identifiers,
+        )
+
+        assert result.applied
+        assert result.provenance_changed
+        assert sum(len(item["source_block_ids"]) for item in result.provenance) == 2
+
+
+def test_structured_adds_reject_aggregate_provenance_plus_one_atomically(monkeypatch) -> None:
+    monkeypatch.setattr(models_module, "MAX_EVIDENCE_SOURCE_BLOCK_REFS", 1)
+    provenance = [
+        VisualEvidence(
+            id="ocr-a",
+            kind="ocr_token",
+            source_block_ids=["block-1"],
+        ).model_dump(mode="json")
+    ]
+    cases = [
+        (
+            {
+                "operation": "add_node",
+                "node_id": "Review",
+                "label": "Manual review",
+                "bbox": [60, 20, 90, 40],
+            },
+            {
+                "user_evidence_id": "user-edit-r000001-Review",
+            },
+        ),
+        (
+            {"operation": "add_edge", "source_id": "API", "target_id": "DB"},
+            {
+                "user_evidence_id": "user-edit-r000001-edge",
+                "user_relation_id": "user-edge-r000001",
+            },
+        ),
+    ]
+
+    for operation, identifiers in cases:
+        original_ir = scene_ir()
+        original_code = flowchart()
+        result = apply_review_operation(
+            operation,
+            ir=original_ir,
+            mermaid_code=original_code,
+            provenance=provenance,
+            source_block_ids=["block-2"],
+            reason="confirmed on source image",
+            **identifiers,
+        )
+
+        assert not result.applied
+        assert result.error_code == "invalid_evidence"
+        assert result.ir == original_ir
+        assert result.mermaid_code == original_code
+        assert result.provenance == provenance
+        assert not result.provenance_changed
+        assert result.history_entry is None
+
+
+def test_structured_operation_rejects_existing_aggregate_provenance_overflow_before_dump(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(models_module, "MAX_EVIDENCE_SOURCE_BLOCK_REFS", 1)
+    provenance = [
+        {
+            "id": "ocr-a",
+            "kind": "ocr_token",
+            "bbox": None,
+            "text": None,
+            "font_weight": None,
+            "score": None,
+            "source_block_ids": ["block-1", "block-2"],
+        }
+    ]
+
+    def forbidden_model_dump(*_args, **_kwargs):
+        raise AssertionError("overflowing provenance must be rejected before model_dump")
+
+    monkeypatch.setattr(VisualEvidence, "model_dump", forbidden_model_dump)
+    original_ir = scene_ir()
+    original_code = flowchart()
+    result = apply_review_operation(
+        {"operation": "delete_node", "node_id": "API"},
+        ir=original_ir,
+        mermaid_code=original_code,
+        provenance=provenance,
+    )
+
+    assert not result.applied
+    assert result.error_code == "invalid_evidence"
+    assert result.ir == original_ir
+    assert result.mermaid_code == original_code
+    assert result.provenance == []
+    assert not result.provenance_changed
+    assert result.history_entry is None
+
+
+def test_structured_add_rejects_source_block_fanout_before_user_evidence_construction(
+    monkeypatch,
+) -> None:
+    from marker_mermaid.resource_limits import MAX_EVIDENCE_REFS
+
+    constructed = False
+
+    def forbidden_evidence_construction(*_args, **_kwargs):
+        nonlocal constructed
+        constructed = True
+        raise AssertionError("oversized source provenance must fail before evidence construction")
+
+    monkeypatch.setattr(
+        review_commands_module,
+        "VisualEvidence",
+        forbidden_evidence_construction,
+    )
+    result = apply_review_operation(
+        {
+            "operation": "add_node",
+            "node_id": "Review",
+            "label": "Manual review",
+            "bbox": [60, 20, 90, 40],
+        },
+        ir=scene_ir(),
+        mermaid_code=flowchart(),
+        provenance=[],
+        user_evidence_id="user-edit-r000001-Review",
+        source_block_ids=[f"block-{index}" for index in range(MAX_EVIDENCE_REFS + 1)],
+        reason="confirmed on source image",
+    )
+
+    assert not result.applied
+    assert result.error_code == "invalid_evidence"
+    assert not constructed
 
 
 def test_source_anchored_add_rejects_missing_reason_and_out_of_canvas_bbox() -> None:

@@ -818,3 +818,242 @@ def test_marker_ocr_evidence_filters_panels_and_offsets_continued_pages():
     assert tokens["Right"] == (40.0, 20.0, 160.0, 60.0)
     assert tokens["Continued"] == (40.0, 220.0, 160.0, 260.0)
     assert len({item.id for item in evidence}) == len(evidence)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(("reference_limit", "overflows"), [(3, False), (2, True)])
+def test_marker_ocr_evidence_enforces_exact_aggregate_provenance_budget(
+    monkeypatch,
+    reference_limit,
+    overflows,
+):
+    import marker_mermaid.models as models_module
+    from marker_mermaid.discovery import DiscoveredSource, SourceFragment
+    from marker_mermaid.marker_integration import MermaidDiagramProcessor
+    from marker_mermaid.source_assembly import assemble_discovered_source
+
+    class Identifier:
+        def __init__(self, value):
+            self.value = value
+
+        def __str__(self):
+            return self.value
+
+    class Polygon:
+        def __init__(self, bbox):
+            self.bbox = bbox
+
+    class Span:
+        id = Identifier("/page/0/Span/1")
+        polygon = Polygon((10, 10, 40, 30))
+        text = "Label"
+
+    class Block:
+        id = Identifier("/page/0/Figure/1")
+        polygon = Polygon((0, 0, 100, 100))
+
+        def contained_blocks(self, document, block_types):
+            return [Span()]
+
+    block = Block()
+    source = DiscoveredSource(
+        source_id="source",
+        anchor_block_id=str(block.id),
+        kind="original",
+        fragments=[
+            SourceFragment(
+                fragment_id="fragment",
+                page_id=0,
+                source_block_ids=[str(block.id)],
+                page_bbox=(0, 0, 100, 100),
+                crop_bbox=(0, 0, 100, 100),
+                image_size=(100, 100),
+            )
+        ],
+        confidence=1,
+    )
+    assembled = assemble_discovered_source(
+        source,
+        {"fragment": Image.new("RGB", (100, 100), "white")},
+    )
+    monkeypatch.setattr(
+        models_module,
+        "MAX_EVIDENCE_SOURCE_BLOCK_REFS",
+        reference_limit,
+    )
+
+    if overflows:
+        with pytest.raises(ValueError, match="source-block references exceed"):
+            MermaidDiagramProcessor._ocr_evidence(
+                source,
+                assembled.metadata,
+                {str(block.id): block},
+                object(),
+            )
+        return
+
+    evidence, texts = MermaidDiagramProcessor._ocr_evidence(
+        source,
+        assembled.metadata,
+        {str(block.id): block},
+        object(),
+    )
+
+    assert sum(len(item.source_block_ids) for item in evidence) == reference_limit
+    assert [item.kind for item in evidence] == ["source_crop", "ocr_token"]
+    assert texts == ["Label"]
+
+
+@pytest.mark.integration
+def test_marker_ocr_rejects_mutated_source_block_fanout_before_evidence_construction(
+    monkeypatch,
+):
+    import marker_mermaid.marker_integration as integration
+    from marker_mermaid.discovery import DiscoveredSource, SourceFragment
+    from marker_mermaid.resource_limits import MAX_EVIDENCE_REFS
+    from marker_mermaid.source_assembly import assemble_discovered_source
+
+    source = DiscoveredSource(
+        source_id="source",
+        kind="page_proposal",
+        fragments=[
+            SourceFragment(
+                fragment_id="fragment",
+                page_id=0,
+                source_block_ids=[],
+                image_size=(10, 10),
+            )
+        ],
+        confidence=1,
+    )
+    assembled = assemble_discovered_source(
+        source,
+        {"fragment": Image.new("RGB", (10, 10), "white")},
+    )
+    source.fragments[0].source_block_ids = [
+        f"source-{index}" for index in range(MAX_EVIDENCE_REFS + 1)
+    ]
+    constructed = False
+
+    def forbidden_evidence_construction(*args, **kwargs):
+        nonlocal constructed
+        constructed = True
+        raise AssertionError("oversized provenance must fail before VisualEvidence construction")
+
+    monkeypatch.setattr(integration, "VisualEvidence", forbidden_evidence_construction)
+
+    with pytest.raises(ValueError, match="exceeds its reference limit"):
+        integration.MermaidDiagramProcessor._ocr_evidence(
+            source,
+            assembled.metadata,
+            {},
+            object(),
+        )
+
+    assert not constructed
+
+
+@pytest.mark.integration
+def test_marker_processor_isolates_ocr_provenance_overflow_and_continues_source(
+    monkeypatch,
+    fake_runtime,
+):
+    import marker_mermaid.models as models_module
+    from marker_mermaid.marker_integration import (
+        MermaidCandidateDiscoveryProcessor,
+        MermaidDiagramProcessor,
+    )
+
+    class Identifier:
+        def __str__(self):
+            return "/page/0/Figure/1"
+
+        def to_path(self):
+            return "_page_0_Figure_1"
+
+    class Polygon:
+        def __init__(self, bbox):
+            self.bbox = bbox
+
+    class Span:
+        id = "/page/0/Span/1"
+        polygon = Polygon((10, 10, 40, 30))
+        text = "must not survive as a partial OCR prefix"
+
+    class Block:
+        id = Identifier()
+        block_type = "Figure"
+        page_id = 0
+        polygon = Polygon((0, 0, 100, 100))
+        current_children = []
+
+        def __init__(self):
+            self.metadata = {}
+
+        def get_image(self, document, highres=True):
+            return Image.new("RGB", (100, 100), "white")
+
+        def contained_blocks(self, document, block_types):
+            return [Span()]
+
+        def raw_text(self, document):
+            return Span.text
+
+        def set_internal_metadata(self, key, value):
+            self.metadata[key] = value
+
+        def get_internal_metadata(self, key):
+            return self.metadata.get(key)
+
+    block = Block()
+
+    class Page:
+        page_id = 0
+        polygon = Polygon((0, 0, 100, 100))
+        current_children = [block]
+
+        def contained_blocks(self, document, block_types):
+            return [block]
+
+    class Document:
+        pages = [Page()]
+
+    document = Document()
+    config = {
+        "MermaidDiagramProcessor_split_composite_figures": False,
+        "MermaidDiagramProcessor_merge_adjacent_fragments": False,
+        "MermaidDiagramProcessor_detect_multi_page_diagrams": False,
+        "MermaidDiagramProcessor_enable_page_detector": False,
+    }
+    MermaidCandidateDiscoveryProcessor(config)(document)
+    monkeypatch.setattr(models_module, "MAX_EVIDENCE_SOURCE_BLOCK_REFS", 0)
+    processor = MermaidDiagramProcessor(
+        config=config,
+        engines=[],
+        runtime=fake_runtime,
+    )
+    captured = {}
+    reconstruct = processor.pipeline.reconstruct
+
+    def capture_reconstruction(*args, **kwargs):
+        captured["evidence"] = kwargs["evidence"]
+        captured["ocr_texts"] = kwargs["ocr_texts"]
+        return reconstruct(*args, **kwargs)
+
+    processor.pipeline.reconstruct = capture_reconstruction
+    processor(document)
+
+    [result] = block.get_internal_metadata("mermaid_results")
+    metadata = block.get_internal_metadata("mermaid")
+    assert captured == {"evidence": [], "ocr_texts": []}
+    assert result.evidence == []
+    assert metadata["status"] == "partial"
+    assert metadata["errors"] == [
+        {
+            "source_id": "_page_0_Figure_1",
+            "error": (
+                "MarkerOCREvidenceError: invalid or oversized OCR evidence was isolated "
+                "atomically (ValueError)"
+            ),
+        }
+    ]

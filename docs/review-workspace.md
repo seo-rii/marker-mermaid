@@ -23,6 +23,16 @@ normalized schema와 content-addressed snapshot으로 revision됩니다. code, I
 바뀐 revision은 원본 기반 점수를 자동 승계하지 않고
 `unscored_user_revision`으로 표시합니다.
 
+Review provenance는 root와 content-addressed revision을 읽을 때, trusted replacement를 받을 때,
+digest와 commit payload를 만들 때마다 공용 aggregate evidence budget을 다시 적용합니다. Raw JSON dict와
+기존 model은 한 record씩 detached canonical snapshot으로 바뀌며 duplicate를 포함한 source-block reference
+20,000개, source-block ID 8,000,000 Python characters, full-evidence 8,000,000 characters 중 하나라도
+넘으면 전체 replacement/operation을 거부합니다. Exact boundary는 허용되고, `add_node`/`add_edge`의
+server-created `user_edit` evidence도 기존 collection과 합친 budget을 IR/Mermaid patch 전에 검사합니다.
+실패 시 code, IR, history, provenance file을 쓰지 않으며 `mmx-review-0.4.1` schema는 바뀌지 않습니다.
+Root `provenance.json`의 manifest digest와 JSON parse는 별도 file read가 아니라 같은 bounded byte
+snapshot에서 계산하므로 두 검사 사이의 file replacement가 다른 provenance를 승인하지 못합니다.
+
 저장이 `422` 또는 다른 오류로 실패해도 두 editor의 local draft는 유지됩니다. `409`에서는
 최신 server revision의 version과 digest를 다시 불러오되 local draft는 덮어쓰지 않으며,
 충돌 draft의 저장은 잠급니다. 사용자가 `Reload latest`로 draft 폐기를 승인한 뒤의 다음 저장은

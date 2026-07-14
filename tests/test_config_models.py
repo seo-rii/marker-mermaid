@@ -23,6 +23,7 @@ from marker_mermaid.models import (
     TypedIRCandidate,
     VisualEvidence,
     canonical_evidence_collection_snapshot,
+    canonical_evidence_input_snapshot,
     canonical_typed_ir_snapshot,
 )
 
@@ -343,6 +344,117 @@ def test_evidence_collection_snapshot_bounds_mutated_enums_before_utf8_encoding(
 
     with pytest.raises(TypeError, match=match):
         canonical_evidence_collection_snapshot([source])
+
+
+def test_evidence_input_snapshot_normalizes_json_with_one_aggregate_budget(monkeypatch) -> None:
+    payload = [
+        {
+            "id": "one",
+            "kind": "ocr_token",
+            "text": "One",
+            "source_block_ids": ["shared"],
+        },
+        {
+            "id": "two",
+            "kind": "contour",
+            "source_block_ids": ["shared"],
+        },
+    ]
+    monkeypatch.setattr(models, "MAX_EVIDENCE_SOURCE_BLOCK_REFS", 2)
+
+    snapshot = canonical_evidence_input_snapshot(payload)
+
+    assert [item.id for item in snapshot.evidence] == ["one", "two"]
+    assert snapshot.usage.source_block_references == 2
+    assert snapshot.evidence[0].source_block_ids is not payload[0]["source_block_ids"]
+    monkeypatch.setattr(models, "MAX_EVIDENCE_SOURCE_BLOCK_REFS", 1)
+    with pytest.raises(ValueError, match="source-block references"):
+        canonical_evidence_input_snapshot(payload)
+
+
+def test_evidence_input_snapshot_detaches_nested_lists_before_record_validation(
+    monkeypatch,
+) -> None:
+    payload = [
+        {
+            "id": "one",
+            "kind": "ocr_token",
+            "bbox": [0, 0, 1, 1],
+            "source_block_ids": ["source"],
+        }
+    ]
+    original_validate = VisualEvidence.model_validate
+
+    def mutating_validate(cls, value, *args, **kwargs):
+        payload[0]["source_block_ids"].append("late")
+        payload[0]["bbox"][0] = 99
+        return original_validate(value, *args, **kwargs)
+
+    monkeypatch.setattr(VisualEvidence, "model_validate", classmethod(mutating_validate))
+
+    snapshot = canonical_evidence_input_snapshot(payload)
+
+    assert snapshot.evidence[0].source_block_ids == ["source"]
+    assert snapshot.evidence[0].bbox == (0, 0, 1, 1)
+    assert payload[0]["source_block_ids"] != snapshot.evidence[0].source_block_ids
+
+
+def test_evidence_input_snapshot_rejects_count_and_large_text_before_record_validation(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(models, "MAX_OBSERVATION_EVIDENCE", 1)
+
+    def forbidden_validation(*_args, **_kwargs):
+        raise AssertionError("record validation must follow collection item preflight")
+
+    monkeypatch.setattr(VisualEvidence, "model_validate", forbidden_validation)
+    with pytest.raises(ValueError, match="item limit"):
+        canonical_evidence_input_snapshot([{}, {}])
+
+    monkeypatch.setattr(models, "MAX_OBSERVATION_EVIDENCE", 2)
+    oversized = "x" * (models.MAX_TEXT_CHARS + 1)
+    with pytest.raises(ValueError, match="text exceeds"):
+        canonical_evidence_input_snapshot([{"id": "e", "kind": "ocr_token", "text": oversized}])
+    with pytest.raises(ValueError, match="field-count"):
+        canonical_evidence_input_snapshot(
+            [{"id": "e", "kind": "contour", **{f"extra-{index}": index for index in range(6)}}]
+        )
+    with pytest.raises(ValueError, match="exactly four"):
+        canonical_evidence_input_snapshot([{"id": "e", "kind": "contour", "bbox": [0] * 1_000}])
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"id": "x" * (models.MAX_ID_CHARS + 1), "kind": "contour"},
+        {
+            "id": "e",
+            "kind": "ocr_token",
+            "text": "x" * (models.MAX_TEXT_CHARS + 1),
+        },
+        {
+            "id": "e",
+            "kind": "contour",
+            "source_block_ids": ["x" * (models.MAX_ID_CHARS + 1)],
+        },
+    ],
+)
+def test_visual_evidence_bounds_large_strings_before_utf8_encoding(
+    monkeypatch,
+    payload,
+) -> None:
+    original_require_utf8_text = models._require_utf8_text
+
+    def guarded_require_utf8_text(value, field_name):
+        limit = models.MAX_TEXT_CHARS if field_name == "evidence text" else models.MAX_ID_CHARS
+        if type(value) is str and len(value) > limit:
+            raise AssertionError(f"oversized {field_name} reached UTF-8 encoding")
+        return original_require_utf8_text(value, field_name)
+
+    monkeypatch.setattr(models, "_require_utf8_text", guarded_require_utf8_text)
+
+    with pytest.raises(ValidationError):
+        VisualEvidence.model_validate(payload)
 
 
 def test_typed_ir_snapshot_is_canonical_detached_and_normalizes_tuples() -> None:

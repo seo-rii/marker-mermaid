@@ -23,7 +23,14 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 
 from marker_mermaid.config import SecurityProfile
-from marker_mermaid.models import ReviewHistoryEntry, VisualEvidence
+from marker_mermaid.models import (
+    MAX_ID_CHARS,
+    ReviewHistoryEntry,
+    VisualEvidence,
+    canonical_evidence_collection_snapshot,
+    canonical_evidence_input_snapshot,
+)
+from marker_mermaid.resource_limits import MAX_EVIDENCE_REFS
 from marker_mermaid.security import MermaidSecurityScanner
 
 MAX_COMMAND_LENGTH = 500
@@ -1652,7 +1659,7 @@ def apply_review_operation(
     *,
     ir: Mapping[str, Any] | None,
     mermaid_code: str | None,
-    provenance: list[Mapping[str, Any] | VisualEvidence] | None = None,
+    provenance: list[dict[str, Any] | VisualEvidence] | None = None,
     user_evidence_id: str | None = None,
     user_relation_id: str | None = None,
     source_block_ids: list[str] | None = None,
@@ -1669,16 +1676,15 @@ def apply_review_operation(
     original_code = mermaid_code
     original_provenance: list[dict[str, Any]] = []
     try:
-        if provenance is not None and not isinstance(provenance, list):
-            raise ReviewCommandError("invalid_evidence", "existing provenance must be a list")
         try:
-            normalized_provenance = [
-                VisualEvidence.model_validate(item) for item in provenance or []
-            ]
-        except ValidationError as error:
+            provenance_snapshot = canonical_evidence_input_snapshot(
+                [] if provenance is None else provenance
+            )
+        except (AttributeError, TypeError, UnicodeEncodeError, ValueError) as error:
             raise ReviewCommandError(
                 "invalid_evidence", "existing provenance contains invalid evidence"
             ) from error
+        normalized_provenance = list(provenance_snapshot.evidence)
         evidence_ids = [item.id for item in normalized_provenance]
         if len(evidence_ids) != len(set(evidence_ids)):
             raise ReviewCommandError(
@@ -1820,6 +1826,57 @@ def apply_review_operation(
                 )
             payload["edge_id"] = _validated_id(user_relation_id)
         intent = ParsedReviewCommand.model_validate(payload)
+        user_evidence: VisualEvidence | None = None
+        if intent.operation in {"add_node", "add_edge"}:
+            if any(evidence.id == intent.evidence_id for evidence in normalized_provenance):
+                raise ReviewCommandError(
+                    "ambiguous_reference", "user evidence id already exists in provenance"
+                )
+            try:
+                live_source_block_ids = [] if source_block_ids is None else source_block_ids
+                if type(live_source_block_ids) is not list:
+                    raise TypeError("user evidence source_block_ids must be an exact plain list")
+                source_block_count = list.__len__(live_source_block_ids)
+                if source_block_count > MAX_EVIDENCE_REFS:
+                    raise ValueError("user evidence source_block_ids exceeds its reference limit")
+                canonical_source_block_ids = list.__getitem__(
+                    live_source_block_ids,
+                    slice(0, source_block_count),
+                )
+                if (
+                    list.__len__(live_source_block_ids) != source_block_count
+                    or list.__len__(canonical_source_block_ids) != source_block_count
+                ):
+                    raise ValueError("user evidence source_block_ids changed while captured")
+                for block_id in canonical_source_block_ids:
+                    if type(block_id) is not str or not block_id or len(block_id) > MAX_ID_CHARS:
+                        raise ValueError(
+                            "user evidence source_block_ids contains an invalid bounded identifier"
+                        )
+                    block_id.encode("utf-8")
+                if list.__len__(live_source_block_ids) != source_block_count or any(
+                    list.__getitem__(live_source_block_ids, index)
+                    is not canonical_source_block_ids[index]
+                    for index in range(source_block_count)
+                ):
+                    raise ValueError("user evidence source_block_ids changed while captured")
+                pending_evidence = VisualEvidence(
+                    id=intent.evidence_id,
+                    kind="user_edit",
+                    bbox=intent.bbox if intent.operation == "add_node" else None,
+                    text=intent.label if intent.operation == "add_node" else reason.strip(),
+                    score=1.0,
+                    source_block_ids=canonical_source_block_ids,
+                )
+                appended_snapshot = canonical_evidence_collection_snapshot(
+                    [pending_evidence],
+                    base=provenance_snapshot.usage,
+                )
+            except (AttributeError, TypeError, UnicodeEncodeError, ValueError) as error:
+                raise ReviewCommandError(
+                    "invalid_evidence", "server-created user evidence is invalid"
+                ) from error
+            user_evidence = appended_snapshot.evidence[0]
         editable_edge = (
             _editable_edge_for_relation(original_ir, original_code, intent.edge_id)
             if intent.operation == "set_edge_label" and intent.edge_id is not None
@@ -1836,25 +1893,8 @@ def apply_review_operation(
             before = {}
         patched_provenance = deepcopy(original_provenance)
         provenance_changed = False
-        if intent.operation in {"add_node", "add_edge"}:
-            if any(item.get("id") == intent.evidence_id for item in patched_provenance):
-                raise ReviewCommandError(
-                    "ambiguous_reference", "user evidence id already exists in provenance"
-                )
-            try:
-                evidence = VisualEvidence(
-                    id=intent.evidence_id,
-                    kind="user_edit",
-                    bbox=intent.bbox if intent.operation == "add_node" else None,
-                    text=intent.label if intent.operation == "add_node" else reason.strip(),
-                    score=1.0,
-                    source_block_ids=source_block_ids or [],
-                )
-            except ValidationError as error:
-                raise ReviewCommandError(
-                    "invalid_evidence", "server-created user evidence is invalid"
-                ) from error
-            patched_provenance.append(evidence.model_dump(mode="json"))
+        if user_evidence is not None:
+            patched_provenance.append(user_evidence.model_dump(mode="json"))
             provenance_changed = True
         history = ReviewHistoryEntry(
             operation=intent.operation,
