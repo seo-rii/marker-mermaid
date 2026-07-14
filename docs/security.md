@@ -94,7 +94,35 @@ token은 source에서만 zero-width separator로 비활성화하며 원문은 ty
 남습니다. Data Lineage relation은 resolved, non-self, non-duplicate endpoint만 Flowchart에
 넘깁니다.
 
-Wardley·Cynefin·Event Modeling·ZenUML·Organization·Data Lineage serializer의 생성 source는
+Railroad는 strict discriminated expression contract로 variant와 payload container를 먼저 제한하고,
+공유 plan이 rule name 충돌, reference, depth와 record budget을 검사합니다. Native grammar가
+ASCII angle bracket·모든 ASCII `#`·entity-like `&` prefix·NFKC quote/backslash hazard를 안전하게 보존하지
+못하므로 각각 `〈`/`〉`, `＃`, `＆`, `″`/`∖` canonical visible glyph로 바꿉니다. Mermaid 전역
+`encodeEntities`가 bare `#word;`와 `#35;`도 변형하므로 ASCII `#`에는 예외를 두지 않고 warning을 남깁니다. 원
+semantic field는 typed IR/sidecar에 남깁니다. Rule/terminal/nonterminal/special과 접근성 text의 active
+URL·directive·callback·HTML-like token 및 compatibility-normalized hazard에는 source-only zero-width
+separator를 넣어 scanner와 parser에서 동작만 비활성화합니다. `style...:#...;`와
+`classDef...:#...;` substring도 Mermaid preprocessor에서 statement로 승격되지 않도록 source에서만
+분리합니다. Emitted source 원문과 NFKC-normalized source를 각각 strict scanner로 검사하며 어느 한쪽이라도
+active rule이 남으면 후보를 거부합니다. Railroad identifier grammar에 안전하지 않은
+scanner/preprocessor source-active name과 case-folded expression-word namespace, `railroad-beta`, case-folded lowercase
+`title*` prefix는 logical `railroad_rule_*` ID와 분리된 collision-safe `rrmapped_N[_suffix]` native
+name으로 mapping하고 visible change warning을 남깁니다. Logical `railroad_rule_*` ID는 Scene/provenance에만
+유지하고 Scene/OCR은
+실제 mapped `native_name =` text를 기록합니다. Normalized safe rule name은 그대로이며 allocator는 먼저
+모든 safe native name을 reserve한 뒤 suffix로 충돌을 피합니다. Mapped rule의 source name도 typed
+IR/sidecar와 nonterminal label에는 각각 raw/normalized 형태로 유지됩니다. 그 밖의 generated Scene/OCR
+label은 separator 없는 canonical compatibility text를 정확히 사용하고 원문 AST는 typed IR/sidecar에
+그대로 남습니다. Direct Scene projection도 `evidence_ids`가 null/생략 또는 string list가 아니면 fail
+closed합니다.
+
+Production은 raw와 NFKC-normalized emitted source에 strict source scan을 적용한 뒤 raw source만
+CandidateValidator parse/render hard gate로 보냅니다. Pinned integration fixture의 NFKC parse/render는 bare
+hash와 `style`/`classDef` substring이 grammar injection을 만들지 않는지 확인하는 안전성 probe이며,
+normalized SVG가 raw SVG와 같은 compatibility glyph를 표시한다고 요구하지 않습니다. 같은 substring을
+포함한 rule name도 source-active mapping 뒤에만 runtime에 전달합니다.
+
+Wardley·Cynefin·Event Modeling·ZenUML·Organization·Data Lineage·Railroad serializer의 생성 source는
 security scanner에 넘기기 전에도 50,000자·5,000줄을 넘으면 전체 후보 단위로 거부됩니다.
 
 Style recovery는 Scene IR 값을 그대로 CSS로 복사하지 않습니다. Node와 edge는 exact built-in PDF vector

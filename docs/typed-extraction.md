@@ -12,6 +12,7 @@ contract 대상입니다. Event Modeling의 lane/frame/relation과 ZenUML의
 participant/message fallback record도 같은 nested 경계를 통과합니다.
 Organization의 재귀 hierarchy와 Data Lineage의 dataset/process/relation record도
 canonical prompt와 응답 후 검증을 공유합니다.
+Railroad도 rule과 discriminated recursive expression AST 전체를 같은 경계에서 검사합니다.
 serializer의 세부 의미 검사는 그 다음 단계에서 수행합니다.
 
 이 경계는 두 문제를 분리합니다.
@@ -64,6 +65,7 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | ZenUML fallback | participant object·message; legacy string participant는 입력 호환만 지원 |
 | Organization fallback | 재귀 root/children reporting hierarchy |
 | Data Lineage fallback | dataset, process, relation endpoint/label |
+| Railroad | rule과 terminal/nonterminal/special/sequence/choice/optional/repetition expression AST |
 
 ### Organization·Data Lineage fallback record 계약
 
@@ -94,6 +96,59 @@ relation은 explicit record가 아니라 검증된 `children`에서만 파생합
 Data Lineage edge label의 `|`, `;`, `()`, `[]`, `{}`, `@`는 Mermaid 11.16의 unquoted
 edge-label grammar과 충돌하므로 실제 SVG에 보이는 compatibility glyph로 치환하고
 warning·Scene·OCR에 같은 손실을 기록합니다.
+
+### Railroad recursive AST 계약
+
+Railroad는 `rules: list`를 필수 root로 사용하며 각 rule은 `name`, `definition`, `bbox`,
+`evidence_ids`를 canonical field로 갖습니다. `definition`은 `type` discriminator로 다음 exact
+object 중 하나를 재귀적으로 선택합니다.
+
+| `type` | canonical payload |
+| --- | --- |
+| `terminal` | `value: string` |
+| `nonterminal` | `name: string` |
+| `special` | `text: string` |
+| `sequence` | `elements: expression[]` |
+| `choice` | `alternatives: expression[]` |
+| `optional` / `one_or_more` / `zero_or_more` | `element: expression` |
+
+Provider prompt에는 이 lowercase closed token과 variant별 payload만 광고합니다. Expression 대신
+scalar/list를 넣거나 선택된 variant의 알려진 payload field에 잘못된 container/scalar 형을 넣으면 응답 후
+strict nested validation에서 거부합니다. 다른 variant의 field는 unknown metadata로 원본에 보존됩니다.
+Partial reconstruction을 위해 rule `name`/`definition`과 expression payload 자체는 model 경계에서
+선택이거나 null일 수 있고 serializer가 실제 requiredness를 판정합니다. 각 expression에도 bbox/evidence를
+둘 수 있으며 discriminator와 variant-local known scalar/container의 형은 coercion하지 않습니다.
+
+Serializer plan 단계에서는 non-empty `rules`, 각 rule의 `name`/`definition`, non-empty expression
+container가 필수입니다. 이어서 rule name uniqueness, emitted-ID normalization, native namespace collision
+avoidance, scanner/preprocessor source-active 또는 native grammar-reserved rule-name mapping, 모든
+nonterminal reference 해결, 최대 깊이 20, rule/expression 각각 500개 한도와 50,000자·5,000줄 source
+budget은 serializer와 generated Scene이 공유하는 bounded plan이 계속 판정합니다. Mapping으로 visible
+rule name이 달라지면
+warning을 남깁니다. 따라서 extraction model은 문법 AST의 형을 확정하고,
+reference·identity·resource 의미 검사는 한 번 만든 plan에서 serializer와 attribution에 동일하게
+적용됩니다.
+
+Rule/nonterminal name은 whitespace normalization 뒤 ASCII Mermaid identifier
+`[A-Za-z_][A-Za-z0-9_-]{0,127}`이어야 합니다. Terminal/special/title/accessibility 등 text도 whitespace를
+정규화하고 field당 500자로 제한합니다. 이 serializer-visible normalized text와 별개로 raw field는 원본
+typed IR/sidecar에 유지됩니다.
+
+Pinned Mermaid 11.16에 넣는 canonical visible text는 ASCII `<`/`>`를 `〈`/`〉`로, 모든 ASCII `#`를
+`＃`로, entity-like `&` prefix를 `＆`로 바꿉니다. 이는 전역 `encodeEntities`가 bare `#word;`와 `#35;`도
+변형하는 동작까지 포함합니다. NFKC에서 quote/backslash 문법으로 되돌아오는 호환 문자는 각각
+`″`/`∖`로 바꿉니다. 원 semantic field는 typed IR/sidecar에 유지하고 shared plan은 이 compatibility text를
+serializer·Scene·OCR에 동일하게 제공하며 치환을 compatibility warning으로 공개합니다. Active token을
+끊는 zero-width separator는 emitted source에만 존재하며 `style...:#...;`/`classDef...:#...;`로 해석될 수
+있는 preprocessor substring도 source에서 분리합니다. 반환 전 원 source와 NFKC-normalized source를 모두
+strict scanner로 검사합니다.
+
+Source identifier로 안전하지 않은 이름뿐 아니라 native grammar의 case-folded expression-word namespace
+(`terminal`, `nonterminal`, `special`, `sequence`, `choice`, `optional`, `oneOrMore`, `zeroOrMore`),
+`railroad-beta`, 대소문자를 접은 뒤 lowercase `title*`인 이름도 collision-safe
+`rrmapped_N[_suffix]`로 바꿉니다. Scanner 또는 Mermaid preprocessor에서 source-active인 이름,
+즉 `style`/`classDef` substring을 포함하는 이름도 같은 mapping 대상입니다. 원 이름은 typed IR과
+nonterminal visible label에 남습니다.
 
 ### Event Modeling·ZenUML fallback record 계약
 
@@ -523,16 +578,33 @@ compatibility 치환 후 실제 화면에
 보이는 node/relation label을 각 record당 한 번만 사용합니다. Data Lineage
 direction은 `TB`, `BT`, `LR`, `RL`만 허용하고 기본은 `LR`입니다.
 
+Railroad adapter도 raw AST를 다시 해석하지 않고 native serializer의 frozen plan을 사용합니다.
+Rule은 `railroad_rule_*` logical ID와 실제 SVG text인 `native_name =` label을, expression은 preorder
+`railroad_expression_N` ID를 사용합니다. Terminal/nonterminal label은 canonical compatibility text이고
+special은 `? text ?`이며, ASCII angle·모든 ASCII `#`·entity-like `&` prefix·NFKC quote/backslash hazard는
+위 glyph 계약을 그대로 반영합니다. Sequence/choice/optional/repetition operator에는 표시 text를
+만들지 않습니다. Rule→definition과 parent operator→child만 marker 없는 containment relation으로
+투영하고, nonterminal reference를 입력에 없는 native connector로 만들지 않습니다. Native layout이
+source bbox를 재현하지 않으므로 Scene은 `LR`, zero geometry, 빈 group을 사용합니다. Rule evidence는
+rule element에, expression evidence는 해당 element와 그 expression으로 들어오는 containment relation에만
+연결하며 OCR은 화면에 실제 보이는 rule/leaf label을 한 번씩만 셉니다. Direct Scene 경계는
+`evidence_ids`가 null/생략 또는 string list일 때만 받으며 다른 scalar·object·원소 형은 fail closed합니다.
+Normalized safe rule name은 `native_name == source_name`이지만 scanner/preprocessor source-active name과
+exact expression word, `railroad-beta`, case-folded lowercase `title*` prefix는 collision-safe
+`rrmapped_N[_suffix]` native identifier로 mapping되고 warning을 남깁니다. Logical ID는 계속 source 기반
+`railroad_rule_*`이며 원 source field는 typed IR에, normalized source name은 nonterminal 표시 text에
+보존됩니다. Raw
+ID/label/role/shape/style, source bbox와 다른 extra metadata는 sidecar IR에는 남지만 Scene/OCR 구조로
+승격하지 않습니다.
+
 현재 Marker `response_schema`의 외부 envelope는 여전히 `TypedIRCandidate.ir: dict`입니다. 따라서 이 단계는
 모든 Phase 2 type, Phase 3 chart(Pie·XY·Quadrant·Sankey·Radar·Treemap·Venn),
 Journey·Kanban·GitGraph와 Packet·Ishikawa·TreeView·Wardley·Cynefin·Event Modeling·ZenUML·
-Organization·Data Lineage의
+Organization·Data Lineage·Railroad의
 prompt와 응답 후 검증을 중첩 구조까지
 확장하지만 provider에 모든 Mermaid 유형을 하나의 discriminated JSON Schema로 직접 노출하거나 generic
-envelope reserve를 늘리지는 않습니다. 나머지 special type인
-Railroad는
-아직 schema-light root contract입니다. Envelope-level discriminated
-schema도 후속 작업이므로 Phase 2에 root-only type이 남지 않아도 `ARCH-001`은 여전히 부분 완화
+envelope reserve를 늘리지는 않습니다. 모든 등록 유형의 root 아래에는 strict nested contract가 있지만,
+envelope-level discriminated schema는 후속 작업이므로 `ARCH-001`은 여전히 부분 완화
 상태입니다.
 
 Marker 1.10.2의 stock Ollama service는 원래 schema의 최상위 `properties`와 `required`만 복사해 `$defs`를

@@ -1866,6 +1866,19 @@ def test_experimental_native_nested_prompts_are_exact_and_enabled_type_only() ->
             "transitions[]: {source:string,target:string,label:string,bbox:number[4],"
             "evidence_ids:string[]}",
         ),
+        "railroad": (
+            "rules[]: {name:string,definition:expression,bbox:number[4],evidence_ids:string[]}",
+            "rules[].definition: terminal{type:terminal,value:string,bbox:number[4],"
+            "evidence_ids:string[]}|nonterminal{type:nonterminal,name:string,bbox:number[4],"
+            "evidence_ids:string[]}|special{type:special,text:string,bbox:number[4],"
+            "evidence_ids:string[]}|sequence{type:sequence,elements:expression[],"
+            "bbox:number[4],evidence_ids:string[]}|choice{type:choice,"
+            "alternatives:expression[],bbox:number[4],evidence_ids:string[]}|"
+            "optional{type:optional,element:expression,bbox:number[4],evidence_ids:string[]}|"
+            "one_or_more{type:one_or_more,element:expression,bbox:number[4],"
+            "evidence_ids:string[]}|zero_or_more{type:zero_or_more,element:expression,"
+            "bbox:number[4],evidence_ids:string[]}",
+        ),
         "wardley": (
             "components[]: {id:string,label:string,x:number,y:number,anchor:boolean,"
             "bbox:number[4],evidence_ids:string[]}",
@@ -1894,12 +1907,20 @@ def test_experimental_native_nested_prompts_are_exact_and_enabled_type_only() ->
     } == NESTED_TYPED_IR_TYPES
 
     combined = typed_ir_contract_prompt(set(EXPERIMENTAL_NATIVE_NESTED_TYPES))
-    assert combined == typed_ir_contract_prompt({"wardley", "cynefin"})
-    assert combined.index("- cynefin:") < combined.index("- wardley:")
+    assert combined == typed_ir_contract_prompt({"wardley", "cynefin", "railroad"})
+    assert (
+        combined.index("- cynefin:") < combined.index("- railroad:") < combined.index("- wardley:")
+    )
     assert "domains[].items[]: string" not in combined
-    assert "name:string" not in combined
+    assert "cynefin.domains[]: {name:string" not in combined
+    assert "wardley.components[]: {name:string" not in combined
     assert "wardley.nodes[]" not in combined
     assert "cynefin.quadrants[]" not in combined
+    assert "railroad.productions[]" not in combined
+    assert "kind:" not in combined
+    assert "children:expression[]" not in combined
+    assert "type:repeat" not in combined
+    assert "type:oneOrMore" not in combined
     assert "packet.fields[]" not in combined
 
     for diagram_type, records in expected_records.items():

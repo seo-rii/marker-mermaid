@@ -1079,6 +1079,125 @@ def test_experimental_typed_pipeline_scores_emitted_visible_text(
 
 
 @pytest.mark.parametrize("attributed", [True, False])
+def test_railroad_generated_scene_controls_publication_review_and_sidecar(
+    tmp_path,
+    attributed: bool,
+) -> None:
+    class RailroadRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="railroad",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    attribution = {"evidence_ids": ["ocr-scene"]} if attributed else {}
+    ir = {
+        "title": "Hidden railroad title",
+        "rules": [
+            {
+                "name": "start",
+                "comment": "Hidden start comment",
+                **attribution,
+                "definition": {
+                    "type": "sequence",
+                    **attribution,
+                    "elements": [
+                        {"type": "terminal", "value": "open", **attribution},
+                        {"type": "nonterminal", "name": "name", **attribution},
+                    ],
+                },
+            },
+            {
+                "name": "name",
+                **attribution,
+                "definition": {"type": "terminal", "value": "word", **attribution},
+            },
+        ],
+    }
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["railroad"], scores=[1.0]),
+        typed_candidates=[TypedIRCandidate(diagram_type="railroad", ir=ir)],
+        evidence=[
+            VisualEvidence(
+                id="ocr-scene",
+                kind="ocr_token",
+                text="start name open name word",
+                bbox=(0, 0, 80, 10),
+            )
+        ],
+    )
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(RailroadRuntime(), config.security_profile),
+    ).reconstruct(
+        f"railroad-source-{'attributed' if attributed else 'unattributed'}",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+    )
+
+    assert result.selected is not None
+    selected = result.selected
+    assert selected.diagram_type == "railroad"
+    assert selected.emitted_diagram_type == "railroad"
+    assert selected.fallback_chain == ["railroad"]
+    assert selected.generated_scene_ir is not None
+    generated_scene = selected.generated_scene_ir
+    assert generated_scene.diagram_type_candidates == ["railroad"]
+    assert generated_scene.reading_direction == "LR"
+    assert generated_scene.groups == []
+    assert [element.id for element in generated_scene.elements] == [
+        "railroad_rule_start",
+        "railroad_rule_name",
+        "railroad_expression_1",
+        "railroad_expression_2",
+        "railroad_expression_3",
+        "railroad_expression_4",
+    ]
+    assert [element.text for element in generated_scene.elements] == [
+        "start =",
+        "name =",
+        None,
+        "open",
+        "name",
+        "word",
+    ]
+    assert all(element.bbox == (0, 0, 0, 0) for element in generated_scene.elements)
+    assert [relation.id for relation in generated_scene.relations] == [
+        f"railroad_relation_{index}" for index in range(1, 5)
+    ]
+    assert all(
+        relation.semantic_relation == "containment" for relation in generated_scene.relations
+    )
+    assert all(relation.polyline == [] for relation in generated_scene.relations)
+    assert all(not relation.arrow_at_start for relation in generated_scene.relations)
+    assert all(not relation.arrow_at_end for relation in generated_scene.relations)
+    assert selected.scores["ocr_recall"] == 1
+    assert selected.scores["visual_entailment_precision"] == (1 if attributed else 0)
+    assert result.publish is attributed
+    assert result.review_required is not attributed
+    assert (selected.aggregate_score is not None) is attributed
+    assert any("provenance gate" in warning for warning in selected.warnings) is not attributed
+
+    relative = SidecarStore(tmp_path).write(result)
+    bundle = tmp_path / relative
+    manifest = json.loads((bundle / "manifest.json").read_text())
+    assert manifest["requested_diagram_type"] == "railroad"
+    assert manifest["emitted_diagram_type"] == "railroad"
+    assert manifest["fallback_chain"] == ["railroad"]
+    sidecar_scene = json.loads((bundle / "generated-scene-ir.json").read_text())
+    assert sidecar_scene == generated_scene.model_dump(mode="json")
+    assert sidecar_scene["diagram_type_candidates"] == ["railroad"]
+
+
+@pytest.mark.parametrize("attributed", [True, False])
 @pytest.mark.parametrize(
     (
         "diagram_type",

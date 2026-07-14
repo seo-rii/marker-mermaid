@@ -32,6 +32,7 @@ from marker_mermaid.serializers_experimental import (
     plan_cynefin_runtime_items,
     plan_data_lineage_records,
     plan_organization_hierarchy,
+    plan_railroad_records,
     plan_wardley_records,
     plan_zenuml_structure,
 )
@@ -587,6 +588,81 @@ def typed_ir_to_scene(
             for lane in eventmodeling_plan.lanes
         ]
         scene_direction_override = "LR"
+    elif diagram_type == "railroad":
+        try:
+            railroad_plan = plan_railroad_records(ir)
+            for record in (
+                *(rule.source_record for rule in railroad_plan.rules),
+                *(expression.source_record for expression in railroad_plan.expressions),
+            ):
+                evidence_ids = record.get("evidence_ids")
+                if evidence_ids is not None and (
+                    not isinstance(evidence_ids, list)
+                    or any(not isinstance(evidence_id, str) for evidence_id in evidence_ids)
+                ):
+                    raise SerializationError("railroad Scene evidence_ids must be a list or null")
+            elements = [
+                SceneElement(
+                    id=rule.emitted_id,
+                    role="rule",
+                    text=rule.label,
+                    bbox=(0.0, 0.0, 0.0, 0.0),
+                    shape=None,
+                    confidence=1.0,
+                    evidence_ids=list(rule.source_record.get("evidence_ids") or []),
+                )
+                for rule in railroad_plan.rules
+            ]
+            expression_shapes = {
+                "terminal": "round",
+                "nonterminal": "rectangle",
+                "special": "rectangle",
+            }
+            elements.extend(
+                SceneElement(
+                    id=expression.emitted_id,
+                    role=expression.kind,
+                    text=expression.label,
+                    bbox=(0.0, 0.0, 0.0, 0.0),
+                    shape=expression_shapes.get(expression.kind),
+                    confidence=1.0,
+                    evidence_ids=list(expression.source_record.get("evidence_ids") or []),
+                )
+                for expression in railroad_plan.expressions
+            )
+            element_ids = {element.id for element in elements}
+            relations = [
+                SceneRelation(
+                    id=relation.emitted_id,
+                    source_id=relation.source_emitted_id,
+                    target_id=relation.target_emitted_id,
+                    relation_type="generated_connector",
+                    semantic_relation="containment",
+                    label=None,
+                    polyline=[],
+                    arrow_at_start=False,
+                    arrow_at_end=False,
+                    line_style=None,
+                    confidence=1.0,
+                    evidence_ids=list(relation.source_record.get("evidence_ids") or []),
+                )
+                for relation in railroad_plan.relations
+                if relation.semantic_relation == "containment"
+                and relation.source_emitted_id in element_ids
+                and relation.target_emitted_id in element_ids
+            ]
+            if len(relations) != len(railroad_plan.relations):
+                return None
+            return DiagramSceneIR(
+                elements=elements,
+                relations=relations,
+                groups=[],
+                reading_direction="LR",
+                diagram_type_candidates=["railroad"],
+                coordinate_space="pixels",
+            )
+        except (SerializationError, ValueError):
+            return None
     elif diagram_type == "wardley":
         try:
             wardley_plan = plan_wardley_records(ir)
@@ -1213,6 +1289,14 @@ def typed_ir_semantic_texts(
         for relation in plan.relations:
             if relation.label is not None:
                 yield relation.label
+        return
+    if diagram_type == "railroad":
+        plan = plan_railroad_records(ir)
+        for rule in plan.rules:
+            yield rule.label
+        for expression in plan.expressions:
+            if expression.label is not None:
+                yield expression.label
         return
     if diagram_type == "wardley":
         plan = plan_wardley_records(ir)

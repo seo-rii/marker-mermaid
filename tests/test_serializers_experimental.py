@@ -14,6 +14,7 @@ from marker_mermaid.serializers_experimental import (
     plan_cynefin_records,
     plan_data_lineage_records,
     plan_organization_hierarchy,
+    plan_railroad_records,
     plan_wardley_records,
     plan_zenuml_records,
     plan_zenuml_structure,
@@ -471,6 +472,504 @@ def test_railroad_rejects_unknown_nonterminal_and_excess_depth():
         expression = {"type": "optional", "element": expression}
     with pytest.raises(SerializationError, match="too deep"):
         serialize_railroad({"rules": [{"name": "root", "definition": expression}]})
+
+
+def test_railroad_plan_is_frozen_ordered_attributable_and_complete():
+    root_rule = {
+        "name": "root-rule",
+        "evidence_ids": ["ocr-root"],
+        "definition": {
+            "type": "sequence",
+            "evidence_ids": ["shape-sequence"],
+            "elements": [
+                {
+                    "type": "terminal",
+                    "value": 'literal &amp; "Q" \\ path',
+                    "evidence_ids": ["ocr-terminal"],
+                },
+                {"type": "nonterminal", "name": "child"},
+                {"type": "special", "text": "guard"},
+                {
+                    "type": "optional",
+                    "element": {"type": "terminal", "value": "optional"},
+                },
+                {
+                    "type": "one_or_more",
+                    "element": {"type": "nonterminal", "name": "child"},
+                },
+                {
+                    "type": "zero_or_more",
+                    "element": {"type": "terminal", "value": "zero"},
+                },
+                {
+                    "type": "choice",
+                    "alternatives": [
+                        {"type": "terminal", "value": "a"},
+                        {"type": "terminal", "value": "b"},
+                    ],
+                },
+            ],
+        },
+    }
+    child_rule = {
+        "name": "child",
+        "definition": {"type": "terminal", "value": "child-value"},
+    }
+
+    plan = plan_railroad_records({"rules": [root_rule, child_rule]})
+
+    assert plan.rules[0].source_record is root_rule
+    assert plan.rules[0].source_name == "root-rule"
+    assert plan.rules[0].emitted_id == "railroad_rule_root_rule"
+    assert plan.rules[0].native_name == "root-rule"
+    assert plan.rules[0].label == "root-rule ="
+    assert plan.rules[0].definition_expression_id == "railroad_expression_1"
+    assert plan.rules[1].emitted_id == "railroad_rule_child"
+    assert [expression.emitted_id for expression in plan.expressions] == [
+        f"railroad_expression_{index}" for index in range(1, 15)
+    ]
+    assert plan.expressions[0].source_record is root_rule["definition"]
+    assert plan.expressions[0].kind == "sequence"
+    assert plan.expressions[0].label is None
+    assert plan.expressions[0].child_ids == (
+        "railroad_expression_2",
+        "railroad_expression_3",
+        "railroad_expression_4",
+        "railroad_expression_5",
+        "railroad_expression_7",
+        "railroad_expression_9",
+        "railroad_expression_11",
+    )
+    assert plan.expressions[1].label == 'literal ＆amp; "Q" \\ path'
+    assert plan.expressions[1].semantic_label == 'literal &amp; "Q" \\ path'
+    assert plan.expressions[2].label == "child"
+    assert plan.expressions[2].referenced_rule_id == "railroad_rule_child"
+    assert plan.expressions[3].label == "? guard ?"
+    assert plan.expressions[4].child_ids == ("railroad_expression_6",)
+    assert [relation.emitted_id for relation in plan.relations] == [
+        f"railroad_relation_{index}" for index in range(1, 15)
+    ]
+    assert plan.relations[0].source_record is root_rule["definition"]
+    assert plan.relations[0].source_emitted_id == "railroad_rule_root_rule"
+    assert plan.relations[0].target_emitted_id == "railroad_expression_1"
+    assert plan.relations[1].source_record is root_rule["definition"]["elements"][0]
+    assert plan.relations[1].source_emitted_id == "railroad_expression_1"
+    assert plan.relations[1].target_emitted_id == "railroad_expression_2"
+    assert {relation.semantic_relation for relation in plan.relations} == {"containment"}
+    assert len(plan.accessibility) == 2
+    with pytest.raises(FrozenInstanceError):
+        plan.rules[0].label = "changed"
+    with pytest.raises(FrozenInstanceError):
+        plan.expressions[0].kind = "terminal"
+
+
+@pytest.mark.parametrize(
+    ("ir", "message"),
+    [
+        (
+            {
+                "rules": [
+                    {"name": "root", "definition": {"type": "terminal", "value": "x"}},
+                    {"name": "root", "definition": {"type": "terminal", "value": "y"}},
+                ]
+            },
+            "must be unique",
+        ),
+        (
+            {
+                "rules": [
+                    {"name": "a-b", "definition": {"type": "terminal", "value": "x"}},
+                    {"name": "a_b", "definition": {"type": "terminal", "value": "y"}},
+                ]
+            },
+            "ambiguous after Mermaid normalization",
+        ),
+        (
+            {"rules": [{"name": "root", "definition": {"type": "terminal"}}]},
+            "terminal value",
+        ),
+        (
+            {"rules": [{"name": "root", "definition": {"type": "special"}}]},
+            "special text",
+        ),
+        (
+            {
+                "rules": [
+                    {
+                        "name": "root",
+                        "definition": {"type": "sequence", "elements": []},
+                    }
+                ]
+            },
+            "requires elements",
+        ),
+        (
+            {"rules": [{"name": "root", "definition": {"type": "unsupported"}}]},
+            "unsupported railroad expression",
+        ),
+        (
+            {
+                "title": 1,
+                "rules": [{"name": "root", "definition": {"type": "terminal", "value": "x"}}],
+            },
+            "title must be a non-empty string",
+        ),
+        (
+            {
+                "description": "bad\ud800",
+                "rules": [{"name": "root", "definition": {"type": "terminal", "value": "x"}}],
+            },
+            "unsupported control",
+        ),
+        (
+            {
+                "rules": [
+                    {
+                        "name": "root",
+                        "definition": {"type": "terminal", "value": "bad\u0000"},
+                    }
+                ]
+            },
+            "unsupported control",
+        ),
+    ],
+)
+def test_railroad_plan_rejects_duplicate_missing_unsupported_and_unsafe_records(ir, message):
+    with pytest.raises(SerializationError, match=message):
+        plan_railroad_records(ir)
+
+
+def test_railroad_preserves_expression_and_depth_limits(monkeypatch):
+    accepted = {
+        "rules": [
+            {
+                "name": "root",
+                "definition": {
+                    "type": "sequence",
+                    "elements": [{"type": "terminal", "value": str(index)} for index in range(499)],
+                },
+            }
+        ]
+    }
+    assert len(plan_railroad_records(accepted).expressions) == 500
+    accepted["rules"][0]["definition"]["elements"].append({"type": "terminal", "value": "overflow"})
+    with pytest.raises(SerializationError, match="expression limit"):
+        plan_railroad_records(accepted)
+
+    rule_boundary = {
+        "rules": [
+            {
+                "name": f"rule_{index}",
+                "definition": {"type": "terminal", "value": "x"},
+            }
+            for index in range(500)
+        ]
+    }
+    assert len(plan_railroad_records(rule_boundary).rules) == 500
+    rule_boundary["rules"].append(
+        {"name": "overflow", "definition": {"type": "terminal", "value": "x"}}
+    )
+    with pytest.raises(SerializationError, match="bounded non-empty rules"):
+        plan_railroad_records(rule_boundary)
+
+    depth_boundary: dict[str, object] = {"type": "terminal", "value": "x"}
+    for _ in range(20):
+        depth_boundary = {"type": "optional", "element": depth_boundary}
+    assert (
+        len(
+            plan_railroad_records(
+                {"rules": [{"name": "root", "definition": depth_boundary}]}
+            ).expressions
+        )
+        == 21
+    )
+    depth_boundary = {"type": "optional", "element": depth_boundary}
+    with pytest.raises(SerializationError, match="too deep"):
+        plan_railroad_records({"rules": [{"name": "root", "definition": depth_boundary}]})
+
+    monkeypatch.setattr(experimental_serializers, "MAX_ITEMS", 2)
+    with pytest.raises(SerializationError, match="bounded non-empty rules"):
+        plan_railroad_records(
+            {
+                "rules": [
+                    {"name": f"rule_{index}", "definition": {"type": "terminal", "value": "x"}}
+                    for index in range(3)
+                ]
+            }
+        )
+
+
+def test_railroad_unsafe_rule_mapping_avoids_safe_native_name_collisions():
+    plan = plan_railroad_records(
+        {
+            "rules": [
+                {"name": "click", "definition": {"type": "terminal", "value": "x"}},
+                {"name": "rrmapped_1", "definition": {"type": "terminal", "value": "y"}},
+                {
+                    "name": "railroad_rule_click",
+                    "definition": {"type": "terminal", "value": "z"},
+                },
+            ]
+        }
+    )
+
+    assert [rule.source_name for rule in plan.rules] == [
+        "click",
+        "rrmapped_1",
+        "railroad_rule_click",
+    ]
+    assert [rule.native_name for rule in plan.rules] == [
+        "rrmapped_1_2",
+        "rrmapped_1",
+        "railroad_rule_click",
+    ]
+    assert len({rule.native_name for rule in plan.rules}) == 3
+    assert plan.mapped_rule_names == ("click",)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "terminal",
+        "nonterminal",
+        "special",
+        "sequence",
+        "choice",
+        "optional",
+        "oneOrMore",
+        "zeroOrMore",
+        "railroad-beta",
+        "title",
+        "titleRule",
+        "title2",
+        "xstyle",
+        "xclassDef",
+        "myStyle",
+        "linkStyle",
+    ],
+)
+def test_railroad_maps_native_grammar_reserved_rule_names(name: str) -> None:
+    ir = {
+        "rules": [
+            {
+                "name": "root",
+                "definition": {"type": "nonterminal", "name": name},
+            },
+            {"name": name, "definition": {"type": "terminal", "value": "value"}},
+        ]
+    }
+
+    plan = plan_railroad_records(ir)
+    result = serialize_railroad(ir)
+
+    assert plan.rules[1].source_name == name
+    assert plan.rules[1].native_name == "rrmapped_2"
+    assert plan.rules[1].label == "rrmapped_2 ="
+    assert plan.expressions[0].label == name
+    assert plan.expressions[0].referenced_rule_id == f"railroad_rule_{name.replace('-', '_')}"
+    assert plan.mapped_rule_names == (name,)
+    assert f"\n{name} =" not in result.code
+    assert "\nrrmapped_2 =" in result.code
+    assert result.warnings[0] == (
+        "Source-active or grammar-reserved Railroad rule names were mapped to reserved "
+        "native identifiers; source names remain in typed IR and nonterminal labels."
+    )
+
+
+def test_railroad_plan_preflights_character_and_line_budgets(monkeypatch):
+    ir = {"rules": [{"name": "root", "definition": {"type": "terminal", "value": "x"}}]}
+    regular = serialize_railroad(ir).code
+    experimental = serialize_railroad(ir, experimental=True).code
+    boundary = max(len(regular), len(experimental))
+
+    monkeypatch.setattr(experimental_serializers, "MAX_EXPERIMENTAL_OUTPUT_CHARS", boundary)
+    assert plan_railroad_records(ir).rules[0].source_name == "root"
+    monkeypatch.setattr(experimental_serializers, "MAX_EXPERIMENTAL_OUTPUT_CHARS", boundary - 1)
+    with pytest.raises(SerializationError, match="railroad output exceeds source-character"):
+        plan_railroad_records(ir)
+
+    monkeypatch.setattr(experimental_serializers, "MAX_EXPERIMENTAL_OUTPUT_CHARS", 50_000)
+    monkeypatch.setattr(experimental_serializers, "MAX_EXPERIMENTAL_OUTPUT_LINES", 2)
+    with pytest.raises(SerializationError, match="railroad output exceeds source-line"):
+        plan_railroad_records(ir)
+
+
+def test_railroad_active_text_is_source_only_and_visible_glyphs_remain_semantic():
+    ir = {
+        "title": 'Grammar &amp; "Q" \\ https://title.invalid <title> @import',
+        "description": "click %%{init}%% https://description.invalid <desc>",
+        "rules": [
+            {
+                "name": "root",
+                "definition": {
+                    "type": "sequence",
+                    "elements": [
+                        {
+                            "type": "terminal",
+                            "value": 'style https://x.invalid <script> &amp; "T" \\ path',
+                        },
+                        {
+                            "type": "special",
+                            "text": 'click %% <guard> directive &amp; "S" \\ path',
+                        },
+                        {"type": "nonterminal", "name": "style"},
+                        {"type": "nonterminal", "name": "iconify"},
+                    ],
+                },
+            },
+            {
+                "name": "style",
+                "definition": {"type": "terminal", "value": "mapped"},
+            },
+            {
+                "name": "iconify",
+                "definition": {"type": "terminal", "value": "icon"},
+            },
+        ],
+    }
+
+    plan = plan_railroad_records(ir)
+    result = serialize_railroad(ir)
+
+    assert plan.semantic_title == 'Grammar &amp; "Q" \\ https://title.invalid <title> @import'
+    assert plan.title == 'Grammar ＆amp; "Q" \\ https://title.invalid 〈title〉 @import'
+    assert plan.accessibility[0].source_description == (
+        "click %%{init}%% https://description.invalid <desc>"
+    )
+    assert plan.accessibility[0].description == (
+        "click %%{init}%% https://description.invalid 〈desc〉"
+    )
+    assert plan.expressions[1].label == ('style https://x.invalid 〈script〉 ＆amp; "T" \\ path')
+    assert (
+        plan.expressions[1].semantic_label == 'style https://x.invalid <script> &amp; "T" \\ path'
+    )
+    assert plan.expressions[2].label == ('? click %% 〈guard〉 directive ＆amp; "S" \\ path ?')
+    assert plan.expressions[2].semantic_label == '? click %% <guard> directive &amp; "S" \\ path ?'
+    assert plan.expressions[3].label == "style"
+    assert plan.expressions[3].referenced_rule_id == "railroad_rule_style"
+    assert plan.expressions[4].label == "iconify"
+    assert plan.expressions[4].referenced_rule_id == "railroad_rule_iconify"
+    assert plan.rules[1].source_name == "style"
+    assert plan.rules[1].native_name == "rrmapped_2"
+    assert plan.rules[1].label == "rrmapped_2 ="
+    assert plan.rules[2].native_name == "rrmapped_3"
+    assert plan.mapped_rule_names == ("style", "iconify")
+    assert "\nrrmapped_2 =" in result.code
+    assert "\nrrmapped_3 =" in result.code
+    assert "\nstyle =" not in result.code
+    assert "https://" not in result.code
+    assert "<script>" not in result.code
+    assert "@import" not in result.code
+    assert "%%" not in result.code
+    assert "＆" in result.code
+    assert "&amp;" not in result.code
+    assert '\\"T\\"' in result.code
+    assert "\\\\ path" in result.code
+    assert result.warnings == (
+        "Source-active or grammar-reserved Railroad rule names were mapped to reserved "
+        "native identifiers; source names remain in typed IR and nonterminal labels.",
+        "Railroad uses visible compatibility glyphs for angle brackets, number signs, "
+        "entity-like text, and NFKC-sensitive quote or backslash characters.",
+    )
+    assert MermaidSecurityScanner(SecurityProfile.STRICT).scan(result.code).safe
+    assert (
+        MermaidSecurityScanner(SecurityProfile.STRICT)
+        .scan(unicodedata.normalize("NFKC", result.code))
+        .safe
+    )
+
+
+def test_railroad_compatibility_normalized_active_text_stays_strict_safe() -> None:
+    visible = (
+        "safe； ｓｔｙｌｅ ｈｔｔｐｓ：／／example.invalid "
+        "＜ｓｃｒｉｐｔ＞ ＠ｉｍｐｏｒｔ ｉｃｏｎｉｆｙ"
+    )
+    ir = {
+        "rules": [
+            {
+                "name": "root",
+                "definition": {"type": "terminal", "value": visible},
+            }
+        ]
+    }
+
+    plan = plan_railroad_records(ir)
+    result = serialize_railroad(ir)
+
+    assert plan.expressions[0].semantic_label == visible
+    assert plan.expressions[0].label == visible
+    assert "\u200b" not in plan.expressions[0].label
+    assert "\u200b" in result.code
+    assert result.warnings == ()
+    scanner = MermaidSecurityScanner(SecurityProfile.STRICT)
+    assert scanner.scan(result.code).safe
+    assert scanner.scan(unicodedata.normalize("NFKC", result.code)).safe
+
+
+def test_railroad_nfkc_quote_injection_is_neutralized_without_losing_semantics() -> None:
+    visible = "a＂); evil = terminal(＂b"
+    ir = {
+        "rules": [
+            {
+                "name": "root",
+                "definition": {"type": "terminal", "value": visible},
+            }
+        ]
+    }
+
+    plan = plan_railroad_records(ir)
+    result = serialize_railroad(ir)
+    normalized = unicodedata.normalize("NFKC", result.code)
+    normalized_rule_lines = normalized.splitlines()[3:]
+
+    assert plan.expressions[0].semantic_label == visible
+    assert plan.expressions[0].label == "a″); evil = terminal(″b"
+    assert len(normalized_rule_lines) == 1
+    assert normalized_rule_lines[0].startswith("root = terminal(")
+    assert not any(line.startswith("evil =") for line in normalized_rule_lines)
+    assert MermaidSecurityScanner(SecurityProfile.STRICT).scan(normalized).safe
+    assert result.warnings == (
+        "Railroad uses visible compatibility glyphs for angle brackets, number signs, "
+        "entity-like text, and NFKC-sensitive quote or backslash characters.",
+    )
+
+
+def test_railroad_hash_and_preprocessor_substrings_have_exact_safe_visible_text() -> None:
+    values = ["plain #35; text", "xstyle:a#foo;tail", "xclassDef:a#foo;tail"]
+    ir = {
+        "rules": [
+            {
+                "name": "root",
+                "definition": {
+                    "type": "sequence",
+                    "elements": [{"type": "terminal", "value": value} for value in values],
+                },
+            }
+        ]
+    }
+
+    plan = plan_railroad_records(ir)
+    result = serialize_railroad(ir)
+
+    assert [expression.semantic_label for expression in plan.expressions[1:]] == values
+    assert [expression.label for expression in plan.expressions[1:]] == [
+        "plain ＃35; text",
+        "xstyle:a＃foo;tail",
+        "xclassDef:a＃foo;tail",
+    ]
+    assert "#" not in result.code
+    assert "xstyle" not in result.code
+    assert "xclassDef" not in result.code
+    assert MermaidSecurityScanner(SecurityProfile.STRICT).scan(result.code).safe
+    assert (
+        MermaidSecurityScanner(SecurityProfile.STRICT)
+        .scan(unicodedata.normalize("NFKC", result.code))
+        .safe
+    )
+    assert result.warnings == (
+        "Railroad uses visible compatibility glyphs for angle brackets, number signs, "
+        "entity-like text, and NFKC-sensitive quote or backslash characters.",
+    )
 
 
 def test_zenuml_is_an_explicit_sequence_fallback():
@@ -1217,6 +1716,164 @@ def test_experimental_serializers_pass_strict_mermaid_11_16_parse_and_render():
             assert outcome.runtime.diagram_type.casefold() == expected_type
     finally:
         runtime.close()
+
+
+@pytest.mark.integration
+def test_railroad_shared_plan_matches_strict_mermaid_11_16_visible_runtime() -> None:
+    compatibility_visible = (
+        "safe； ｓｔｙｌｅ ｈｔｔｐｓ：／／example.invalid "
+        "＜ｓｃｒｉｐｔ＞ ＠ｉｍｐｏｒｔ ｉｃｏｎｉｆｙ"
+    )
+    injection_visible = "a＂); evil = terminal(＂b"
+    preprocessor_values = ["plain #35; text", "xstyle:a#foo;tail", "xclassDef:a#foo;tail"]
+    ir = {
+        "title": 'Grammar &amp; "Q" \\ https://title.invalid <title> @import',
+        "description": "click %%{init}%% https://description.invalid <desc>",
+        "rules": [
+            {
+                "name": "root",
+                "definition": {
+                    "type": "sequence",
+                    "elements": [
+                        {
+                            "type": "terminal",
+                            "value": 'style https://x.invalid <script> &amp; "T" \\ path',
+                        },
+                        {"type": "nonterminal", "name": "style"},
+                        {
+                            "type": "special",
+                            "text": 'click %% <guard> directive &amp; "S" \\ path',
+                        },
+                        {
+                            "type": "optional",
+                            "element": {
+                                "type": "choice",
+                                "alternatives": [
+                                    {"type": "terminal", "value": "alpha"},
+                                    {"type": "terminal", "value": "beta"},
+                                ],
+                            },
+                        },
+                        {"type": "nonterminal", "name": "iconify"},
+                        {"type": "terminal", "value": compatibility_visible},
+                        {"type": "terminal", "value": injection_visible},
+                        *({"type": "terminal", "value": value} for value in preprocessor_values),
+                        {"type": "nonterminal", "name": "terminal"},
+                        {"type": "nonterminal", "name": "titleRule"},
+                        {"type": "nonterminal", "name": "railroad-beta"},
+                    ],
+                },
+            },
+            {"name": "style", "definition": {"type": "terminal", "value": "mapped"}},
+            {"name": "iconify", "definition": {"type": "terminal", "value": "icon"}},
+            {"name": "terminal", "definition": {"type": "terminal", "value": "term"}},
+            {"name": "titleRule", "definition": {"type": "terminal", "value": "named"}},
+            {
+                "name": "railroad-beta",
+                "definition": {"type": "terminal", "value": "header"},
+            },
+        ],
+    }
+    plan = plan_railroad_records(ir)
+    result = serialize_railroad(ir)
+
+    assert plan.rules[1].label == "rrmapped_2 ="
+    assert plan.rules[2].label == "rrmapped_3 ="
+    assert plan.expressions[1].label == ('style https://x.invalid 〈script〉 ＆amp; "T" \\ path')
+    assert plan.expressions[2].label == "style"
+    assert plan.expressions[3].label == ('? click %% 〈guard〉 directive ＆amp; "S" \\ path ?')
+    injection_expression = next(
+        expression
+        for expression in plan.expressions
+        if expression.semantic_label == injection_visible
+    )
+    assert injection_expression.label == "a″); evil = terminal(″b"
+    assert [
+        expression.label
+        for expression in plan.expressions
+        if expression.semantic_label in preprocessor_values
+    ] == ["plain ＃35; text", "xstyle:a＃foo;tail", "xclassDef:a＃foo;tail"]
+    assert [rule.label for rule in plan.rules[3:]] == [
+        "rrmapped_4 =",
+        "rrmapped_5 =",
+        "rrmapped_6 =",
+    ]
+    assert len(plan.relations) == len(plan.expressions)
+    assert result.warnings == (
+        "Source-active or grammar-reserved Railroad rule names were mapped to reserved "
+        "native identifiers; source names remain in typed IR and nonterminal labels.",
+        "Railroad uses visible compatibility glyphs for angle brackets, number signs, "
+        "entity-like text, and NFKC-sensitive quote or backslash characters.",
+    )
+
+    runtime = NodeMermaidRuntime()
+    process = None
+    try:
+        outcome = CandidateValidator(runtime, SecurityProfile.STRICT).validate(result.code, 20)
+        normalized_outcome = CandidateValidator(runtime, SecurityProfile.STRICT).validate(
+            unicodedata.normalize("NFKC", result.code), 20
+        )
+        process = runtime._process
+    finally:
+        runtime.close()
+
+    assert outcome.runtime.syntax_valid, outcome.runtime.error
+    assert outcome.runtime.render_valid, outcome.runtime.error
+    assert outcome.runtime.diagram_type.casefold() == "railroad"
+    assert normalized_outcome.runtime.syntax_valid, normalized_outcome.runtime.error
+    assert normalized_outcome.runtime.render_valid, normalized_outcome.runtime.error
+    assert process is not None and process.poll() is not None
+    assert runtime._process is None
+    assert runtime._process_group_id is None
+
+    root = ET.fromstring(outcome.runtime.svg or "")
+    visible_texts = {
+        " ".join("".join(element.itertext()).replace("\u200b", "").split())
+        for element in root.iter()
+        if element.tag.rsplit("}", 1)[-1] in {"title", "desc", "text"}
+        and "".join(element.itertext()).strip()
+    }
+    assert 'Grammar ＆amp; "Q" \\ https://title.invalid 〈title〉 @import' in visible_texts
+    assert "click %%{init}%% https://description.invalid 〈desc〉" in visible_texts
+    assert 'style https://x.invalid 〈script〉 ＆amp; "T" \\ path' in visible_texts
+    assert '? click %% 〈guard〉 directive ＆amp; "S" \\ path ?' in visible_texts
+    assert compatibility_visible in visible_texts
+    assert "a″); evil = terminal(″b" in visible_texts
+    assert {"plain ＃35; text", "xstyle:a＃foo;tail", "xclassDef:a＃foo;tail"} <= visible_texts
+    assert {
+        "style",
+        "iconify",
+        "terminal",
+        "titleRule",
+        "railroad-beta",
+        "alpha",
+        "beta",
+        "mapped",
+        "icon",
+        "term",
+        "named",
+        "header",
+    } <= visible_texts
+    assert {
+        "root =",
+        "rrmapped_2 =",
+        "rrmapped_3 =",
+        "rrmapped_4 =",
+        "rrmapped_5 =",
+        "rrmapped_6 =",
+    } <= visible_texts
+    normalized_root = ET.fromstring(normalized_outcome.runtime.svg or "")
+    normalized_texts = {
+        " ".join("".join(element.itertext()).replace("\u200b", "").split())
+        for element in normalized_root.iter()
+        if element.tag.rsplit("}", 1)[-1] in {"title", "desc", "text"}
+        and "".join(element.itertext()).strip()
+    }
+    assert "evil =" not in normalized_texts
+    assert all(
+        "marker-start" not in element.attrib and "marker-end" not in element.attrib
+        for element in root.iter()
+    )
 
 
 @pytest.mark.integration

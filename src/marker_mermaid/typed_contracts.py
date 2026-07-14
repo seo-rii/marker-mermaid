@@ -10,7 +10,7 @@ enabled-type-only schema catalog instead of asking it to guess field names.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, ValidationError, field_validator
 
@@ -910,6 +910,68 @@ class _DataLineageIR(_TypedIRRoot):
     relations: list[_DataLineageRelation]
 
 
+class _RailroadTerminalExpression(_TypedIRRecord):
+    type: Literal["terminal"]
+    value: str | None = None
+
+
+class _RailroadNonterminalExpression(_TypedIRRecord):
+    type: Literal["nonterminal"]
+    name: str | None = None
+
+
+class _RailroadSpecialExpression(_TypedIRRecord):
+    type: Literal["special"]
+    text: str | None = None
+
+
+class _RailroadSequenceExpression(_TypedIRRecord):
+    type: Literal["sequence"]
+    elements: list[RailroadExpression] | None = None
+
+
+class _RailroadChoiceExpression(_TypedIRRecord):
+    type: Literal["choice"]
+    alternatives: list[RailroadExpression] | None = None
+
+
+class _RailroadOptionalExpression(_TypedIRRecord):
+    type: Literal["optional"]
+    element: RailroadExpression | None = None
+
+
+class _RailroadOneOrMoreExpression(_TypedIRRecord):
+    type: Literal["one_or_more"]
+    element: RailroadExpression | None = None
+
+
+class _RailroadZeroOrMoreExpression(_TypedIRRecord):
+    type: Literal["zero_or_more"]
+    element: RailroadExpression | None = None
+
+
+RailroadExpression: TypeAlias = Annotated[
+    _RailroadTerminalExpression
+    | _RailroadNonterminalExpression
+    | _RailroadSpecialExpression
+    | _RailroadSequenceExpression
+    | _RailroadChoiceExpression
+    | _RailroadOptionalExpression
+    | _RailroadOneOrMoreExpression
+    | _RailroadZeroOrMoreExpression,
+    Field(discriminator="type"),
+]
+
+
+class _RailroadRule(_TypedIRRecord):
+    name: str | None = None
+    definition: RailroadExpression | None = None
+
+
+class _RailroadIR(_TypedIRRoot):
+    rules: list[_RailroadRule]
+
+
 @dataclass(frozen=True, slots=True)
 class TypedIRContract:
     required: tuple[tuple[str, RootKind], ...]
@@ -1353,7 +1415,24 @@ TYPED_IR_CONTRACTS: dict[str, TypedIRContract] = {
             "evidence_ids:string[]}",
         ),
     ),
-    "railroad": TypedIRContract((("rules", "list"),), guidance="grammar rule AST"),
+    "railroad": TypedIRContract(
+        (("rules", "list"),),
+        guidance="grammar rule AST",
+        nested_model=_RailroadIR,
+        prompt_records=(
+            "rules[]: {name:string,definition:expression,bbox:number[4],evidence_ids:string[]}",
+            "rules[].definition: terminal{type:terminal,value:string,bbox:number[4],"
+            "evidence_ids:string[]}|nonterminal{type:nonterminal,name:string,bbox:number[4],"
+            "evidence_ids:string[]}|special{type:special,text:string,bbox:number[4],"
+            "evidence_ids:string[]}|sequence{type:sequence,elements:expression[],"
+            "bbox:number[4],evidence_ids:string[]}|choice{type:choice,"
+            "alternatives:expression[],bbox:number[4],evidence_ids:string[]}|"
+            "optional{type:optional,element:expression,bbox:number[4],evidence_ids:string[]}|"
+            "one_or_more{type:one_or_more,element:expression,bbox:number[4],"
+            "evidence_ids:string[]}|zero_or_more{type:zero_or_more,element:expression,"
+            "bbox:number[4],evidence_ids:string[]}",
+        ),
+    ),
     "organization": TypedIRContract(
         (("root", "object"),),
         guidance="organization hierarchy",
@@ -1389,7 +1468,7 @@ PHASE_THREE_CORE_NESTED_TYPES = frozenset({"pie", "quadrant", "xychart"})
 PHASE_THREE_EXTENDED_NESTED_TYPES = frozenset({"sankey", "radar", "treemap", "venn"})
 PLANNING_NESTED_TYPES = frozenset({"journey", "kanban", "gitgraph"})
 SPECIAL_NATIVE_NESTED_TYPES = frozenset({"packet", "ishikawa", "treeview"})
-EXPERIMENTAL_NATIVE_NESTED_TYPES = frozenset({"wardley", "cynefin"})
+EXPERIMENTAL_NATIVE_NESTED_TYPES = frozenset({"wardley", "cynefin", "railroad"})
 SPECIAL_FALLBACK_NESTED_TYPES = frozenset(
     {"data_lineage", "eventmodeling", "organization", "zenuml"}
 )

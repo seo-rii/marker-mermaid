@@ -38,7 +38,7 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 | Ishikawa, TreeView | 동일 또는 `flowchart` | cycle/object reuse/duplicate ID/depth를 검증한 hierarchy |
 | Event Modeling | `flowchart` | Mermaid 11.16 renderer 불안정으로 lane-aware fallback |
 | Wardley, Cynefin | 동일 | strict positioned-component/domain plan이 검증한 experimental native |
-| Railroad | 동일 | rule AST evidence가 완전할 때 experimental native |
+| Railroad | 동일 | strict recursive rule AST와 bounded shared plan이 검증한 experimental native |
 | ZenUML | `sequence` | pinned runtime에 ZenUML extension이 없어 명시적 fallback |
 | Organization | `treeview` | reporting hierarchy 보존, organization 전용 notation 없음 |
 | Data Lineage | `flowchart` | dataset/process endpoint를 모두 확인한 portable graph |
@@ -296,6 +296,49 @@ Object item의 record evidence만 provenance로 사용하며 legacy scalar item�
 대체를 같은 candidate slot에서 자동 재시도하지 않으므로 해당 후보는 publication hard gate에서
 격리됩니다. Cynefin native는 렌더에 성공해도 고정 template에 source provenance를 붙이는
 계약이 없어 자동 게시하지 않고 review/sidecar로만 routing합니다.
+
+### Railroad의 recursive AST projection
+
+Railroad serializer는 strict nested expression을 직접 다시 순회하지 않고
+`plan_railroad_records()`가 만든 frozen rule/expression/relation plan만 소비합니다. Rule은 source 순서,
+expression은 rule별 preorder를 유지합니다. Plan은 rule 이름의 uniqueness, terminal/nonterminal/special의
+문자열 payload, sequence/choice의 child list, optional/one-or-more/zero-or-more의 단일 child, 모든
+nonterminal reference, 최대 depth 20과 rule/expression 각각 500개 한도를 한 번 판정합니다. Rule과
+nonterminal name은 whitespace normalization 뒤 ASCII identifier 128자, 다른 visible text는 whitespace
+normalization 뒤 field당 500자로 제한하며 raw input은 typed IR/sidecar에 보존합니다.
+
+Native source는 `railroad-beta`에서 `native_name = expression;`을 방출합니다.
+`railroad_expression_N`과 `railroad_relation_N`은 Mermaid source에 없는 Scene/provenance identity이고,
+logical `railroad_rule_*`도 일반적으로 source rule name과 분리됩니다. Scanner/preprocessor에서
+source-active인 rule name과 case-folded expression-word namespace, `railroad-beta`, case-folded lowercase
+`title*` prefix는 Railroad identifier로 안전하게 방출할 수 없어 collision-safe `rrmapped_N[_suffix]`를
+strict-safe `native_name`으로 사용하고 visible change warning을 남깁니다. `style`/`classDef` substring을
+포함한 이름도 preprocessor source-active mapping 대상입니다.
+정규화된 safe source name은 그대로 native name으로 유지하며 allocator는 모든 safe name을 먼저 reserve한
+뒤 suffix로 충돌을 피합니다. `railroad_relation_N`은 rule→definition과 parent operator→child만 나타내며 native에 없는
+nonterminal→rule edge를 발명하지 않습니다. 실제 SVG 기준 visible text는 rule `native_name =`,
+terminal/nonterminal runtime label, special `? text ?`이고 구조 operator에는 label이 없습니다.
+
+Railroad visible compatibility layer는 ASCII `<`/`>`를 `〈`/`〉`, 모든 ASCII `#`를 `＃`, entity-like
+`&` prefix를 `＆`, NFKC에서 quote/backslash가 되는 호환 문자를 `″`/`∖`로 바꿉니다. 전역
+`encodeEntities`가 변형하는 bare `#word;`/`#35;`도 예외가 아니며 치환을 compatibility warning으로
+공개합니다. Plan은 raw
+semantic field를 typed IR/sidecar에 남기고 이 exact compatibility text를 native visible output·Scene·OCR에
+공유합니다. Rule identifier 외의 URL/directive/callback/HTML-like active token과
+compatibility-normalized hazard에는 source에서만 zero-width separator를 넣습니다. Mermaid preprocessor가
+statement로 오인할 수 있는 `style...:#...;`/`classDef...:#...;` substring도 source에서만 분리합니다.
+Emitted source 원문과
+NFKC-normalized source 모두 strict scanner를 통과해야 합니다. Production CandidateValidator의
+parse/render hard gate는 raw source에 적용하고, NFKC parse/render는 integration safety probe에서 grammar
+injection이 생기지 않는지만 고정합니다. NFKC SVG의 compatibility glyph가 원 glyph와 같다고 요구하지
+않습니다. Mapped rule의 raw source name은 typed IR에, normalized name은 nonterminal label에 남습니다.
+접근성 title/description도 plan이 같은 source-only 경계를 적용해 serializer가 raw IR을 다시 읽지
+않습니다. 반환 전 50,000자·5,000줄 source preflight를 수행하며 strict scanner, parse, render와 SVG
+inspection은 다른 experimental native와 동일하게 필수입니다.
+
+Generated Scene은 rule/expression source record의 `evidence_ids`가 null/생략 또는 string list인지 직접
+검사하고 다른 형이면 후보 전체를 fail closed합니다. 따라서 serializer, Scene, OCR, provenance가 동일한
+bounded plan과 compatibility label을 소비합니다.
 
 ### Pie·XY·Quadrant의 native-only 경계
 

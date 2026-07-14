@@ -17,7 +17,9 @@ from decimal import Decimal
 from typing import Any
 
 from marker_mermaid.accessibility import enrich_accessibility_ir, resolve_accessibility
+from marker_mermaid.config import SecurityProfile
 from marker_mermaid.models import MAX_ID_CHARS
+from marker_mermaid.security import MermaidSecurityScanner
 from marker_mermaid.serialization import SerializationResult
 from marker_mermaid.serializers import SerializationError, serialize_flowchart
 from marker_mermaid.serializers_special import _neutralize_active_text
@@ -53,6 +55,22 @@ _ENTITY_LITERAL = re.compile(
     r"&(?P<body>#[0-9]+|#x[0-9A-F]+|[A-Z][A-Z0-9]+);",
     re.IGNORECASE,
 )
+_RAILROAD_REMOTE_ICON = re.compile(r"iconify|fa:|logos:", re.IGNORECASE)
+_RAILROAD_PREPROCESSOR_TOKEN = re.compile(r"style|classDef", re.IGNORECASE)
+_RAILROAD_NATIVE_RULE_RESERVED = frozenset(
+    name.casefold()
+    for name in (
+        "terminal",
+        "nonterminal",
+        "special",
+        "sequence",
+        "choice",
+        "optional",
+        "oneOrMore",
+        "zeroOrMore",
+        "railroad-beta",
+    )
+)
 _ENTITY_COMPATIBILITY_WARNING = (
     "Entity-like literal text uses visible fullwidth ampersand and number-sign glyphs "
     "(＆ and ＃) because Mermaid 11.16 cannot preserve every literal entity form."
@@ -64,6 +82,15 @@ _ZENUML_COMPATIBILITY_WARNING = (
 _DATA_LINEAGE_COMPATIBILITY_WARNING = (
     "Data Lineage Flowchart fallback uses visible compatibility glyphs for "
     "grammar-conflicting label characters."
+)
+_RAILROAD_RULE_MAPPING_WARNING = (
+    "Source-active or grammar-reserved Railroad rule names were mapped to reserved "
+    "native identifiers; "
+    "source names remain in typed IR and nonterminal labels."
+)
+_RAILROAD_COMPATIBILITY_WARNING = (
+    "Railroad uses visible compatibility glyphs for angle brackets, number signs, "
+    "entity-like text, and NFKC-sensitive quote or backslash characters."
 )
 
 
@@ -268,6 +295,69 @@ class DataLineagePlan:
     compatibility_substituted: bool
 
 
+@dataclass(frozen=True, slots=True)
+class RailroadAccessibilityPlan:
+    """One strict-safe accessibility profile selected by serializer mode."""
+
+    experimental: bool
+    title: str
+    description: str
+    source_title: str
+    source_description: str
+
+
+@dataclass(frozen=True, slots=True)
+class RailroadRulePlan:
+    """One ordered grammar rule and its exact logical/native identities."""
+
+    source_record: Mapping[str, Any]
+    source_name: str
+    emitted_id: str
+    native_name: str
+    label: str
+    definition_expression_id: str
+    definition_code: str
+
+
+@dataclass(frozen=True, slots=True)
+class RailroadExpressionPlan:
+    """One bounded Railroad AST expression with an exact visible label, if any."""
+
+    source_record: Mapping[str, Any]
+    emitted_id: str
+    kind: str
+    label: str | None
+    semantic_label: str | None
+    child_ids: tuple[str, ...]
+    referenced_rule_id: str | None
+    code: str
+
+
+@dataclass(frozen=True, slots=True)
+class RailroadRelationPlan:
+    """One markerless containment slot from a rule/operator to an expression."""
+
+    source_record: Mapping[str, Any]
+    emitted_id: str
+    source_emitted_id: str
+    target_emitted_id: str
+    semantic_relation: str
+
+
+@dataclass(frozen=True, slots=True)
+class RailroadPlan:
+    """Frozen bounded Railroad program shared by native output and Scene consumers."""
+
+    title: str | None
+    semantic_title: str | None
+    rules: tuple[RailroadRulePlan, ...]
+    expressions: tuple[RailroadExpressionPlan, ...]
+    relations: tuple[RailroadRelationPlan, ...]
+    accessibility: tuple[RailroadAccessibilityPlan, ...]
+    mapped_rule_names: tuple[str, ...]
+    compatibility_substituted: bool
+
+
 def _text(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise SerializationError(f"{field} must be a non-empty string")
@@ -279,10 +369,6 @@ def _text(value: Any, field: str) -> str:
     if len(normalized) > MAX_TEXT_LENGTH:
         raise SerializationError(f"{field} exceeds the safe text limit")
     return normalized
-
-
-def _quoted(value: Any, field: str) -> str:
-    return json.dumps(_text(value, field), ensure_ascii=False)
 
 
 def _identifier(value: Any, field: str) -> str:
@@ -371,6 +457,48 @@ def _flowchart_visible_text(
     if accessibility:
         visible = visible.replace("<", "〈").replace(">", "〉")
     return semantic, visible, entity_substituted or visible != semantic
+
+
+def _railroad_compatibility_text(text: str) -> tuple[str, bool]:
+    """Return canonical visible glyphs before source-only NFKC isolation."""
+
+    compatible, entity_substituted = _entity_compatibility_text(text)
+    compatible = (
+        compatible.replace("<", "〈")
+        .replace(">", "〉")
+        .replace("#", "＃")
+        .replace("＂", "″")
+        .replace("﹨", "∖")
+        .replace("＼", "∖")
+    )
+    return compatible, entity_substituted or compatible != text
+
+
+def _railroad_source_text(text: str) -> str:
+    """Neutralize active source before and after compatibility normalization."""
+
+    compatible, _substituted = _railroad_compatibility_text(text)
+    neutralized = _neutralize_active_text(compatible)
+    neutralized = _RAILROAD_REMOTE_ICON.sub(
+        lambda match: f"{match.group(0)[0]}\u200b{match.group(0)[1:]}",
+        neutralized,
+    )
+    neutralized = _RAILROAD_PREPROCESSOR_TOKEN.sub(
+        lambda match: f"{match.group(0)[0]}\u200b{match.group(0)[1:]}",
+        neutralized,
+    )
+    return "".join(
+        f"\u200b{character}\u200b"
+        if unicodedata.normalize("NFKC", character) != character
+        else character
+        for character in neutralized
+    )
+
+
+def _railroad_visible_text(text: str) -> str:
+    """Return the literal text Mermaid 11.16 places in Railroad SVG text nodes."""
+
+    return _railroad_compatibility_text(text)[0]
 
 
 def _zenuml_visible_text(
@@ -708,75 +836,257 @@ def serialize_cynefin(ir: Mapping[str, Any], *, experimental: bool = False) -> S
     return SerializationResult.native("cynefin", code, warnings=warnings, stability="experimental")
 
 
-def _railroad_expression(
-    value: Any,
-    *,
-    rule_names: set[str],
-    depth: int,
-    counter: list[int],
-) -> str:
-    if depth > MAX_DEPTH:
-        raise SerializationError("railroad expression nesting is too deep")
-    if not isinstance(value, Mapping):
-        raise SerializationError("railroad expressions must be objects")
-    counter[0] += 1
-    if counter[0] > MAX_ITEMS:
-        raise SerializationError("railroad expression limit exceeded")
-    kind = value.get("type")
-    if kind == "terminal":
-        return f"terminal({_quoted(value.get('value'), 'terminal value')})"
-    if kind == "nonterminal":
-        name = _identifier(value.get("name"), "nonterminal name")
-        if name not in rule_names:
-            raise SerializationError(f"unresolved railroad nonterminal: {name}")
-        return f"nonterminal({json.dumps(name)})"
-    if kind == "special":
-        return f"special({_quoted(value.get('text'), 'special text')})"
-    collection_key = {"sequence": "elements", "choice": "alternatives"}.get(str(kind))
-    if collection_key is not None:
-        children = value.get(collection_key)
-        if not isinstance(children, list) or not children:
-            raise SerializationError(f"railroad {kind} requires {collection_key}")
-        rendered = [
-            _railroad_expression(child, rule_names=rule_names, depth=depth + 1, counter=counter)
-            for child in children
-        ]
-        return f"{kind}({', '.join(rendered)})"
-    unary_name = {
-        "optional": "optional",
-        "one_or_more": "oneOrMore",
-        "zero_or_more": "zeroOrMore",
-    }.get(str(kind))
-    if unary_name is not None:
-        child = _railroad_expression(
-            value.get("element"), rule_names=rule_names, depth=depth + 1, counter=counter
-        )
-        return f"{unary_name}({child})"
-    raise SerializationError(f"unsupported railroad expression type: {kind!r}")
+def plan_railroad_records(ir: Mapping[str, Any]) -> RailroadPlan:
+    """Validate and freeze one exact bounded Railroad grammar program."""
 
-
-def serialize_railroad(ir: Mapping[str, Any], *, experimental: bool = False) -> SerializationResult:
+    if not isinstance(ir, Mapping):
+        raise SerializationError("railroad IR must be an object")
+    _validate_accessibility_inputs(ir)
     rules = ir.get("rules")
     if not isinstance(rules, list) or not rules or len(rules) > MAX_ITEMS:
         raise SerializationError("railroad IR requires a bounded non-empty rules list")
     names: list[str] = []
+    rule_records: list[Mapping[str, Any]] = []
+    emitted_rule_ids: set[str] = set()
+    emitted_by_name: dict[str, str] = {}
+    native_by_name: dict[str, str] = {}
+    mapped_rule_names: list[str] = []
     for index, rule in enumerate(rules):
         if not isinstance(rule, Mapping):
             raise SerializationError("railroad rules must be objects")
-        names.append(_identifier(rule.get("name"), f"rules[{index}].name"))
-    if len(names) != len(set(names)):
-        raise SerializationError("railroad rule names must be unique")
-    lines = ["railroad-beta", *_accessibility(ir, "railroad", experimental=experimental)]
-    if ir.get("title") is not None:
-        lines.append(f"title {_text(ir['title'], 'title')}")
-    counter = [0]
-    known = set(names)
-    for name, rule in zip(names, rules, strict=True):
-        expression = _railroad_expression(
-            rule.get("definition"), rule_names=known, depth=0, counter=counter
+        name = _identifier(rule.get("name"), f"rules[{index}].name")
+        if name in emitted_by_name:
+            raise SerializationError("railroad rule names must be unique")
+        emitted_id = f"railroad_rule_{name.replace('-', '_')}"
+        if len(emitted_id) > MAX_ID_CHARS:
+            raise SerializationError("railroad rule id exceeds the emitted identifier limit")
+        if emitted_id in emitted_rule_ids:
+            raise SerializationError(
+                f"railroad rule names are ambiguous after Mermaid normalization: {name}"
+            )
+        emitted_rule_ids.add(emitted_id)
+        emitted_by_name[name] = emitted_id
+        names.append(name)
+        rule_records.append(rule)
+    unsafe_native_names = {
+        name
+        for name in names
+        if (
+            _railroad_source_text(name) != name
+            or name.casefold() in _RAILROAD_NATIVE_RULE_RESERVED
+            or name.casefold().startswith("title")
         )
-        lines.append(f"{name} = {expression};")
-    return SerializationResult.native("railroad", "\n".join(lines) + "\n", stability="experimental")
+    }
+    native_names = set(names) - unsafe_native_names
+    for index, name in enumerate(names, start=1):
+        if name not in unsafe_native_names:
+            native_by_name[name] = name
+            continue
+        native_name = f"rrmapped_{index}"
+        suffix = 2
+        while native_name in native_names:
+            native_name = f"rrmapped_{index}_{suffix}"
+            suffix += 1
+        native_names.add(native_name)
+        native_by_name[name] = native_name
+        mapped_rule_names.append(name)
+    expressions: list[RailroadExpressionPlan | None] = []
+    relations: list[RailroadRelationPlan] = []
+    known = set(names)
+    compatibility_substituted = False
+
+    def visit_expression(
+        value: Any,
+        *,
+        depth: int,
+        parent_emitted_id: str,
+    ) -> RailroadExpressionPlan:
+        nonlocal compatibility_substituted
+        if depth > MAX_DEPTH:
+            raise SerializationError("railroad expression nesting is too deep")
+        if not isinstance(value, Mapping):
+            raise SerializationError("railroad expressions must be objects")
+        expression_index = len(expressions) + 1
+        if expression_index > MAX_ITEMS:
+            raise SerializationError("railroad expression limit exceeded")
+        emitted_id = f"railroad_expression_{expression_index}"
+        expressions.append(None)
+        relations.append(
+            RailroadRelationPlan(
+                source_record=value,
+                emitted_id=f"railroad_relation_{len(relations) + 1}",
+                source_emitted_id=parent_emitted_id,
+                target_emitted_id=emitted_id,
+                semantic_relation="containment",
+            )
+        )
+
+        kind = value.get("type")
+        label: str | None = None
+        semantic_label: str | None = None
+        child_ids: tuple[str, ...] = ()
+        referenced_rule_id: str | None = None
+        if kind == "terminal":
+            semantic_label = _text(value.get("value"), "terminal value")
+            label = _railroad_visible_text(semantic_label)
+            compatibility_substituted = compatibility_substituted or label != semantic_label
+            code = (
+                f"terminal({json.dumps(_railroad_source_text(semantic_label), ensure_ascii=False)})"
+            )
+        elif kind == "nonterminal":
+            name = _identifier(value.get("name"), "nonterminal name")
+            referenced_rule_id = emitted_by_name.get(name)
+            if referenced_rule_id is None or name not in known:
+                raise SerializationError(f"unresolved railroad nonterminal: {name}")
+            label = semantic_label = name
+            code = f"nonterminal({json.dumps(_railroad_source_text(name), ensure_ascii=False)})"
+        elif kind == "special":
+            semantic_text = _text(value.get("text"), "special text")
+            semantic_label = f"? {semantic_text} ?"
+            label = f"? {_railroad_visible_text(semantic_text)} ?"
+            compatibility_substituted = compatibility_substituted or label != semantic_label
+            code = (
+                f"special({json.dumps(_railroad_source_text(semantic_text), ensure_ascii=False)})"
+            )
+        else:
+            collection_key = {"sequence": "elements", "choice": "alternatives"}.get(str(kind))
+            if collection_key is not None:
+                children = value.get(collection_key)
+                if not isinstance(children, list) or not children:
+                    raise SerializationError(f"railroad {kind} requires {collection_key}")
+                child_plans = [
+                    visit_expression(
+                        child,
+                        depth=depth + 1,
+                        parent_emitted_id=emitted_id,
+                    )
+                    for child in children
+                ]
+                child_ids = tuple(child.emitted_id for child in child_plans)
+                code = f"{kind}({', '.join(child.code for child in child_plans)})"
+            else:
+                unary_name = {
+                    "optional": "optional",
+                    "one_or_more": "oneOrMore",
+                    "zero_or_more": "zeroOrMore",
+                }.get(str(kind))
+                if unary_name is None:
+                    raise SerializationError(f"unsupported railroad expression type: {kind!r}")
+                child = visit_expression(
+                    value.get("element"),
+                    depth=depth + 1,
+                    parent_emitted_id=emitted_id,
+                )
+                child_ids = (child.emitted_id,)
+                code = f"{unary_name}({child.code})"
+        expression = RailroadExpressionPlan(
+            source_record=value,
+            emitted_id=emitted_id,
+            kind=str(kind),
+            label=label,
+            semantic_label=semantic_label,
+            child_ids=child_ids,
+            referenced_rule_id=referenced_rule_id,
+            code=code,
+        )
+        expressions[expression_index - 1] = expression
+        return expression
+
+    planned_rules: list[RailroadRulePlan] = []
+    for name, rule in zip(names, rule_records, strict=True):
+        emitted_id = emitted_by_name[name]
+        native_name = native_by_name[name]
+        definition = visit_expression(
+            rule.get("definition"),
+            depth=0,
+            parent_emitted_id=emitted_id,
+        )
+        planned_rules.append(
+            RailroadRulePlan(
+                source_record=rule,
+                source_name=name,
+                emitted_id=emitted_id,
+                native_name=native_name,
+                label=f"{native_name} =",
+                definition_expression_id=definition.emitted_id,
+                definition_code=definition.code,
+            )
+        )
+
+    accessibility: list[RailroadAccessibilityPlan] = []
+    for experimental in (False, True):
+        resolved = resolve_accessibility(ir, "railroad", experimental=experimental)
+        source_title = _text(resolved.title, "accessible title")
+        source_description = _text(resolved.description, "accessible description")
+        title = _railroad_visible_text(source_title)
+        description = _railroad_visible_text(source_description)
+        compatibility_substituted = (
+            compatibility_substituted or title != source_title or description != source_description
+        )
+        accessibility.append(
+            RailroadAccessibilityPlan(
+                experimental=experimental,
+                title=title,
+                description=description,
+                source_title=source_title,
+                source_description=source_description,
+            )
+        )
+    semantic_title = _text(ir["title"], "title") if ir.get("title") is not None else None
+    title = _railroad_visible_text(semantic_title) if semantic_title is not None else None
+    compatibility_substituted = compatibility_substituted or title != semantic_title
+    plan = RailroadPlan(
+        title=title,
+        semantic_title=semantic_title,
+        rules=tuple(planned_rules),
+        expressions=tuple(expression for expression in expressions if expression is not None),
+        relations=tuple(relations),
+        accessibility=tuple(accessibility),
+        mapped_rule_names=tuple(mapped_rule_names),
+        compatibility_substituted=compatibility_substituted,
+    )
+    for experimental in (False, True):
+        _railroad_code(plan, experimental=experimental)
+    return plan
+
+
+def _railroad_code(plan: RailroadPlan, *, experimental: bool) -> str:
+    accessibility = next(
+        profile for profile in plan.accessibility if profile.experimental is experimental
+    )
+    lines = [
+        "railroad-beta",
+        f"accTitle: {_railroad_source_text(accessibility.source_title)}",
+        f"accDescr: {_railroad_source_text(accessibility.source_description)}",
+    ]
+    if plan.semantic_title is not None:
+        lines.append(f"title {_railroad_source_text(plan.semantic_title)}")
+    lines.extend(f"{rule.native_name} = {rule.definition_code};" for rule in plan.rules)
+    code = _preflight_experimental_code("\n".join(lines) + "\n", diagram_type="railroad")
+    scanner = MermaidSecurityScanner(SecurityProfile.STRICT)
+    for source_name, source in (
+        ("source", code),
+        ("NFKC-normalized source", unicodedata.normalize("NFKC", code)),
+    ):
+        report = scanner.scan(source)
+        if not report.safe:
+            rules = ", ".join(sorted({finding.rule for finding in report.findings}))
+            raise SerializationError(f"railroad {source_name} failed strict security scan: {rules}")
+    return code
+
+
+def serialize_railroad(ir: Mapping[str, Any], *, experimental: bool = False) -> SerializationResult:
+    plan = plan_railroad_records(ir)
+    warnings = (
+        *((_RAILROAD_RULE_MAPPING_WARNING,) if plan.mapped_rule_names else ()),
+        *((_RAILROAD_COMPATIBILITY_WARNING,) if plan.compatibility_substituted else ()),
+    )
+    return SerializationResult.native(
+        "railroad",
+        _railroad_code(plan, experimental=experimental),
+        warnings=warnings,
+        stability="experimental",
+    )
 
 
 def plan_zenuml_structure(

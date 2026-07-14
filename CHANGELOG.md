@@ -57,6 +57,28 @@
   Both generated Scenes use zero geometry, no inferred groups, and record-local evidence instead of raw
   bbox/style metadata; Organization ignores raw direction while Lineage uses only its validated direction.
   Serializer output is bounded to 500 records and 50,000 characters / 5,000 lines.
+- Strict nested Railroad rule/expression extraction with an exact recursive discriminator for terminal,
+  nonterminal, special, sequence, choice, optional, one-or-more, and zero-or-more AST nodes. A shared frozen
+  preorder plan now binds the native serializer, generated Scene, OCR projection, and provenance to the same
+  `railroad_rule_*`, `railroad_expression_N`, and containment-only `railroad_relation_N` identities. The Scene
+  models Mermaid 11.16's marker-less `LR` structure with zero geometry, exact `native_name =` and leaf-visible
+  text, no invented nonterminal-reference connector, and record-local evidence. Rule/reference/depth and separate
+  500-rule/500-expression limits plus 50,000-character/5,000-line source preflight fail closed. A canonical
+  visible compatibility layer maps ASCII angle brackets to `〈`/`〉`, every ASCII `#` to `＃`, entity-like `&`
+  prefixes to `＆`, and NFKC quote/backslash hazards to `″`/`∖`, with a compatibility warning; raw semantics
+  remain in typed IR. This covers bare `#word;`/`#35;` forms changed by Mermaid's global `encodeEntities`.
+  Zero-width separators exist only in emitted source and also split Mermaid preprocessor-active
+  `style`/`classDef` substrings. Raw and NFKC-normalized emitted forms both pass the strict source scan; only raw
+  source enters the production CandidateValidator parse/render hard gate. Rule names that are
+  scanner/preprocessor source-active or conservatively native-grammar-reserved (the case-folded
+  expression-word namespace,
+  `railroad-beta`, and the case-folded lowercase `title*` prefix) are mapped to collision-safe
+  `rrmapped_N[_suffix]` native names with a visible-change warning. Logical IDs remain source-based and normalized
+  source names remain in nonterminal labels. Scene/OCR share the exact compatibility text, and direct Scene
+  projection accepts only null or string-list `evidence_ids`, failing closed on malformed evidence. Runtime
+  integration covers compatibility-normalized injection text, bare hash forms, preprocessor substrings, reserved
+  rule names, accessibility, the raw parse/render gate, an NFKC parse/render grammar-injection safety probe, and
+  process cleanup.
 - Strict nested Wardley component/link and Cynefin domain/item/transition extraction contracts with shared
   bounded serializer/Scene/OCR plans. Wardley maps horizontal/vertical IR coordinates to the native
   `[visibility, evolution]` order as `[y, x]`, canonicalizes the Scene to the rendered token values and

@@ -27,7 +27,7 @@ typed IR은 serializer가 실제 방출하는 node/edge 구조로 다시 변환�
 layout을 추측하지 않습니다. Scene IR portable fallback은 deterministic serializer 보존 여부를 평가할 수
 있습니다. raw/direct Mermaid는 아직 일반 AST→Scene 변환이 없으므로 구조 점수가 unavailable일 수 있습니다.
 평가 Scene adapter는 sequence/ZenUML, hierarchy/organization, planning/event, Packet/Ishikawa/TreeView,
-Wardley/Cynefin, data-lineage, Venn까지 포함하며 typed record의 evidence ID를 보존합니다.
+Wardley/Cynefin, data-lineage, Railroad, Venn까지 포함하며 typed record의 evidence ID를 보존합니다.
 Event Modeling의 generated Scene은 fallback serializer와 같은 namespaced frame/relation ID,
 화면에 보이는 typed/time label, lane subgraph membership, `LR` 방향, end-arrow만 사용합니다.
 ZenUML도 Sequence fallback의 namespaced participant/message ID, alias label, endpoint와 end-arrow를
@@ -47,6 +47,25 @@ data-flow/end-arrow, 검증된 `TB`/`BT`/`LR`/`RL` 방향만 사용합니다.
 Lineage relation evidence는 해당 relation에만 연결합니다. 두 adapter의 geometry는 0,
 group은 빈 list이며 OCR projection은 화면에 보이는 node/relation label을 record당 한 번만
 사용합니다.
+Railroad Scene도 shared plan의 `railroad_rule_*`·`railroad_expression_N` logical element와
+`railroad_relation_N` containment slot을 사용합니다. Rule과 leaf expression evidence는 각 element에,
+expression evidence는 그 expression으로 들어오는 relation에도 연결합니다. Native connector에는 marker가
+없으므로 relation의 양쪽 arrow flag를 모두 끄고 `LR`, zero geometry, 빈 group으로 표시합니다.
+Terminal/nonterminal/special만 각 grammar-visible label을 갖고 구조 operator는 label이 없으며,
+nonterminal reference를 별도 dependency edge로 세지 않습니다. OCR projection도 rule `native_name =`, leaf
+label과 special `? text ?`만 한 번씩 사용하고 accessibility/title이나 operator type을 content recall에
+넣지 않습니다. 여기서 rule text는 normalized safe source name 또는 scanner/preprocessor source-active와
+native grammar-reserved name을 collision-safe `rrmapped_N[_suffix]`로 mapping한 실제
+`native_name =`입니다. Source-active 범위에는 `style`/`classDef` substring이 포함되고, reserved 범위에는
+case-folded expression-word namespace, `railroad-beta`, case-folded lowercase `title*` prefix가 포함됩니다.
+Logical element
+ID는 source 기반 `railroad_rule_*`를 유지합니다. Mapping은 warning으로 공개되고 raw source name은 typed
+IR에, normalized name은 nonterminal label에 남습니다. Terminal/special/title/accessibility의 ASCII angle은
+`〈`/`〉`, 모든 ASCII `#`는 `＃`, entity-like `&` prefix는 `＆`, NFKC quote/backslash hazard는 `″`/`∖`로
+투영하고 warning으로 공개합니다. Scene/OCR은 emitted source의 zero-width separator를 제외한 이 exact
+compatibility text를 공유하고 semantic 원문은 typed IR에 보존합니다. Direct Scene은 `evidence_ids`가
+null/생략 또는 string list가 아니면 fail closed합니다. Raw source bbox·ID·label·role·shape·style extra는
+Scene/OCR 구조로 승격하지 않습니다.
 Wardley Scene은 raw record bbox 대신 native 좌표를 화면에 맞게 바꾼 `(x, 1-y)`만
 `normalized` explicit position으로 씁니다. IR의 수평/수직 `x`/`y`는 native에 `[y, x]`로
 방출하고 token 반올림을 Scene 값에도 적용합니다. `->` link는 실제 SVG에 marker가 없으므로

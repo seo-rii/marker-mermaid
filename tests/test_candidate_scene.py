@@ -2482,6 +2482,277 @@ def test_packet_scene_fails_closed_on_duplicate_or_normalized_field_ids(
     )
 
 
+def test_railroad_scene_reuses_visible_plan_structure_and_record_provenance() -> None:
+    ir = {
+        "title": "Hidden grammar title",
+        "acc_title": "Hidden accessibility title",
+        "rules": [
+            {
+                "name": "entry-point",
+                "comment": "Hidden rule comment",
+                "bbox": [1, 2, 30, 12],
+                "role": "raw rule role",
+                "shape": "diamond",
+                "style": "dashed",
+                "evidence_ids": ["ocr-entry-rule"],
+                "definition": {
+                    "type": "sequence",
+                    "label": "Hidden sequence label",
+                    "bbox": [2, 3, 29, 11],
+                    "role": "raw sequence role",
+                    "shape": "circle",
+                    "style": "thick",
+                    "evidence_ids": ["contour-sequence"],
+                    "elements": [
+                        {
+                            "type": "terminal",
+                            "value": "begin",
+                            "id": "raw-terminal-id",
+                            "bbox": [3, 4, 8, 9],
+                            "role": "raw terminal role",
+                            "shape": "hexagon",
+                            "style": "dotted",
+                            "evidence_ids": ["ocr-begin"],
+                        },
+                        {
+                            "type": "optional",
+                            "evidence_ids": ["contour-optional"],
+                            "element": {
+                                "type": "special",
+                                "text": "whitespace",
+                                "evidence_ids": ["ocr-whitespace"],
+                            },
+                        },
+                        {
+                            "type": "nonterminal",
+                            "name": "identifier",
+                            "evidence_ids": ["ocr-identifier-reference"],
+                        },
+                    ],
+                },
+            },
+            {
+                "name": "identifier",
+                "evidence_ids": ["ocr-identifier-rule"],
+                "definition": {
+                    "type": "terminal",
+                    "value": "name",
+                    "evidence_ids": ["ocr-name"],
+                },
+            },
+        ],
+    }
+
+    scene = typed_ir_to_scene("railroad", ir)
+
+    assert scene is not None
+    assert scene.diagram_type_candidates == ["railroad"]
+    assert scene.reading_direction == "LR"
+    assert scene.coordinate_space == "pixels"
+    assert scene.groups == []
+    assert [element.id for element in scene.elements] == [
+        "railroad_rule_entry_point",
+        "railroad_rule_identifier",
+        "railroad_expression_1",
+        "railroad_expression_2",
+        "railroad_expression_3",
+        "railroad_expression_4",
+        "railroad_expression_5",
+        "railroad_expression_6",
+    ]
+    assert [element.role for element in scene.elements] == [
+        "rule",
+        "rule",
+        "sequence",
+        "terminal",
+        "optional",
+        "special",
+        "nonterminal",
+        "terminal",
+    ]
+    assert [element.text for element in scene.elements] == [
+        "entry-point =",
+        "identifier =",
+        None,
+        "begin",
+        None,
+        "? whitespace ?",
+        "identifier",
+        "name",
+    ]
+    assert [element.shape for element in scene.elements] == [
+        None,
+        None,
+        None,
+        "round",
+        None,
+        "rectangle",
+        "rectangle",
+        "round",
+    ]
+    assert all(element.bbox == (0, 0, 0, 0) for element in scene.elements)
+    assert [element.evidence_ids for element in scene.elements] == [
+        ["ocr-entry-rule"],
+        ["ocr-identifier-rule"],
+        ["contour-sequence"],
+        ["ocr-begin"],
+        ["contour-optional"],
+        ["ocr-whitespace"],
+        ["ocr-identifier-reference"],
+        ["ocr-name"],
+    ]
+    assert [relation.id for relation in scene.relations] == [
+        f"railroad_relation_{index}" for index in range(1, 7)
+    ]
+    assert [(relation.source_id, relation.target_id) for relation in scene.relations] == [
+        ("railroad_rule_entry_point", "railroad_expression_1"),
+        ("railroad_expression_1", "railroad_expression_2"),
+        ("railroad_expression_1", "railroad_expression_3"),
+        ("railroad_expression_3", "railroad_expression_4"),
+        ("railroad_expression_1", "railroad_expression_5"),
+        ("railroad_rule_identifier", "railroad_expression_6"),
+    ]
+    assert [relation.evidence_ids for relation in scene.relations] == [
+        ["contour-sequence"],
+        ["ocr-begin"],
+        ["contour-optional"],
+        ["ocr-whitespace"],
+        ["ocr-identifier-reference"],
+        ["ocr-name"],
+    ]
+    assert all(relation.semantic_relation == "containment" for relation in scene.relations)
+    assert all(relation.relation_type == "generated_connector" for relation in scene.relations)
+    assert all(not relation.arrow_at_start for relation in scene.relations)
+    assert all(not relation.arrow_at_end for relation in scene.relations)
+    assert all(relation.polyline == [] for relation in scene.relations)
+    assert all(
+        relation.label is None and relation.line_style is None for relation in scene.relations
+    )
+
+    texts = list(typed_ir_semantic_texts("railroad", ir, scene))
+    assert texts == [
+        "entry-point =",
+        "identifier =",
+        "begin",
+        "? whitespace ?",
+        "identifier",
+        "name",
+    ]
+    assert (
+        ocr_recall(
+            ["entry point identifier begin whitespace name"],
+            "",
+            generated_texts=texts,
+        )
+        == 1
+    )
+    assert (
+        ocr_recall(
+            [
+                "Hidden grammar title Hidden accessibility title Hidden rule comment "
+                "Hidden sequence label raw rule role diamond dashed raw-terminal-id"
+            ],
+            "",
+            generated_texts=texts,
+        )
+        == 0
+    )
+
+
+def test_railroad_scene_and_ocr_use_mapped_native_and_compatible_visible_text() -> None:
+    ir = {
+        "rules": [
+            {
+                "name": "style",
+                "definition": {
+                    "type": "sequence",
+                    "elements": [
+                        {"type": "terminal", "value": "<script>"},
+                        {"type": "terminal", "value": "plain #35; text"},
+                        {"type": "terminal", "value": "xstyle:a#foo;tail"},
+                        {"type": "terminal", "value": "a＂ ＼ ﹨"},
+                        {"type": "nonterminal", "name": "style"},
+                    ],
+                },
+            }
+        ]
+    }
+
+    scene = typed_ir_to_scene("railroad", ir)
+
+    assert scene is not None
+    assert [element.text for element in scene.elements] == [
+        "rrmapped_1 =",
+        None,
+        "〈script〉",
+        "plain ＃35; text",
+        "xstyle:a＃foo;tail",
+        "a″ ∖ ∖",
+        "style",
+    ]
+    assert list(typed_ir_semantic_texts("railroad", ir, scene)) == [
+        "rrmapped_1 =",
+        "〈script〉",
+        "plain ＃35; text",
+        "xstyle:a＃foo;tail",
+        "a″ ∖ ∖",
+        "style",
+    ]
+
+
+@pytest.mark.parametrize(
+    "ir",
+    [
+        {
+            "rules": [
+                {
+                    "name": "entry",
+                    "definition": {"type": "nonterminal", "name": "missing"},
+                }
+            ]
+        },
+        {
+            "rules": [
+                {
+                    "name": "entry",
+                    "definition": {
+                        "type": "sequence",
+                        "elements": [
+                            {"type": "terminal", "value": f"token-{index}"} for index in range(500)
+                        ],
+                    },
+                }
+            ]
+        },
+    ],
+)
+def test_railroad_scene_fails_closed_with_invalid_or_over_budget_plan(
+    ir: dict[str, object],
+) -> None:
+    assert typed_ir_to_scene("railroad", ir) is None
+
+
+@pytest.mark.parametrize(
+    "malformed_evidence_ids",
+    ["ocr-token", {"ocr-token": 1}, 7, [7], [{"ocr-token": 1}]],
+)
+@pytest.mark.parametrize("record_kind", ["rule", "expression"])
+def test_railroad_scene_fails_closed_on_non_list_evidence_ids(
+    malformed_evidence_ids: object,
+    record_kind: str,
+) -> None:
+    rule = {
+        "name": "entry",
+        "definition": {"type": "terminal", "value": "token"},
+    }
+    if record_kind == "rule":
+        rule["evidence_ids"] = malformed_evidence_ids
+    else:
+        rule["definition"]["evidence_ids"] = malformed_evidence_ids
+
+    assert typed_ir_to_scene("railroad", {"rules": [rule]}) is None
+
+
 @pytest.mark.parametrize(
     ("diagram_type", "ir", "expected_ids"),
     [

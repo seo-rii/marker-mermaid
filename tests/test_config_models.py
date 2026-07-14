@@ -2954,6 +2954,86 @@ def test_generic_candidate_envelopes_apply_special_native_nested_contracts(
             {"domains": [], "transitions": [{"label": False}]},
             "transitions[0].label",
         ),
+        ("railroad", {"rules": ["rule"]}, "rules[0]"),
+        ("railroad", {"rules": [{"name": 1}]}, "rules[0].name"),
+        (
+            "railroad",
+            {"rules": [{"definition": "terminal"}]},
+            "rules[0].definition",
+        ),
+        (
+            "railroad",
+            {"rules": [{"definition": {}}]},
+            "rules[0].definition",
+        ),
+        (
+            "railroad",
+            {"rules": [{"definition": {"type": "terminal", "value": []}}]},
+            "rules[0].definition.terminal.value",
+        ),
+        (
+            "railroad",
+            {"rules": [{"definition": {"type": "nonterminal", "name": False}}]},
+            "rules[0].definition.nonterminal.name",
+        ),
+        (
+            "railroad",
+            {"rules": [{"definition": {"type": "special", "text": 1}}]},
+            "rules[0].definition.special.text",
+        ),
+        (
+            "railroad",
+            {"rules": [{"definition": {"type": "sequence", "elements": "item"}}]},
+            "rules[0].definition.sequence.elements",
+        ),
+        (
+            "railroad",
+            {"rules": [{"definition": {"type": "sequence", "elements": [1]}}]},
+            "rules[0].definition.sequence.elements[0]",
+        ),
+        (
+            "railroad",
+            {"rules": [{"definition": {"type": "choice", "alternatives": [1]}}]},
+            "rules[0].definition.choice.alternatives[0]",
+        ),
+        (
+            "railroad",
+            {"rules": [{"definition": {"type": "optional", "element": []}}]},
+            "rules[0].definition.optional.element",
+        ),
+        (
+            "railroad",
+            {
+                "rules": [
+                    {
+                        "definition": {
+                            "type": "one_or_more",
+                            "element": {"type": "terminal", "evidence_ids": [1]},
+                        }
+                    }
+                ]
+            },
+            "rules[0].definition.one_or_more.element.terminal.evidence_ids[0]",
+        ),
+        (
+            "railroad",
+            {
+                "rules": [
+                    {
+                        "definition": {
+                            "type": "zero_or_more",
+                            "element": {"type": "terminal", "bbox": [0, False, 10, 10]},
+                        }
+                    }
+                ]
+            },
+            "rules[0].definition.zero_or_more.element.terminal.bbox",
+        ),
+        (
+            "railroad",
+            {"rules": [{"bbox": [0, 0, 10], "definition": None}]},
+            "rules[0].bbox",
+        ),
     ],
 )
 def test_experimental_native_nested_contracts_reject_strict_known_types(
@@ -3003,6 +3083,37 @@ def test_cynefin_contract_accepts_normalized_domain_token_without_rewriting() ->
 
     assert candidate.ir == ir
     assert candidate.ir["domains"][0]["name"] == "  CoMpLeX  "
+
+
+@pytest.mark.parametrize("expression_type", ["Terminal", "repeat", "oneOrMore", ""])
+def test_railroad_contract_rejects_noncanonical_discriminator_tokens(
+    expression_type: str,
+) -> None:
+    with pytest.raises(ValidationError, match=r"rules\[0\]\.definition"):
+        TypedIRCandidate(
+            diagram_type="railroad",
+            ir={"rules": [{"definition": {"type": expression_type}}]},
+        )
+
+
+def test_railroad_contract_rejects_nonfinite_recursive_bbox_at_canonical_boundary() -> None:
+    with pytest.raises(ValidationError, match="typed IR number must be finite"):
+        TypedIRCandidate(
+            diagram_type="railroad",
+            ir={
+                "rules": [
+                    {
+                        "definition": {
+                            "type": "optional",
+                            "element": {
+                                "type": "terminal",
+                                "bbox": [0, 0, math.inf, 10],
+                            },
+                        }
+                    }
+                ]
+            },
+        )
 
 
 @pytest.mark.parametrize(
@@ -3063,6 +3174,59 @@ def test_cynefin_contract_accepts_normalized_domain_token_without_rewriting() ->
                 "future_root_metadata": {"kept": True},
             },
         ),
+        (
+            "railroad",
+            {
+                "rules": [
+                    {
+                        "name": "root",
+                        "bbox": [0, 0, 20, 10],
+                        "evidence_ids": ["ocr-root"],
+                        "definition": {
+                            "type": "choice",
+                            "alternatives": [
+                                {
+                                    "type": "terminal",
+                                    "value": "literal",
+                                    "future_metadata": {"kept": True},
+                                },
+                                {
+                                    "type": "sequence",
+                                    "elements": [
+                                        {
+                                            "type": "nonterminal",
+                                            "name": "other",
+                                            "bbox": [1, 1, 2, 2],
+                                            "evidence_ids": ["ocr-ref"],
+                                        },
+                                        {
+                                            "type": "special",
+                                            "text": "annotation",
+                                        },
+                                        {
+                                            "type": "optional",
+                                            "element": {
+                                                "type": "one_or_more",
+                                                "element": {
+                                                    "type": "zero_or_more",
+                                                    "element": {
+                                                        "type": "terminal",
+                                                        "value": "x",
+                                                    },
+                                                },
+                                            },
+                                        },
+                                    ],
+                                },
+                            ],
+                            "future_metadata": {"kept": True},
+                        },
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "future_root_metadata": {"kept": True},
+            },
+        ),
     ],
 )
 def test_experimental_native_contracts_preserve_legacy_extra_and_original_ir(
@@ -3080,6 +3244,7 @@ def test_experimental_native_contracts_preserve_legacy_extra_and_original_ir(
     [
         ("wardley", {"nodes": []}, "components"),
         ("cynefin", {"quadrants": []}, "domains"),
+        ("railroad", {"productions": []}, "rules"),
     ],
 )
 def test_experimental_native_aliases_do_not_replace_canonical_roots(
@@ -3114,6 +3279,43 @@ def test_experimental_native_aliases_do_not_replace_canonical_roots(
                 "transitions": [{"source": "complex", "target": "missing"}],
             },
         ),
+        ("railroad", {"rules": []}),
+        ("railroad", {"rules": [{}]}),
+        ("railroad", {"rules": [{"name": "", "definition": None}]}),
+        (
+            "railroad",
+            {"rules": [{"name": "root", "definition": {"type": "terminal"}}]},
+        ),
+        (
+            "railroad",
+            {"rules": [{"name": "root", "definition": {"type": "sequence"}}]},
+        ),
+        (
+            "railroad",
+            {
+                "rules": [
+                    {
+                        "name": "root",
+                        "definition": {"type": "choice", "alternatives": []},
+                    }
+                ]
+            },
+        ),
+        (
+            "railroad",
+            {"rules": [{"name": "root", "definition": {"type": "optional"}}]},
+        ),
+        (
+            "railroad",
+            {
+                "rules": [
+                    {
+                        "name": "root",
+                        "definition": {"type": "nonterminal", "name": "missing"},
+                    }
+                ]
+            },
+        ),
     ],
 )
 def test_experimental_native_contracts_leave_semantic_requiredness_to_serializer(
@@ -3139,6 +3341,21 @@ def test_experimental_native_contracts_leave_semantic_requiredness_to_serializer
             {"domains": [{"name": "complex", "items": ["Emergent"]}]},
             lambda ir: ir["domains"][0]["items"].append(1),
             r"domains\[0\]\.items\[1\]",
+        ),
+        (
+            "railroad",
+            {
+                "rules": [
+                    {
+                        "definition": {
+                            "type": "sequence",
+                            "elements": [{"type": "terminal", "value": "x"}],
+                        }
+                    }
+                ]
+            },
+            lambda ir: ir["rules"][0]["definition"]["elements"][0].__setitem__("value", []),
+            r"rules\[0\]\.definition\.sequence\.elements\[0\]\.terminal\.value",
         ),
     ],
 )
@@ -3167,6 +3384,20 @@ def test_canonical_key_revalidates_mutated_experimental_native_contracts(
             "cynefin",
             {"domains": [{"name": "complex", "items": [{"evidence_ids": [1]}]}]},
             r"domains\[0\]\.items\[0\]\.evidence_ids\[0\]",
+        ),
+        (
+            "railroad",
+            {
+                "rules": [
+                    {
+                        "definition": {
+                            "type": "choice",
+                            "alternatives": [{"type": "special", "evidence_ids": [1]}],
+                        }
+                    }
+                ]
+            },
+            r"rules\[0\]\.definition\.choice\.alternatives\[0\]\.special\.evidence_ids\[0\]",
         ),
     ],
 )

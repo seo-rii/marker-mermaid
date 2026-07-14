@@ -76,8 +76,24 @@ accessible title/description에 동일하게 적용되며 실제 SVG text integr
   domain transition만 허용합니다. Canonical item은 `label`/bbox/evidence를 갖는 object이며,
   기존 scalar string item은 입력 호환을 위해 받지만 provenance를 만들지 않습니다. 공유 plan은
   domain·item·transition ID와 표시 text, membership을 고정합니다.
-- Railroad는 terminal/nonterminal/sequence/choice/optional/repetition AST를 bounded recursion으로
-  직렬화하고 모든 nonterminal reference가 rule에 존재하는지 검사합니다.
+- Railroad는 strict nested rule/expression contract와 frozen preorder plan으로
+  terminal/nonterminal/special/sequence/choice/optional/repetition AST를 직렬화합니다.
+  Rule은 `railroad_rule_*`, expression은 `railroad_expression_N`, native source에 ID 문법이 없는
+  containment은 `railroad_relation_N` Scene/provenance slot을 사용합니다. 모든 nonterminal reference가
+  존재하는 rule을 가리키는지 검사하지만 native SVG에 없는 reference connector는 만들지 않습니다.
+  Rule label은 실제 runtime text인 `native_name =`, terminal/nonterminal은 runtime-visible label,
+  special은 `? text ?`이고 operator node는 표시 text가 없습니다. Canonical compatibility text는 ASCII
+  `<`/`>`를 `〈`/`〉`, 모든 ASCII `#`를 `＃`, entity-like `&` prefix를 `＆`, NFKC quote/backslash hazard를
+  `″`/`∖`로 표시하고 compatibility warning을 남기며 원 semantic text는 typed IR/sidecar에 유지합니다.
+  전역 `encodeEntities`가 변형하는 bare `#word;`와 `#35;`도 같은 hash 계약을 적용합니다. Active token용
+  zero-width separator는 source에만 넣고 `style...:#...;`/`classDef...:#...;` preprocessor substring도
+  분리하며, raw와 NFKC-normalized emitted source를 모두 strict scan합니다. Scanner/preprocessor
+  source-active rule name뿐 아니라 case-folded expression-word namespace, `railroad-beta`, case-folded lowercase
+  `title*` prefix도 collision-safe
+  `rrmapped_N[_suffix]` native name으로 mapping하고 visible change warning을 남깁니다. 모든 safe source name을
+  먼저 reserve해 collision을 피하며, raw source name은 typed IR에, normalized name은 nonterminal label에
+  유지합니다. Scene/OCR은 separator 없는 동일 compatibility text를 사용하고 direct Scene은 null/생략 또는
+  string list가 아닌 `evidence_ids`를 fail closed합니다.
 - ZenUML은 pinned runtime에 extension이 없어 Sequence fallback을 사용합니다. Strict nested
   participant/message 계약과 공유 plan이 `zenuml_participant_*` emitted ID, alias, endpoint,
   단방향 message만 방출합니다. Mermaid message에는 ID 문법이 없으므로
@@ -136,7 +152,7 @@ canonical provider prompt에는 `label`만 노출합니다. Organization fallbac
 재현하지 않으므로 위 계층 Scene의 bbox 보존 규칙을 공유하지 않습니다.
 
 엄격한 source preflight가 구현된 Packet·Ishikawa·TreeView·Event Modeling·Wardley·Cynefin·ZenUML·
-Organization·Data Lineage
+Organization·Data Lineage·Railroad
 serializer는 native/fallback과 무관하게 50,000자·5,000줄 hard budget을 반환 전에
 검사합니다. Entity-like literal을 Mermaid 11.16이 정확히
 보존하지 못하는 문법에서는 보이는 `＆`/`＃` compatibility glyph를 사용하고 warning을
@@ -169,7 +185,12 @@ Kanban/GitGraph도 같은 방식으로 native rejection 뒤 공용 planning plan
 Organization은 실제 TreeView runtime fixture와 simulated rejection→Flowchart pipeline fixture를 함께
 고정합니다. Data Lineage Flowchart fallback도 실제 strict runtime fixture에서
 parse/render, visible label, accessibility, security 계약을 검사합니다. experimental native도
-validation hard gate를 우회하지 않습니다. Wardley·Cynefin은 현재 native runtime rejection 뒤
+validation hard gate를 우회하지 않습니다. Railroad native fixture는 재귀 choice/sequence와
+terminal/nonterminal/special의 compatibility text, 접근성, source-only active-token neutralization,
+raw/NFKC-normalized strict scan, raw CandidateValidator parse/render hard gate, NFKC grammar-injection safety
+probe, scanner/preprocessor source-active·grammar-reserved rule-name mapping, bare `#word;`/`#35;`,
+`style`/`classDef` substring, NFKC quote injection neutralization과 runtime 종료를 고정합니다.
+Wardley·Cynefin은 현재 native runtime rejection 뒤
 같은 candidate slot에서 대체 grammar를 재시도하지 않으므로, 그 경우 후보는 격리되고 review에
 남습니다. Cynefin은 runtime이 성공해도 위 고정 template 경계 때문에 자동 Markdown 게시 대신
 review workspace/sidecar로 routing합니다.
