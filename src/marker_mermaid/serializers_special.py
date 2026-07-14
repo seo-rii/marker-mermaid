@@ -554,6 +554,16 @@ def plan_packet_fields(ir: dict[str, Any]) -> PacketPlan:
     return PacketPlan(tuple(normalized), contiguous)
 
 
+def packet_native_title_text(ir: Mapping[str, Any]) -> str | None:
+    """Return the normalized glyphs visible in a native Packet canvas title."""
+
+    value = ir.get("title")
+    if not value:
+        return None
+    text, _substituted = _entity_compatibility_text(_semantic_text(value, context="packet title"))
+    return text
+
+
 def _packet_fallback(
     ir: dict[str, Any],
     fields: tuple[PacketFieldPlan, ...],
@@ -611,8 +621,9 @@ def _serialize_packet(
         ir, "packet", experimental=experimental
     )
     lines = ["packet-beta", *accessibility_lines]
-    if ir.get("title"):
-        lines.append(f"    title {_special_directive_text(ir['title'], context='packet title')}")
+    native_title = packet_native_title_text(ir)
+    if native_title is not None:
+        lines.append(f"    title {_neutralize_active_text(native_title)}")
     lines.extend(
         f'{field.start}-{field.end}: "{_packet_text(field.label, context="packet field label")}"'
         for field in plan.fields

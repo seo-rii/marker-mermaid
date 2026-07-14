@@ -95,7 +95,10 @@ glyph로 표시하는 경우 OCR projection도
 Packet Scene은 serializer의 field plan에서 나온 reserved-safe emitted ID, label,
 bbox/evidence를 그대로 사용하고 입력에 없는 field 간 edge를 추가하지 않습니다.
 Bit range는 같은 plan에서 검증되지만 Scene element로 승격하지 않고 별도 numeric
-projection/source gate에서 비교합니다.
+projection/source gate에서 비교합니다. Pipeline은 검증된 terminal grammar도 semantic projection에
+전달합니다. Native Packet일 때만 실제 canvas의 normalized title을 OCR text에 포함하고, disconnected
+Flowchart fallback에서는 native-only title을 제외합니다. Entity-like title은 serializer와 같은 visible
+fullwidth glyph를 사용하지만 source security용 invisible separator는 OCR token을 쪼개지 않도록 제거합니다.
 Ishikawa/TreeView는 serializer와 공유하는 DFS plan의 정확한 parent/emitted ID로 containment를
 만듭니다. Duplicate/normalized collision, missing-ID ambiguity, alias conflict, cycle, object reuse 또는
 resource 한도로 planner가 거부하면 Scene adapter는 충돌 node를 조용히 제거해 attribution
@@ -177,7 +180,8 @@ generated Scene attribution에서 제외합니다.
   time·frame type·label 조합 및 relation label, Wardley는 native title·component·link label을 셉니다.
   Cynefin native는 고정 template·실제 visible item(`confusion`은 세 개+`+N more`)·transition label을,
   Flowchart fallback은 supplied domain label을 한 번씩, 모든 explicit item과 transition label을 셉니다. ZenUML은
-  Sequence fallback의 participant alias·message label만 셉니다. 내부 endpoint ID, 좌표, anchor 같은 문법
+  Sequence fallback의 participant alias·message label만 셉니다. Packet은 terminal이 native일 때만 canvas
+  title을 field label 앞에 세고 Flowchart fallback에서는 제외합니다. 내부 endpoint ID, 좌표, anchor 같은 문법
   구조와 접근성 text는 OCR 의미 증거로 세지 않습니다. 각 유형의 record planning은 serializer와 projection이
   같은 deterministic helper를 공유합니다.
 - Typed semantic projection이 malformed data나 adapter defect로 예외를 내면 해당 candidate의 OCR을

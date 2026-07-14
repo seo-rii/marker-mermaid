@@ -50,6 +50,7 @@ from marker_mermaid.serializers_phase2 import (
 )
 from marker_mermaid.serializers_planning import plan_gitgraph_records, plan_kanban_records
 from marker_mermaid.serializers_special import (
+    packet_native_title_text,
     plan_eventmodeling_records,
     plan_ishikawa_hierarchy,
     plan_packet_fields,
@@ -1237,8 +1238,10 @@ def typed_ir_semantic_texts(
     diagram_type: str,
     ir: dict[str, Any],
     scene: DiagramSceneIR,
+    *,
+    emitted_diagram_type: str | None = None,
 ) -> Iterator[str]:
-    """Project serializer-visible typed IR text without Mermaid identifiers.
+    """Project terminal-serializer-visible typed IR text without Mermaid identifiers.
 
     Structural scenes deliberately omit record details such as class members and ER
     attributes. OCR scoring needs those rendered labels while topology and textual
@@ -1413,6 +1416,16 @@ def typed_ir_semantic_texts(
         for relation in plan.relations:
             if relation.label is not None:
                 yield relation.label
+        return
+    if diagram_type == "packet":
+        plan = plan_packet_fields(ir)
+        terminal_type = (emitted_diagram_type or diagram_type).casefold()
+        if terminal_type.startswith("packet"):
+            native_title = packet_native_title_text(ir)
+            if native_title is not None:
+                yield native_title
+        for field in plan.fields:
+            yield field.label
         return
     if diagram_type == "railroad":
         plan = plan_railroad_records(ir)

@@ -849,7 +849,7 @@ def test_pipeline_isolates_generated_scene_conversion_failure(fake_runtime, monk
 
 
 def test_pipeline_isolates_generated_semantic_text_projection_failure(fake_runtime, monkeypatch):
-    def fail_text_projection(diagram_type, ir, scene):
+    def fail_text_projection(diagram_type, ir, scene, *, emitted_diagram_type=None):
         yield from ()
         raise ValueError("invalid semantic projection")
 

@@ -114,6 +114,10 @@
   duplicate source section/task IDs cannot erase rendered records. Invalid Block endpoints and malformed State
   records or transitions fail closed instead of producing a partial semantic Scene. Boundary markers stay out of
   structural Scene relations while their rendered transition labels remain in the semantic OCR projection.
+- Packet semantic OCR projection is now terminal-aware: a validated native Packet includes its normalized canvas
+  title, while a same-slot Flowchart fallback excludes that native-only text. Native serialization and scoring
+  share entity-compatible title normalization; invisible source-security separators are omitted from OCR tokens,
+  and field labels plus field-local numeric binding remain unchanged.
 - Bounded pre-validation source repair with audit events, diagnostics, idempotence, and AST adapter seam.
 - Page-level missed-diagram proposals with occupied-region exclusion and virtual source crops.
 - Profile-gated flowchart fill, border, and link style recovery with strict CSS allowlists.

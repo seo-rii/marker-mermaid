@@ -269,6 +269,13 @@ explicit start/end를 묶어 contiguous 여부를 판정합니다. Gap이 있거
 disconnected Flowchart를 방출합니다. Generated Scene도 같은 ID/label/bbox/evidence의
 `field` element만 `LR` 순서로 만들고 relation은 비워 둡니다.
 
+Native Packet의 명시적 `title`은 field plan과 별도의 공용 title normalizer가 whitespace와
+entity-compatible visible glyph를 한 번만 결정합니다. Serializer source는 active token을 끊는 invisible
+separator를 추가할 수 있지만 semantic OCR projection은 화면상 동일한 text에서 그 separator를 제거합니다.
+Pipeline은 parse/render로 확인한 terminal type을 projection에 넘기므로 `packet` terminal만 title을 세고,
+같은 candidate slot의 `flowchart` fallback은 접근성 metadata에 남은 title을 canvas label로 오인하지 않습니다.
+이 분기는 field label과 field-local numeric range association을 변경하지 않습니다.
+
 Ishikawa plan은 child가 없는 effect와 categories를 하나의 DFS tree로, TreeView plan은
 root/children tree로 검증합니다. Source ID·emitted ID·label·depth·parent·source record를
 각 row에 고정하며 serializer, Flowchart fallback과 Scene containment relation이 이 row를 공유합니다.

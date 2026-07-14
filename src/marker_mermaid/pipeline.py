@@ -2527,6 +2527,7 @@ class ReconstructionPipeline:
                     semantic_diagram_type,
                     typed_ir,
                     generated_scene,
+                    emitted_diagram_type=runtime.diagram_type,
                 )
             else:
                 semantic_labels = chain(
