@@ -231,6 +231,12 @@
 
 ### Changed
 
+- Generated-node provenance scoring and the release evaluator now share a collision-free attribution
+  policy. Only `ocr_token`, `vector_text`, `contour`, `vlm_observation`, and `user_edit` evidence can
+  support a node; `source_crop`, `line_segment`, and `arrowhead` cannot. If multiple generated nodes
+  claim the same eligible evidence ID, that ID is conservatively revoked from every claimant instead
+  of inflating coverage. Relation/group references remain outside node-collision accounting, and the
+  release evaluator applies the rule independently within each corpus case.
 - PDF vector extraction now applies reconstruction-global streaming budgets before parsing,
   mapping, or deduplication: 256 sources, 2,048 primitive/command records, 5,000 text records,
   and 8,000,000 text characters by default. Malformed, out-of-crop, duplicate, and empty nested

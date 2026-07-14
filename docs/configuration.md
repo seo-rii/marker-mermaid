@@ -133,8 +133,12 @@ State/Class/ER/Requirement/Block typed serializer와 C4/Deployment/Component/Use
 `enabled_types` allowlist에 포함할 때 활성화됩니다. 요청 type과 실제 grammar가 다를 수 있으므로
 [serializer 계약](serialization.md)의 emitted type과 fallback chain을 함께 확인해야 합니다.
 Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn도 같은 allowlist와 계약을 사용합니다. 숫자 chart의 자동
-게시에는 OCR 또는 vector numeric evidence와 최소 numeric consistency가 필요합니다. 구조 후보는 생성
-node attribution을 계산할 수 없거나 80% 미만이면 자동 게시하지 않습니다.
+게시에는 OCR 또는 vector numeric evidence와 최소 numeric consistency가 필요합니다. 구조 후보는
+`ocr_token`, `vector_text`, `contour`, `vlm_observation`, `user_edit`만 node 근거로 사용하고,
+나머지 `source_crop`, `line_segment`, `arrowhead`는 node credit을 만들지 않습니다. 둘 이상의
+generated node가 같은 eligible ID를 참조하면 그 ID를 모두에서 취소한 뒤 attribution을
+계산합니다. 이 collision-free attribution을 계산할 수 없거나 80% 미만이면 자동 게시하지
+않습니다. 이 규칙은 기존 설정과 스키마를 바꾸지 않습니다.
 
 `tile_size`는 64 이상이고 `tile_overlap`은 0 이상 `tile_size` 미만이어야 합니다. View slot은 큰
 source의 tile 1~2개를 먼저 예약하고, 앞선 engine의 type top-k에 따라 유형별 priority를 적용합니다.

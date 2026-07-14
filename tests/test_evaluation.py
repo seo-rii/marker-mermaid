@@ -364,6 +364,55 @@ def test_fake_provenance_ids_do_not_satisfy_registry_gate(tmp_path):
     assert _gate(report, "generated_nodes_without_provenance").status == "fail"
 
 
+def test_shared_node_evidence_fails_the_release_provenance_gate(tmp_path):
+    manifest_path = _write_manifest(tmp_path)
+    prediction = json.loads((tmp_path / "prediction.json").read_text())
+    prediction["generated_scene_ir"]["elements"][1]["evidence_ids"] = ["ocr-a"]
+    prediction_hash = _write_json(tmp_path / "prediction.json", prediction)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["cases"][0]["prediction"]["sha256"] = prediction_hash
+    _write_json(manifest_path, manifest)
+
+    report = evaluate_manifest(load_evaluation_manifest(manifest_path))
+
+    assert _gate(report, "generated_nodes_without_provenance").observed == 1
+    assert _gate(report, "generated_nodes_without_provenance").status == "fail"
+
+
+def test_release_provenance_evidence_ids_are_scoped_to_each_case(tmp_path):
+    manifest_path = _write_manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    first = manifest["cases"][0]
+
+    source_two = tmp_path / "source-2.bin"
+    source_two.write_bytes(b"second-source-image")
+    truth_two = tmp_path / "ground-truth-2.json"
+    truth_two.write_bytes((tmp_path / "ground-truth.json").read_bytes())
+    prediction_two = tmp_path / "prediction-2.json"
+    prediction_two.write_bytes((tmp_path / "prediction.json").read_bytes())
+
+    second = json.loads(json.dumps(first))
+    second["case_id"] = "case-2"
+    second["source"] = {
+        "path": source_two.name,
+        "sha256": hashlib.sha256(source_two.read_bytes()).hexdigest(),
+    }
+    second["ground_truth"] = {
+        "path": truth_two.name,
+        "sha256": hashlib.sha256(truth_two.read_bytes()).hexdigest(),
+    }
+    second["prediction"] = {
+        "path": prediction_two.name,
+        "sha256": hashlib.sha256(prediction_two.read_bytes()).hexdigest(),
+    }
+    manifest["cases"].append(second)
+    _write_json(manifest_path, manifest)
+
+    report = evaluate_manifest(load_evaluation_manifest(manifest_path))
+
+    assert _gate(report, "generated_nodes_without_provenance").observed == 0
+
+
 def test_serializer_scope_does_not_enter_end_to_end_quality_denominators(tmp_path):
     report = evaluate_manifest(
         load_evaluation_manifest(_write_manifest(tmp_path, scope="serializer"))

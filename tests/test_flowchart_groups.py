@@ -5,6 +5,7 @@ from marker_mermaid.models import (
     MAX_TEXT_CHARS,
     DiagramSceneIR,
     SceneElement,
+    SceneRelation,
     VisualEvidence,
 )
 from marker_mermaid.pipeline import _generated_node_provenance_score
@@ -186,6 +187,269 @@ def test_normalized_id_collisions_cannot_borrow_another_nodes_provenance():
 
     assert generated is not None
     assert _generated_node_provenance_score(generated, source, evidence) == 0
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["ocr_token", "vector_text", "contour", "vlm_observation", "user_edit"],
+)
+def test_shared_node_evidence_is_revoked_for_every_direct_claimant(kind):
+    generated = DiagramSceneIR(
+        elements=[
+            SceneElement(
+                id="A",
+                role="node",
+                text="First",
+                bbox=(0, 0, 1, 1),
+                evidence_ids=["shared"],
+            ),
+            SceneElement(
+                id="B",
+                role="node",
+                text="Second",
+                bbox=(2, 0, 3, 1),
+                evidence_ids=["shared"],
+            ),
+        ]
+    )
+
+    score = _generated_node_provenance_score(
+        generated,
+        None,
+        [VisualEvidence(id="shared", kind=kind)],
+    )
+
+    assert score == 0
+
+
+def test_shared_inherited_evidence_is_revoked_for_every_generated_node():
+    source = DiagramSceneIR(
+        elements=[
+            SceneElement(
+                id="A",
+                role="node",
+                text="First",
+                bbox=(0, 0, 1, 1),
+                evidence_ids=["shared"],
+            ),
+            SceneElement(
+                id="B",
+                role="node",
+                text="Second",
+                bbox=(2, 0, 3, 1),
+                evidence_ids=["shared"],
+            ),
+        ]
+    )
+    generated = DiagramSceneIR(
+        elements=[
+            SceneElement(id="A", role="node", text="First", bbox=(0, 0, 1, 1)),
+            SceneElement(id="B", role="node", text="Second", bbox=(2, 0, 3, 1)),
+        ]
+    )
+
+    score = _generated_node_provenance_score(
+        generated,
+        source,
+        [VisualEvidence(id="shared", kind="ocr_token", text="First Second")],
+    )
+
+    assert score == 0
+
+
+def test_direct_and_inherited_claims_share_the_same_collision_domain():
+    source = DiagramSceneIR(
+        elements=[
+            SceneElement(id="A", role="node", text="First", bbox=(0, 0, 1, 1)),
+            SceneElement(
+                id="B",
+                role="node",
+                text="Second",
+                bbox=(2, 0, 3, 1),
+                evidence_ids=["shared"],
+            ),
+        ]
+    )
+    generated = DiagramSceneIR(
+        elements=[
+            SceneElement(
+                id="A",
+                role="node",
+                text="First",
+                bbox=(0, 0, 1, 1),
+                evidence_ids=["shared"],
+            ),
+            SceneElement(id="B", role="node", text="Second", bbox=(2, 0, 3, 1)),
+        ]
+    )
+
+    score = _generated_node_provenance_score(
+        generated,
+        source,
+        [VisualEvidence(id="shared", kind="contour", bbox=(0, 0, 3, 1))],
+    )
+
+    assert score == 0
+
+
+def test_unique_alternatives_support_nodes_after_shared_evidence_is_revoked():
+    generated = DiagramSceneIR(
+        elements=[
+            SceneElement(
+                id="A",
+                role="node",
+                text="First",
+                bbox=(0, 0, 1, 1),
+                evidence_ids=["shared", "unique-a"],
+            ),
+            SceneElement(
+                id="B",
+                role="node",
+                text="Second",
+                bbox=(2, 0, 3, 1),
+                evidence_ids=["shared", "unique-b"],
+            ),
+        ]
+    )
+    evidence = [
+        VisualEvidence(id="shared", kind="ocr_token", text="First Second"),
+        VisualEvidence(id="unique-a", kind="ocr_token", text="First"),
+        VisualEvidence(id="unique-b", kind="ocr_token", text="Second"),
+    ]
+
+    assert _generated_node_provenance_score(generated, None, evidence) == 1
+
+
+def test_direct_unique_evidence_keeps_inherited_shared_claims_out_of_collision_domain():
+    source = DiagramSceneIR(
+        elements=[
+            SceneElement(
+                id="A",
+                role="node",
+                text="First",
+                bbox=(0, 0, 1, 1),
+                evidence_ids=["shared"],
+            ),
+            SceneElement(
+                id="B",
+                role="node",
+                text="Second",
+                bbox=(2, 0, 3, 1),
+                evidence_ids=["shared"],
+            ),
+        ]
+    )
+    generated = DiagramSceneIR(
+        elements=[
+            SceneElement(
+                id="A",
+                role="node",
+                text="First",
+                bbox=(0, 0, 1, 1),
+                evidence_ids=["unique-a"],
+            ),
+            SceneElement(id="B", role="node", text="Second", bbox=(2, 0, 3, 1)),
+        ]
+    )
+    evidence = [
+        VisualEvidence(id="shared", kind="ocr_token", text="Second"),
+        VisualEvidence(id="unique-a", kind="ocr_token", text="First"),
+    ]
+
+    assert _generated_node_provenance_score(generated, source, evidence) == 1
+
+
+@pytest.mark.parametrize("direct_claim", [True, False])
+def test_duplicate_evidence_registry_ids_fail_closed_for_direct_and_inherited_claims(
+    direct_claim,
+):
+    source = DiagramSceneIR(
+        elements=[
+            SceneElement(
+                id="A",
+                role="node",
+                text="First",
+                bbox=(0, 0, 1, 1),
+                evidence_ids=["duplicate"],
+            )
+        ]
+    )
+    generated = DiagramSceneIR(
+        elements=[
+            SceneElement(
+                id="A",
+                role="node",
+                text="First",
+                bbox=(0, 0, 1, 1),
+                evidence_ids=["duplicate"] if direct_claim else [],
+            )
+        ]
+    )
+    evidence = [
+        VisualEvidence(id="duplicate", kind="ocr_token", text="First"),
+        VisualEvidence(id="duplicate", kind="vector_text", text="First"),
+    ]
+
+    assert _generated_node_provenance_score(generated, source, evidence) == 0
+
+
+@pytest.mark.parametrize("kind", ["source_crop", "line_segment", "arrowhead"])
+def test_context_and_connector_evidence_cannot_attribute_generated_nodes(kind):
+    generated = DiagramSceneIR(
+        elements=[
+            SceneElement(
+                id="A",
+                role="node",
+                text="First",
+                bbox=(0, 0, 1, 1),
+                evidence_ids=["context"],
+            )
+        ]
+    )
+
+    score = _generated_node_provenance_score(
+        generated,
+        None,
+        [VisualEvidence(id="context", kind=kind, bbox=(0, 0, 1, 1))],
+    )
+
+    assert score == 0
+
+
+def test_node_and_relation_reuse_is_not_a_node_evidence_collision():
+    generated = DiagramSceneIR(
+        elements=[
+            SceneElement(
+                id="A",
+                role="node",
+                text="First",
+                bbox=(0, 0, 1, 1),
+                evidence_ids=["node-a"],
+            ),
+            SceneElement(
+                id="B",
+                role="node",
+                text="Second",
+                bbox=(2, 0, 3, 1),
+                evidence_ids=["node-b"],
+            ),
+        ],
+        relations=[
+            SceneRelation(
+                id="edge",
+                source_id="A",
+                target_id="B",
+                relation_type="sequence",
+                evidence_ids=["node-b"],
+            )
+        ],
+    )
+    evidence = [
+        VisualEvidence(id="node-a", kind="contour", bbox=(0, 0, 1, 1)),
+        VisualEvidence(id="node-b", kind="contour", bbox=(2, 0, 3, 1)),
+    ]
+
+    assert _generated_node_provenance_score(generated, None, evidence) == 1
 
 
 def test_swimlane_candidate_scene_records_emitted_lane_groups():

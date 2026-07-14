@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from marker_mermaid.config import ALL_TYPES, CORE_TYPES
 from marker_mermaid.models import DiagramSceneIR, VisualEvidence
-from marker_mermaid.quality import SceneAlignment
+from marker_mermaid.quality import SceneAlignment, injective_node_provenance_counts
 
 MANIFEST_SCHEMA_VERSION = "mmx-eval-manifest-0.1"
 GROUND_TRUTH_SCHEMA_VERSION = "mmx-eval-ground-truth-0.1"
@@ -724,25 +724,28 @@ def _hard_gates(cases: tuple[LoadedCase, ...]) -> list[GateResult]:
     if not reconstructed or missing_generated_scene:
         gates.append(_unavailable_gate("generated_nodes_without_provenance", "<= 0.20"))
     else:
-        nodes: list[tuple[Any, set[str]]] = []
+        supported_nodes = 0
+        total_nodes = 0
         for case in reconstructed:
-            registry = {item.id for item in case.prediction.evidence}
-            nodes.extend(
-                (element, registry)
-                for element in case.prediction.generated_scene_ir.elements  # type: ignore[union-attr]
+            supported, total = injective_node_provenance_counts(
+                (
+                    element.evidence_ids
+                    for element in case.prediction.generated_scene_ir.elements  # type: ignore[union-attr]
+                ),
+                case.prediction.evidence,
             )
-        if not nodes:
+            supported_nodes += supported
+            total_nodes += total
+        if not total_nodes:
             gates.append(_unavailable_gate("generated_nodes_without_provenance", "<= 0.20"))
         else:
-            missing = sum(
-                not (set(element.evidence_ids) & registry) for element, registry in nodes
-            )
+            missing = total_nodes - supported_nodes
             gates.append(
                 _threshold_gate(
                     "generated_nodes_without_provenance",
-                    missing / len(nodes),
+                    missing / total_nodes,
                     0.20,
-                    len(nodes),
+                    total_nodes,
                     maximum=True,
                 )
             )

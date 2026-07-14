@@ -38,7 +38,9 @@ Group 삭제는 member node/edge를 보존하면서 exact Scene↔subgraph block
 - `extended` 기본 budget은 type 2개, candidate 3개, repair 3회입니다.
 - 의미 점수가 없는 결과는 성공률을 부풀리지 않고 `U` 등급과 review 대상으로 둡니다.
 - syntax/render 점수는 의미 점수를 희석할 수 없으며 게시 정책의 semantic threshold도 별도로 통과해야 합니다.
-- `extended`의 자동 생성 node는 생성 결과 기준 provenance가 80% 미만이면 review로 보냅니다.
+- `extended`의 자동 생성 node는 생성 결과 기준 collision-free provenance가 80% 미만이면
+  review로 보냅니다. 하나의 node 근거를 둘 이상의 generated node가 재사용하면 그 근거는
+  모두에서 모호한 것으로 간주해 coverage를 늘리지 않습니다.
 - node/relation의 OCR, contour, VLM observation 등 provenance를 sidecar에 보존합니다.
 - composite panel과 adjacent/continued multi-page fragment를 virtual source로 조립·출력합니다.
 - panel/merge OCR bbox와 원 page/block을 잇는 affine provenance를 sidecar에 보존합니다.

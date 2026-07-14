@@ -43,7 +43,11 @@ manifest SHA-256 snapshot을 포함합니다.
 
 Prediction은 `VisualEvidence[]` registry도 포함합니다. Generated node의 `evidence_ids` 문자열이 비어
 있지 않은 것만으로 provenance를 인정하지 않고, 같은 hash-bound prediction artifact registry에 실제로
-존재하는 ID와 교집합이 있어야 합니다.
+존재하는 `ocr_token`, `vector_text`, `contour`, `vlm_observation`, `user_edit` ID와
+교집합이 있어야 합니다. `source_crop`, `line_segment`, `arrowhead`는 node provenance credit을
+만들지 않습니다. 한 case에서 둘 이상의 generated node가 같은 eligible evidence ID를 참조하면
+그 ID는 모든 claimant에서 revoke합니다. 이 충돌 계산은 case-local이므로 다른 corpus case의
+같은 로컬 ID는 서로 충돌하지 않으며, relation/group 참조도 node claim 충돌에 포함하지 않습니다.
 
 ## Manifest contract
 

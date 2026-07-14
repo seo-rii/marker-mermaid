@@ -171,8 +171,16 @@ generated Scene attribution에서 제외합니다.
   `quadrant-1`~`quadrant-4` slot index도 문법 토큰으로 제외하지만 directive label과 point 좌표 안의 실제
   숫자는 보존합니다. Block metadata 뒤 같은 줄의 statement는 다시 평가하며 bounded suffix budget이
   소진되면 부분 점수 대신 `0.0`으로 fail closed합니다.
-- visual entailment precision은 생성된 node를 source node ID 또는 유일한 정규화 label로 정렬한
-  evidence coverage proxy입니다. source scene 자체를 후보 precision으로 재사용하지 않습니다. model scorer는 후속입니다.
+- visual entailment precision은 생성된 node를 source node ID, collision-free portable ID alias 또는
+  유일한 정규화 label로 정렬한 collision-free evidence coverage proxy입니다. Node 근거로
+  인정하는 kind는 `ocr_token`, `vector_text`, `contour`, `vlm_observation`, `user_edit`로
+  제한합니다. `source_crop`, `line_segment`, `arrowhead`는 registry에 존재해도 node credit을
+  만들지 않습니다. 둘 이상의 generated node가 같은 eligible evidence ID를 직접 참조하거나
+  source alignment에서 상속하면 그 ID는 모든 claimant에서 모호한 근거로 취소합니다.
+  한 node 내부의 동일 ID 반복은 한 claim으로 세고, 충돌하지 않는 eligible ID가 하나라도
+  남으면 그 node는 지지된 것으로 섹니다. Relation/group의 근거 참조는 node claim
+  충돌에 포함하지 않아 정상적인 connector·containment 근거 공유를 손상하지 않습니다.
+  Source scene 자체를 후보 precision으로 재사용하지 않습니다. model scorer는 후속입니다.
 - 구조 edge를 평가할 수 없고 render PNG가 있으면 raster edge IoU를 fallback으로 사용합니다.
 
 path enumeration은 기본 10,000개 completed path와 100,000개 탐색 state/stack에서 중단합니다. Terminal로
@@ -181,7 +189,8 @@ path enumeration은 기본 10,000개 completed path와 100,000개 탐색 state/s
 metric 전체를 unavailable로 둡니다.
 표시용 total score와 별도로 non-runtime semantic score를 계산합니다. syntax/render는 hard gate와 total
 score에는 참여하지만 0인 의미 점수를 게시 가능 등급으로 희석할 수 없습니다. `extended`/`maximal`의
-구조 후보는 생성 node provenance가 80% 미만이거나 계산 불가능하면 review 대상으로 둡니다.
+구조 후보는 위 eligible-kind·conservative-revocation 규칙을 적용한 collision-free 생성 node
+provenance가 80% 미만이거나 계산 불가능하면 review 대상으로 둡니다.
 Packet도 이 구조 provenance gate에 포함되며, bit 숫자가 일치하는 것만으로
 unattributed field를 자동 게시하지 않습니다.
 

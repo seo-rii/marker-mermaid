@@ -79,6 +79,7 @@ from marker_mermaid.protocols import (
 from marker_mermaid.quality import (
     arrow_agreement,
     edge_topology_agreement,
+    injective_node_provenance_counts,
     path_consistency,
     relative_layout_similarity,
 )
@@ -417,18 +418,21 @@ def _generated_node_provenance_score(
         if label:
             source_by_label.setdefault(label, []).append(element)
 
-    supported = 0
+    effective_evidence_ids: list[set[str]] = []
     for element in generated_scene.elements:
-        if known.intersection(element.evidence_ids):
-            supported += 1
+        direct_evidence_ids = known.intersection(element.evidence_ids)
+        if direct_evidence_ids:
+            effective_evidence_ids.append(direct_evidence_ids)
             continue
         source_element = safe_source_by_id.get(element.id) or source_by_portable_id.get(element.id)
         if source_element is None:
             matches = source_by_label.get(_normalized_label(element.text), [])
             source_element = matches[0] if len(matches) == 1 else None
-        if source_element is not None and known.intersection(source_element.evidence_ids):
-            supported += 1
-    return supported / len(generated_scene.elements)
+        effective_evidence_ids.append(
+            known.intersection(source_element.evidence_ids) if source_element is not None else set()
+        )
+    supported, total = injective_node_provenance_counts(effective_evidence_ids, evidence)
+    return supported / total
 
 
 def _canonical_publication_source(code: str) -> str:

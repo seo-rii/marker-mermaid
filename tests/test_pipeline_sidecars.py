@@ -795,6 +795,65 @@ def test_generated_node_provenance_gate_holds_unattributed_typed_nodes(fake_runt
     assert any("provenance gate" in warning for warning in result.selected.warnings)
 
 
+def test_shared_node_evidence_cannot_publish_an_organization_candidate():
+    class TreeViewRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="treeview",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    source = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["organization"], scores=[1.0]),
+        typed_candidates=[
+            TypedIRCandidate(
+                diagram_type="organization",
+                ir={
+                    "root": {
+                        "id": "ceo",
+                        "label": "CEO",
+                        "evidence_ids": ["shared-ocr"],
+                        "children": [
+                            {
+                                "id": "cto",
+                                "label": "CTO",
+                                "evidence_ids": ["shared-ocr"],
+                            }
+                        ],
+                    }
+                },
+            )
+        ],
+        evidence=[
+            VisualEvidence(
+                id="shared-ocr",
+                kind="ocr_token",
+                text="CEO CTO",
+                bbox=(0, 0, 50, 10),
+            )
+        ],
+    )
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(source)],
+        CandidateValidator(TreeViewRuntime(), config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is not None
+    assert result.selected.scores["visual_entailment_precision"] == 0
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert result.review_required
+    assert any("provenance gate" in warning for warning in result.selected.warnings)
+
+
 def test_marker_vlm_omitted_prior_cannot_satisfy_publication_provenance(fake_runtime):
     captured = {}
 
@@ -1167,20 +1226,25 @@ def test_c4_pipeline_scores_only_architecture_fallback_visible_labels():
     ir = {
         "level": "container",
         "elements": [
-            {"id": "user", "label": "User", "kind": "person", "evidence_ids": ["ocr"]},
+            {
+                "id": "user",
+                "label": "User",
+                "kind": "person",
+                "evidence_ids": ["ocr-user"],
+            },
             {
                 "id": "api",
                 "name": "Payment API",
                 "kind": "container",
                 "technology": "Hidden runtime",
                 "boundary": "payments",
-                "evidence_ids": ["ocr"],
+                "evidence_ids": ["ocr-api"],
             },
             {
                 "id": "worker",
                 "label": "Worker",
                 "boundary": "payments",
-                "evidence_ids": ["ocr"],
+                "evidence_ids": ["ocr-worker"],
             },
         ],
         "boundaries": [{"id": "payments", "label": "Payments"}],
@@ -1191,11 +1255,23 @@ def test_c4_pipeline_scores_only_architecture_fallback_visible_labels():
         typed_candidates=[TypedIRCandidate(diagram_type="c4", ir=ir)],
         evidence=[
             VisualEvidence(
-                id="ocr",
+                id="ocr-user",
                 kind="ocr_token",
-                text="Payments User Payment API Worker",
+                text="Payments User",
                 bbox=(0, 0, 50, 10),
-            )
+            ),
+            VisualEvidence(
+                id="ocr-api",
+                kind="ocr_token",
+                text="Payment API",
+                bbox=(0, 0, 50, 10),
+            ),
+            VisualEvidence(
+                id="ocr-worker",
+                kind="ocr_token",
+                text="Worker",
+                bbox=(0, 0, 50, 10),
+            ),
         ],
     )
     config = MermaidConfig(candidate_count=1)
@@ -1236,7 +1312,7 @@ def test_eventmodeling_pipeline_scores_lane_typed_frame_and_relation_labels():
                         "type": "ui",
                         "time": "T0",
                         "label": "Open checkout",
-                        "evidence_ids": ["ocr"],
+                        "evidence_ids": ["ocr-open"],
                     }
                 ],
             },
@@ -1246,7 +1322,7 @@ def test_eventmodeling_pipeline_scores_lane_typed_frame_and_relation_labels():
                     {
                         "id": "placed",
                         "label": "Order placed",
-                        "evidence_ids": ["ocr"],
+                        "evidence_ids": ["ocr-placed"],
                     }
                 ],
             },
@@ -1258,11 +1334,17 @@ def test_eventmodeling_pipeline_scores_lane_typed_frame_and_relation_labels():
         typed_candidates=[TypedIRCandidate(diagram_type="eventmodeling", ir=ir)],
         evidence=[
             VisualEvidence(
-                id="ocr",
+                id="ocr-open",
                 kind="ocr_token",
-                text=("Customer lane T0 ui Open checkout operations unknown Order placed continue"),
+                text="Customer lane T0 ui Open checkout",
                 bbox=(0, 0, 50, 10),
-            )
+            ),
+            VisualEvidence(
+                id="ocr-placed",
+                kind="ocr_token",
+                text="operations unknown Order placed continue",
+                bbox=(0, 0, 50, 10),
+            ),
         ],
     )
     config = MermaidConfig(candidate_count=1)
@@ -1293,14 +1375,14 @@ def test_eventmodeling_pipeline_scores_lane_typed_frame_and_relation_labels():
                         "label": "Customer",
                         "x": 0.9,
                         "y": 0.8,
-                        "evidence_ids": ["ocr"],
+                        "evidence_ids": ["ocr-first"],
                     },
                     {
                         "id": "payment_api",
                         "text": "Hidden component text",
                         "x": 0.5,
                         "y": 0.4,
-                        "evidence_ids": ["ocr"],
+                        "evidence_ids": ["ocr-second"],
                     },
                 ],
                 "links": [{"source": "customer", "target": "payment_api", "label": "requests"}],
@@ -1313,11 +1395,15 @@ def test_eventmodeling_pipeline_scores_lane_typed_frame_and_relation_labels():
             "sequence",
             {
                 "participants": [
-                    {"id": "InternalUser", "label": "Customer", "evidence_ids": ["ocr"]},
+                    {
+                        "id": "InternalUser",
+                        "label": "Customer",
+                        "evidence_ids": ["ocr-first"],
+                    },
                     {
                         "id": "PaymentAPI",
                         "text": "Hidden participant text",
-                        "evidence_ids": ["ocr"],
+                        "evidence_ids": ["ocr-second"],
                     },
                 ],
                 "messages": [
@@ -1347,16 +1433,28 @@ def test_experimental_typed_pipeline_scores_emitted_visible_text(
         def close(self):
             pass
 
+    evidence_texts = (
+        ("Payment value chain Customer", "payment_api requests")
+        if diagram_type == "wardley"
+        else ("Customer", "PaymentAPI Authorize payment")
+    )
+    assert " ".join(evidence_texts) == visible_text
     observation = EngineObservation(
         prediction=DiagramTypePrediction(candidates=[diagram_type], scores=[0.9]),
         typed_candidates=[TypedIRCandidate(diagram_type=diagram_type, ir=ir)],
         evidence=[
             VisualEvidence(
-                id="ocr",
+                id="ocr-first",
                 kind="ocr_token",
-                text=visible_text,
+                text=evidence_texts[0],
                 bbox=(0, 0, 50, 10),
-            )
+            ),
+            VisualEvidence(
+                id="ocr-second",
+                kind="ocr_token",
+                text=evidence_texts[1],
+                bbox=(0, 0, 50, 10),
+            ),
         ],
     )
     config = MermaidConfig(candidate_count=1)
@@ -1389,27 +1487,38 @@ def test_railroad_generated_scene_controls_publication_review_and_sidecar(
         def close(self):
             pass
 
-    attribution = {"evidence_ids": ["ocr-scene"]} if attributed else {}
     ir = {
         "title": "Hidden railroad title",
         "rules": [
             {
                 "name": "start",
                 "comment": "Hidden start comment",
-                **attribution,
+                **({"evidence_ids": ["ocr-rule-start"]} if attributed else {}),
                 "definition": {
                     "type": "sequence",
-                    **attribution,
+                    **({"evidence_ids": ["ocr-sequence"]} if attributed else {}),
                     "elements": [
-                        {"type": "terminal", "value": "open", **attribution},
-                        {"type": "nonterminal", "name": "name", **attribution},
+                        {
+                            "type": "terminal",
+                            "value": "open",
+                            **({"evidence_ids": ["ocr-open"]} if attributed else {}),
+                        },
+                        {
+                            "type": "nonterminal",
+                            "name": "name",
+                            **({"evidence_ids": ["ocr-name-reference"]} if attributed else {}),
+                        },
                     ],
                 },
             },
             {
                 "name": "name",
-                **attribution,
-                "definition": {"type": "terminal", "value": "word", **attribution},
+                **({"evidence_ids": ["ocr-rule-name"]} if attributed else {}),
+                "definition": {
+                    "type": "terminal",
+                    "value": "word",
+                    **({"evidence_ids": ["ocr-word"]} if attributed else {}),
+                },
             },
         ],
     }
@@ -1418,11 +1527,40 @@ def test_railroad_generated_scene_controls_publication_review_and_sidecar(
         typed_candidates=[TypedIRCandidate(diagram_type="railroad", ir=ir)],
         evidence=[
             VisualEvidence(
-                id="ocr-scene",
+                id="ocr-rule-start",
                 kind="ocr_token",
-                text="start name open name word",
+                text="start",
                 bbox=(0, 0, 80, 10),
-            )
+            ),
+            VisualEvidence(
+                id="ocr-rule-name",
+                kind="ocr_token",
+                text="name",
+                bbox=(0, 0, 80, 10),
+            ),
+            VisualEvidence(
+                id="ocr-sequence",
+                kind="ocr_token",
+                bbox=(0, 0, 80, 10),
+            ),
+            VisualEvidence(
+                id="ocr-open",
+                kind="ocr_token",
+                text="open",
+                bbox=(0, 0, 80, 10),
+            ),
+            VisualEvidence(
+                id="ocr-name-reference",
+                kind="ocr_token",
+                text="name",
+                bbox=(0, 0, 80, 10),
+            ),
+            VisualEvidence(
+                id="ocr-word",
+                kind="ocr_token",
+                text="word",
+                bbox=(0, 0, 80, 10),
+            ),
         ],
     )
     config = MermaidConfig(candidate_count=1)
@@ -1542,7 +1680,6 @@ def test_eventmodeling_and_zenuml_generated_scene_controls_provenance_and_sideca
         def close(self):
             pass
 
-    attribution = {"evidence_ids": ["ocr-scene"]} if attributed else {}
     if diagram_type == "eventmodeling":
         ir = {
             "direction": "RL",
@@ -1551,34 +1688,59 @@ def test_eventmodeling_and_zenuml_generated_scene_controls_provenance_and_sideca
                     "id": "customer",
                     "label": "Customer",
                     "frames": [
-                        {"id": "open", "label": "Open", **attribution},
-                        {"id": "placed", "label": "Placed", **attribution},
+                        {
+                            "id": "open",
+                            "label": "Open",
+                            **({"evidence_ids": ["ocr-node-a"]} if attributed else {}),
+                        },
+                        {
+                            "id": "placed",
+                            "label": "Placed",
+                            **({"evidence_ids": ["ocr-node-b"]} if attributed else {}),
+                        },
                     ],
                 }
             ],
             "relations": [{"source": "open", "target": "placed", "label": "next"}],
         }
         visible_text = "Customer unknown Open unknown Placed next"
+        node_evidence_texts = ("Customer unknown Open", "unknown Placed next")
     else:
         ir = {
             "direction": "RL",
             "participants": [
-                {"id": "User", "label": "Customer", **attribution},
-                {"id": "API", "label": "Payment API", **attribution},
+                {
+                    "id": "User",
+                    "label": "Customer",
+                    **({"evidence_ids": ["ocr-node-a"]} if attributed else {}),
+                },
+                {
+                    "id": "API",
+                    "label": "Payment API",
+                    **({"evidence_ids": ["ocr-node-b"]} if attributed else {}),
+                },
             ],
             "messages": [{"source": "User", "target": "API", "label": "Authorize"}],
         }
         visible_text = "Customer Payment API Authorize"
+        node_evidence_texts = ("Customer", "Payment API Authorize")
+    assert " ".join(node_evidence_texts) == visible_text
     observation = EngineObservation(
         prediction=DiagramTypePrediction(candidates=[diagram_type], scores=[1.0]),
         typed_candidates=[TypedIRCandidate(diagram_type=diagram_type, ir=ir)],
         evidence=[
             VisualEvidence(
-                id="ocr-scene",
+                id="ocr-node-a",
                 kind="ocr_token",
-                text=visible_text,
+                text=node_evidence_texts[0],
                 bbox=(0, 0, 80, 10),
-            )
+            ),
+            VisualEvidence(
+                id="ocr-node-b",
+                kind="ocr_token",
+                text=node_evidence_texts[1],
+                bbox=(0, 0, 80, 10),
+            ),
         ],
     )
     config = MermaidConfig(candidate_count=1)
@@ -1698,7 +1860,6 @@ def test_organization_and_data_lineage_generated_scene_control_provenance_and_si
         def close(self):
             pass
 
-    attribution = {"evidence_ids": ["ocr-scene"]} if attributed else {}
     if diagram_type == "organization":
         ir = {
             "direction": "RL",
@@ -1706,18 +1867,19 @@ def test_organization_and_data_lineage_generated_scene_control_provenance_and_si
                 "id": "ceo",
                 "label": "CEO",
                 "bbox": [0, 0, 20, 10],
-                **attribution,
+                **({"evidence_ids": ["ocr-node-a"]} if attributed else {}),
                 "children": [
                     {
                         "id": "cto",
                         "label": "CTO",
                         "bbox": [30, 0, 50, 10],
-                        **attribution,
+                        **({"evidence_ids": ["ocr-node-b"]} if attributed else {}),
                     }
                 ],
             },
         }
         visible_text = "CEO CTO"
+        node_evidence_texts = ("CEO", "CTO")
     else:
         ir = {
             "direction": "BT",
@@ -1726,7 +1888,7 @@ def test_organization_and_data_lineage_generated_scene_control_provenance_and_si
                     "id": "raw",
                     "label": "Raw",
                     "bbox": [0, 0, 20, 10],
-                    **attribution,
+                    **({"evidence_ids": ["ocr-node-a"]} if attributed else {}),
                 }
             ],
             "processes": [
@@ -1734,7 +1896,7 @@ def test_organization_and_data_lineage_generated_scene_control_provenance_and_si
                     "id": "etl",
                     "label": "ETL",
                     "bbox": [30, 0, 50, 10],
-                    **attribution,
+                    **({"evidence_ids": ["ocr-node-b"]} if attributed else {}),
                 }
             ],
             "relations": [
@@ -1747,14 +1909,22 @@ def test_organization_and_data_lineage_generated_scene_control_provenance_and_si
             ],
         }
         visible_text = "Raw ETL writes"
+        node_evidence_texts = ("Raw", "ETL writes")
+    assert " ".join(node_evidence_texts) == visible_text
     observation = EngineObservation(
         prediction=DiagramTypePrediction(candidates=[diagram_type], scores=[1.0]),
         typed_candidates=[TypedIRCandidate(diagram_type=diagram_type, ir=ir)],
         evidence=[
             VisualEvidence(
-                id="ocr-scene",
+                id="ocr-node-a",
                 kind="ocr_token",
-                text=visible_text,
+                text=node_evidence_texts[0],
+                bbox=(0, 0, 80, 10),
+            ),
+            VisualEvidence(
+                id="ocr-node-b",
+                kind="ocr_token",
+                text=node_evidence_texts[1],
                 bbox=(0, 0, 80, 10),
             ),
             VisualEvidence(id="line-scene", kind="line_segment"),
@@ -2593,12 +2763,12 @@ def test_nested_organization_runtime_rejection_retries_flowchart_fallback():
         "root": {
             "id": "ceo",
             "label": "CEO",
-            "evidence_ids": ["ocr"],
+            "evidence_ids": ["ocr-ceo"],
             "children": [
                 {
                     "id": "cto",
                     "label": "CTO",
-                    "evidence_ids": ["ocr"],
+                    "evidence_ids": ["ocr-cto"],
                 }
             ],
         }
@@ -2608,11 +2778,17 @@ def test_nested_organization_runtime_rejection_retries_flowchart_fallback():
         typed_candidates=[TypedIRCandidate(diagram_type="organization", ir=organization_ir)],
         evidence=[
             VisualEvidence(
-                id="ocr",
+                id="ocr-ceo",
                 kind="ocr_token",
-                text="CEO CTO",
+                text="CEO",
                 bbox=(0, 0, 50, 10),
-            )
+            ),
+            VisualEvidence(
+                id="ocr-cto",
+                kind="ocr_token",
+                text="CTO",
+                bbox=(0, 0, 50, 10),
+            ),
         ],
     )
     runtime = TreeViewRejectingRuntime()
@@ -2666,12 +2842,13 @@ _ARCHITECTURE_RUNTIME_CASES = {
     "architecture": {
         "ir": {
             "services": [
-                {"id": "api", "label": "API", "evidence_ids": ["ocr"]},
-                {"id": "db", "label": "DB", "evidence_ids": ["ocr"]},
+                {"id": "api", "label": "API", "evidence_ids": ["ocr-api"]},
+                {"id": "db", "label": "DB", "evidence_ids": ["ocr-db"]},
             ],
             "edges": [{"source": "api", "target": "db"}],
         },
         "ocr": "API DB",
+        "node_evidence": [("ocr-api", "API"), ("ocr-db", "DB")],
         "chain": ["architecture", "flowchart"],
         "stability": "extended",
     },
@@ -2683,40 +2860,43 @@ _ARCHITECTURE_RUNTIME_CASES = {
                     "kind": "container",
                     "label": "API",
                     "boundary": "payments",
-                    "evidence_ids": ["ocr"],
+                    "evidence_ids": ["ocr-api"],
                 },
                 {
                     "id": "db",
                     "kind": "container_database",
                     "label": "DB",
                     "boundary": "payments",
-                    "evidence_ids": ["ocr"],
+                    "evidence_ids": ["ocr-db"],
                 },
             ],
             "boundaries": [{"id": "payments", "type": "system", "label": "Payments"}],
             "relations": [{"source": "api", "target": "db"}],
         },
         "ocr": "Payments API DB",
+        "node_evidence": [("ocr-api", "Payments API"), ("ocr-db", "DB")],
         "chain": ["c4", "architecture", "flowchart"],
         "stability": "experimental",
     },
     "deployment": {
         "ir": {
-            "nodes": [{"id": "app", "label": "App", "evidence_ids": ["ocr"]}],
-            "artifacts": [{"id": "image", "label": "Image", "evidence_ids": ["ocr"]}],
+            "nodes": [{"id": "app", "label": "App", "evidence_ids": ["ocr-app"]}],
+            "artifacts": [{"id": "image", "label": "Image", "evidence_ids": ["ocr-image"]}],
             "links": [{"source": "app", "target": "image"}],
         },
         "ocr": "App Image",
+        "node_evidence": [("ocr-app", "App"), ("ocr-image", "Image")],
         "chain": ["deployment", "architecture", "flowchart"],
         "stability": "extended",
     },
     "component": {
         "ir": {
-            "components": [{"id": "web", "label": "Web", "evidence_ids": ["ocr"]}],
-            "interfaces": [{"id": "auth", "label": "Auth", "evidence_ids": ["ocr"]}],
+            "components": [{"id": "web", "label": "Web", "evidence_ids": ["ocr-web"]}],
+            "interfaces": [{"id": "auth", "label": "Auth", "evidence_ids": ["ocr-auth"]}],
             "dependencies": [{"source": "web", "target": "auth"}],
         },
         "ocr": "Web Auth",
+        "node_evidence": [("ocr-web", "Web"), ("ocr-auth", "Auth")],
         "chain": ["component", "architecture", "flowchart"],
         "stability": "extended",
     },
@@ -2758,11 +2938,12 @@ def _architecture_runtime_observation(diagram_type):
         typed_candidates=[TypedIRCandidate(diagram_type=diagram_type, ir=case["ir"])],
         evidence=[
             VisualEvidence(
-                id="ocr",
+                id=evidence_id,
                 kind="ocr_token",
-                text=case["ocr"],
+                text=text,
                 bbox=(0, 0, 90, 10),
             )
+            for evidence_id, text in case["node_evidence"]
         ],
     )
 
@@ -2878,23 +3059,30 @@ def test_gitgraph_generated_scene_controls_default_extended_provenance_gate(
 
 
 @pytest.mark.parametrize(
-    ("diagram_type", "native_prefix", "ir", "ocr_text"),
+    ("diagram_type", "native_prefix", "ir", "ocr_text", "node_evidence"),
     [
         (
             "kanban",
             "kanban",
             {
-                "columns": [{"id": "ready", "label": "Ready", "evidence_ids": ["ocr-plan"]}],
+                "columns": [
+                    {
+                        "id": "ready",
+                        "label": "Ready",
+                        "evidence_ids": ["ocr-ready"],
+                    }
+                ],
                 "cards": [
                     {
                         "id": "ship",
                         "label": "Ship",
                         "column_id": "ready",
-                        "evidence_ids": ["ocr-plan"],
+                        "evidence_ids": ["ocr-ship"],
                     }
                 ],
             },
             "Ready Ship",
+            [("ocr-ready", "Ready"), ("ocr-ship", "Ship")],
         ),
         (
             "gitgraph",
@@ -2906,11 +3094,12 @@ def test_gitgraph_generated_scene_controls_default_extended_provenance_gate(
                         "type": "commit",
                         "branch": "main",
                         "id": "root",
-                        "evidence_ids": ["ocr-plan"],
+                        "evidence_ids": ["ocr-root"],
                     }
                 ],
             },
             "main root",
+            [("ocr-root", "main root")],
         ),
     ],
 )
@@ -2919,6 +3108,7 @@ def test_planning_runtime_rejection_retries_flowchart_in_same_candidate_slot(
     native_prefix: str,
     ir: dict[str, object],
     ocr_text: str,
+    node_evidence: list[tuple[str, str]],
 ) -> None:
     class NativeRejectingRuntime:
         def __init__(self):
@@ -2948,13 +3138,15 @@ def test_planning_runtime_rejection_retries_flowchart_in_same_candidate_slot(
         typed_candidates=[TypedIRCandidate(diagram_type=diagram_type, ir=ir)],
         evidence=[
             VisualEvidence(
-                id="ocr-plan",
+                id=evidence_id,
                 kind="ocr_token",
-                text=ocr_text,
+                text=text,
                 bbox=(0, 0, 50, 10),
             )
+            for evidence_id, text in node_evidence
         ],
     )
+    assert " ".join(text for _evidence_id, text in node_evidence) == ocr_text
     runtime = NativeRejectingRuntime()
     config = MermaidConfig(candidate_count=1)
 

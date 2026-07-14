@@ -13,7 +13,7 @@
 | page missed detector | 구현 | bounded proposal/crop, occupied exclusion, anchored Markdown 또는 unanchored page sidecar queue |
 | composite split | 구현 | proposal, raw-fragment crop, virtual 원본/결과 출력 |
 | fragment/multi-page merge | 구현 | caption/continued proposal, canvas assembly, first-fragment anchor 출력 |
-| Scene IR/provenance | 구현 | Pydantic 무결성, record별 256 evidence reference와 post-fusion 재검증, 생성 node attribution, Extended 80% 게시 gate, sidecar |
+| Scene IR/provenance | 구현 | Pydantic 무결성, record별 256 evidence reference와 post-fusion 재검증, node-eligible kind allowlist와 재사용 ID 전체 revoke를 적용한 collision-free 생성 node attribution, Extended 80% 게시 gate, sidecar |
 | accessibility | 구현 | requested type 기반 title/description 파생, direct revalidation, 비지원 grammar warning/IR 보존 |
 | type-aware visual priors | 구현 | edge/Hough/arrow/OCR/contour/threshold/grayscale, source-resolution tile과 view manifest |
 | color cluster/vector primitive | 구현 | PIL color map, Marker PyMuPDF/duck-typed provider, observe-local 1회 build exact-dict placement-reference index의 O(1) page/block/page+block lookup·256/+1 atomic placement/ID gate·unique 선택 후 transform 지연 파싱·invalid-transform ambiguity 보존, reconstruction-global 256 source·2,048 primitive·5,000 text·8,000,000 text-character raw-work budget, custom span pre-parse 문자 accounting, one-lookahead streaming, malformed/crop/dedupe/nested-container work accounting, 256/512 per-record·100,000 aggregate point gate, 256-char metadata token, exact hash+250,000 approximate-dedup·각 1,000,000 text/endpoint comparison cap, huge-int와 hook-free fixed scalar normalization, custom/direct observation backstop, bounded label/provenance enrichment fallback |
@@ -48,7 +48,7 @@
 | structured operations | 구현 | linked OCR/vector evidence 기반 node relabel, provenance-backed edge 추가, stable relation ID 기반 label 추가·교체·제거와 exact-ID edge 재연결·삭제, node 삭제, group 생성·삭제, screen-space endpoint drag와 accessible forms, global IR↔Mermaid node/edge/group 1:1 gate, pre-interpretation optimistic lock |
 | source-anchored node add | 구현 | bounded canvas bbox, server-created user_edit evidence, code/IR/provenance transaction |
 | layout drag-and-drop | 구현 | source bbox와 분리된 normalized advisory node move, screen-space edge endpoint snap, pointer/keyboard fallback, content-addressed revision과 undo/redo |
-| release evaluation | 기반 | hash-bound manifest, micro metrics, hard/fixture/22-type/quality gate와 JSON/Markdown report; 대규모 corpus와 격리 runner 후속 |
+| release evaluation | 기반 | hash-bound manifest, micro metrics, hard/fixture/22-type/quality gate, case-local collision-free node provenance와 JSON/Markdown report; 대규모 corpus와 격리 runner 후속 |
 
 ## 릴리스 해석
 

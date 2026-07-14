@@ -25,7 +25,23 @@ from marker_mermaid.flowchart_structure import (
     ambiguous_portable_ids,
     unique_portable_id_aliases,
 )
-from marker_mermaid.models import DiagramSceneIR, MetricResult, SceneElement, SceneRelation
+from marker_mermaid.models import (
+    DiagramSceneIR,
+    MetricResult,
+    SceneElement,
+    SceneRelation,
+    VisualEvidence,
+)
+
+_NODE_PROVENANCE_KINDS = frozenset(
+    {
+        "contour",
+        "ocr_token",
+        "user_edit",
+        "vector_text",
+        "vlm_observation",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +51,47 @@ class SceneAlignment:
     generated_to_source: dict[str, str]
     unmatched_source_ids: tuple[str, ...]
     unmatched_generated_ids: tuple[str, ...]
+
+
+def injective_node_provenance_counts(
+    node_evidence_ids: Iterable[Iterable[str]],
+    evidence: Iterable[VisualEvidence],
+) -> tuple[int, int]:
+    """Count nodes with one unambiguous, node-eligible evidence claim.
+
+    Text, shape, VLM, and user-edit evidence is node-specific. If two generated
+    nodes claim the same record, that record supports neither node; another
+    collision-free record can still support either node. Source crops and
+    connector evidence remain available to group/relation metrics but do not
+    establish generated-node provenance.
+    """
+
+    evidence_by_id: dict[str, VisualEvidence] = {}
+    duplicate_ids: set[str] = set()
+    for item in evidence:
+        if item.id in evidence_by_id:
+            duplicate_ids.add(item.id)
+        else:
+            evidence_by_id[item.id] = item
+    for evidence_id in duplicate_ids:
+        evidence_by_id.pop(evidence_id, None)
+
+    eligible_ids = {
+        evidence_id
+        for evidence_id, item in evidence_by_id.items()
+        if item.kind in _NODE_PROVENANCE_KINDS
+    }
+    claims_by_node: list[frozenset[str]] = []
+    claim_counts: Counter[str] = Counter()
+    for values in node_evidence_ids:
+        claims = frozenset(evidence_id for evidence_id in values if evidence_id in eligible_ids)
+        claims_by_node.append(claims)
+        claim_counts.update(claims)
+
+    supported = sum(
+        any(claim_counts[evidence_id] == 1 for evidence_id in claims) for claims in claims_by_node
+    )
+    return supported, len(claims_by_node)
 
 
 def align_scene_elements(source: DiagramSceneIR, generated: DiagramSceneIR) -> SceneAlignment:
