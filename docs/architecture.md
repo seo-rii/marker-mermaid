@@ -103,6 +103,12 @@ candidate ID 순서로 결정적입니다. `review_required`와 `sidecar_only`�
 사용하지 않아 기존 aggregate 중심 검토 순서를 유지합니다.
 typed 후보는 prediction의 top-k type 순서로 먼저 filter/reorder한 뒤 candidate budget을 적용합니다.
 따라서 top-k에 없는 앞쪽 후보가 안전한 predicted-type 후보의 직렬화 slot을 소비하지 않습니다.
+Fusion의 element/relation evidence와 evidence source-block 합집합은 공용 256-reference 상한을 넘기기
+전에 중단하고, overflow cluster는 cross-input enrichment 없이 결정적 winner record를 유지합니다.
+같은 evidence ID의 모든 입력을 한 번에 판정하므로 앞선 부분 합집합도 남기지 않습니다. 변형 record를
+재구성한 뒤 pipeline이 내부 fused Scene/evidence와 exact-list/20,000-item evidence collection 계약을
+다시 검증하므로 canonical Scene만 candidate generation, scoring, publication receipt와 sidecar 경계로
+이동합니다.
 
 fused observation의 `flowchart`와 `generic_network` typed 후보만 별도 ID 정합화 gate를 거칩니다. typed
 node가 같은 owner Scene element ID를 정확히 재사용하고, 그 element가 독립 vector/geometry node 하나와

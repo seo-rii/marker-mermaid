@@ -83,7 +83,7 @@ class VectorObservation:
         evidence: list[VisualEvidence] = []
         elements: list[SceneElement] = []
         records: list[tuple[VectorPrimitive, str]] = []
-        font_warnings: list[str] = []
+        text_warnings: list[str] = []
 
         for primitive in primitives:
             if not _is_node_primitive(primitive):
@@ -137,19 +137,39 @@ class VectorObservation:
             if len(containing) == 1:
                 text_assignments.setdefault(containing[0], []).append((text_item, evidence_id))
 
-        by_id = {element.id: element for element in elements}
+        by_id = {element.id: (index, element) for index, element in enumerate(elements)}
         for element_id, assigned in text_assignments.items():
             assigned.sort(key=lambda item: (item[0].bbox[1], item[0].bbox[0], item[0].text))
-            element = by_id[element_id]
-            element.text = " ".join(item.text for item, _evidence_id in assigned)
-            element.evidence_ids.extend(evidence_id for _item, evidence_id in assigned)
+            element_index, element = by_id[element_id]
             weights = {item.font_weight for item, _evidence_id in assigned}
+            font_weight = None
+            mixed_font_weight = False
             if weights == {"bold"}:
-                element.font_weight = "bold"
+                font_weight = "bold"
             elif weights == {"normal"}:
-                element.font_weight = "normal"
+                font_weight = "normal"
             elif weights - {None}:
-                font_warnings.append(
+                mixed_font_weight = True
+
+            enriched = element.model_dump(mode="python")
+            enriched["text"] = " ".join(item.text for item, _evidence_id in assigned)
+            enriched["evidence_ids"] = [
+                *element.evidence_ids,
+                *(evidence_id for _item, evidence_id in assigned),
+            ]
+            enriched["font_weight"] = font_weight
+            try:
+                updated = SceneElement.model_validate(enriched)
+            except ValueError:
+                text_warnings.append(
+                    f"vector text enrichment exceeded Scene field or reference limits for "
+                    f"{element_id}; label and emphasis omitted"
+                )
+                continue
+            elements[element_index] = updated
+            by_id[element_id] = (element_index, updated)
+            if mixed_font_weight:
+                text_warnings.append(
                     f"vector text weight was mixed or partial for {element_id}; emphasis omitted"
                 )
 
@@ -201,7 +221,7 @@ class VectorObservation:
                 )
             )
 
-        warnings = [*self.warnings, *dedupe_warnings, *font_warnings]
+        warnings = [*self.warnings, *dedupe_warnings, *text_warnings]
         if not primitives and not texts:
             warnings.append("vector engine found no PDF vector primitives or text")
         elif not elements:

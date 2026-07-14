@@ -15,6 +15,7 @@ from marker_mermaid.geometry import ContourObservation, GeometryEngine, Geometry
 from marker_mermaid.markdown import standalone_document_markdown
 from marker_mermaid.models import (
     MAX_EVIDENCE_REFS,
+    MAX_OBSERVATION_EVIDENCE,
     DiagramSceneIR,
     DiagramTypePrediction,
     DirectMermaidCandidate,
@@ -174,6 +175,183 @@ def test_pipeline_publishes_the_exact_per_record_evidence_reference_limit(fake_r
     assert result.selected.generated_scene_ir is not None
     assert result.selected.generated_scene_ir.elements[0].evidence_ids == evidence_ids
     assert not result.failures
+
+
+@pytest.mark.parametrize("record_kind", ["element", "relation"])
+@pytest.mark.parametrize(("right_count", "overflow"), [(128, False), (129, True)])
+def test_pipeline_publishes_only_canonical_fused_scene_evidence_unions(
+    tmp_path,
+    fake_runtime,
+    record_kind: str,
+    right_count: int,
+    overflow: bool,
+) -> None:
+    left_ids = [f"left-{index:03d}" for index in range(128)]
+    right_ids = [f"right-{index:03d}" for index in range(right_count)]
+    observations: list[EngineObservation] = []
+    for evidence_ids in (left_ids, right_ids):
+        elements = [
+            SceneElement(
+                id="A",
+                role="node",
+                text="Start" if record_kind == "relation" else "Node",
+                bbox=(0, 0, 10, 10),
+                evidence_ids=(evidence_ids if record_kind == "element" else [evidence_ids[0]]),
+            )
+        ]
+        relations: list[SceneRelation] = []
+        if record_kind == "relation":
+            elements.append(
+                SceneElement(
+                    id="B",
+                    role="node",
+                    text="End",
+                    bbox=(20, 0, 30, 10),
+                    evidence_ids=[evidence_ids[1]],
+                )
+            )
+            relations.append(
+                SceneRelation(
+                    id="E",
+                    source_id="A",
+                    target_id="B",
+                    relation_type="edge",
+                    evidence_ids=evidence_ids,
+                )
+            )
+        observations.append(
+            EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1]),
+                scene_ir=DiagramSceneIR(elements=elements, relations=relations),
+            )
+        )
+    engines = [JsonFixtureEngine(observation) for observation in observations]
+    engines[0].name = "left"
+    engines[0].fusion_source = "vector"
+    engines[1].name = "right"
+    engines[1].fusion_source = "vlm"
+    all_ids = [*left_ids, *right_ids]
+    config = MermaidConfig(
+        candidate_count=1,
+        enable_typed_ir=False,
+        enable_generic_scene_ir=True,
+        enable_direct_mermaid=False,
+    )
+
+    result = ReconstructionPipeline(
+        config,
+        engines,
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        f"fused-{record_kind}-{'overflow' if overflow else 'exact'}",
+        "source.png",
+        Image.new("RGB", (40, 20), "white"),
+        evidence=[
+            VisualEvidence(
+                id=evidence_id,
+                kind="vlm_observation",
+                score=1,
+                source_block_ids=["source"],
+            )
+            for evidence_id in all_ids
+        ],
+        ocr_texts=["Start End" if record_kind == "relation" else "Node"],
+    )
+
+    assert result.publish
+    assert result.has_authorized_publication()
+    assert result.selected is not None
+    assert result.selected.generation_engine == FusionEngine.name
+    assert result.selected.scene_ir is not None
+    assert result.selected.generated_scene_ir is not None
+    source_record = (
+        result.selected.scene_ir.elements[0]
+        if record_kind == "element"
+        else result.selected.scene_ir.relations[0]
+    )
+    generated_record = (
+        result.selected.generated_scene_ir.elements[0]
+        if record_kind == "element"
+        else result.selected.generated_scene_ir.relations[0]
+    )
+    expected_ids = left_ids if overflow else sorted(all_ids)
+    assert source_record.evidence_ids == expected_ids
+    assert generated_record.evidence_ids == expected_ids
+    if overflow:
+        assert any(
+            f"fusion {record_kind} evidence union exceeded" in warning
+            for warning in result.selected.warnings
+        )
+    relative = SidecarStore(tmp_path).write(result)
+    assert (tmp_path / relative / "scene-ir.json").is_file()
+
+
+@pytest.mark.parametrize(
+    "invalid_component",
+    [
+        "scene",
+        "evidence_record",
+        "evidence_record_type",
+        "evidence_list_type",
+        "evidence_item_count",
+    ],
+)
+def test_pipeline_revalidates_internal_fused_payload_before_generation(
+    monkeypatch,
+    fake_runtime,
+    invalid_component: str,
+) -> None:
+    invalid_fused = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1]),
+        scene_ir=DiagramSceneIR(elements=[SceneElement(id="A", role="node", bbox=(0, 0, 10, 10))]),
+        evidence=[VisualEvidence(id="fused", kind="contour")],
+    )
+    oversized = [f"evidence-{index}" for index in range(MAX_EVIDENCE_REFS + 1)]
+    if invalid_component == "scene":
+        assert invalid_fused.scene_ir is not None
+        invalid_fused.scene_ir.elements[0].evidence_ids = oversized
+    elif invalid_component == "evidence_record":
+        invalid_fused.evidence[0].source_block_ids = oversized
+    elif invalid_component == "evidence_record_type":
+        invalid_fused.evidence = [{"id": "fused", "kind": "contour"}]
+    elif invalid_component == "evidence_list_type":
+        invalid_fused.evidence = _ExplosiveList(invalid_fused.evidence)
+    else:
+        invalid_fused.evidence = [invalid_fused.evidence[0]] * (MAX_OBSERVATION_EVIDENCE + 1)
+
+    def invalid_fuse(_self, _inputs):
+        return invalid_fused
+
+    monkeypatch.setattr(FusionEngine, "fuse", invalid_fuse)
+    config = MermaidConfig(
+        candidate_count=1,
+        enable_generic_scene_ir=False,
+        enable_direct_mermaid=False,
+    )
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation()), JsonFixtureEngine(observation())],
+        CandidateValidator(fake_runtime, config.security_profile),
+    ).reconstruct(
+        "invalid-fused-scene",
+        "source.png",
+        Image.new("RGB", (40, 20), "white"),
+    )
+
+    assert result.selected is not None
+    assert result.selected.generation_engine == JsonFixtureEngine.name
+    expected_failure = {
+        "scene": "reference count limit",
+        "evidence_record": "reference count limit",
+        "evidence_record_type": "exact canonical VisualEvidence records",
+        "evidence_list_type": "exact plain list",
+        "evidence_item_count": "observation item limit",
+    }[invalid_component]
+    assert any(
+        failure.stage == "fusion" and expected_failure in failure.message
+        for failure in result.failures
+    )
 
 
 def test_pipeline_ocr_recall_uses_generated_labels_and_spatial_occurrence_max(fake_runtime):

@@ -334,6 +334,13 @@ built-in string인지 bounded copy에서 먼저 확인하며 Pydantic validation
 알려진 typed semantic record의 `evidence_ids`는 Scene과 공유하는 256-reference 상한을 prompt와 nested
 post-validation에 모두 노출합니다. 생략·`null`·빈 목록은 호환을 위해 유지하되, 초과 목록은 fusion,
 pipeline, accessibility/repair 및 sidecar sink의 현재-payload 재검증에서도 후보 단위로 격리됩니다.
+Fusion은 Scene element/relation evidence 및 같은 VisualEvidence의 source-block 합집합을 257번째 고유
+reference 전에 중단합니다. 같은 ID의 모든 입력을 원자적으로 판정하며, 초과 시 앞서 성공한 일부
+합집합도 새 provenance로 게시하지 않고 cross-input enrichment를 버려 precedence winner record를
+유지합니다. Vector text 결합도 새 SceneElement로 검증하며 초과한 label/font attribution 전체를
+생략합니다. Pipeline은 내부 fused Scene/evidence record뿐 아니라 evidence의 exact plain list와 20,000개
+전역 상한도 scoring 전에 다시 검증하므로 post-construction list mutation이 publication receipt와
+sidecar 사이를 우회하지 못합니다.
 
 ## SVG 검사
 

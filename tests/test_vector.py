@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
 from PIL import Image
 
+from marker_mermaid.models import MAX_EVIDENCE_REFS, MAX_TEXT_CHARS
 from marker_mermaid.protocols import SourceContext
 from marker_mermaid.vector import (
     VectorObservation,
@@ -91,6 +93,57 @@ def test_ambiguous_nested_shape_does_not_receive_text_or_connector() -> None:
     assert any(item.kind == "vector_text" and item.text == "ambiguous" for item in result.evidence)
 
 
+@pytest.mark.parametrize(
+    ("text_count", "enriched"),
+    [(MAX_EVIDENCE_REFS - 1, True), (MAX_EVIDENCE_REFS, False)],
+)
+def test_vector_text_enrichment_respects_the_scene_evidence_reference_cap(
+    text_count: int,
+    enriched: bool,
+) -> None:
+    observation = VectorObservation(
+        canvas_size=(100, 100),
+        texts=tuple(
+            VectorText(f"token-{index:03d}", (10, 10, 20, 20)) for index in range(text_count)
+        ),
+        primitives=(VectorPrimitive(kind="rectangle", bbox=(0, 0, 50, 50), closed=True),),
+    )
+
+    result = observation.to_engine_observation(["source"])
+
+    assert result.scene_ir is not None
+    node = result.scene_ir.elements[0]
+    if enriched:
+        assert node.text is not None
+        assert len(node.evidence_ids) == MAX_EVIDENCE_REFS
+        assert not any("text enrichment exceeded" in warning for warning in result.warnings)
+    else:
+        assert node.text is None
+        assert node.evidence_ids == ["vector-shape-001"]
+        assert any("text enrichment exceeded" in warning for warning in result.warnings)
+    assert len(result.evidence) == text_count + 1
+
+
+def test_vector_text_enrichment_revalidates_the_combined_scene_text_size() -> None:
+    span_size = MAX_TEXT_CHARS // 2 + 1
+    observation = VectorObservation(
+        canvas_size=(100, 100),
+        texts=(
+            VectorText("a" * span_size, (10, 10, 20, 20)),
+            VectorText("b" * span_size, (10, 20, 20, 30)),
+        ),
+        primitives=(VectorPrimitive(kind="rectangle", bbox=(0, 0, 50, 50), closed=True),),
+    )
+
+    result = observation.to_engine_observation(["source"])
+
+    assert result.scene_ir is not None
+    assert result.scene_ir.elements[0].text is None
+    assert result.scene_ir.elements[0].evidence_ids == ["vector-shape-001"]
+    assert any("text enrichment exceeded" in warning for warning in result.warnings)
+    assert len(result.evidence) == 3
+
+
 def test_missing_vector_data_fails_closed() -> None:
     result = VectorPrimitiveEngine().observe(_context(object()))
 
@@ -175,9 +228,7 @@ def test_mixed_vector_span_weights_fail_closed_without_node_emphasis() -> None:
             VectorText("Bold", (10, 10, 35, 20), font_weight="bold"),
             VectorText("Normal", (40, 10, 75, 20), font_weight="normal"),
         ),
-        primitives=(
-            VectorPrimitive(kind="rectangle", bbox=(0, 0, 90, 30), closed=True),
-        ),
+        primitives=(VectorPrimitive(kind="rectangle", bbox=(0, 0, 90, 30), closed=True),),
     )
 
     result = observation.to_engine_observation(["block"])
@@ -194,9 +245,7 @@ def test_duplicate_vector_span_weight_conflict_does_not_duplicate_the_label() ->
             VectorText("Node", (10, 10, 50, 20), font_weight="bold"),
             VectorText("Node", (10, 10, 50, 20), font_weight="normal"),
         ),
-        primitives=(
-            VectorPrimitive(kind="rectangle", bbox=(0, 0, 90, 30), closed=True),
-        ),
+        primitives=(VectorPrimitive(kind="rectangle", bbox=(0, 0, 90, 30), closed=True),),
     )
 
     result = observation.to_engine_observation(["block"])

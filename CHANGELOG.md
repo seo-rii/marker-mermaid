@@ -231,6 +231,12 @@
 
 ### Changed
 
+- Fusion now bounds Scene element/relation evidence and VisualEvidence source-block unions before
+  assignment. Source-block unions are decided atomically across every matching input, and an
+  overflowing cluster keeps its deterministic precedence winner without partial provenance
+  truncation. Vector text overflow keeps a contour-only node and reusable span evidence. Rebuilt
+  records plus a pipeline fused-observation backstop enforce the exact-list/20,000-item collection
+  contract and keep scoring, publication, and atomic sidecars on the same Scene contract.
 - Known typed semantic records now share the Scene model's 256-reference `evidence_ids` cap in
   Structured VLM prompts and local nested schemas. Exact-boundary provenance remains publishable,
   while oversized or post-construction-mutated records are isolated before fusion, pipeline

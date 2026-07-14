@@ -1296,6 +1296,231 @@ def test_rejects_empty_or_untyped_inputs() -> None:
         raise AssertionError("untyped fusion input should fail")
 
 
+@pytest.mark.parametrize("record_kind", ["element", "relation"])
+@pytest.mark.parametrize(("right_count", "overflow"), [(128, False), (129, True)])
+def test_fusion_bounds_cross_input_scene_evidence_enrichment(
+    record_kind: str,
+    right_count: int,
+    overflow: bool,
+) -> None:
+    left_ids = [f"left-{index:03d}" for index in range(128)]
+    right_ids = [f"right-{index:03d}" for index in range(right_count)]
+    scenes: list[DiagramSceneIR] = []
+    for evidence_ids in (left_ids, right_ids):
+        elements = [
+            SceneElement(
+                id="A",
+                role="node",
+                bbox=(0, 0, 10, 10),
+                evidence_ids=(evidence_ids if record_kind == "element" else []),
+            )
+        ]
+        relations: list[SceneRelation] = []
+        if record_kind == "element":
+            elements.append(
+                SceneElement(
+                    id="B",
+                    role="node",
+                    bbox=(20, 0, 30, 10),
+                    evidence_ids=[evidence_ids[0]],
+                )
+            )
+        else:
+            elements.append(SceneElement(id="B", role="node", bbox=(20, 0, 30, 10)))
+            relations.append(
+                SceneRelation(
+                    id="E",
+                    source_id="A",
+                    target_id="B",
+                    relation_type="edge",
+                    evidence_ids=evidence_ids,
+                )
+            )
+        scenes.append(DiagramSceneIR(elements=elements, relations=relations))
+
+    inputs = [
+        FusionInput(
+            "vector",
+            EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1]),
+                scene_ir=scenes[0],
+            ),
+            "left",
+        ),
+        FusionInput(
+            "vlm",
+            EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1]),
+                scene_ir=scenes[1],
+            ),
+            "right",
+        ),
+    ]
+
+    fused = FusionEngine().fuse(inputs)
+    reversed_fused = FusionEngine().fuse(reversed(inputs))
+
+    EngineObservation.model_validate(fused.model_dump(mode="python"))
+    assert fused.model_dump(mode="json") == reversed_fused.model_dump(mode="json")
+    assert fused.scene_ir is not None
+    record = fused.scene_ir.elements[0] if record_kind == "element" else fused.scene_ir.relations[0]
+    if overflow:
+        assert record.evidence_ids == left_ids
+        assert any(
+            f"fusion {record_kind} evidence union exceeded" in warning for warning in fused.warnings
+        )
+    else:
+        assert record.evidence_ids == sorted([*left_ids, *right_ids])
+        assert not any(
+            f"fusion {record_kind} evidence union exceeded" in warning for warning in fused.warnings
+        )
+    if record_kind == "element":
+        assert fused.scene_ir.elements[1].evidence_ids == sorted([left_ids[0], right_ids[0]])
+
+
+@pytest.mark.parametrize(("right_count", "overflow"), [(128, False), (129, True)])
+def test_fusion_bounds_visual_evidence_source_block_enrichment(
+    right_count: int,
+    overflow: bool,
+) -> None:
+    left_blocks = [f"left-block-{index:03d}" for index in range(128)]
+    right_blocks = [f"right-block-{index:03d}" for index in range(right_count)]
+    inputs = [
+        FusionInput(
+            "vector",
+            EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1]),
+                evidence=[
+                    VisualEvidence(
+                        id="shared-evidence",
+                        kind="contour",
+                        score=0.5,
+                        source_block_ids=left_blocks,
+                    )
+                ],
+            ),
+            "left",
+        ),
+        FusionInput(
+            "vlm",
+            EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1]),
+                evidence=[
+                    VisualEvidence(
+                        id="shared-evidence",
+                        kind="contour",
+                        score=0.9,
+                        source_block_ids=right_blocks,
+                    )
+                ],
+            ),
+            "right",
+        ),
+    ]
+
+    fused = FusionEngine().fuse(inputs)
+    reversed_fused = FusionEngine().fuse(reversed(inputs))
+
+    assert fused.model_dump(mode="json") == reversed_fused.model_dump(mode="json")
+    assert len(fused.evidence) == 1
+    evidence = VisualEvidence.model_validate(fused.evidence[0].model_dump(mode="python"))
+    assert evidence.score == 0.9
+    if overflow:
+        assert evidence.source_block_ids == left_blocks
+        assert any(
+            "fusion evidence source-block union exceeded" in warning for warning in fused.warnings
+        )
+    else:
+        assert evidence.source_block_ids == sorted([*left_blocks, *right_blocks])
+        assert not any(
+            "fusion evidence source-block union exceeded" in warning for warning in fused.warnings
+        )
+
+
+def test_fusion_discards_the_entire_multi_input_source_block_union_on_overflow() -> None:
+    left_blocks = [f"left-block-{index:03d}" for index in range(128)]
+    middle_blocks = [f"middle-block-{index:03d}" for index in range(128)]
+    inputs = [
+        FusionInput(
+            source,
+            EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1]),
+                evidence=[
+                    VisualEvidence(
+                        id="shared-evidence",
+                        kind="contour",
+                        score=score,
+                        source_block_ids=blocks,
+                    )
+                ],
+            ),
+            name,
+        )
+        for source, name, score, blocks in (
+            ("vector", "left", 0.5, left_blocks),
+            ("geometry", "middle", 0.7, middle_blocks),
+            ("vlm", "right", 0.9, ["right-block-000"]),
+        )
+    ]
+
+    fused = FusionEngine().fuse(inputs)
+    reversed_fused = FusionEngine().fuse(reversed(inputs))
+
+    assert fused.model_dump(mode="json") == reversed_fused.model_dump(mode="json")
+    assert len(fused.evidence) == 1
+    assert fused.evidence[0].source_block_ids == left_blocks
+    assert fused.evidence[0].score == 0.9
+    assert any(
+        "fusion evidence source-block union exceeded" in warning for warning in fused.warnings
+    )
+
+
+def test_relation_evidence_overflow_keeps_direction_conflict_tracking() -> None:
+    scenes = [
+        DiagramSceneIR(
+            elements=[
+                SceneElement(id="A", role="node", bbox=(0, 0, 10, 10)),
+                SceneElement(id="B", role="node", bbox=(20, 0, 30, 10)),
+            ],
+            relations=[
+                SceneRelation(
+                    id="E",
+                    source_id=source_id,
+                    target_id=target_id,
+                    relation_type="edge",
+                    evidence_ids=[f"{prefix}-{index:03d}" for index in range(count)],
+                )
+            ],
+        )
+        for source_id, target_id, prefix, count in (
+            ("A", "B", "left", 128),
+            ("B", "A", "right", 129),
+        )
+    ]
+
+    fused = FusionEngine().fuse(
+        [
+            FusionInput(
+                source,
+                EngineObservation(
+                    prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1]),
+                    scene_ir=scene,
+                ),
+                source,
+            )
+            for source, scene in zip(("vector", "vlm"), scenes, strict=True)
+        ]
+    )
+
+    assert fused.scene_ir is not None
+    assert fused.scene_ir.relations[0].source_id == "A"
+    assert fused.scene_ir.relations[0].target_id == "B"
+    assert fused.scene_ir.relations[0].evidence_ids == [f"left-{index:03d}" for index in range(128)]
+    assert fused.fusion_conflicted_connector_pairs == {frozenset({"A", "B"})}
+    assert any("direction conflict" in warning for warning in fused.warnings)
+    assert any("relation evidence union exceeded" in warning for warning in fused.warnings)
+
+
 @pytest.mark.parametrize("mutation", ["nested_label", "evidence_overflow"])
 def test_fusion_isolates_invalid_typed_ir_without_live_model_dump(
     monkeypatch,

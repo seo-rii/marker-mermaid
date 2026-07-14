@@ -1784,6 +1784,24 @@ class ReconstructionPipeline:
                         )
                     )
                 fused = FusionEngine().fuse(fusion_inputs)
+                if fused.scene_ir is not None:
+                    fused.scene_ir = DiagramSceneIR.model_validate(
+                        fused.scene_ir.model_dump(mode="python")
+                    )
+                if type(fused.evidence) is not list:
+                    raise TypeError("fused evidence must be an exact plain list")
+                if len(fused.evidence) > MAX_OBSERVATION_EVIDENCE:
+                    raise ValueError("fused evidence exceeds the global observation item limit")
+                canonical_fused_evidence: list[VisualEvidence] = []
+                for item in fused.evidence:
+                    if type(item) is not VisualEvidence:
+                        raise TypeError(
+                            "fused evidence must contain exact canonical VisualEvidence records"
+                        )
+                    canonical_fused_evidence.append(
+                        VisualEvidence.model_validate(item.model_dump(mode="python"))
+                    )
+                fused.evidence = canonical_fused_evidence
                 generation_observations = [
                     (FusionEngine.name, fused, True),
                     *generation_observations,

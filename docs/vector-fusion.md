@@ -14,6 +14,10 @@ node 하나에만 포함될 때 label로 결합합니다. fill/stroke color와 l
 PyMuPDF span의 integer bold flag `16`은 `vector_text` evidence에 보존합니다. 한 node에 포함된 span이
 전부 bold일 때만 node bold를 복원하며 mixed/partial weight는 warning과 함께 생략합니다. 동일
 text+bbox의 weight 충돌도 label을 중복하지 않고 emphasis만 생략합니다.
+결합 label·font·provenance는 새 `SceneElement`로 다시 검증합니다. Contour 1개를 포함해 record당
+evidence reference는 최대 256개이며, 결합 text 또는 reference가 상한을 넘으면 일부 ID만 자르지
+않습니다. 해당 text enrichment 전체를 생략하고 원래 contour-only node와 개별 `vector_text` evidence,
+명시적 warning을 유지하므로 뒤 engine은 원본 span을 계속 사용할 수 있습니다.
 
 panel/merged source는 `source-map.json`과 같은 assembly placement의 `page_to_canvas` affine을 사용합니다.
 block/page mapping이 모호하거나 없으면 bbox fallback warning을 남기며, primitive가 없으면 unknown empty
@@ -36,6 +40,15 @@ Scene node는 동일 ID 또는 정규화된 bbox IoU로 cluster합니다. relati
 Scene node ID로 다시 매핑하며 provenance와 source block ID를 합칩니다. 서로 다른 값이 경쟁하면
 우선순위로 선택하고 warning을 남깁니다. typed/direct candidate는 canonical JSON/code 기준으로 중복
 제거합니다. 이 일반 Scene cluster 규칙 자체는 typed IR의 ID를 바꿀 권한이 아닙니다.
+
+Element/relation `evidence_ids`와 같은 VisualEvidence의 `source_block_ids` 합집합도 record별 256개
+상한 안에서만 적용합니다. 합집합이 넘치면 bounded prefix를 게시하거나 record를 삭제하지 않고,
+같은 evidence ID의 모든 engine 입력을 한 번에 폐기해 앞선 부분 합집합도 남기지 않습니다. 이렇게
+cross-input enrichment 전체를 생략해 위 우선순위의 원 winner record를 유지하고 warning을 남깁니다.
+Relation endpoint remap과 direction-conflict 추적은 이 경우에도 유지됩니다. 모든 변형 record는 새
+Pydantic record로 다시 검증되고, pipeline도 내부 fused Scene/evidence와 exact-list/20,000-item evidence
+collection을 후보 생성 전에 한 번 더 검증합니다. 따라서 정확히 256개는 손실 없이 합쳐지고 257번째
+근거가 scoring·게시·sidecar 사이의 계약 차이를 만들지 않습니다.
 
 ### Flow node ID 정합화
 

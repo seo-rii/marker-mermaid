@@ -118,6 +118,10 @@ generated Scene attribution에서 제외합니다.
   제한한 뒤 결정하므로, 점수나 `scores.json`만 바꿔 신뢰도가 높은 것처럼 표시할 수 없습니다. Digest의
   확률 값은 exponent 없는 decimal string으로 encode하고 negative zero를 `"0"`으로 정규화하므로 Python과
   JavaScript verifier가 같은 bytes를 재현할 수 있습니다.
+- Source/generated Scene은 nested record를 포함한 현재 payload가 Pydantic resource 계약을 다시 통과한
+  경우에만 semantic scoring에 들어갑니다. Fusion overflow는 winner record fallback으로 canonical화되고,
+  pipeline의 내부-fusion backstop은 evidence collection의 exact-list/20,000-item 계약도 확인합니다. 이
+  backstop이 실패하면 fused 후보만 격리한 채 원 engine 후보를 유지합니다.
 - OCR recall은 NFKC/casefold한 원 OCR token multiset의 occurrence recall입니다. 같은 text라도 다른 bbox에서
   관찰되면 별도 occurrence로 유지하고, context OCR과 OCR/vector evidence가 겹치면 token별 최대 count를
   사용합니다. bbox가 없는 동일 text evidence는 공간적으로 다른 occurrence임을 입증하지 못하므로 하나로

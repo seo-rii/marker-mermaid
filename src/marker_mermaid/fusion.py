@@ -46,6 +46,7 @@ from marker_mermaid.models import (
     _canonical_typed_candidate_fields,
     canonical_typed_ir_snapshot,
 )
+from marker_mermaid.resource_limits import MAX_EVIDENCE_REFS
 
 FusionSource = Literal["vector", "geometry", "ocr", "vlm", "other"]
 
@@ -72,6 +73,20 @@ _TYPE_WEIGHT: dict[FusionSource, float] = {
 }
 
 
+def _bounded_reference_union(values: Iterable[Sequence[str]]) -> list[str] | None:
+    """Return a sorted union without ever materializing an oversized set."""
+
+    merged: set[str] = set()
+    for references in values:
+        for reference in references:
+            if reference in merged:
+                continue
+            if len(merged) >= MAX_EVIDENCE_REFS:
+                return None
+            merged.add(reference)
+    return sorted(merged)
+
+
 def _canonical_typed_candidates(
     value: object,
 ) -> tuple[list[TypedIRCandidate], list[str]]:
@@ -95,8 +110,8 @@ def _canonical_typed_candidates(
         try:
             if type(candidate) is not TypedIRCandidate:
                 raise TypeError("candidate must be an exact TypedIRCandidate record")
-            is_model, diagram_type, ir_snapshot, confidence = (
-                _canonical_typed_candidate_fields(candidate)
+            is_model, diagram_type, ir_snapshot, confidence = _canonical_typed_candidate_fields(
+                candidate
             )
             if not is_model:  # pragma: no cover - exact type guard above
                 raise TypeError("typed candidate must remain a canonical model")
@@ -194,8 +209,7 @@ class FusionEngine:
     def __init__(self, *, element_iou_threshold: float = 0.45):
         if not NODE_ID_MAPPING_MIN_IOU <= element_iou_threshold <= 1:
             raise ValueError(
-                "element_iou_threshold must be at least "
-                f"{NODE_ID_MAPPING_MIN_IOU} and at most one"
+                f"element_iou_threshold must be at least {NODE_ID_MAPPING_MIN_IOU} and at most one"
             )
         self.element_iou_threshold = element_iou_threshold
 
@@ -332,40 +346,51 @@ class FusionEngine:
     def _fuse_evidence(
         self, inputs: Sequence[FusionInput]
     ) -> tuple[list[VisualEvidence], list[str], set[str]]:
-        records: dict[str, tuple[FusionSource, str, VisualEvidence]] = {}
+        groups: defaultdict[str, list[tuple[FusionSource, str, VisualEvidence]]] = defaultdict(list)
         warnings: list[str] = []
         collided_ids: set[str] = set()
         for item in inputs:
             for candidate in item.observation.evidence:
-                existing = records.get(candidate.id)
-                if existing is None:
-                    records[candidate.id] = (
-                        item.source,
-                        item.name,
-                        candidate.model_copy(deep=True),
-                    )
-                    continue
-                collided_ids.add(candidate.id)
-                old_source, old_name, old = existing
-                equivalent = old.model_dump(exclude={"score", "source_block_ids"}) == (
-                    candidate.model_dump(exclude={"score", "source_block_ids"})
+                groups[candidate.id].append((item.source, item.name, candidate))
+
+        records: list[VisualEvidence] = []
+        for evidence_id in sorted(groups):
+            group = groups[evidence_id]
+            winner_source, winner_name, winner_record = group[0]
+            for source, name, candidate in group[1:]:
+                if _GEOMETRY_RANK[source] > _GEOMETRY_RANK[winner_source]:
+                    winner_source, winner_name, winner_record = source, name, candidate
+            winner = winner_record.model_copy(deep=True)
+            winner_payload = winner_record.model_dump(exclude={"score", "source_block_ids"})
+            for _source, _name, candidate in group:
+                equivalent = candidate.model_dump(exclude={"score", "source_block_ids"}) == (
+                    winner_payload
                 )
-                winner_source, winner_name, winner = old_source, old_name, old
-                if _GEOMETRY_RANK[item.source] > _GEOMETRY_RANK[old_source]:
-                    winner_source, winner_name = item.source, item.name
-                    winner = candidate.model_copy(deep=True)
-                winner.source_block_ids = sorted(
-                    set(old.source_block_ids) | set(candidate.source_block_ids)
-                )
-                scores = [score for score in (old.score, candidate.score) if score is not None]
-                winner.score = max(scores) if scores else None
-                records[candidate.id] = (winner_source, winner_name, winner)
                 if not equivalent:
                     warnings.append(
                         "fusion evidence conflict for "
                         f"{candidate.id!r}; kept {winner_source} input {winner_name!r}"
                     )
-        return [records[key][2] for key in sorted(records)], warnings, collided_ids
+            if len(group) > 1:
+                collided_ids.add(evidence_id)
+            source_block_ids = _bounded_reference_union(
+                candidate.source_block_ids for _source, _name, candidate in group
+            )
+            if source_block_ids is None:
+                warnings.append(
+                    "fusion evidence source-block union exceeded the per-record reference "
+                    "limit; kept the precedence winner blocks"
+                )
+            else:
+                winner.source_block_ids = source_block_ids
+            scores = [
+                candidate.score
+                for _source, _name, candidate in group
+                if candidate.score is not None
+            ]
+            winner.score = max(scores) if scores else None
+            records.append(VisualEvidence.model_validate(winner.model_dump(mode="python")))
+        return records, warnings, collided_ids
 
     def _fuse_predictions(self, inputs: Sequence[FusionInput]) -> DiagramTypePrediction:
         totals: defaultdict[str, float] = defaultdict(float)
@@ -431,6 +456,7 @@ class FusionEngine:
         for cluster in clusters:
             fused, cluster_warnings = self._fuse_element_cluster(cluster, evidence)
             fused.id = _unique_id(fused.id, used_ids)
+            fused = SceneElement.model_validate(fused.model_dump(mode="python"))
             used_ids.add(fused.id)
             output_ids.append(fused.id)
             fused_elements.append(fused)
@@ -465,6 +491,7 @@ class FusionEngine:
         for cluster in relation_clusters:
             fused, cluster_warnings, direction_conflict = self._fuse_relation_cluster(cluster)
             fused.id = _unique_id(fused.id, used_relation_ids)
+            fused = SceneRelation.model_validate(fused.model_dump(mode="python"))
             used_relation_ids.add(fused.id)
             fused_relations.append(fused)
             warnings.extend(cluster_warnings)
@@ -771,9 +798,8 @@ class FusionEngine:
             trusted_blocks = source_record.trusted_source_block_ids.intersection(
                 authority_record.trusted_source_block_ids
             )
-            if (
-                not trusted_blocks
-                or not source_blocks.intersection(authority_blocks, trusted_blocks)
+            if not trusted_blocks or not source_blocks.intersection(
+                authority_blocks, trusted_blocks
             ):
                 failures[source_key] = (
                     "source and authority evidence do not share a trusted source block"
@@ -846,10 +872,6 @@ class FusionEngine:
         )
         geometry = ordered[0]
         result = geometry.element.model_copy(deep=True)
-        result.evidence_ids = sorted(
-            {evidence_id for item in ordered for evidence_id in item.element.evidence_ids}
-        )
-        result.confidence = max(item.element.confidence for item in ordered)
         warnings: list[str] = []
         base_box = _unit_bbox(geometry.element.bbox, geometry.scene)
         for item in ordered[1:]:
@@ -858,6 +880,15 @@ class FusionEngine:
                     "fusion element geometry conflict for "
                     f"{result.id!r}; kept {geometry.source} geometry"
                 )
+        evidence_ids = _bounded_reference_union(item.element.evidence_ids for item in ordered)
+        if evidence_ids is None:
+            warnings.append(
+                "fusion element evidence union exceeded the per-record reference limit; "
+                "kept the precedence winner record"
+            )
+            return result, warnings
+        result.evidence_ids = evidence_ids
+        result.confidence = max(item.element.confidence for item in ordered)
 
         label, label_warning = _select_label(
             ordered,
@@ -870,17 +901,13 @@ class FusionEngine:
             warnings.append(f"fusion element {result.id!r} {label_warning}")
 
         font_weights = {
-            item.element.font_weight
-            for item in ordered
-            if item.element.font_weight is not None
+            item.element.font_weight for item in ordered if item.element.font_weight is not None
         }
         if len(font_weights) == 1:
             result.font_weight = next(iter(font_weights))
         elif len(font_weights) > 1:
             result.font_weight = None
-            warnings.append(
-                f"fusion element {result.id!r} font-weight conflict; emphasis omitted"
-            )
+            warnings.append(f"fusion element {result.id!r} font-weight conflict; emphasis omitted")
 
         # Roles carry semantic meaning, so prefer a non-unknown VLM role even
         # when the shape and position come from vector or CV geometry.
@@ -933,10 +960,6 @@ class FusionEngine:
         result = geometry.relation.model_copy(deep=True)
         result.source_id = geometry.mapped_source
         result.target_id = geometry.mapped_target
-        result.evidence_ids = sorted(
-            {evidence_id for item in cluster for evidence_id in item.relation.evidence_ids}
-        )
-        result.confidence = max(item.relation.confidence for item in cluster)
         warnings: list[str] = []
         direction_conflict = False
         for item in geometry_order[1:]:
@@ -956,6 +979,16 @@ class FusionEngine:
                     "fusion relation direction conflict for "
                     f"{result.id!r}; kept {geometry.source} direction"
                 )
+
+        evidence_ids = _bounded_reference_union(item.relation.evidence_ids for item in cluster)
+        if evidence_ids is None:
+            warnings.append(
+                "fusion relation evidence union exceeded the per-record reference limit; "
+                "kept the precedence winner record"
+            )
+            return result, warnings, direction_conflict
+        result.evidence_ids = evidence_ids
+        result.confidence = max(item.relation.confidence for item in cluster)
 
         semantic_order = sorted(
             (
@@ -1031,7 +1064,7 @@ class FusionEngine:
                     f"fusion group geometry conflict for {result.id!r}; kept {source} geometry "
                     f"from {owner!r}"
                 )
-            fused.append(result)
+            fused.append(SceneGroup.model_validate(result.model_dump(mode="python")))
         return fused
 
     def _fuse_typed_candidates(
@@ -1348,96 +1381,94 @@ class FusionEngine:
                 (f"{reason_prefix} skipped: known scalar field has a nested container"),
             )
 
-        if any(
-            (
-                node.get("bbox") is not None
-                and not (
-                    isinstance(node.get("bbox"), list | tuple)
-                    and len(node["bbox"]) == 4
-                    and all(
-                        isinstance(item, int | float)
-                        and not isinstance(item, bool)
-                        and math.isfinite(item)
-                        for item in node["bbox"]
-                    )
-                )
-            )
-            or (
-                node.get("polygon") is not None
-                and not (
-                    isinstance(node.get("polygon"), list | tuple)
-                    and all(
-                        isinstance(point, list | tuple)
-                        and len(point) == 2
+        if (
+            any(
+                (
+                    node.get("bbox") is not None
+                    and not (
+                        isinstance(node.get("bbox"), list | tuple)
+                        and len(node["bbox"]) == 4
                         and all(
                             isinstance(item, int | float)
                             and not isinstance(item, bool)
                             and math.isfinite(item)
-                            for item in point
+                            for item in node["bbox"]
                         )
-                        for point in node["polygon"]
                     )
                 )
-            )
-            or (
-                not isinstance(node.get("evidence_ids"), list)
-                or not all(
-                    isinstance(item, str) and item for item in node["evidence_ids"]
+                or (
+                    node.get("polygon") is not None
+                    and not (
+                        isinstance(node.get("polygon"), list | tuple)
+                        and all(
+                            isinstance(point, list | tuple)
+                            and len(point) == 2
+                            and all(
+                                isinstance(item, int | float)
+                                and not isinstance(item, bool)
+                                and math.isfinite(item)
+                                for item in point
+                            )
+                            for point in node["polygon"]
+                        )
+                    )
                 )
+                or (
+                    not isinstance(node.get("evidence_ids"), list)
+                    or not all(isinstance(item, str) and item for item in node["evidence_ids"])
+                )
+                for node in nodes
             )
-            for node in nodes
-        ) or any(
-            (
-                edge.get("polyline") is not None
-                and not (
-                    isinstance(edge.get("polyline"), list | tuple)
-                    and all(
-                        isinstance(point, list | tuple)
-                        and len(point) == 2
+            or any(
+                (
+                    edge.get("polyline") is not None
+                    and not (
+                        isinstance(edge.get("polyline"), list | tuple)
+                        and all(
+                            isinstance(point, list | tuple)
+                            and len(point) == 2
+                            and all(
+                                isinstance(item, int | float)
+                                and not isinstance(item, bool)
+                                and math.isfinite(item)
+                                for item in point
+                            )
+                            for point in edge["polyline"]
+                        )
+                    )
+                )
+                or (
+                    edge.get("evidence_ids") is not None
+                    and not (
+                        isinstance(edge.get("evidence_ids"), list)
+                        and all(isinstance(item, str) and item for item in edge["evidence_ids"])
+                    )
+                )
+                for edge in edges
+            )
+            or any(
+                (
+                    group.get("bbox") is not None
+                    and not (
+                        isinstance(group.get("bbox"), list | tuple)
+                        and len(group["bbox"]) == 4
                         and all(
                             isinstance(item, int | float)
                             and not isinstance(item, bool)
                             and math.isfinite(item)
-                            for item in point
+                            for item in group["bbox"]
                         )
-                        for point in edge["polyline"]
                     )
                 )
-            )
-            or (
-                edge.get("evidence_ids") is not None
-                and not (
-                    isinstance(edge.get("evidence_ids"), list)
-                    and all(
-                        isinstance(item, str) and item for item in edge["evidence_ids"]
+                or (
+                    group.get("evidence_ids") is not None
+                    and not (
+                        isinstance(group.get("evidence_ids"), list)
+                        and all(isinstance(item, str) and item for item in group["evidence_ids"])
                     )
                 )
+                for group in groups
             )
-            for edge in edges
-        ) or any(
-            (
-                group.get("bbox") is not None
-                and not (
-                    isinstance(group.get("bbox"), list | tuple)
-                    and len(group["bbox"]) == 4
-                    and all(
-                        isinstance(item, int | float)
-                        and not isinstance(item, bool)
-                        and math.isfinite(item)
-                        for item in group["bbox"]
-                    )
-                )
-            )
-            or (
-                group.get("evidence_ids") is not None
-                and not (
-                    isinstance(group.get("evidence_ids"), list)
-                    and all(
-                        isinstance(item, str) and item for item in group["evidence_ids"]
-                    )
-                )
-            )
-            for group in groups
         ):
             return (
                 candidate.model_copy(deep=True),
