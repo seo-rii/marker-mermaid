@@ -31,12 +31,21 @@
 - Same-origin review API with CSRF, body limits, path confinement, and strict revalidation.
 - Evidence-strict Journey, Kanban, GitGraph, Packet, Ishikawa, TreeView, and Event Modeling serializers.
 - Native Wardley, Cynefin, and Railroad serializers plus explicit ZenUML, organization, and lineage fallbacks.
+- Strict nested Wardley component/link and Cynefin domain/item/transition extraction contracts with shared
+  bounded serializer/Scene/OCR plans. Wardley maps horizontal/vertical IR coordinates to the native
+  `[visibility, evolution]` order as `[y, x]`, canonicalizes the Scene to the rendered token values and
+  normalized `(x, 1-y)` screen position, and models `->` as the marker-less link Mermaid 11.16 actually
+  renders. Cynefin attribution includes the runtime's fixed domain/practice/response/disorder template and
+  its first-three-plus-`+N more` confusion-item projection; the fixed content remains unprovenanced and makes
+  native Cynefin review-only instead of allowing a false automatic publication. Both native grammars enforce
+  validator-sized source budgets and disclose visible compatibility glyphs when Mermaid 11.16 cannot preserve
+  entity-like literals in SVG text.
 - Bounded pre-validation source repair with audit events, diagnostics, idempotence, and AST adapter seam.
 - Page-level missed-diagram proposals with occupied-region exclusion and virtual source crops.
 - Profile-gated flowchart fill, border, and link style recovery with strict CSS allowlists.
 - Enabled-type typed IR root contracts shared by Structured VLM prompts and response validation.
 - Type-aware grayscale, adaptive-threshold, contour, and source-resolution tile visual priors.
-- Candidate Scene adapters for planning, hierarchy, event, Wardley, lineage, Venn, and ZenUML structures.
+- Candidate Scene adapters for planning, hierarchy, event, Wardley, Cynefin, lineage, Venn, and ZenUML structures.
 - Requested-type accessibility enrichment with emitted-grammar limitations and validated direct-code augmentation.
 - Evidence-backed typed Flowchart label repair with structured IR/code proposals.
 - Validated Review Workspace edge reconnection and node deletion with synchronized IR/code audit history.
@@ -65,7 +74,7 @@
 - Serializer-aware OCR text projection for Class members/cardinalities, ER attributes, and multi-event Timeline records.
 - Source-sized Review provenance overlays with Scene-coordinate view boxes and stale image-load isolation.
 - Emitted-serializer OCR projection for C4 architecture fallbacks and native Requirement diagrams.
-- Emitted-visible OCR projection for Event Modeling, Wardley, and ZenUML fallbacks/native output.
+- Emitted-visible OCR projection for Event Modeling, Wardley, Cynefin, and ZenUML fallbacks/native output.
 - Serializer-aligned Event Modeling lane Scenes plus grammar-specific, fallback-safe special-label and accessibility neutralization.
 - Entity-shaped Flowchart source-text preservation, pre-normalization line/control rejection, and Event Modeling compatibility-glyph disclosure.
 - Ishikawa raw-line labels that begin with either reserved header token remain visible instead of being consumed by the lexer.

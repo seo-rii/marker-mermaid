@@ -7,6 +7,8 @@ native Phase 2의 Requirement·Block, C4·Deployment·Component·Use-case fallba
 Pie·XY·Quadrant·Sankey·Radar·Treemap·Venn과 planning 유형인 Journey·Kanban·GitGraph는 record 내부의
 알려진 필드와 recursive container도 전용 Pydantic model로 검사합니다. Packet·Ishikawa·TreeView도
 bit-range record와 effect/category/cause 또는 root/children 계층을 같은 경계에서 후검증합니다.
+Wardley·Cynefin의 positioned component/link·domain/item/transition record도 strict nested
+contract 대상입니다.
 serializer의 세부 의미 검사는 그 다음 단계에서 수행합니다.
 
 이 경계는 두 문제를 분리합니다.
@@ -53,6 +55,8 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | Packet | explicit integer bit range와 field label |
 | Ishikawa | effect leaf와 재귀 category/cause hierarchy |
 | TreeView | 재귀 root/children hierarchy |
+| Wardley | positioned component와 explicit link |
+| Cynefin | official domain, evidence-bearing item, domain transition |
 
 ### Requirement·Block record 계약
 
@@ -358,6 +362,42 @@ Packet Scene은 field를 `LR` 순서의 독립 element로 표시하고 입력에
 containment relation을 만들고 원 record의 bbox/evidence를 유지합니다. Planner가 거부하면
 Scene adapter도 부분 attribution을 만들지 않고 `unavailable`로 보냅니다.
 
+### Wardley·Cynefin experimental native 계약
+
+Wardley는 `components: list`를 필수, `links: list`를 선택 root로 사용합니다. Component
+prompt는 `id`·`label`·`x`·`y`·`anchor`·bbox/evidence, link는 `source`·`target`·`label`·
+bbox/evidence만 공개합니다. `x`/`y`는 boolean이 아닌 finite JSON integer/float,
+`anchor`는 strict boolean입니다. 좌표 누락·`[0,1]` 범위, safe ID, display label 충돌,
+endpoint·self/duplicate link와 component/link각 500개는 공유 Wardley plan이 추가로
+fail closed 판정합니다. Serializer는 생성 source에 50,000자·5,000줄 preflight를 별도로
+적용합니다. `name`·`nodes`·`relations`와 같은 비공식 alias는 canonical root를
+대체하지 않습니다.
+
+Cynefin은 `domains: list`를 필수, `transitions: list`를 선택 root로 사용합니다. Domain
+`name`은 `complex|complicated|clear|chaotic|confusion`만 허용하며 extraction 경계는
+serializer와 같이 whitespace 정규화·case-insensitive로 토큰을 검사하되 원문 casing을
+바꾸지 않습니다. Canonical prompt는 item을 `{label,bbox,evidence_ids}` object로 요청해
+각 표시 항목이 provenance를 가질 수 있게 합니다. 기존 scalar string item은 입력 호환을
+위해 후검증에서는 허용하지만 prompt에 광고하지 않고, record evidence를 생성하지도
+않습니다. Empty domain/item, unknown·duplicate domain, transition endpoint/self/duplicate과
+item/transition각 500개는 serializer-owned plan이 판정하고, 생성 source budget은 serializer
+preflight가 별도로 판정합니다.
+
+Wardley IR의 `x`/`y`는 화면의 수평/수직 좌표입니다. Mermaid 11.16 Wardley 문법이
+`[visibility, evolution]`을 요구하므로 serializer는 `[y, x]`를 방출하고 generated Scene은
+`(x, 1-y)`를 사용합니다. `->` link는 해당 runtime에서 화살촉 없는 선이므로 Scene에서도
+무방향 relation입니다.
+
+Cynefin 11.16 renderer는 입력과 무관하게 다섯 domain과 practice/response template text를
+자동 출력합니다. Generated Scene/OCR은 이 고정 element를 무근거 runtime template로 명시하고,
+`confusion` item이 네 개 이상이면 처음 세 개와 renderer가 표시하는 `+N more`만 투영합니다.
+숨겨진 item 원문은 typed IR/sidecar에 남습니다. 고정 template에 source provenance를 붙일
+계약이 없으므로 native Cynefin 후보는 점수와 무관하게 review를 요구합니다.
+
+두 nested model은 공통 strict bbox/evidence와 알려진 scalar/container만 확정하고 추가 metadata를
+원본 IR에 보존합니다. 검증 model은 입력 dict를 대체하지 않으므로 direct serializer의
+label fallback, key-presence, order가 변하지 않습니다.
+
 알려진 scalar field에는 object/list를 넣을 수 없고, record와 child container의 종류도 고정합니다. `bbox`는
 정확히 네 개의 finite number, `evidence_ids`와 membership은 string list여야 합니다. `extra="allow"`를
 사용하므로 style, geometry, plugin 또는 향후 Mermaid field 같은 미등록 metadata는 삭제하지 않습니다.
@@ -395,10 +435,10 @@ message만 serializer와 Scene에 함께 전달하고, raw message ID와 무관�
 
 현재 Marker `response_schema`의 외부 envelope는 여전히 `TypedIRCandidate.ir: dict`입니다. 따라서 이 단계는
 모든 Phase 2 type, Phase 3 chart(Pie·XY·Quadrant·Sankey·Radar·Treemap·Venn),
-Journey·Kanban·GitGraph와 Packet·Ishikawa·TreeView의 prompt와 응답 후 검증을 중첩 구조까지
+Journey·Kanban·GitGraph와 Packet·Ishikawa·TreeView·Wardley·Cynefin의 prompt와 응답 후 검증을 중첩 구조까지
 확장하지만 provider에 모든 Mermaid 유형을 하나의 discriminated JSON Schema로 직접 노출하거나 generic
 envelope reserve를 늘리지는 않습니다. 나머지 special type인
-Wardley·Cynefin·Event Modeling·ZenUML·Railroad·Organization·Data Lineage는
+Event Modeling·ZenUML·Railroad·Organization·Data Lineage는
 아직 schema-light root contract입니다. Envelope-level discriminated
 schema도 후속 작업이므로 Phase 2에 root-only type이 남지 않아도 `ARCH-001`은 여전히 부분 완화
 상태입니다.
@@ -479,7 +519,7 @@ observation이 fusion fallback이나 serialization sink를 우회해 게시되�
 
 Typed IR serializer가 만든 결과를 provenance 및 구조 점수에 사용할 때는 `candidate_scene.py`가 실제
 방출 구조를 `DiagramSceneIR`로 바꿉니다. Flow/UML/architecture/chart 외에도 sequence/ZenUML,
-mindmap/treemap/tree/organization, timeline/journey/Kanban, event modeling, Ishikawa, Wardley,
+mindmap/treemap/tree/organization, timeline/journey/Kanban, event modeling, Ishikawa, Wardley/Cynefin,
 data lineage, Venn adapter가 있습니다. Adapter가 없는 유형은 구조를 추측하지 않고 metric을
 `unavailable`로 둡니다.
 

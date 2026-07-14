@@ -65,6 +65,13 @@ TreeView, Ishikawa는 각 native grammar의 실제 SVG text 동작에 맞춘 enc
 typed IR/review metadata에만 유지하고 자동 SVG에는 generic 문구를 넣습니다. native/fallback label과
 SVG title/description은 pinned Mermaid integration test로 검사합니다.
 
+Wardley·Cynefin native serializer도 control/format/line separator를 정규화 전에 거부하고,
+entity-like literal을 renderer가 손실시키는 자리에 보이는 `＆`/`＃` compatibility glyph를 사용합니다.
+대체 사실은 warning에 남고 원문은 typed IR/sidecar에 보존됩니다. Strict nested 계약은
+Wardley `x`/`y`에 boolean·NaN·infinity를, `anchor`에 integer/string coercion을 허용하지
+않으며 Cynefin domain을 닫힌 official token 집합으로 검증합니다. 두 serializer의 생성 source는
+security scanner에 넘기기 전에도 50,000자·5,000줄을 넘으면 전체 후보 단위로 거부됩니다.
+
 Style recovery는 Scene IR 값을 그대로 CSS로 복사하지 않습니다. Node와 edge는 exact built-in PDF vector
 engine이 현재 source block에서 새로 등록한 collision-free contour/line과 bbox/endpoint ownership을
 증명해야 하며 edge는 source/vector/generated/code 네 방향 표현도 일치해야 합니다. 그 trusted vector

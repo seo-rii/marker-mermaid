@@ -2910,6 +2910,288 @@ def test_generic_candidate_envelopes_apply_special_native_nested_contracts(
         )
 
 
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "location"),
+    [
+        ("wardley", {"components": ["component"]}, "components[0]"),
+        ("wardley", {"components": [{"id": 1}]}, "components[0].id"),
+        ("wardley", {"components": [{"label": []}]}, "components[0].label"),
+        ("wardley", {"components": [{"x": "0.5"}]}, "components[0].x"),
+        ("wardley", {"components": [{"y": True}]}, "components[0].y"),
+        ("wardley", {"components": [{"anchor": 1}]}, "components[0].anchor"),
+        ("wardley", {"components": [{"bbox": [0, 0, 10]}]}, "components[0].bbox"),
+        (
+            "wardley",
+            {"components": [], "links": [{"source": 1}]},
+            "links[0].source",
+        ),
+        (
+            "wardley",
+            {"components": [], "links": [{"evidence_ids": [1]}]},
+            "links[0].evidence_ids[0]",
+        ),
+        ("cynefin", {"domains": ["complex"]}, "domains[0]"),
+        ("cynefin", {"domains": [{"name": 1}]}, "domains[0].name"),
+        ("cynefin", {"domains": [{"items": "item"}]}, "domains[0].items"),
+        ("cynefin", {"domains": [{"items": [1]}]}, "domains[0].items[0]"),
+        (
+            "cynefin",
+            {"domains": [{"items": [{"label": 1}]}]},
+            "domains[0].items[0].label",
+        ),
+        (
+            "cynefin",
+            {"domains": [{"items": [{"bbox": [0, False, 10, 10]}]}]},
+            "domains[0].items[0].bbox",
+        ),
+        (
+            "cynefin",
+            {"domains": [], "transitions": [{"target": []}]},
+            "transitions[0].target",
+        ),
+        (
+            "cynefin",
+            {"domains": [], "transitions": [{"label": False}]},
+            "transitions[0].label",
+        ),
+    ],
+)
+def test_experimental_native_nested_contracts_reject_strict_known_types(
+    diagram_type: str,
+    ir: dict[str, object],
+    location: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    message = str(exc_info.value)
+    assert "violates its nested contract" in message
+    assert location in message
+
+
+@pytest.mark.parametrize("coordinate", [float("nan"), float("inf"), float("-inf")])
+def test_wardley_contract_rejects_non_finite_coordinates_at_canonical_boundary(
+    coordinate: float,
+) -> None:
+    with pytest.raises(ValidationError, match="number must be finite and bounded"):
+        TypedIRCandidate(
+            diagram_type="wardley",
+            ir={"components": [{"x": coordinate}]},
+        )
+
+
+@pytest.mark.parametrize("name", ["obvious", "unknown", "complex domain"])
+def test_cynefin_contract_rejects_unsupported_closed_domain_tokens(name: str) -> None:
+    with pytest.raises(ValidationError, match=r"domains\[0\]\.name"):
+        TypedIRCandidate(
+            diagram_type="cynefin",
+            ir={"domains": [{"name": name}]},
+        )
+
+
+def test_cynefin_contract_accepts_normalized_domain_token_without_rewriting() -> None:
+    ir = {
+        "domains": [
+            {
+                "name": "  CoMpLeX  ",
+                "items": [{"label": "Emergent practice"}],
+            }
+        ]
+    }
+
+    candidate = TypedIRCandidate(diagram_type="cynefin", ir=ir)
+
+    assert candidate.ir == ir
+    assert candidate.ir["domains"][0]["name"] == "  CoMpLeX  "
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "wardley",
+            {
+                "components": [
+                    {
+                        "id": "api",
+                        "label": "API",
+                        "x": 0,
+                        "y": 1.0,
+                        "anchor": False,
+                        "bbox": [0, 0, 10, 10],
+                        "evidence_ids": ["vector-api"],
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "links": [
+                    {
+                        "source": "api",
+                        "target": "db",
+                        "label": "request",
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+        (
+            "cynefin",
+            {
+                "domains": [
+                    {
+                        "name": "complex",
+                        "items": [
+                            "Legacy scalar item",
+                            {
+                                "label": "Canonical item",
+                                "bbox": [0, 0, 10, 10],
+                                "evidence_ids": ["ocr-item"],
+                                "future_metadata": {"kept": True},
+                            },
+                        ],
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "transitions": [
+                    {
+                        "source": "complex",
+                        "target": "clear",
+                        "label": "stabilize",
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+    ],
+)
+def test_experimental_native_contracts_preserve_legacy_extra_and_original_ir(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    assert candidate.ir == ir
+    assert candidate.ir is not ir
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "root_field"),
+    [
+        ("wardley", {"nodes": []}, "components"),
+        ("cynefin", {"quadrants": []}, "domains"),
+    ],
+)
+def test_experimental_native_aliases_do_not_replace_canonical_roots(
+    diagram_type: str,
+    ir: dict[str, object],
+    root_field: str,
+) -> None:
+    with pytest.raises(ValidationError, match=rf"requires root field '{root_field}'"):
+        TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        ("wardley", {"components": []}),
+        ("wardley", {"components": [{}]}),
+        ("wardley", {"components": [{"id": "api", "x": -1, "y": 2}]}),
+        (
+            "wardley",
+            {
+                "components": [{"id": "api"}, {"id": "api"}],
+                "links": [{"source": "api", "target": "missing"}],
+            },
+        ),
+        ("cynefin", {"domains": []}),
+        ("cynefin", {"domains": [{}]}),
+        ("cynefin", {"domains": [{"name": "", "items": []}]}),
+        (
+            "cynefin",
+            {
+                "domains": [{"name": "complex", "items": []}],
+                "transitions": [{"source": "complex", "target": "missing"}],
+            },
+        ),
+    ],
+)
+def test_experimental_native_contracts_leave_semantic_requiredness_to_serializer(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    assert candidate.ir == ir
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "mutation", "location"),
+    [
+        (
+            "wardley",
+            {"components": [{"id": "api", "x": 0.5, "y": 0.5}]},
+            lambda ir: ir["components"][0].__setitem__("anchor", 1),
+            r"components\[0\]\.anchor",
+        ),
+        (
+            "cynefin",
+            {"domains": [{"name": "complex", "items": ["Emergent"]}]},
+            lambda ir: ir["domains"][0]["items"].append(1),
+            r"domains\[0\]\.items\[1\]",
+        ),
+    ],
+)
+def test_canonical_key_revalidates_mutated_experimental_native_contracts(
+    diagram_type: str,
+    ir: dict[str, object],
+    mutation,
+    location: str,
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+    mutation(candidate.ir)
+
+    with pytest.raises(ValidationError, match=location):
+        candidate.canonical_key()
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "invalid_ir", "location"),
+    [
+        (
+            "wardley",
+            {"components": [{"anchor": "true"}]},
+            r"components\[0\]\.anchor",
+        ),
+        (
+            "cynefin",
+            {"domains": [{"name": "complex", "items": [{"evidence_ids": [1]}]}]},
+            r"domains\[0\]\.items\[0\]\.evidence_ids\[0\]",
+        ),
+    ],
+)
+def test_generic_candidate_envelopes_apply_experimental_native_nested_contracts(
+    diagram_type: str,
+    invalid_ir: dict[str, object],
+    location: str,
+) -> None:
+    prediction = DiagramTypePrediction(candidates=[diagram_type], scores=[1.0])
+
+    with pytest.raises(ValidationError, match=location):
+        EngineObservation(
+            prediction=prediction,
+            typed_candidates=[{"diagram_type": diagram_type, "ir": invalid_ir}],
+        )
+
+    with pytest.raises(ValidationError, match=location):
+        MermaidCandidate(
+            candidate_id=f"candidate-{diagram_type}",
+            generation_method="typed_ir",
+            diagram_type=diagram_type,
+            typed_ir=invalid_ir,
+        )
+
+
 def test_canonical_key_uses_a_bounded_digest_without_model_dump(
     monkeypatch,
 ) -> None:

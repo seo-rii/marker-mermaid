@@ -1078,6 +1078,261 @@ def test_experimental_typed_pipeline_scores_emitted_visible_text(
     assert result.selected.scores["ocr_recall"] == 1
 
 
+def test_wardley_layout_score_uses_native_xy_instead_of_source_bbox_metadata():
+    class WardleyRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="wardley",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    source_scene = DiagramSceneIR(
+        elements=[
+            SceneElement(
+                id="a",
+                role="component",
+                text="A",
+                bbox=(0, 0, 10, 10),
+                evidence_ids=["ocr-a"],
+            ),
+            SceneElement(
+                id="b",
+                role="component",
+                text="B",
+                bbox=(90, 90, 100, 100),
+                evidence_ids=["ocr-b"],
+            ),
+        ]
+    )
+    ir = {
+        "description": "Wardley layout",
+        "components": [
+            {
+                "id": "a",
+                "label": "A",
+                "x": 0.9,
+                "y": 0.1,
+                "bbox": [0, 0, 10, 10],
+                "evidence_ids": ["ocr-a"],
+            },
+            {
+                "id": "b",
+                "label": "B",
+                "x": 0.1,
+                "y": 0.9,
+                "bbox": [90, 90, 100, 100],
+                "evidence_ids": ["ocr-b"],
+            },
+        ],
+    }
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["wardley"], scores=[0.9]),
+        scene_ir=source_scene,
+        typed_candidates=[TypedIRCandidate(diagram_type="wardley", ir=ir)],
+        evidence=[
+            VisualEvidence(id="ocr-a", kind="ocr_token", text="A", bbox=(0, 0, 10, 10)),
+            VisualEvidence(id="ocr-b", kind="ocr_token", text="B", bbox=(90, 90, 100, 100)),
+        ],
+    )
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(WardleyRuntime(), config.security_profile),
+    ).reconstruct(
+        "wardley-layout",
+        "source.png",
+        Image.new("RGB", (100, 100), "white"),
+        ocr_texts=["A B"],
+    )
+
+    assert result.selected is not None
+    assert result.selected.generated_scene_ir is not None
+    assert result.selected.generated_scene_ir.coordinate_space == "normalized"
+    assert result.selected.scores["layout_similarity"] == 0
+
+
+@pytest.mark.parametrize("attributed", [True, False])
+def test_cynefin_generated_scene_controls_provenance_publication_and_sidecar(
+    tmp_path,
+    attributed: bool,
+) -> None:
+    class CynefinRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="cynefin",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    ir = {
+        "description": "Cynefin reconstruction",
+        "domains": [
+            {
+                "name": "complex",
+                **({"evidence_ids": ["domain-complex"]} if attributed else {}),
+                "items": [
+                    {
+                        "label": "Probe",
+                        **({"evidence_ids": ["item-probe"]} if attributed else {}),
+                    },
+                ],
+            },
+            {
+                "name": "clear",
+                **({"evidence_ids": ["domain-clear"]} if attributed else {}),
+                "items": [
+                    {
+                        "label": "Respond",
+                        **({"evidence_ids": ["item-respond"]} if attributed else {}),
+                    },
+                ],
+            },
+        ],
+        "transitions": [
+            {
+                "source": "complex",
+                "target": "clear",
+                "label": "stabilize",
+                "evidence_ids": ["transition-stabilize"],
+            }
+        ],
+    }
+    evidence = [
+        VisualEvidence(id="domain-complex", kind="ocr_token", text="complex"),
+        VisualEvidence(id="item-probe", kind="ocr_token", text="Probe"),
+        VisualEvidence(id="domain-clear", kind="ocr_token", text="clear"),
+        VisualEvidence(id="item-respond", kind="ocr_token", text="Respond"),
+        VisualEvidence(id="transition-stabilize", kind="line_segment", text="stabilize"),
+    ]
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["cynefin"], scores=[0.9]),
+        typed_candidates=[TypedIRCandidate(diagram_type="cynefin", ir=ir)],
+        evidence=evidence,
+    )
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(CynefinRuntime(), config.security_profile),
+    ).reconstruct(
+        "cynefin-source",
+        "source.png",
+        Image.new("RGB", (100, 100), "white"),
+        ocr_texts=[
+            "Complex Complicated Chaotic Clear Confusion "
+            "Probe Sense Respond Emergent Practices Sense Analyse Respond Good Practices "
+            "Act Sense Respond Novel Practices Sense Categorise Respond Best Practices Disorder "
+            "Probe Respond stabilize"
+        ],
+    )
+
+    assert result.selected is not None
+    scene = result.selected.generated_scene_ir
+    assert scene is not None
+    assert [item.role for item in scene.elements] == [
+        *(["domain"] * 5),
+        *(["runtime_template"] * 9),
+        "item",
+        "item",
+    ]
+    assert len(scene.groups) == 2
+    assert len(scene.relations) == 1
+    assert result.selected.scores["ocr_recall"] == 1
+    assert result.selected.scores["visual_entailment_precision"] == (0.25 if attributed else 0.0)
+    assert not result.publish
+    assert result.review_required
+    assert result.selected.aggregate_score is None
+    assert any("fixed template content" in item for item in result.selected.warnings)
+    if attributed:
+        relative = SidecarStore(tmp_path).write(result)
+        generated = json.loads((tmp_path / relative / "generated-scene-ir.json").read_text())
+        assert [item["role"] for item in generated["elements"]] == [
+            *(["domain"] * 5),
+            *(["runtime_template"] * 9),
+            "item",
+            "item",
+        ]
+        assert all(item["bbox"] == [0.0, 0.0, 0.0, 0.0] for item in generated["elements"])
+        assert len(generated["groups"]) == 2
+        assert len(generated["relations"]) == 1
+    else:
+        assert any("provenance gate" in item for item in result.selected.warnings)
+
+
+def test_cynefin_fixed_runtime_template_requires_review_even_above_provenance_threshold():
+    class CynefinRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="cynefin",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    items = [
+        {"label": f"Item {index}", "evidence_ids": [f"ocr-item-{index}"]} for index in range(100)
+    ]
+    ir = {
+        "domains": [
+            {
+                "name": "complex",
+                "evidence_ids": ["ocr-domain-complex"],
+                "items": items,
+            }
+        ]
+    }
+    evidence = [
+        VisualEvidence(id="ocr-domain-complex", kind="ocr_token", text="Complex"),
+        *[
+            VisualEvidence(
+                id=f"ocr-item-{index}",
+                kind="ocr_token",
+                text=f"Item {index}",
+            )
+            for index in range(100)
+        ],
+    ]
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["cynefin"], scores=[0.9]),
+        typed_candidates=[TypedIRCandidate(diagram_type="cynefin", ir=ir)],
+        evidence=evidence,
+    )
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(CynefinRuntime(), config.security_profile),
+    ).reconstruct(
+        "cynefin-template-gate",
+        "source.png",
+        Image.new("RGB", (100, 100), "white"),
+    )
+
+    assert result.selected is not None
+    assert result.selected.scores["visual_entailment_precision"] > 0.8
+    assert not any("provenance gate" in item for item in result.selected.warnings)
+    assert any("fixed template content" in item for item in result.selected.warnings)
+    assert result.selected.aggregate_score is None
+    assert result.review_required
+    assert not result.publish
+
+
 def test_direct_structural_candidate_without_attribution_requires_review(fake_runtime):
     class DirectOnlyEngine:
         name = "direct-only"

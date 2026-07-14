@@ -27,10 +27,23 @@ typed IR은 serializer가 실제 방출하는 node/edge 구조로 다시 변환�
 layout을 추측하지 않습니다. Scene IR portable fallback은 deterministic serializer 보존 여부를 평가할 수
 있습니다. raw/direct Mermaid는 아직 일반 AST→Scene 변환이 없으므로 구조 점수가 unavailable일 수 있습니다.
 평가 Scene adapter는 sequence/ZenUML, hierarchy/organization, planning/event, Packet/Ishikawa/TreeView,
-Wardley, data-lineage, Venn까지 포함하며 typed record의 evidence ID를 보존합니다.
+Wardley/Cynefin, data-lineage, Venn까지 포함하며 typed record의 evidence ID를 보존합니다.
 Event Modeling의 generated Scene은 fallback serializer와 같은 normalized frame ID, typed/time label,
 lane subgraph membership, `LR` 방향을 사용합니다. Wardley의 label 없는 component와 ZenUML의 label 없는
 participant도 임의 `text`가 아니라 serializer가 실제 표시하는 safe source ID를 사용합니다.
+Wardley Scene은 raw record bbox 대신 native 좌표를 화면에 맞게 바꾼 `(x, 1-y)`만
+`normalized` explicit position으로 씁니다. IR의 수평/수직 `x`/`y`는 native에 `[y, x]`로
+방출하고 token 반올림을 Scene 값에도 적용합니다. `->` link는 실제 SVG에 marker가 없으므로
+무방향 relation으로 평가해 arrow/path 점수를 만들지 않습니다.
+Cynefin Scene은 domain·item·transition과 domain group membership을 공유 plan에서 복원하고,
+runtime이 항상 만드는 고정 domain/practice/response/disorder text를 무근거 template element로
+추가합니다. `confusion` item은 처음 세 개와 `+N more`만 실제 렌더에 맞게 투영합니다.
+Native placement가 없어 zero geometry를 쓰므로 layout similarity는 unavailable이며, 고정 template의
+source provenance 계약이 없는 현재 Cynefin은 aggregate와 무관하게 review를 요구합니다.
+Wardley·Cynefin의 entity-like 원문을 Mermaid 11.16 호환 glyph로 표시하는 경우 OCR projection도
+해당 호환 label이 실제 SVG에 보이는 text를 사용합니다. 원문을 projection에 넣어 렌더러 손실을
+숨기지 않습니다. Wardley 축·evolution stage처럼 grammar 고정 chrome을 전체 source label로
+간주하지는 않습니다.
 
 Packet Scene은 serializer의 field plan에서 나온 reserved-safe emitted ID, label,
 bbox/evidence를 그대로 사용하고 입력에 없는 field 간 edge를 추가하지 않습니다.
@@ -100,7 +113,8 @@ generated Scene attribution에서 제외합니다.
   Requirement는 serializer와 같은 normalized/collision-safe output ID,
   requirement type·ID·text·risk·verification, element type·docref, relation type을 셉니다. 접근성 metadata와
   serializer가 무시한 대체 label은 포함하지 않습니다. Event Modeling은 lane label과 실제 fallback의
-  time·frame type·label 조합 및 relation label, Wardley는 native title·component·link label, ZenUML은
+  time·frame type·label 조합 및 relation label, Wardley는 native title·component·link label, Cynefin은
+  native 고정 template·실제 visible item(`confusion`은 세 개+`+N more`)·transition label, ZenUML은
   Sequence fallback의 participant alias·message label만 셉니다. 내부 endpoint ID, 좌표, anchor 같은 문법
   구조와 접근성 text는 OCR 의미 증거로 세지 않습니다. 각 유형의 record planning은 serializer와 projection이
   같은 deterministic helper를 공유합니다.

@@ -63,8 +63,15 @@ accessible title/description에 동일하게 적용되며 실제 SVG text integr
   재해석되지 않도록 `&` 뒤를 비활성 분리합니다. Flowchart edge label의 literal `|`만 grammar delimiter와
   NFKC 이후에도 구분되는 `∣`로 출력하고 semantic OCR에는 원문을 유지합니다. quote/backslash를
   `″`/`∖`로 바꿀 때는 Event Modeling도 다른 Flowchart fallback과 같은 compatibility warning을 남깁니다.
-- Wardley는 각 component의 0~1 범위 `x`/`y`를 요구하며 누락 좌표를 배치 알고리즘으로 추정하지 않습니다.
-- Cynefin은 다섯 공식 domain과 그 item, 명시적 domain transition만 허용합니다.
+- Wardley는 strict nested component/link 계약에서 각 component의 0~1 범위 `x`/`y`와
+  strict boolean `anchor`를 검증하며 누락 좌표를 배치 알고리즘으로 추정하지 않습니다. 공유
+  plan은 component ID·표시 label 충돌, endpoint, self/duplicate link와 record 예산을
+  native output·Scene·OCR에 동일하게 적용합니다. Source 문자/줄 예산은 serializer 반환 전
+  preflight가 별도로 판정합니다.
+- Cynefin은 strict nested domain/item/transition 계약에서 다섯 공식 domain과 명시적
+  domain transition만 허용합니다. Canonical item은 `label`/bbox/evidence를 갖는 object이며,
+  기존 scalar string item은 입력 호환을 위해 받지만 provenance를 만들지 않습니다. 공유 plan은
+  domain·item·transition ID와 표시 text, membership을 고정합니다.
 - Railroad는 terminal/nonterminal/sequence/choice/optional/repetition AST를 bounded recursion으로
   직렬화하고 모든 nonterminal reference가 rule에 존재하는지 검사합니다.
 - ZenUML은 pinned runtime에 extension이 없어 Sequence fallback을 사용합니다.
@@ -93,10 +100,25 @@ fallback과 generated Scene만 예약어 안전 namespace `packet_field_`, `ishi
 만듭니다. Packet도 generated-node provenance 80% 게이트의 대상이며 별도 source
 OCR/vector numeric gate를 계속 적용합니다.
 
-모든 특수 serializer 결과는 native/fallback과 무관하게 50,000자·5,000줄 source hard
-budget을 반환 전에 검사합니다. Entity-like literal을 Mermaid 11.16이 정확히
+엄격한 source preflight가 구현된 Packet·Ishikawa·TreeView·Event Modeling·Wardley·Cynefin
+serializer는 native/fallback과 무관하게 50,000자·5,000줄 hard budget을 반환 전에
+검사합니다. Entity-like literal을 Mermaid 11.16이 정확히
 보존하지 못하는 문법에서는 보이는 `＆`/`＃` compatibility glyph를 사용하고 warning을
 남기며, 원문·geometry·evidence는 typed IR과 sidecar에 그대로 남깁니다.
+
+Wardley generated Scene의 좌표는 native 세로축을 화면 좌표로 바꾼 `(x, 1-y)`를
+`normalized` coordinate space에 저장합니다. IR의 `x`/`y`는 수평/수직 값이지만 Mermaid
+Wardley source는 `[visibility, evolution]` 순서이므로 serializer는 `[y, x]`를 방출합니다.
+소수 token 반올림도 plan 좌표에 동일하게 반영하며, typed record의 별도 bbox나 임의 extra
+geometry가 layout 점수를 오염시키지 않습니다. Wardley `->`는 Mermaid 11.16에서 화살촉 없는
+일반 link이므로 generated Scene에서도 무방향 relation으로 평가합니다.
+
+Cynefin native grammar은 item의 명시적 배치를 제공하지 않으므로 layout metric을
+unavailable로 남겨 둡니다. 또한 입력하지 않은 다섯 domain·practice/response 고정
+template를 항상 표시합니다. Scene/OCR은 이 element를 무근거로 명시하고, `confusion`의
+네 번째 이후 item은 실제 runtime처럼 `+N more`로 축약합니다. 입력 membership을 containment
+edge로 만들지 않으며, 고정 template provenance 계약이 없는 현재 native 후보는 항상
+review를 요구합니다.
 
 대표 native/fallback fixture는 pinned Mermaid 11.16에서 실제 strict security scan, parse, render, SVG
 inspection을 통과하는 integration test로 고정합니다. Packet/Ishikawa/TreeView와 Treemap/Venn은 native
@@ -104,4 +126,7 @@ runtime rejection 뒤 같은 candidate slot에서 evidence-preserving portable f
 Kanban/GitGraph도 같은 방식으로 native rejection 뒤 공용 planning plan의 Flowchart를 한 번 재검증합니다.
 Organization은 실제 TreeView runtime fixture와 simulated rejection→Flowchart pipeline fixture를 함께
 고정합니다. Data Lineage의 별도 runtime fixture는 아직 이 범위에 포함되지 않습니다. experimental native도
-validation hard gate를 우회하지 않습니다.
+validation hard gate를 우회하지 않습니다. Wardley·Cynefin은 현재 native runtime rejection 뒤
+같은 candidate slot에서 대체 grammar를 재시도하지 않으므로, 그 경우 후보는 격리되고 review에
+남습니다. Cynefin은 runtime이 성공해도 위 고정 template 경계 때문에 자동 Markdown 게시 대신
+review workspace/sidecar로 routing합니다.

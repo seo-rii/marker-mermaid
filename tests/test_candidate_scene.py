@@ -8,7 +8,10 @@ from marker_mermaid.models import (
     MAX_SCENE_ELEMENTS,
     MAX_SCENE_GROUPS,
     MAX_SCENE_RELATIONS,
+    DiagramSceneIR,
+    SceneElement,
 )
+from marker_mermaid.quality import relative_layout_similarity
 from marker_mermaid.scoring import ocr_recall
 from marker_mermaid.serializers import (
     SerializationError,
@@ -1636,6 +1639,316 @@ def test_wardley_semantic_texts_include_native_title_and_visible_labels_only():
         )
         == 0
     )
+
+
+def test_wardley_scene_uses_only_emitted_structure_and_native_coordinate_orientation():
+    ir = {
+        "direction": "RL",
+        "components": [
+            {
+                "id": "user",
+                "label": "User",
+                "x": 0.1,
+                "y": 0.2,
+                "anchor": True,
+                "bbox": [10, 20, 30, 40],
+                "role": "source-only-role",
+                "shape": "diamond",
+                "evidence_ids": ["ocr-user"],
+            },
+            {
+                "id": "api",
+                "label": "API",
+                "x": 0.8,
+                "y": 0.9,
+                "bbox": [60, 70, 90, 95],
+                "evidence_ids": ["ocr-api"],
+            },
+        ],
+        "links": [
+            {
+                "source": "user",
+                "target": "api",
+                "label": "uses",
+                "bidirectional": True,
+                "arrow_at_start": True,
+                "style": "dashed",
+                "semantic_relation": "causal",
+                "evidence_ids": ["line-user-api"],
+            }
+        ],
+    }
+
+    scene = typed_ir_to_scene("wardley", ir)
+
+    assert scene is not None
+    assert scene.coordinate_space == "normalized"
+    assert scene.reading_direction == "unknown"
+    assert [(item.id, item.role, item.text, item.bbox) for item in scene.elements] == [
+        ("user", "anchor", "User", (0.1, 0.8, 0.1, 0.8)),
+        ("api", "component", "API", (0.8, pytest.approx(0.1), 0.8, pytest.approx(0.1))),
+    ]
+    assert [item.shape for item in scene.elements] == [None, None]
+    assert [item.evidence_ids for item in scene.elements] == [["ocr-user"], ["ocr-api"]]
+    [link] = scene.relations
+    assert (link.source_id, link.target_id, link.label) == ("user", "api", "uses")
+    assert not link.arrow_at_start
+    assert not link.arrow_at_end
+    assert link.line_style is None
+    assert link.semantic_relation == "unknown"
+    assert link.evidence_ids == ["line-user-api"]
+
+
+def test_wardley_layout_score_uses_emitted_xy_not_source_bbox_metadata():
+    source = DiagramSceneIR(
+        elements=[
+            SceneElement(id="a", role="component", text="A", bbox=(0, 0, 10, 10)),
+            SceneElement(id="b", role="component", text="B", bbox=(90, 90, 100, 100)),
+        ]
+    )
+    generated = typed_ir_to_scene(
+        "wardley",
+        {
+            "components": [
+                {
+                    "id": "a",
+                    "label": "A",
+                    "x": 0.9,
+                    "y": 0.1,
+                    "bbox": [0, 0, 10, 10],
+                },
+                {
+                    "id": "b",
+                    "label": "B",
+                    "x": 0.1,
+                    "y": 0.9,
+                    "bbox": [90, 90, 100, 100],
+                },
+            ]
+        },
+    )
+
+    assert generated is not None
+    assert relative_layout_similarity(source, generated).value == 0
+
+
+def test_wardley_scene_coordinates_match_native_token_rounding() -> None:
+    scene = typed_ir_to_scene(
+        "wardley",
+        {
+            "components": [
+                {"id": "a", "x": 0.5000000000000001, "y": 0.2},
+                {"id": "b", "x": 0.5000000000000002, "y": 0.8},
+            ]
+        },
+    )
+
+    assert scene is not None
+    assert scene.elements[0].bbox[0] == scene.elements[1].bbox[0] == 0.5
+
+
+def test_cynefin_scene_uses_reserved_plan_ids_groups_and_transition_only_relations():
+    ir = {
+        "title": "Hidden accessibility title",
+        "description": "Hidden accessibility description",
+        "direction": "RL",
+        "domains": [
+            {
+                "name": "complex",
+                "bbox": [0, 0, 40, 40],
+                "evidence_ids": ["domain-complex"],
+                "items": [
+                    {
+                        "id": "hidden-item-id",
+                        "label": "Probe &quot; safely",
+                        "text": "Hidden item text",
+                        "bbox": [1, 1, 10, 10],
+                        "evidence_ids": ["item-probe"],
+                    },
+                    {"label": "Observe", "evidence_ids": ["item-observe"]},
+                ],
+            },
+            {
+                "name": "clear",
+                "evidence_ids": ["domain-clear"],
+                "items": [{"label": "Respond", "evidence_ids": ["item-respond"]}],
+            },
+        ],
+        "transitions": [
+            {
+                "id": "hidden-transition-id",
+                "source": "complex",
+                "target": "clear",
+                "label": "stabilize",
+                "style": "dashed",
+                "bidirectional": True,
+                "evidence_ids": ["transition-stabilize"],
+            }
+        ],
+    }
+
+    scene = typed_ir_to_scene("cynefin", ir)
+
+    assert scene is not None
+    assert scene.coordinate_space == "pixels"
+    assert scene.reading_direction == "unknown"
+    domains = [item for item in scene.elements if item.role == "domain"]
+    items = [item for item in scene.elements if item.role == "item"]
+    runtime_template = [item for item in scene.elements if item.role == "runtime_template"]
+    assert [item.text for item in domains] == [
+        "Complex",
+        "Complicated",
+        "Chaotic",
+        "Clear",
+        "Confusion",
+    ]
+    assert [item.text for item in runtime_template] == [
+        "Probe → Sense → Respond",
+        "Emergent Practices",
+        "Sense → Analyse → Respond",
+        "Good Practices",
+        "Act → Sense → Respond",
+        "Novel Practices",
+        "Sense → Categorise → Respond",
+        "Best Practices",
+        "Disorder",
+    ]
+    assert [item.text for item in items] == ["Probe ＆quot; safely", "Observe", "Respond"]
+    assert all(item.id.startswith("cynefin_domain_") for item in domains)
+    assert all(item.id.startswith("cynefin_item_") for item in items)
+    assert all(item.bbox == (0.0, 0.0, 0.0, 0.0) for item in scene.elements)
+    assert [item.evidence_ids for item in domains] == [
+        ["domain-complex"],
+        [],
+        [],
+        ["domain-clear"],
+        [],
+    ]
+    assert all(not item.evidence_ids for item in runtime_template)
+    assert [item.evidence_ids for item in items] == [
+        ["item-probe"],
+        ["item-observe"],
+        ["item-respond"],
+    ]
+    assert len(scene.groups) == 2
+    assert all(group.bbox == (0.0, 0.0, 0.0, 0.0) for group in scene.groups)
+    assert scene.groups[0].member_ids == [item.id for item in items[:2]]
+    assert scene.groups[1].member_ids == [items[2].id]
+    [transition] = scene.relations
+    assert transition.source_id == domains[0].id
+    assert transition.target_id == domains[3].id
+    assert transition.label == "stabilize"
+    assert not transition.arrow_at_start
+    assert transition.arrow_at_end
+    assert transition.line_style is None
+    assert transition.semantic_relation == "unknown"
+    assert transition.evidence_ids == ["transition-stabilize"]
+    texts = list(typed_ir_semantic_texts("cynefin", ir, scene))
+    assert texts == [
+        "Complex",
+        "Complicated",
+        "Chaotic",
+        "Clear",
+        "Confusion",
+        "Probe → Sense → Respond",
+        "Emergent Practices",
+        "Sense → Analyse → Respond",
+        "Good Practices",
+        "Act → Sense → Respond",
+        "Novel Practices",
+        "Sense → Categorise → Respond",
+        "Best Practices",
+        "Disorder",
+        "Probe ＆quot; safely",
+        "Observe",
+        "Respond",
+        "stabilize",
+    ]
+    assert (
+        ocr_recall(
+            [" ".join(texts)],
+            "",
+            generated_texts=texts,
+        )
+        == 1
+    )
+    assert (
+        ocr_recall(
+            [
+                "Hidden accessibility title description item text hidden-item-id "
+                "hidden-transition-id dashed bidirectional"
+            ],
+            "",
+            generated_texts=texts,
+        )
+        == 0
+    )
+
+
+def test_cynefin_scene_matches_runtime_confusion_item_summary() -> None:
+    ir = {
+        "domains": [
+            {
+                "name": "confusion",
+                "items": [
+                    {"label": label, "evidence_ids": [f"ocr-{label.casefold()}"]}
+                    for label in ["One", "Two", "Three", "Four", "Five"]
+                ],
+            }
+        ]
+    }
+
+    scene = typed_ir_to_scene("cynefin", ir)
+
+    assert scene is not None
+    visible_items = [item for item in scene.elements if item.role == "item"]
+    assert [item.text for item in visible_items] == ["One", "Two", "Three"]
+    summary = next(item for item in scene.elements if item.id == "cynefin_runtime_confusion_more")
+    assert summary.role == "runtime_template"
+    assert summary.text == "+2 more"
+    assert summary.evidence_ids == []
+    assert scene.groups[0].member_ids == [
+        *(item.id for item in visible_items),
+        summary.id,
+    ]
+    texts = list(typed_ir_semantic_texts("cynefin", ir, scene))
+    assert texts[-4:] == ["One", "Two", "Three", "+2 more"]
+    assert "Four" not in texts
+    assert "Five" not in texts
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "wardley",
+            {
+                "components": [
+                    {"id": "same", "label": "A", "x": 0.1, "y": 0.1},
+                    {"id": "same", "label": "B", "x": 0.2, "y": 0.2},
+                ]
+            },
+        ),
+        (
+            "cynefin",
+            {
+                "domains": [
+                    {"name": "complex", "items": ["A"]},
+                    {"name": "complex", "items": ["B"]},
+                ]
+            },
+        ),
+        (
+            "cynefin",
+            {"domains": [{"name": "complex", "items": ["A"] * 501}]},
+        ),
+    ],
+)
+def test_wardley_and_cynefin_scene_planning_failures_are_isolated(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    assert typed_ir_to_scene(diagram_type, ir) is None
 
 
 def test_zenuml_semantic_texts_follow_sequence_fallback_aliases_and_messages():

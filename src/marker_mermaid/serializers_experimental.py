@@ -10,7 +10,10 @@ from __future__ import annotations
 import json
 import math
 import re
+import unicodedata
 from collections.abc import Mapping
+from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from marker_mermaid.accessibility import enrich_accessibility_ir, resolve_accessibility
@@ -20,15 +23,141 @@ from marker_mermaid.serializers import SerializationError, serialize_flowchart
 MAX_ITEMS = 500
 MAX_DEPTH = 20
 MAX_TEXT_LENGTH = 500
+MAX_EXPERIMENTAL_OUTPUT_CHARS = 50_000
+MAX_EXPERIMENTAL_OUTPUT_LINES = 5_000
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,127}\Z")
 _DOMAINS = {"complex", "complicated", "clear", "chaotic", "confusion"}
+CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS: tuple[tuple[str, str, str], ...] = (
+    ("cynefin_domain_complex", "domain", "Complex"),
+    ("cynefin_domain_complicated", "domain", "Complicated"),
+    ("cynefin_domain_chaotic", "domain", "Chaotic"),
+    ("cynefin_domain_clear", "domain", "Clear"),
+    ("cynefin_domain_confusion", "domain", "Confusion"),
+    ("cynefin_runtime_complex_flow", "runtime_template", "Probe → Sense → Respond"),
+    ("cynefin_runtime_complex_practice", "runtime_template", "Emergent Practices"),
+    (
+        "cynefin_runtime_complicated_flow",
+        "runtime_template",
+        "Sense → Analyse → Respond",
+    ),
+    ("cynefin_runtime_complicated_practice", "runtime_template", "Good Practices"),
+    ("cynefin_runtime_chaotic_flow", "runtime_template", "Act → Sense → Respond"),
+    ("cynefin_runtime_chaotic_practice", "runtime_template", "Novel Practices"),
+    ("cynefin_runtime_clear_flow", "runtime_template", "Sense → Categorise → Respond"),
+    ("cynefin_runtime_clear_practice", "runtime_template", "Best Practices"),
+    ("cynefin_runtime_confusion_label", "runtime_template", "Disorder"),
+)
+_ENTITY_LITERAL = re.compile(
+    r"&(?P<body>#[0-9]+|#x[0-9A-F]+|[A-Z][A-Z0-9]+);",
+    re.IGNORECASE,
+)
+_ENTITY_COMPATIBILITY_WARNING = (
+    "Entity-like literal text uses visible fullwidth ampersand and number-sign glyphs "
+    "(＆ and ＃) because Mermaid 11.16 cannot preserve every literal entity form."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class WardleyComponentPlan:
+    """One explicitly positioned Wardley component and its visible identity token."""
+
+    source_record: Mapping[str, Any]
+    source_id: str
+    label: str
+    semantic_label: str
+    kind: str
+    x: float
+    y: float
+    x_token: str
+    y_token: str
+    token: str
+
+
+@dataclass(frozen=True, slots=True)
+class WardleyLinkPlan:
+    """One resolved Wardley link using the exact component tokens Mermaid receives."""
+
+    source_record: Mapping[str, Any]
+    source_id: str
+    target_id: str
+    source_token: str
+    target_token: str
+    label: str | None
+    semantic_label: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class WardleyPlan:
+    """Validated Wardley records shared by serialization and generated Scene projection."""
+
+    title: str | None
+    semantic_title: str | None
+    components: tuple[WardleyComponentPlan, ...]
+    links: tuple[WardleyLinkPlan, ...]
+    compatibility_substituted: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CynefinItemPlan:
+    """One Cynefin item with stable emitted identity and source-visible text."""
+
+    source_record: Mapping[str, Any] | None
+    emitted_id: str
+    label: str
+    semantic_label: str
+
+
+@dataclass(frozen=True, slots=True)
+class CynefinDomainPlan:
+    """One canonical Cynefin domain and its ordered items."""
+
+    source_record: Mapping[str, Any]
+    name: str
+    emitted_id: str
+    group_id: str
+    items: tuple[CynefinItemPlan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CynefinTransitionPlan:
+    """One explicit transition between two emitted Cynefin domain identities."""
+
+    source_record: Mapping[str, Any]
+    emitted_id: str
+    source_name: str
+    target_name: str
+    source_emitted_id: str
+    target_emitted_id: str
+    label: str | None
+    semantic_label: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CynefinPlan:
+    """Validated Cynefin records shared by serialization and generated Scene projection."""
+
+    domains: tuple[CynefinDomainPlan, ...]
+    transitions: tuple[CynefinTransitionPlan, ...]
+    compatibility_substituted: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CynefinRuntimeItemPlan:
+    """One item label that Mermaid 11.16 actually exposes in the Cynefin SVG."""
+
+    source_record: Mapping[str, Any] | None
+    emitted_id: str
+    label: str
+    implicit: bool = False
 
 
 def _text(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise SerializationError(f"{field} must be a non-empty string")
+    if any(unicodedata.category(char) in {"Cc", "Cf", "Zl", "Zp"} for char in value):
+        raise SerializationError(f"{field} contains unsupported control or format characters")
     normalized = " ".join(value.strip().split())
-    if len(normalized) > MAX_TEXT_LENGTH or any(ord(char) < 32 for char in normalized):
+    if len(normalized) > MAX_TEXT_LENGTH:
         raise SerializationError(f"{field} exceeds the safe text limit")
     return normalized
 
@@ -44,6 +173,23 @@ def _identifier(value: Any, field: str) -> str:
     return text
 
 
+def _entity_compatibility_text(text: str) -> tuple[str, bool]:
+    """Keep entity-like evidence visible instead of allowing SVG entity decoding."""
+
+    substituted = _ENTITY_LITERAL.search(text) is not None
+    return (
+        _ENTITY_LITERAL.sub(
+            lambda match: (
+                f"＆＃{match.group('body')[1:]};"
+                if match.group("body").startswith("#")
+                else f"＆{match.group('body')};"
+            ),
+            text,
+        ),
+        substituted,
+    )
+
+
 def _accessibility(ir: Mapping[str, Any], diagram_type: str, *, experimental: bool) -> list[str]:
     resolved = resolve_accessibility(ir, diagram_type, experimental=experimental)
     return [
@@ -52,22 +198,60 @@ def _accessibility(ir: Mapping[str, Any], diagram_type: str, *, experimental: bo
     ]
 
 
-def _coordinate(value: Any, field: str) -> str:
+def _compatible_accessibility(
+    ir: Mapping[str, Any], diagram_type: str, *, experimental: bool
+) -> tuple[list[str], bool]:
+    resolved = resolve_accessibility(ir, diagram_type, experimental=experimental)
+    title, title_substituted = _entity_compatibility_text(_text(resolved.title, "accessible title"))
+    description, description_substituted = _entity_compatibility_text(
+        _text(resolved.description, "accessible description")
+    )
+    return (
+        [f"accTitle: {title}", f"accDescr: {description}"],
+        title_substituted or description_substituted,
+    )
+
+
+def _preflight_experimental_code(code: str, *, diagram_type: str) -> str:
+    """Apply CandidateValidator's default source budgets before returning code."""
+
+    if code.count("\n") + 1 > MAX_EXPERIMENTAL_OUTPUT_LINES:
+        raise SerializationError(
+            f"{diagram_type} output exceeds source-line limit of {MAX_EXPERIMENTAL_OUTPUT_LINES}"
+        )
+    if len(code) > MAX_EXPERIMENTAL_OUTPUT_CHARS:
+        raise SerializationError(
+            f"{diagram_type} output exceeds source-character limit of "
+            f"{MAX_EXPERIMENTAL_OUTPUT_CHARS}"
+        )
+    return code
+
+
+def _coordinate(value: Any, field: str) -> tuple[float, str]:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise SerializationError(f"{field} must be an explicit numeric coordinate")
     number = float(value)
     if not math.isfinite(number) or not 0 <= number <= 1:
         raise SerializationError(f"{field} must be between 0 and 1")
+    if number == 0:
+        number = 0.0
     rendered = format(number, ".15g")
-    return rendered if "." in rendered else f"{rendered}.0"
+    if "e" in rendered.casefold():
+        rendered = format(Decimal(rendered), "f")
+    if "." not in rendered:
+        rendered = f"{rendered}.0"
+    return float(rendered), rendered
 
 
 def plan_wardley_records(
     ir: Mapping[str, Any],
-) -> tuple[str | None, list[dict[str, str]], list[dict[str, str | None]]]:
+) -> WardleyPlan:
     """Validate and normalize the exact title, components, and links Wardley emits."""
 
-    title = _text(ir["title"], "title") if ir.get("title") is not None else None
+    semantic_title = _text(ir["title"], "title") if ir.get("title") is not None else None
+    title, title_substituted = (
+        _entity_compatibility_text(semantic_title) if semantic_title is not None else (None, False)
+    )
     components = ir.get("components")
     if not isinstance(components, list) or not components:
         raise SerializationError("wardley IR requires components")
@@ -75,30 +259,47 @@ def plan_wardley_records(
         raise SerializationError("wardley component limit exceeded")
     tokens: dict[str, str] = {}
     labels: set[str] = set()
-    normalized_components: list[dict[str, str]] = []
+    normalized_components: list[WardleyComponentPlan] = []
+    compatibility_substituted = title_substituted
     for index, component in enumerate(components):
         if not isinstance(component, Mapping):
             raise SerializationError("wardley components must be objects")
         component_id = _identifier(component.get("id"), f"components[{index}].id")
         if component_id in tokens:
             raise SerializationError(f"duplicate Wardley component id: {component_id}")
-        label = _text(component.get("label", component_id), f"components[{index}].label")
+        semantic_label = _text(component.get("label", component_id), f"components[{index}].label")
+        label, label_substituted = _entity_compatibility_text(semantic_label)
         if label in labels:
             raise SerializationError(f"duplicate Wardley component label: {label}")
         labels.add(label)
+        compatibility_substituted = compatibility_substituted or label_substituted
         token = json.dumps(label, ensure_ascii=False)
         tokens[component_id] = token
-        kind = "anchor" if component.get("anchor") is True else "component"
-        x = _coordinate(component.get("x"), f"components[{index}].x")
-        y = _coordinate(component.get("y"), f"components[{index}].y")
+        anchor = component.get("anchor")
+        if anchor is not None and type(anchor) is not bool:
+            raise SerializationError(f"components[{index}].anchor must be a boolean or null")
+        kind = "anchor" if anchor is True else "component"
+        x, x_token = _coordinate(component.get("x"), f"components[{index}].x")
+        y, y_token = _coordinate(component.get("y"), f"components[{index}].y")
         normalized_components.append(
-            {"id": component_id, "label": label, "token": token, "kind": kind, "x": x, "y": y}
+            WardleyComponentPlan(
+                source_record=component,
+                source_id=component_id,
+                label=label,
+                semantic_label=semantic_label,
+                kind=kind,
+                x=x,
+                y=y,
+                x_token=x_token,
+                y_token=y_token,
+                token=token,
+            )
         )
     links = ir.get("links", [])
     if not isinstance(links, list) or len(links) > MAX_ITEMS:
         raise SerializationError("wardley links must be a bounded list")
     seen_links: set[tuple[str, str]] = set()
-    normalized_links: list[dict[str, str | None]] = []
+    normalized_links: list[WardleyLinkPlan] = []
     for index, link in enumerate(links):
         if not isinstance(link, Mapping):
             raise SerializationError("wardley links must be objects")
@@ -110,48 +311,73 @@ def plan_wardley_records(
             raise SerializationError(f"duplicate or self Wardley link: {source}->{target}")
         seen_links.add((source, target))
         label = None
+        semantic_label = None
         if link.get("label") is not None:
-            label = _text(link["label"], f"links[{index}].label")
-            if any(char in label for char in ";\r\n"):
+            semantic_label = _text(link["label"], f"links[{index}].label")
+            if ";" in _ENTITY_LITERAL.sub("", semantic_label):
                 raise SerializationError("Wardley link labels cannot contain separators")
+            label, label_substituted = _entity_compatibility_text(semantic_label)
+            compatibility_substituted = compatibility_substituted or label_substituted
         normalized_links.append(
-            {
-                "source": source,
-                "target": target,
-                "source_token": tokens[source],
-                "target_token": tokens[target],
-                "label": label,
-            }
+            WardleyLinkPlan(
+                source_record=link,
+                source_id=source,
+                target_id=target,
+                source_token=tokens[source],
+                target_token=tokens[target],
+                label=label,
+                semantic_label=semantic_label,
+            )
         )
-    return title, normalized_components, normalized_links
+    return WardleyPlan(
+        title=title,
+        semantic_title=semantic_title,
+        components=tuple(normalized_components),
+        links=tuple(normalized_links),
+        compatibility_substituted=compatibility_substituted,
+    )
 
 
 def serialize_wardley(ir: Mapping[str, Any], *, experimental: bool = False) -> SerializationResult:
     """Serialize explicitly positioned components without inferring coordinates."""
 
-    title, components, links = plan_wardley_records(ir)
-    lines = ["wardley-beta", *_accessibility(ir, "wardley", experimental=experimental)]
-    if title is not None:
-        lines.append(f"title {title}")
-    lines.extend(
-        f"{component['kind']} {component['token']} [{component['x']}, {component['y']}]"
-        for component in components
+    plan = plan_wardley_records(ir)
+    accessibility_ir = dict(ir)
+    accessibility_ir["links"] = []
+    accessibility_lines, accessibility_substituted = _compatible_accessibility(
+        accessibility_ir, "wardley", experimental=experimental
     )
-    for link in links:
-        suffix = f"; {link['label']}" if link["label"] is not None else ""
-        lines.append(f"{link['source_token']} -> {link['target_token']}{suffix}")
-    return SerializationResult.native("wardley", "\n".join(lines) + "\n", stability="experimental")
+    lines = ["wardley-beta", *accessibility_lines]
+    if plan.title is not None:
+        lines.append(f"title {plan.title}")
+    lines.extend(
+        f"{component.kind} {component.token} [{component.y_token}, {component.x_token}]"
+        for component in plan.components
+    )
+    for link in plan.links:
+        suffix = f"; {link.label}" if link.label is not None else ""
+        lines.append(f"{link.source_token} -> {link.target_token}{suffix}")
+    code = _preflight_experimental_code("\n".join(lines) + "\n", diagram_type="wardley")
+    warnings = (
+        (_ENTITY_COMPATIBILITY_WARNING,)
+        if plan.compatibility_substituted or accessibility_substituted
+        else ()
+    )
+    return SerializationResult.native("wardley", code, warnings=warnings, stability="experimental")
 
 
-def serialize_cynefin(ir: Mapping[str, Any], *, experimental: bool = False) -> SerializationResult:
+def plan_cynefin_records(ir: Mapping[str, Any]) -> CynefinPlan:
+    """Validate and normalize the exact domains, items, and transitions Cynefin emits."""
+
     domains = ir.get("domains")
     if not isinstance(domains, list) or not domains:
         raise SerializationError("cynefin IR requires domains")
     if len(domains) > len(_DOMAINS):
         raise SerializationError("cynefin has at most five domains")
-    lines = ["cynefin-beta", *_accessibility(ir, "cynefin", experimental=experimental)]
-    defined: set[str] = set()
+    defined: dict[str, str] = {}
+    normalized_domains: list[CynefinDomainPlan] = []
     item_count = 0
+    compatibility_substituted = False
     for index, domain in enumerate(domains):
         if not isinstance(domain, Mapping):
             raise SerializationError("cynefin domains must be objects")
@@ -164,33 +390,124 @@ def serialize_cynefin(ir: Mapping[str, Any], *, experimental: bool = False) -> S
         item_count += len(items)
         if item_count > MAX_ITEMS:
             raise SerializationError("cynefin item limit exceeded")
-        defined.add(name)
-        lines.append(name)
-        for item_index, item in enumerate(items):
-            label = item.get("label") if isinstance(item, Mapping) else item
-            lines.append(f"  {_quoted(label, f'domains[{index}].items[{item_index}]')}")
+        emitted_id = f"cynefin_domain_{name}"
+        defined[name] = emitted_id
+        normalized_items: list[CynefinItemPlan] = []
+        for item_index, item in enumerate(items, start=1):
+            source_record = item if isinstance(item, Mapping) else None
+            value = item.get("label") if source_record is not None else item
+            semantic_label = _text(value, f"domains[{index}].items[{item_index - 1}]")
+            label, label_substituted = _entity_compatibility_text(semantic_label)
+            compatibility_substituted = compatibility_substituted or label_substituted
+            normalized_items.append(
+                CynefinItemPlan(
+                    source_record=source_record,
+                    emitted_id=f"cynefin_item_{name}_{item_index}",
+                    label=label,
+                    semantic_label=semantic_label,
+                )
+            )
+        normalized_domains.append(
+            CynefinDomainPlan(
+                source_record=domain,
+                name=name,
+                emitted_id=emitted_id,
+                group_id=f"cynefin_group_{name}",
+                items=tuple(normalized_items),
+            )
+        )
     transitions = ir.get("transitions", [])
     if not isinstance(transitions, list) or len(transitions) > MAX_ITEMS:
         raise SerializationError("cynefin transitions must be a bounded list")
     seen: set[tuple[str, str, str | None]] = set()
-    for index, transition in enumerate(transitions):
+    normalized_transitions: list[CynefinTransitionPlan] = []
+    for index, transition in enumerate(transitions, start=1):
         if not isinstance(transition, Mapping):
             raise SerializationError("cynefin transitions must be objects")
-        source = _text(transition.get("source"), f"transitions[{index}].source").casefold()
-        target = _text(transition.get("target"), f"transitions[{index}].target").casefold()
+        source = _text(transition.get("source"), f"transitions[{index - 1}].source").casefold()
+        target = _text(transition.get("target"), f"transitions[{index - 1}].target").casefold()
         if source not in defined or target not in defined or source == target:
             raise SerializationError(f"invalid Cynefin transition: {source}->{target}")
-        label = transition.get("label")
-        normalized_label = _text(label, f"transitions[{index}].label") if label else None
-        key = (source, target, normalized_label)
+        label = None
+        semantic_label = None
+        if transition.get("label") is not None:
+            semantic_label = _text(transition.get("label"), f"transitions[{index - 1}].label")
+            label, label_substituted = _entity_compatibility_text(semantic_label)
+            compatibility_substituted = compatibility_substituted or label_substituted
+        key = (source, target, label)
         if key in seen:
             raise SerializationError(f"duplicate Cynefin transition: {source}->{target}")
         seen.add(key)
-        suffix = (
-            f" : {json.dumps(normalized_label, ensure_ascii=False)}" if normalized_label else ""
+        normalized_transitions.append(
+            CynefinTransitionPlan(
+                source_record=transition,
+                emitted_id=f"cynefin_transition_{index}",
+                source_name=source,
+                target_name=target,
+                source_emitted_id=defined[source],
+                target_emitted_id=defined[target],
+                label=label,
+                semantic_label=semantic_label,
+            )
         )
-        lines.append(f"{source} --> {target}{suffix}")
-    return SerializationResult.native("cynefin", "\n".join(lines) + "\n", stability="experimental")
+    return CynefinPlan(
+        domains=tuple(normalized_domains),
+        transitions=tuple(normalized_transitions),
+        compatibility_substituted=compatibility_substituted,
+    )
+
+
+def plan_cynefin_runtime_items(
+    plan: CynefinPlan,
+) -> dict[str, tuple[CynefinRuntimeItemPlan, ...]]:
+    """Project source items to the exact item labels Mermaid 11.16 renders."""
+
+    projected: dict[str, tuple[CynefinRuntimeItemPlan, ...]] = {}
+    for domain in plan.domains:
+        visible_items = domain.items[:3] if domain.name == "confusion" else domain.items
+        items = [
+            CynefinRuntimeItemPlan(
+                source_record=item.source_record,
+                emitted_id=item.emitted_id,
+                label=item.label,
+            )
+            for item in visible_items
+        ]
+        hidden_count = len(domain.items) - len(visible_items)
+        if hidden_count:
+            items.append(
+                CynefinRuntimeItemPlan(
+                    source_record=None,
+                    emitted_id="cynefin_runtime_confusion_more",
+                    label=f"+{hidden_count} more",
+                    implicit=True,
+                )
+            )
+        projected[domain.emitted_id] = tuple(items)
+    return projected
+
+
+def serialize_cynefin(ir: Mapping[str, Any], *, experimental: bool = False) -> SerializationResult:
+    plan = plan_cynefin_records(ir)
+    accessibility_lines, accessibility_substituted = _compatible_accessibility(
+        ir, "cynefin", experimental=experimental
+    )
+    lines = ["cynefin-beta", *accessibility_lines]
+    for domain in plan.domains:
+        lines.append(domain.name)
+        lines.extend(f"  {json.dumps(item.label, ensure_ascii=False)}" for item in domain.items)
+    for transition in plan.transitions:
+        suffix = (
+            f" : {json.dumps(transition.label, ensure_ascii=False)}" if transition.label else ""
+        )
+        lines.append(f"{transition.source_name} --> {transition.target_name}{suffix}")
+    code = _preflight_experimental_code("\n".join(lines) + "\n", diagram_type="cynefin")
+    warnings = (
+        (_ENTITY_COMPATIBILITY_WARNING,)
+        if plan.compatibility_substituted or accessibility_substituted
+        else ()
+    )
+    return SerializationResult.native("cynefin", code, warnings=warnings, stability="experimental")
 
 
 def _railroad_expression(

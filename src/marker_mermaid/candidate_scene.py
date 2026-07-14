@@ -3,8 +3,9 @@
 This adapter is deliberately narrower than a Mermaid parser.  It covers typed IR
 families whose serializers have deterministic node/edge semantics and returns
 ``None`` for unsupported data rather than guessing from raw Mermaid text.  Layout
-coordinates are retained only when the IR explicitly carries a bbox; otherwise
-nodes use a shared origin so layout scoring remains unavailable.
+coordinates are retained when the IR explicitly carries a bbox or the serializer
+grammar has an explicit position such as Wardley; otherwise nodes use a shared
+origin so layout scoring remains unavailable.
 """
 
 from __future__ import annotations
@@ -25,7 +26,13 @@ from marker_mermaid.flowchart_structure import (
 )
 from marker_mermaid.models import DiagramSceneIR, SceneElement, SceneGroup, SceneRelation
 from marker_mermaid.serializers import SerializationError, plan_architecture_structure
-from marker_mermaid.serializers_experimental import plan_wardley_records, plan_zenuml_records
+from marker_mermaid.serializers_experimental import (
+    CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS,
+    plan_cynefin_records,
+    plan_cynefin_runtime_items,
+    plan_wardley_records,
+    plan_zenuml_records,
+)
 from marker_mermaid.serializers_phase2 import (
     REQUIREMENT_TYPE_TOKENS,
     plan_c4_architecture_fallback,
@@ -121,6 +128,7 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
     group_records: list[dict[str, Any]] = []
     flowchart_structure: FlowchartStructurePlan | None = None
     scene_direction_override: str | None = None
+    coordinate_space = "pixels"
     if diagram_type in {"flowchart", "generic_network"}:
         node_records = [
             {
@@ -529,24 +537,96 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
             for source, lane in zip(source_lanes, lanes, strict=True)
         ]
     elif diagram_type == "wardley":
-        _title, components, links = plan_wardley_records(ir)
-        source_components = [
-            component for component in ir.get("components") or [] if isinstance(component, Mapping)
-        ]
+        try:
+            wardley_plan = plan_wardley_records(ir)
+        except SerializationError:
+            return None
         node_records = [
-            {**source, "id": component["id"], "label": component["label"]}
-            for source, component in zip(source_components, components, strict=True)
+            {
+                "id": component.source_id,
+                "label": component.label,
+                "role": component.kind,
+                "bbox": (component.x, 1 - component.y, component.x, 1 - component.y),
+                "evidence_ids": list(component.source_record.get("evidence_ids") or []),
+            }
+            for component in wardley_plan.components
         ]
-        source_links = [link for link in ir.get("links") or [] if isinstance(link, Mapping)]
         edge_records = [
             {
-                **source,
-                "source": link["source"],
-                "target": link["target"],
-                "label": link["label"],
+                "id": f"wardley_link_{index}",
+                "source": link.source_id,
+                "target": link.target_id,
+                "label": link.label,
+                "arrow_at_start": False,
+                "arrow_at_end": False,
+                "evidence_ids": list(link.source_record.get("evidence_ids") or []),
             }
-            for source, link in zip(source_links, links, strict=True)
+            for index, link in enumerate(wardley_plan.links, start=1)
         ]
+        coordinate_space = "normalized"
+        scene_direction_override = "unknown"
+    elif diagram_type == "cynefin":
+        try:
+            cynefin_plan = plan_cynefin_records(ir)
+        except SerializationError:
+            return None
+        explicit_domains = {domain.emitted_id: domain for domain in cynefin_plan.domains}
+        runtime_items = plan_cynefin_runtime_items(cynefin_plan)
+        node_records.extend(
+            {
+                "id": emitted_id,
+                "label": label,
+                "role": role,
+                "bbox": (0.0, 0.0, 0.0, 0.0),
+                "evidence_ids": list(
+                    explicit_domains[emitted_id].source_record.get("evidence_ids") or []
+                )
+                if emitted_id in explicit_domains
+                else [],
+            }
+            for emitted_id, role, label in CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS
+        )
+        domain_labels = {
+            emitted_id: label
+            for emitted_id, role, label in CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS
+            if role == "domain"
+        }
+        for domain in cynefin_plan.domains:
+            member_ids: list[str] = []
+            for item in runtime_items[domain.emitted_id]:
+                source_record = item.source_record if item.source_record is not None else {}
+                node_records.append(
+                    {
+                        "id": item.emitted_id,
+                        "label": item.label,
+                        "role": "runtime_template" if item.implicit else "item",
+                        "bbox": (0.0, 0.0, 0.0, 0.0),
+                        "evidence_ids": list(source_record.get("evidence_ids") or []),
+                    }
+                )
+                member_ids.append(item.emitted_id)
+            group_records.append(
+                {
+                    "id": domain.group_id,
+                    "label": domain_labels[domain.emitted_id],
+                    "role": "domain",
+                    "member_ids": member_ids,
+                    "bbox": (0.0, 0.0, 0.0, 0.0),
+                }
+            )
+        edge_records = [
+            {
+                "id": transition.emitted_id,
+                "source": transition.source_emitted_id,
+                "target": transition.target_emitted_id,
+                "label": transition.label,
+                "arrow_at_start": False,
+                "arrow_at_end": True,
+                "evidence_ids": list(transition.source_record.get("evidence_ids") or []),
+            }
+            for transition in cynefin_plan.transitions
+        ]
+        scene_direction_override = "unknown"
     elif diagram_type == "data_lineage":
         node_records = [*(ir.get("datasets") or []), *(ir.get("processes") or [])]
         edge_records = list(ir.get("relations") or [])
@@ -839,6 +919,26 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
                 )
             )
             known_group_ids.add(group_id)
+    if diagram_type == "cynefin":
+        for group_record in group_records:
+            group_id = str(group_record["id"])
+            member_ids = [str(member_id) for member_id in group_record["member_ids"]]
+            if (
+                group_id in known_group_ids
+                or not member_ids
+                or any(member_id not in known_ids for member_id in member_ids)
+            ):
+                return None
+            groups.append(
+                SceneGroup(
+                    id=group_id,
+                    role="domain",
+                    label=str(group_record["label"]),
+                    bbox=(0.0, 0.0, 0.0, 0.0),
+                    member_ids=member_ids,
+                )
+            )
+            known_group_ids.add(group_id)
     if diagram_type == "eventmodeling":
         direction = "LR"
     elif diagram_type == "journey":
@@ -859,7 +959,7 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
         groups=groups,
         reading_direction=direction,
         diagram_type_candidates=[diagram_type],
-        coordinate_space="pixels",
+        coordinate_space=coordinate_space,
     )
 
 
@@ -1039,14 +1139,26 @@ def typed_ir_semantic_texts(
                 yield str(relation["semantic_label"])
         return
     if diagram_type == "wardley":
-        title, components, links = plan_wardley_records(ir)
-        if title is not None:
-            yield title
-        for component in components:
-            yield component["label"]
-        for link in links:
-            if link["label"] is not None:
-                yield str(link["label"])
+        plan = plan_wardley_records(ir)
+        if plan.title is not None:
+            yield plan.title
+        for component in plan.components:
+            yield component.label
+        for link in plan.links:
+            if link.label is not None:
+                yield link.label
+        return
+    if diagram_type == "cynefin":
+        plan = plan_cynefin_records(ir)
+        runtime_items = plan_cynefin_runtime_items(plan)
+        for _emitted_id, _role, label in CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS:
+            yield label
+        for domain in plan.domains:
+            for item in runtime_items[domain.emitted_id]:
+                yield item.label
+        for transition in plan.transitions:
+            if transition.label is not None:
+                yield transition.label
         return
     if diagram_type == "zenuml":
         participants, messages = plan_zenuml_records(ir)

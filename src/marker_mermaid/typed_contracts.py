@@ -786,6 +786,57 @@ class _TreeViewIR(_TypedIRRoot):
     root: _SpecialHierarchyNode
 
 
+class _WardleyComponent(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+    x: _ChartNumber | None = None
+    y: _ChartNumber | None = None
+    anchor: bool | None = None
+
+
+class _WardleyLink(_TypedIRRecord):
+    source: str | None = None
+    target: str | None = None
+    label: str | None = None
+
+
+class _WardleyIR(_TypedIRRoot):
+    components: list[_WardleyComponent]
+    links: list[_WardleyLink] = Field(default_factory=list)
+
+
+_CYNEFIN_DOMAINS = frozenset({"complex", "complicated", "clear", "chaotic", "confusion"})
+
+
+class _CynefinItem(_TypedIRRecord):
+    label: str | None = None
+
+
+class _CynefinDomain(_TypedIRRecord):
+    name: str | None = None
+    items: list[str | _CynefinItem] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def name_is_supported(cls, value: str | None) -> str | None:
+        if value is not None:
+            normalized = " ".join(value.strip().split()).casefold()
+            if normalized and normalized not in _CYNEFIN_DOMAINS:
+                raise ValueError("Cynefin domain name has an unsupported token")
+        return value
+
+
+class _CynefinTransition(_TypedIRRecord):
+    source: str | None = None
+    target: str | None = None
+    label: str | None = None
+
+
+class _CynefinIR(_TypedIRRoot):
+    domains: list[_CynefinDomain]
+    transitions: list[_CynefinTransition] = Field(default_factory=list)
+
+
 @dataclass(frozen=True, slots=True)
 class TypedIRContract:
     required: tuple[tuple[str, RootKind], ...]
@@ -1174,9 +1225,30 @@ TYPED_IR_CONTRACTS: dict[str, TypedIRContract] = {
         ),
     ),
     "wardley": TypedIRContract(
-        (("components", "list"),), ("links",), "components with explicit x/y coordinates"
+        (("components", "list"),),
+        ("links",),
+        "components with explicit x/y coordinates",
+        _WardleyIR,
+        (
+            "components[]: {id:string,label:string,x:number,y:number,anchor:boolean,"
+            "bbox:number[4],evidence_ids:string[]}",
+            "links[]: {source:string,target:string,label:string,bbox:number[4],"
+            "evidence_ids:string[]}",
+        ),
     ),
-    "cynefin": TypedIRContract((("domains", "list"),), ("transitions",), "named domains and items"),
+    "cynefin": TypedIRContract(
+        (("domains", "list"),),
+        ("transitions",),
+        "named domains and items",
+        _CynefinIR,
+        (
+            "domains[]: {name:complex|complicated|clear|chaotic|confusion,"
+            "bbox:number[4],evidence_ids:string[],items:item[]}",
+            "domains[].items[]: {label:string,bbox:number[4],evidence_ids:string[]}",
+            "transitions[]: {source:string,target:string,label:string,bbox:number[4],"
+            "evidence_ids:string[]}",
+        ),
+    ),
     "treeview": TypedIRContract(
         (("root", "object"),),
         guidance="rooted hierarchy",
@@ -1213,6 +1285,7 @@ PHASE_THREE_CORE_NESTED_TYPES = frozenset({"pie", "quadrant", "xychart"})
 PHASE_THREE_EXTENDED_NESTED_TYPES = frozenset({"sankey", "radar", "treemap", "venn"})
 PLANNING_NESTED_TYPES = frozenset({"journey", "kanban", "gitgraph"})
 SPECIAL_NATIVE_NESTED_TYPES = frozenset({"packet", "ishikawa", "treeview"})
+EXPERIMENTAL_NATIVE_NESTED_TYPES = frozenset({"wardley", "cynefin"})
 NESTED_TYPED_IR_TYPES = (
     PHASE_ONE_NESTED_TYPES
     | CORE_UML_NESTED_TYPES
@@ -1222,6 +1295,7 @@ NESTED_TYPED_IR_TYPES = (
     | PHASE_THREE_EXTENDED_NESTED_TYPES
     | PLANNING_NESTED_TYPES
     | SPECIAL_NATIVE_NESTED_TYPES
+    | EXPERIMENTAL_NATIVE_NESTED_TYPES
 )
 
 for _diagram_type in NESTED_TYPED_IR_TYPES:  # pragma: no cover - import-time invariant

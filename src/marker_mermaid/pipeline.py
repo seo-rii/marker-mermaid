@@ -356,11 +356,17 @@ _NUMERIC_TYPES = frozenset(
     }
 )
 
+_CYNEFIN_TEMPLATE_REVIEW_WARNING = (
+    "Cynefin native runtime adds fixed template content without source provenance; "
+    "review is required"
+)
+
 _EVALUATION_WARNING_TEXT = frozenset(
     {
         "generated-node attribution is unavailable; review is required",
         "generated-node provenance gate requires at least 80% attribution",
         "more than 20% of generated nodes lack provenance",
+        _CYNEFIN_TEMPLATE_REVIEW_WARNING,
         "numeric consistency is below the automatic publication threshold",
         "numeric diagram lacks OCR/vector numeric evidence and cannot auto-publish",
         "unlabeled scene-only candidates require OCR/VLM fusion before publishing",
@@ -2680,6 +2686,9 @@ class ReconstructionPipeline:
             elif provenance < 0.8:
                 aggregate = None
                 warnings.append("generated-node provenance gate requires at least 80% attribution")
+        if gate_diagram_type == "cynefin":
+            aggregate = None
+            warnings.append(_CYNEFIN_TEMPLATE_REVIEW_WARNING)
         if gate_diagram_type in _NUMERIC_TYPES and numeric is None:
             aggregate = None
             warnings.append(

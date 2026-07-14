@@ -37,7 +37,8 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 | Packet | `packet` 또는 `flowchart` | 명시적 contiguous bit range만 native; fallback은 가상 gap·edge가 없는 독립 field |
 | Ishikawa, TreeView | 동일 또는 `flowchart` | cycle/object reuse/duplicate ID/depth를 검증한 hierarchy |
 | Event Modeling | `flowchart` | Mermaid 11.16 renderer 불안정으로 lane-aware fallback |
-| Wardley, Cynefin, Railroad | 동일 | 좌표/domain/rule AST evidence가 완전할 때 experimental native |
+| Wardley, Cynefin | 동일 | strict positioned-component/domain plan이 검증한 experimental native |
+| Railroad | 동일 | rule AST evidence가 완전할 때 experimental native |
 | ZenUML | `sequence` | pinned runtime에 ZenUML extension이 없어 명시적 fallback |
 | Organization | `treeview` | reporting hierarchy 보존, organization 전용 notation 없음 |
 | Data Lineage | `flowchart` | dataset/process endpoint를 모두 확인한 portable graph |
@@ -246,6 +247,34 @@ pinned grammar가 안전하게 보존하지 못하면 보이는 `＆`/`＃` glyp
 사용합니다. 원 label, alias, bbox/evidence는 typed IR·review sidecar에 변경 없이
 남습니다. Native/fallback 모두 serializer 반환 전에 50,000자·5,000줄 source budget을
 다시 검사합니다.
+
+### Wardley·Cynefin의 공유 projection
+
+Wardley serializer와 generated Scene/OCR projection은 같은 bounded plan을 소비합니다.
+Plan은 component source ID, 충돌 없는 표시 label, strict finite `x`/`y`, exact boolean
+`anchor`, link endpoint·label을 한 번만 검증합니다. Mermaid 11.16이 entity-like literal을
+손실시키는 경우 보이는 `＆`/`＃` compatibility glyph를 native source와 generated
+semantic text에 같이 사용하고 warning을 남깁니다. 원문은 typed IR을 변경하지 않습니다.
+IR `x`/`y`는 수평/수직 좌표입니다. Native의 `[visibility, evolution]` 문법에는 `[y, x]`로
+직렬화하고 Scene은 실제 화면 좌표 `(x, 1-y)`를 normalized position으로 사용합니다. Native
+token으로 반올림된 값을 plan 좌표에도 적용하며 record bbox·extra geometry를 layout 근거로
+사용하지 않습니다. Wardley `->`는 11.16 SVG에서 marker가 없는 plain link이므로 Scene도
+무방향 relation을 만듭니다.
+
+Cynefin plan은 다섯 official domain의 reserved-safe domain/group ID, 순서적 item ID,
+명시적 transition ID와 표시 text를 고정합니다. 11.16 runtime이 입력과 무관하게 만드는
+다섯 domain·practice/response·disorder template element도 generated Scene/OCR에 포함하되
+evidence는 비워 둡니다. `confusion` item은 runtime이 보이는 처음 세 개와 `+N more`만 Scene/OCR에
+넣고, 나머지 원문은 typed IR/sidecar에만 보존합니다. Domain membership을 containment edge로
+추측하지 않고 native grammar이 명시적 item 좌표를 주지 않으므로 layout metric은 unavailable입니다.
+Object item의 record evidence만 provenance로 사용하며 legacy scalar item에 evidence를 발명하지
+않습니다.
+
+두 serializer는 source를 반환하기 전 50,000자·5,000줄 hard budget을 독립적으로
+검사합니다. 현재는 native runtime rejection 후 Wardley→Flowchart 또는 Cynefin→Quadrant/Table
+대체를 같은 candidate slot에서 자동 재시도하지 않으므로 해당 후보는 publication hard gate에서
+격리됩니다. Cynefin native는 렌더에 성공해도 고정 template에 source provenance를 붙이는
+계약이 없어 자동 게시하지 않고 review/sidecar로만 routing합니다.
 
 ### Pie·XY·Quadrant의 native-only 경계
 
