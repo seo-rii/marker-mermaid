@@ -2233,6 +2233,394 @@ def test_generic_candidate_envelopes_apply_phase_three_extended_chart_contracts(
         )
 
 
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "location"),
+    [
+        ("journey", {"sections": ["section"]}, "sections[0]"),
+        ("journey", {"sections": [{"tasks": ["task"]}]}, "sections[0].tasks[0]"),
+        ("journey", {"sections": [{"title": 1}]}, "sections[0].title"),
+        ("journey", {"sections": [{"tasks": [{"text": 1}]}]}, "tasks[0].text"),
+        ("journey", {"sections": [{"tasks": [{"score": "5"}]}]}, "tasks[0].score"),
+        ("journey", {"sections": [{"tasks": [{"actors": "User"}]}]}, "tasks[0].actors"),
+        ("journey", {"sections": [{"tasks": [{"actors": [1]}]}]}, "actors[0]"),
+        ("journey", {"sections": [{"bbox": [0, 0, 10]}]}, "sections[0].bbox"),
+        ("journey", {"sections": [{"evidence_ids": [1]}]}, "evidence_ids[0]"),
+        ("kanban", {"columns": ["column"], "cards": []}, "columns[0]"),
+        ("kanban", {"columns": [], "cards": ["card"]}, "cards[0]"),
+        ("kanban", {"columns": [{"id": 1}], "cards": []}, "columns[0].id"),
+        ("kanban", {"columns": [{"title": []}], "cards": []}, "columns[0].title"),
+        ("kanban", {"columns": [], "cards": [{"text": 1}]}, "cards[0].text"),
+        ("kanban", {"columns": [], "cards": [{"column_id": 1}]}, "cards[0].column_id"),
+        (
+            "kanban",
+            {"columns": [], "cards": [{"bbox": [0, 0, 10, True]}]},
+            "cards[0].bbox",
+        ),
+        (
+            "kanban",
+            {"columns": [{"evidence_ids": [1]}], "cards": []},
+            "evidence_ids[0]",
+        ),
+        ("gitgraph", {"initial_branch": "main", "operations": ["commit"]}, "operations[0]"),
+        (
+            "gitgraph",
+            {"initial_branch": "main", "operations": [{"type": 1}]},
+            "operations[0].type",
+        ),
+        (
+            "gitgraph",
+            {"initial_branch": "main", "operations": [{"id": 1}]},
+            "operations[0].id",
+        ),
+        (
+            "gitgraph",
+            {"initial_branch": "main", "operations": [{"branch": 1}]},
+            "operations[0].branch",
+        ),
+        (
+            "gitgraph",
+            {"initial_branch": "main", "operations": [{"tag": 1}]},
+            "operations[0].tag",
+        ),
+        (
+            "gitgraph",
+            {"initial_branch": "main", "operations": [{"commit_type": 1}]},
+            "operations[0].commit_type",
+        ),
+        (
+            "gitgraph",
+            {"initial_branch": "main", "operations": [{"style": 1}]},
+            "operations[0].style",
+        ),
+        (
+            "gitgraph",
+            {"initial_branch": "main", "operations": [{"name": 1}]},
+            "operations[0].name",
+        ),
+        (
+            "gitgraph",
+            {"initial_branch": "main", "operations": [{"from": 1}]},
+            "operations[0].from",
+        ),
+        (
+            "gitgraph",
+            {"initial_branch": "main", "operations": [{"source": 1}]},
+            "operations[0].source",
+        ),
+        (
+            "gitgraph",
+            {"initial_branch": "main", "operations": [{"target": 1}]},
+            "operations[0].target",
+        ),
+        (
+            "gitgraph",
+            {"initial_branch": "main", "operations": [{"order": "1"}]},
+            "operations[0].order",
+        ),
+        (
+            "gitgraph",
+            {"initial_branch": "main", "operations": [{"order": True}]},
+            "operations[0].order",
+        ),
+        (
+            "gitgraph",
+            {"initial_branch": "main", "operations": [{"bbox": [0, 0, "10", 10]}]},
+            "operations[0].bbox",
+        ),
+        (
+            "gitgraph",
+            {"initial_branch": "main", "operations": [{"evidence_ids": [1]}]},
+            "evidence_ids[0]",
+        ),
+    ],
+)
+def test_planning_nested_contracts_reject_non_objects_and_strict_known_types(
+    diagram_type: str,
+    ir: dict[str, object],
+    location: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    message = str(exc_info.value)
+    assert "violates its nested contract" in message
+    assert location in message
+
+
+@pytest.mark.parametrize(
+    ("ir", "message"),
+    [
+        ({"operations": []}, "requires root field 'initial_branch'"),
+        (
+            {"initial_branch": 1, "operations": []},
+            "field 'initial_branch' must be a string",
+        ),
+    ],
+)
+def test_gitgraph_contract_requires_initial_branch_string_root(
+    ir: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        TypedIRCandidate(diagram_type="gitgraph", ir=ir)
+
+
+@pytest.mark.parametrize(
+    ("ir", "location"),
+    [
+        ({"initial_branch": "main", "direction": "RL", "operations": []}, "direction"),
+        (
+            {"initial_branch": "main", "operations": [{"type": "checkout"}]},
+            "operations[0].type",
+        ),
+        (
+            {"initial_branch": "main", "operations": [{"commit_type": "FAST"}]},
+            "operations[0].commit_type",
+        ),
+        (
+            {"initial_branch": "main", "operations": [{"style": "RED"}]},
+            "operations[0].style",
+        ),
+    ],
+)
+def test_gitgraph_nested_contract_rejects_unsupported_closed_tokens(
+    ir: dict[str, object],
+    location: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TypedIRCandidate(diagram_type="gitgraph", ir=ir)
+
+    message = str(exc_info.value)
+    assert "unsupported token" in message
+    assert location in message
+
+
+def test_gitgraph_nested_contract_accepts_lowercase_closed_tokens_without_rewriting() -> None:
+    ir = {
+        "initial_branch": "main",
+        "direction": "lr",
+        "operations": [
+            {"type": "commit", "commit_type": "normal"},
+            {"type": "branch", "commit_type": "reverse"},
+            {"type": "merge", "style": "highlight"},
+        ],
+    }
+
+    candidate = TypedIRCandidate(diagram_type="gitgraph", ir=ir)
+
+    assert candidate.ir == ir
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "journey",
+            {
+                "sections": [
+                    {
+                        "label": "Discover",
+                        "tasks": [
+                            {
+                                "id": "find",
+                                "text": "Find product",
+                                "score": 3,
+                                "actors": ["Customer"],
+                                "bbox": [0, 0, 10, 10],
+                                "evidence_ids": ["ocr-find"],
+                                "future_metadata": {"kept": True},
+                            }
+                        ],
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+        (
+            "kanban",
+            {
+                "columns": [
+                    {
+                        "id": "todo",
+                        "title": "To do",
+                        "bbox": [0, 0, 10, 10],
+                        "evidence_ids": ["ocr-todo"],
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "cards": [
+                    {
+                        "id": "card-1",
+                        "text": "Write tests",
+                        "column_id": "todo",
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+        (
+            "gitgraph",
+            {
+                "initial_branch": "main",
+                "operations": [
+                    {
+                        "type": "branch",
+                        "id": "feature",
+                        "from": "main",
+                        "style": "highlight",
+                        "bbox": [0, 0, 10, 10],
+                        "evidence_ids": ["ocr-feature"],
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+    ],
+)
+def test_planning_contracts_preserve_compatibility_aliases_extra_and_original_ir(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    assert candidate.ir == ir
+    assert candidate.ir is not ir
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "root_field"),
+    [
+        ("journey", {"tasks": []}, "sections"),
+        ("kanban", {"lanes": [], "cards": []}, "columns"),
+        ("kanban", {"columns": [], "items": []}, "cards"),
+        ("gitgraph", {"branch": "main", "operations": []}, "initial_branch"),
+        ("gitgraph", {"initial_branch": "main", "commits": []}, "operations"),
+    ],
+)
+def test_planning_aliases_do_not_replace_canonical_roots(
+    diagram_type: str,
+    ir: dict[str, object],
+    root_field: str,
+) -> None:
+    with pytest.raises(ValidationError, match=rf"requires root field '{root_field}'"):
+        TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "journey",
+            {"sections": [{"title": "", "tasks": [{"label": "", "score": 0, "actors": []}]}]},
+        ),
+        (
+            "kanban",
+            {
+                "columns": [{"id": "todo", "label": "To do"}],
+                "cards": [{"id": "todo", "label": "Card", "column_id": "missing"}],
+            },
+        ),
+        (
+            "gitgraph",
+            {
+                "initial_branch": "release",
+                "operations": [
+                    {"type": "branch", "name": "feature", "from": "missing", "order": -1}
+                ],
+            },
+        ),
+    ],
+)
+def test_planning_contracts_leave_semantic_requiredness_to_serializer(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    assert candidate.ir == ir
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "mutation", "location"),
+    [
+        (
+            "journey",
+            {"sections": [{"tasks": [{"score": 3}]}]},
+            lambda ir: ir["sections"][0]["tasks"][0].__setitem__("score", True),
+            r"sections\[0\]\.tasks\[0\]\.score",
+        ),
+        (
+            "kanban",
+            {"columns": [{"id": "todo"}], "cards": []},
+            lambda ir: ir["columns"][0].__setitem__("id", 1),
+            r"columns\[0\]\.id",
+        ),
+        (
+            "gitgraph",
+            {"initial_branch": "main", "operations": [{"type": "branch", "order": 1}]},
+            lambda ir: ir["operations"][0].__setitem__("order", True),
+            r"operations\[0\]\.order",
+        ),
+    ],
+)
+def test_canonical_key_revalidates_mutated_planning_contracts(
+    diagram_type: str,
+    ir: dict[str, object],
+    mutation,
+    location: str,
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+    mutation(candidate.ir)
+
+    with pytest.raises(ValidationError, match=location):
+        candidate.canonical_key()
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "invalid_ir", "location"),
+    [
+        (
+            "journey",
+            {"sections": [{"tasks": [{"score": True}]}]},
+            r"sections\[0\]\.tasks\[0\]\.score",
+        ),
+        (
+            "kanban",
+            {"columns": [], "cards": [{"text": {"invalid": True}}]},
+            r"cards\[0\]\.text",
+        ),
+        (
+            "gitgraph",
+            {"initial_branch": "main", "direction": "RL", "operations": []},
+            "direction",
+        ),
+    ],
+)
+def test_generic_candidate_envelopes_apply_planning_nested_contracts(
+    diagram_type: str,
+    invalid_ir: dict[str, object],
+    location: str,
+) -> None:
+    prediction = DiagramTypePrediction(candidates=[diagram_type], scores=[1.0])
+
+    with pytest.raises(ValidationError, match=location):
+        EngineObservation(
+            prediction=prediction,
+            typed_candidates=[{"diagram_type": diagram_type, "ir": invalid_ir}],
+        )
+
+    with pytest.raises(ValidationError, match=location):
+        MermaidCandidate(
+            candidate_id=f"candidate-{diagram_type}",
+            generation_method="typed_ir",
+            diagram_type=diagram_type,
+            typed_ir=invalid_ir,
+        )
+
+
 def test_canonical_key_uses_a_bounded_digest_without_model_dump(
     monkeypatch,
 ) -> None:

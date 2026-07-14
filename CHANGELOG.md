@@ -130,6 +130,19 @@
   bound the experimental runtime loop. Venn fallback intersection nodes now receive IDs
   distinct from normalized set IDs, preventing collision-driven self-loops without inventing sizes;
   Treemap/Venn Scene attribution fails closed on duplicate node IDs instead of under-counting them.
+- Journey, Kanban, and GitGraph typed IR now have strict nested prompt/post-validation contracts for
+  scored tasks, assigned cards, and ordered branch operations while preserving compatibility aliases
+  and extra evidence metadata without rewriting the original IR. Shared bounded planning records align
+  Kanban/GitGraph native output, generated Scene attribution, and same-slot Flowchart runtime fallback;
+  Journey scores now require independent source numeric evidence. GitGraph uses grammar-specific safe
+  quoting verified against Mermaid 11.16 SVG text, preserving quote, backslash, and ordinary punctuation
+  while disclosing the visible compatibility glyphs needed for angle brackets. Journey Timeline items,
+  native Kanban labels, and portable planning fallbacks likewise disclose grammar-specific compatibility
+  glyphs instead of silently losing text. Canonical/compatibility alias conflicts and post-encoding
+  GitGraph identity collisions now fail closed, Kanban shares a reserved-word-safe ID namespace across
+  native/Scene/fallback output, and every planning result enforces the validator's 50,000-character and
+  5,000-line source budgets before publication. GitGraph also rejects known fields that are irrelevant to
+  the declared commit, branch, or merge operation instead of silently discarding them.
 - Serializer-visible Scene text now includes Architecture group labels, excludes hidden
   Deployment/Component relation labels, and mirrors Use-case Flowchart relation type-over-label
   precedence; hidden role/shape/style/semantic metadata cannot enter the projected Scene, and

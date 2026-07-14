@@ -33,7 +33,7 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 | Treemap | `treemap` 또는 `flowchart` | leaf value 필수, internal-node value는 fallback에서 보존 |
 | Venn | `venn` 또는 `flowchart` | 모든 크기가 관측되면 native, 누락 시 숫자 합성 없는 set graph |
 | Journey | `timeline` | strict SVG에서 금지된 `foreignObject`를 피하고 score/actor를 event text로 보존 |
-| Kanban, GitGraph | 동일 | card/branch/commit/merge ID와 reference evidence 필수 |
+| Kanban, GitGraph | 동일 또는 `flowchart` | native runtime 거부 시 공용 planning plan으로 같은 candidate slot에서 portable fallback |
 | Packet | `packet` 또는 `flowchart` | 명시적 contiguous bit range만 native; gap을 임의 field로 채우지 않음 |
 | Ishikawa, TreeView | 동일 | cycle/duplicate ID/depth를 검증한 hierarchy |
 | Event Modeling | `flowchart` | Mermaid 11.16 renderer 불안정으로 lane-aware fallback |
@@ -177,6 +177,49 @@ Actor/UseCase source ID 분리, normalized ID와 `usecase_` prefix 이후의 2�
 node/relation cap은 공용 plan과 serializer가 계속 fail closed로 판정합니다. 기본 direction은 `LR`이고
 허용되지 않은 값은 serializer와 Scene 모두 `TB`를 사용합니다. 이 계약으로 모든 Phase 2 type이 nested
 검증을 갖지만, provider envelope는 계속 generic `TypedIRCandidate.ir: dict`입니다.
+
+### Journey·Kanban·GitGraph의 planning projection
+
+세 planning type은 strict nested extraction으로 known record/container/scalar와 bbox/evidence 형을 먼저
+확인합니다. Journey는 `sections`와 nested task, Kanban은 `columns`/`cards`, GitGraph는 ordered
+`operations`를 canonical prompt에 공개합니다. Compatibility alias는 검증하고 원본 IR에 보존하되 prompt에는
+광고하지 않습니다. Non-empty, 1~5 score, ID/reference/collision, branch-head replay와 merge 가능성은
+serializer-owned 의미 검사로 남습니다. 2,000개 record는 구조 탐색의 절대 상한이며, 실제 native/fallback
+source는 candidate validator와 같은 50,000자·5,000줄 hard budget을 생성 직후 다시 검사합니다. 따라서
+긴 label이나 많은 actor가 있으면 record 상한보다 먼저 실패합니다.
+
+Journey는 native grammar의 `foreignObject` 때문에 처음부터 `journey → timeline`을 명시합니다. Section은
+Scene group, task는 attributed Scene element가 되고 실제 Timeline text의 task label, `Score N`, actor 목록만
+OCR projection에 들어갑니다. 별도 source 숫자가 없거나 score가 일치하지 않으면 parse/render 성공과
+관계없이 review로 남습니다.
+
+Timeline item 문법에서 literal colon과 entity-like spelling을 그대로 두면 delimiter로 분리되거나 text가
+잘릴 수 있습니다. 따라서 Journey section/task/actor의 `:`는 `∶`, `&...;` prefix는 `＆...;` 또는
+`＆＃...;`로 명시적으로 바꾸고 compatibility warning을 남깁니다. Title angle bracket도 `‹`/`›`로
+표시합니다. 원본 evidence는 typed IR과 sidecar에 그대로 보존됩니다.
+
+Kanban의 공용 plan은 column/card raw ID를 한 번만 검증하고 예약어와 충돌하지 않는 `kanban_` namespace로
+정규화하며 label alias 및 card의 resolved column을 고정합니다. Native serializer, generated Scene과
+runtime Flowchart fallback이 모두 이 emitted ID와 containment를 사용합니다. GitGraph 공용 plan은 정확한
+`main`에서 operation을 재생해 commit/merge node,
+부모 relation, branch membership을 고정합니다. Native rejection 뒤에도 같은 node/parent topology와 tag를
+Flowchart로 방출하고 branch lane/order 및 commit-type glyph 손실을 warning으로 공개합니다. 두 fallback은
+새 candidate를 소비하지 않으며 source security scan, parse/render, SVG inspection과 terminal `flowchart`
+type을 다시 통과해야 채택됩니다.
+
+Canonical field와 compatibility alias가 둘 다 존재하면 의미가 같아야 합니다. Journey `title/label`과
+`label/text`, Kanban `label/title`과 `label/text`, GitGraph branch `name/id`와 commit `commit_type/style`이
+서로 다르면 우선순위로 하나를 버리지 않고 fail closed입니다. GitGraph commit ID도 source 문자열뿐 아니라
+grammar encoding 뒤의 표시 namespace까지 고유해야 합니다. Generic extraction record에 함께 기술되는 known
+field도 operation type에 맞아야 하며, 예를 들어 branch의 `commit_type`이나 merge의 `name`은 metadata로
+조용히 버리지 않고 거부합니다.
+
+GitGraph text는 Mermaid 11.16 grammar 전용 quoting을 사용합니다. Quote/backslash와 일반 문장부호는 실제 SVG
+glyph를 보존하고 active URL/directive/callback/entity token만 invisible separator로 끊습니다. Native SVG가
+원문 angle bracket을 보존하지 못해 `‹`/`›`로 대체할 때는 compatibility warning을 result에 남깁니다.
+Kanban native markdown label은 literal quote/backtick을 보존하지 못할 때 `″`/`ˋ`를 사용합니다. Flowchart
+fallback은 native code quoting이 아니라 portable label encoder를 사용하며 literal quote/backslash를
+`″`/`∖`로 바꾼 경우 warning을 남깁니다.
 
 ### Pie·XY·Quadrant의 native-only 경계
 

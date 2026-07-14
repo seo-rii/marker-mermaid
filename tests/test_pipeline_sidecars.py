@@ -1594,6 +1594,161 @@ def test_architecture_family_runtime_rejection_retries_flowchart_in_same_candida
     }
 
 
+@pytest.mark.parametrize("attributed", [True, False])
+def test_gitgraph_generated_scene_controls_default_extended_provenance_gate(
+    attributed: bool,
+) -> None:
+    class GitGraphRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="gitGraph",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    commit = {"type": "commit", "branch": "main", "id": "root"}
+    if attributed:
+        commit["evidence_ids"] = ["ocr-git"]
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["gitgraph"], scores=[1.0]),
+        typed_candidates=[
+            TypedIRCandidate(
+                diagram_type="gitgraph",
+                ir={"initial_branch": "main", "operations": [commit]},
+            )
+        ],
+        evidence=[
+            VisualEvidence(
+                id="ocr-git",
+                kind="ocr_token",
+                text="main root",
+                bbox=(0, 0, 50, 10),
+            )
+        ],
+    )
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(GitGraphRuntime(), config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is not None
+    assert result.selected.generated_scene_ir is not None
+    assert result.selected.scores["visual_entailment_precision"] == (1 if attributed else 0)
+    assert result.publish is attributed
+    assert (result.selected.aggregate_score is not None) is attributed
+    assert any("provenance gate" in item for item in result.selected.warnings) is not attributed
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "native_prefix", "ir", "ocr_text"),
+    [
+        (
+            "kanban",
+            "kanban",
+            {
+                "columns": [{"id": "ready", "label": "Ready", "evidence_ids": ["ocr-plan"]}],
+                "cards": [
+                    {
+                        "id": "ship",
+                        "label": "Ship",
+                        "column_id": "ready",
+                        "evidence_ids": ["ocr-plan"],
+                    }
+                ],
+            },
+            "Ready Ship",
+        ),
+        (
+            "gitgraph",
+            "gitGraph",
+            {
+                "initial_branch": "main",
+                "operations": [
+                    {
+                        "type": "commit",
+                        "branch": "main",
+                        "id": "root",
+                        "evidence_ids": ["ocr-plan"],
+                    }
+                ],
+            },
+            "main root",
+        ),
+    ],
+)
+def test_planning_runtime_rejection_retries_flowchart_in_same_candidate_slot(
+    diagram_type: str,
+    native_prefix: str,
+    ir: dict[str, object],
+    ocr_text: str,
+) -> None:
+    class NativeRejectingRuntime:
+        def __init__(self):
+            self.calls = []
+
+        def validate_and_render(self, code, timeout_seconds):
+            self.calls.append(code)
+            if not code.startswith("flowchart"):
+                return RuntimeResult(
+                    True,
+                    False,
+                    diagram_type=diagram_type,
+                    error="native planning grammar rejected",
+                )
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="flowchart-v2",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=[diagram_type], scores=[1.0]),
+        typed_candidates=[TypedIRCandidate(diagram_type=diagram_type, ir=ir)],
+        evidence=[
+            VisualEvidence(
+                id="ocr-plan",
+                kind="ocr_token",
+                text=ocr_text,
+                bbox=(0, 0, 50, 10),
+            )
+        ],
+    )
+    runtime = NativeRejectingRuntime()
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is not None
+    assert result.alternatives == []
+    assert result.selected.candidate_id == "candidate-1"
+    assert result.selected.emitted_diagram_type == "flowchart"
+    assert result.selected.runtime_diagram_type == "flowchart-v2"
+    assert result.selected.fallback_chain == [diagram_type, "flowchart"]
+    assert result.selected.scores["visual_entailment_precision"] == 1
+    assert len(runtime.calls) == 2
+    assert runtime.calls[0].startswith(native_prefix)
+    assert runtime.calls[1].startswith("flowchart")
+    repair = result.selected.repair_history[-1]
+    assert repair.operation == "runtime_portable_fallback"
+    assert repair.accepted
+    assert repair.details["fallback_chain"] == [diagram_type, "flowchart"]
+
+
 def test_runtime_fallback_validator_exception_is_isolated_to_the_candidate():
     runtime = _ArchitectureRejectingRuntime(
         fallback_error=RuntimeError("fallback validator exploded")
@@ -2145,6 +2300,81 @@ def test_typed_core_charts_reach_numeric_consistency_gate(
     assert result.selected.generated_scene_ir is None
     assert result.selected.scores["numeric_consistency"] == 1
     assert result.selected.aggregate_score is not None
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected_numeric", "expected_publishable"),
+    [
+        ("Build Ship Score 4 Actors Ada", 1, True),
+        ("Build Ship Actors Ada", None, False),
+        ("Build Ship Score 5 Actors Ada", 0, False),
+    ],
+)
+def test_journey_scores_use_independent_source_numeric_gate(
+    source_text: str,
+    expected_numeric: float | None,
+    expected_publishable: bool,
+) -> None:
+    class TimelineRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="timeline",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["journey"], scores=[1.0]),
+        typed_candidates=[
+            TypedIRCandidate(
+                diagram_type="journey",
+                ir={
+                    "sections": [
+                        {
+                            "title": "Build",
+                            "tasks": [
+                                {
+                                    "id": "ship",
+                                    "label": "Ship",
+                                    "score": 4,
+                                    "actors": ["Ada"],
+                                    "evidence_ids": ["ocr-journey"],
+                                }
+                            ],
+                        }
+                    ]
+                },
+            )
+        ],
+        evidence=[
+            VisualEvidence(
+                id="ocr-journey",
+                kind="ocr_token",
+                text=source_text,
+                bbox=(0, 0, 50, 10),
+            )
+        ],
+    )
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(TimelineRuntime(), config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is not None
+    assert result.selected.emitted_diagram_type == "timeline"
+    assert result.selected.scores.get("numeric_consistency") == expected_numeric
+    assert (result.selected.aggregate_score is not None) is expected_publishable
+    if expected_numeric is None:
+        assert any("lacks OCR/vector numeric evidence" in item for item in result.selected.warnings)
+    elif expected_numeric == 0:
+        assert any("numeric consistency" in item for item in result.selected.warnings)
 
 
 def test_geometry_evidence_is_available_to_later_engines(fake_runtime):

@@ -802,6 +802,16 @@ def serialize_runtime_fallback_result(
             warnings=(reason or f"CandidateValidator rejected native {diagram_type}.",),
             stability="experimental",
         )
+    if diagram_type in {"kanban", "gitgraph"}:
+        from marker_mermaid.serializers_planning import serialize_gitgraph, serialize_kanban
+
+        serializer = serialize_kanban if diagram_type == "kanban" else serialize_gitgraph
+        result = serializer(
+            ir,
+            experimental=experimental,
+            native_runtime_valid=False,
+        )
+        return result if result.used_fallback else None
     if diagram_type in {"packet", "ishikawa", "treeview"}:
         from marker_mermaid.serializers_special import serialize_special
 

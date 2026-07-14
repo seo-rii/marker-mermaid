@@ -1732,6 +1732,225 @@ def test_planning_and_event_modeling_scenes_preserve_emitted_elements_and_eviden
     assert event_model is not None and event_model.relations[0].evidence_ids == ["line-1"]
 
 
+def test_journey_scene_preserves_sections_scores_actors_and_task_attribution() -> None:
+    ir = {
+        "title": "Release journey",
+        "sections": [
+            {
+                "label": "Build",
+                "bbox": [0, 0, 100, 40],
+                "tasks": [
+                    {
+                        "id": "design",
+                        "text": "Design API",
+                        "score": 4,
+                        "actors": ["Ada", "Bora"],
+                        "bbox": [5, 5, 45, 30],
+                        "evidence_ids": ["ocr-design"],
+                    },
+                    {
+                        "id": "ship",
+                        "label": "Ship",
+                        "score": 5,
+                        "actors": ["Bora"],
+                        "bbox": [55, 5, 95, 30],
+                        "evidence_ids": ["ocr-ship"],
+                    },
+                ],
+            }
+        ],
+    }
+
+    scene = typed_ir_to_scene("journey", ir)
+
+    assert scene is not None
+    assert scene.reading_direction == "timeline"
+    assert [(element.id, element.text, element.evidence_ids) for element in scene.elements] == [
+        ("design", "Design API", ["ocr-design"]),
+        ("ship", "Ship", ["ocr-ship"]),
+    ]
+    assert [group.model_dump() for group in scene.groups] == [
+        {
+            "id": "journey_section_1",
+            "role": "section",
+            "label": "Build",
+            "bbox": (0.0, 0.0, 100.0, 40.0),
+            "member_ids": ["design", "ship"],
+        }
+    ]
+    assert list(typed_ir_semantic_texts("journey", ir, scene)) == [
+        "Release journey",
+        "Build",
+        "Design API",
+        "Score 4",
+        "Actors Ada, Bora",
+        "Ship",
+        "Score 5",
+        "Actors Bora",
+    ]
+
+
+def test_journey_scene_fails_closed_on_duplicate_task_attribution_ids() -> None:
+    assert (
+        typed_ir_to_scene(
+            "journey",
+            {
+                "sections": [
+                    {
+                        "title": "Build",
+                        "tasks": [
+                            {"id": "same", "label": "First", "score": 1, "actors": ["A"]},
+                            {"id": "same", "label": "Second", "score": 2, "actors": ["B"]},
+                        ],
+                    }
+                ]
+            },
+        )
+        is None
+    )
+
+
+def test_kanban_scene_uses_shared_normalized_ids_aliases_and_containment() -> None:
+    ir = {
+        "columns": [
+            {
+                "id": "ready lane",
+                "title": "Ready",
+                "bbox": [0, 0, 40, 80],
+                "evidence_ids": ["ocr-ready"],
+            }
+        ],
+        "cards": [
+            {
+                "id": "task one",
+                "text": "Ship",
+                "column_id": "ready lane",
+                "bbox": [5, 20, 35, 50],
+                "evidence_ids": ["ocr-ship"],
+            }
+        ],
+    }
+
+    scene = typed_ir_to_scene("kanban", ir)
+
+    assert scene is not None
+    assert scene.reading_direction == "LR"
+    assert [(item.id, item.role, item.text, item.evidence_ids) for item in scene.elements] == [
+        ("kanban_column_ready_lane", "column", "Ready", ["ocr-ready"]),
+        ("kanban_card_task_one", "card", "Ship", ["ocr-ship"]),
+    ]
+    assert [
+        (relation.source_id, relation.target_id, relation.semantic_relation)
+        for relation in scene.relations
+    ] == [("kanban_column_ready_lane", "kanban_card_task_one", "containment")]
+    assert list(typed_ir_semantic_texts("kanban", ir, scene)) == ["Ready", "Ship"]
+
+
+def test_gitgraph_scene_replays_parent_topology_branch_groups_and_evidence() -> None:
+    ir = {
+        "initial_branch": "main",
+        "direction": "TB",
+        "operations": [
+            {
+                "type": "commit",
+                "branch": "main",
+                "id": "root",
+                "bbox": [0, 0, 10, 10],
+                "evidence_ids": ["ocr-root"],
+            },
+            {
+                "type": "branch",
+                "name": "feature/api",
+                "from": "main",
+                "bbox": [15, 0, 25, 10],
+                "evidence_ids": ["ocr-feature"],
+            },
+            {
+                "type": "commit",
+                "branch": "feature/api",
+                "id": "work",
+                "tag": "reviewed",
+                "bbox": [20, 20, 30, 30],
+                "evidence_ids": ["ocr-work"],
+            },
+            {
+                "type": "commit",
+                "branch": "main",
+                "id": "docs",
+                "bbox": [0, 20, 10, 30],
+                "evidence_ids": ["ocr-docs"],
+            },
+            {
+                "type": "merge",
+                "source": "feature/api",
+                "target": "main",
+                "id": "merged",
+                "bbox": [0, 40, 10, 50],
+                "evidence_ids": ["ocr-merged"],
+            },
+        ],
+    }
+
+    scene = typed_ir_to_scene("gitgraph", ir)
+
+    assert scene is not None
+    assert scene.reading_direction == "TB"
+    assert [(item.id, item.text, item.evidence_ids) for item in scene.elements] == [
+        ("git_commit_1", "root", ["ocr-root"]),
+        ("git_commit_3", "work", ["ocr-work"]),
+        ("git_commit_4", "docs", ["ocr-docs"]),
+        ("git_commit_5", "merged", ["ocr-merged"]),
+    ]
+    assert [
+        (relation.id, relation.source_id, relation.target_id, relation.arrow_at_end)
+        for relation in scene.relations
+    ] == [
+        ("git_relation_1", "git_commit_1", "git_commit_3", False),
+        ("git_relation_2", "git_commit_1", "git_commit_4", False),
+        ("git_relation_3", "git_commit_4", "git_commit_5", False),
+        ("git_relation_4", "git_commit_3", "git_commit_5", False),
+    ]
+    assert [(group.label, group.member_ids) for group in scene.groups] == [
+        ("main", ["git_commit_1", "git_commit_4", "git_commit_5"]),
+        ("feature/api", ["git_commit_3"]),
+    ]
+    assert list(typed_ir_semantic_texts("gitgraph", ir, scene)) == [
+        "main",
+        "feature/api",
+        "root",
+        "work",
+        "reviewed",
+        "docs",
+        "merged",
+    ]
+
+
+@pytest.mark.parametrize(
+    "diagram_type, ir",
+    [
+        (
+            "kanban",
+            {
+                "columns": [{"id": "ready", "label": "Ready"}],
+                "cards": [{"id": "task", "label": "Task", "column_id": "missing"}],
+            },
+        ),
+        (
+            "gitgraph",
+            {
+                "initial_branch": "main",
+                "operations": [{"type": "branch", "name": "feature", "from": "main"}],
+            },
+        ),
+    ],
+)
+def test_planning_scene_adapters_fail_closed_with_the_shared_plan(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    assert typed_ir_to_scene(diagram_type, ir) is None
+
+
 def test_hierarchy_lineage_wardley_and_venn_scene_adapters_are_attributable():
     organization = typed_ir_to_scene(
         "organization",

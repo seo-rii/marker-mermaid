@@ -343,6 +343,7 @@ _PROVENANCE_GATED_TYPES = frozenset(
 _NUMERIC_TYPES = frozenset(
     {
         "gantt",
+        "journey",
         "packet",
         "pie",
         "quadrant",

@@ -257,6 +257,9 @@ _C4_ELEMENT_KINDS = frozenset(
         "component_queue",
     }
 )
+_GITGRAPH_OPERATION_TYPES = frozenset({"commit", "branch", "merge"})
+_GITGRAPH_COMMIT_TYPES = frozenset({"normal", "reverse", "highlight"})
+_GITGRAPH_DIRECTIONS = frozenset({"lr", "tb", "bt"})
 
 
 def _validate_casefolded_token(
@@ -443,6 +446,84 @@ class _GanttSection(_TypedIRRecord):
 class _GanttIR(_TypedIRRoot):
     date_format: str | None = None
     sections: list[_GanttSection]
+
+
+class _JourneyTask(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+    text: str | None = None
+    score: int | None = None
+    actors: list[str] | None = None
+
+
+class _JourneySection(_TypedIRRecord):
+    title: str | None = None
+    label: str | None = None
+    tasks: list[_JourneyTask] = Field(default_factory=list)
+
+
+class _JourneyIR(_TypedIRRoot):
+    sections: list[_JourneySection]
+
+
+class _KanbanColumn(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+    title: str | None = None
+
+
+class _KanbanCard(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+    text: str | None = None
+    column_id: str | None = None
+
+
+class _KanbanIR(_TypedIRRoot):
+    columns: list[_KanbanColumn]
+    cards: list[_KanbanCard]
+
+
+class _GitGraphOperation(_TypedIRRecord):
+    type: str | None = None
+    id: str | None = None
+    branch: str | None = None
+    tag: str | None = None
+    commit_type: str | None = None
+    style: str | None = None
+    name: str | None = None
+    from_: str | None = Field(default=None, alias="from")
+    source: str | None = None
+    target: str | None = None
+    order: int | None = None
+
+    @field_validator("type", "commit_type", "style")
+    @classmethod
+    def closed_token_is_supported(cls, value: str | None, info: Any) -> str | None:
+        allowed = {
+            "type": _GITGRAPH_OPERATION_TYPES,
+            "commit_type": _GITGRAPH_COMMIT_TYPES,
+            "style": _GITGRAPH_COMMIT_TYPES,
+        }[info.field_name]
+        return _validate_casefolded_token(
+            value,
+            allowed,
+            field=f"gitgraph operation {info.field_name}",
+        )
+
+
+class _GitGraphIR(_TypedIRRoot):
+    initial_branch: str
+    operations: list[_GitGraphOperation]
+
+    @field_validator("direction")
+    @classmethod
+    def direction_is_supported(cls, value: str | None) -> str | None:
+        return _validate_casefolded_token(
+            value,
+            _GITGRAPH_DIRECTIONS,
+            field="gitgraph direction",
+        )
 
 
 class _ArchitectureService(_TypedIRRecord):
@@ -928,13 +1009,38 @@ TYPED_IR_CONTRACTS: dict[str, TypedIRContract] = {
             "evidence_ids:string[]}",
         ),
     ),
-    "journey": TypedIRContract((("sections", "list"),), guidance="sections with scored tasks"),
+    "journey": TypedIRContract(
+        (("sections", "list"),),
+        guidance="sections with scored tasks",
+        nested_model=_JourneyIR,
+        prompt_records=(
+            "sections[]: {title:string,bbox:number[4],evidence_ids:string[],tasks:task[]}",
+            "sections[].tasks[]: {id:string,label:string,score:integer,actors:string[],"
+            "bbox:number[4],evidence_ids:string[]}",
+        ),
+    ),
     "kanban": TypedIRContract(
-        (("columns", "list"), ("cards", "list")), guidance="columns and assigned cards"
+        (("columns", "list"), ("cards", "list")),
+        guidance="columns and assigned cards",
+        nested_model=_KanbanIR,
+        prompt_records=(
+            "columns[]: {id:string,label:string,bbox:number[4],evidence_ids:string[]}",
+            "cards[]: {id:string,label:string,column_id:string,bbox:number[4],"
+            "evidence_ids:string[]}",
+        ),
     ),
     "gitgraph": TypedIRContract(
         (("initial_branch", "string"), ("operations", "list")),
         guidance="ordered branch/commit/merge operations",
+        nested_model=_GitGraphIR,
+        prompt_records=(
+            "initial_branch: main",
+            "direction: LR|TB|BT",
+            "operations[]: {type:commit|branch|merge,id:string,branch:string,name:string,"
+            "from:string,source:string,target:string,tag:string,"
+            "commit_type:NORMAL|REVERSE|HIGHLIGHT,order:integer,bbox:number[4],"
+            "evidence_ids:string[]}",
+        ),
     ),
     "pie": TypedIRContract(
         (("slices", "list"),),
@@ -1052,6 +1158,7 @@ PHASE_TWO_NATIVE_NESTED_TYPES = frozenset({"requirement", "block"})
 PHASE_TWO_FALLBACK_NESTED_TYPES = frozenset({"c4", "component", "deployment", "usecase"})
 PHASE_THREE_CORE_NESTED_TYPES = frozenset({"pie", "quadrant", "xychart"})
 PHASE_THREE_EXTENDED_NESTED_TYPES = frozenset({"sankey", "radar", "treemap", "venn"})
+PLANNING_NESTED_TYPES = frozenset({"journey", "kanban", "gitgraph"})
 NESTED_TYPED_IR_TYPES = (
     PHASE_ONE_NESTED_TYPES
     | CORE_UML_NESTED_TYPES
@@ -1059,6 +1166,7 @@ NESTED_TYPED_IR_TYPES = (
     | PHASE_TWO_FALLBACK_NESTED_TYPES
     | PHASE_THREE_CORE_NESTED_TYPES
     | PHASE_THREE_EXTENDED_NESTED_TYPES
+    | PLANNING_NESTED_TYPES
 )
 
 for _diagram_type in NESTED_TYPED_IR_TYPES:  # pragma: no cover - import-time invariant

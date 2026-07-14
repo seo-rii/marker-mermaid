@@ -4,8 +4,8 @@ Structured VLM은 `diagram_type`만 맞춘 임의 JSON을 내보내지 않습니
 root 필드와 container 종류를 고정한 `TypedIRContract`를 prompt로 받고, 응답은 Pydantic 모델 생성
 시점에 같은 registry로 다시 검사됩니다. Phase 1 유형, stable Core UML 유형(State, Class, ER),
 native Phase 2의 Requirement·Block, C4·Deployment·Component·Use-case fallback, Phase 3 chart인
-Pie·XY·Quadrant·Sankey·Radar·Treemap·Venn은 record 내부의 알려진 필드와 recursive container도 전용
-Pydantic model로 검사합니다.
+Pie·XY·Quadrant·Sankey·Radar·Treemap·Venn과 planning 유형인 Journey·Kanban·GitGraph는 record 내부의
+알려진 필드와 recursive container도 전용 Pydantic model로 검사합니다.
 serializer의 세부 의미 검사는 그 다음 단계에서 수행합니다.
 
 이 경계는 두 문제를 분리합니다.
@@ -46,6 +46,9 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | Radar | dimension, ordered numeric series, native option scalar |
 | Treemap | 재귀 root/children hierarchy와 explicit value |
 | Venn | set, intersection membership와 explicit value |
+| Journey | section, scored task와 actor list |
+| Kanban | column/card와 명시적 column reference |
+| GitGraph | ordered commit/branch/merge operation과 닫힌 token |
 
 ### Requirement·Block record 계약
 
@@ -272,6 +275,53 @@ reference가 독립 source OCR/vector numeric gate를 대신하지 않습니다.
 generic `TypedIRCandidate.ir: dict`이며 recursive Treemap model도 provider에 diagram-type discriminated
 recursive schema를 직접 노출한다는 뜻은 아닙니다.
 
+### Journey·Kanban·GitGraph 계획 다이어그램 계약
+
+세 계획 유형도 canonical record를 provider prompt에 공개하고 같은 strict nested model로 응답을
+후검증합니다.
+
+| Type | 필수 root | 선택 root | Prompt record |
+| --- | --- | --- | --- |
+| Journey | `sections: list` | 없음 | section의 `title`과 nested task; task의 `id`·`label`·strict integer `score`·`actors`; 각 record의 bbox/evidence |
+| Kanban | `columns: list`, `cards: list` | 없음 | column의 `id`·`label`; card의 `id`·`label`·`column_id`; 각 record의 bbox/evidence |
+| GitGraph | `initial_branch: string`, `operations: list` | 없음 | exact `initial_branch: main`; `direction: LR\|TB\|BT`; commit/branch/merge operation의 ID·branch/reference·tag·commit type·order와 bbox/evidence |
+
+Journey section `label`과 task `text`, Kanban column `title`과 card `text`, GitGraph branch의 legacy `id` 및
+commit `style`은 기존 serializer 호환 field로 strict 형을 검사하고 원본 IR에 보존하지만 canonical prompt에는
+광고하지 않습니다. GitGraph의 operation type, direction, `NORMAL|REVERSE|HIGHLIGHT` commit type은
+대소문자를 구분하지 않고 닫힌 집합으로 검증하되 원본 casing을 다시 쓰지 않습니다. `order`와 Journey
+`score`는 boolean을 허용하지 않는 strict integer이고 bbox는 네 finite number, evidence reference는 string
+list여야 합니다.
+
+Nested model은 record/container와 알려진 scalar 형만 확정합니다. Journey의 non-empty section/task,
+1~5 score와 고유 actor, Kanban의 non-empty ID·정규화 충돌·`column_id` reference, GitGraph의 정확한 `main`
+초기 branch·순서가 있는 branch-head replay·commit/merge ID 고유성·merge 가능성은 공용 planning planner와
+serializer가 계속 fail closed로 판정합니다. 세 유형의 2,000-record cap은 구조 탐색의 절대 상한이고, 모든
+native/fallback 결과는 생성 뒤 validator와 같은 50,000자·5,000줄 source budget을 별도로 확인합니다.
+긴 label이나 많은 actor 때문에 source budget이 먼저 소진되는 것은 정상적인 fail-closed 결과입니다.
+
+Journey는 Timeline fallback의 section/task Scene을 만들고 score/actor를 실제 event text와 OCR projection에
+보존합니다. Score는 typed IR에 있다는 이유만으로 신뢰하지 않고 독립 source OCR/vector 숫자와 일치해야
+자동 게시할 수 있습니다. Kanban은 공용 column/card plan의 정규화된 emitted ID와 containment를 native,
+Flowchart runtime fallback 및 generated Scene에 동일하게 사용합니다. GitGraph도 공용 branch-head plan으로
+commit/merge node, parent relation, branch membership과 provenance를 만들며 native runtime 거부 시 같은
+candidate slot에서 Flowchart로 재검증합니다. GitGraph label의 quote/backslash와 일반 문장부호는 pinned
+Mermaid 11.16의 실제 SVG text를 기준으로 보존하고, renderer가 원문 angle bracket을 보존하지 못하는 경우만
+`‹`/`›` compatibility glyph와 warning을 사용합니다.
+
+Journey Timeline item은 colon을 문법 delimiter로 사용하고 entity-like spelling을 잘라낼 수 있으므로
+section/task/actor의 `:`와 entity prefix를 각각 `∶`, `＆`/`＃` compatibility glyph로 표시합니다. Kanban
+native markdown label의 quote/backtick은 `″`/`ˋ`, 두 planning Flowchart fallback의 quote/backslash는
+`″`/`∖`로 표시합니다. 치환은 warning에 기록되고 원문은 typed IR/provenance sidecar에서 바뀌지 않습니다.
+
+Canonical field와 compatibility alias가 동시에 있으면 정규화한 의미가 같아야 하며 충돌하면 응답을
+거부합니다. GitGraph `initial_branch`는 root/prompt에서 필수이고 exact `main`을 요청합니다. Commit ID는
+source 문자열뿐 아니라 grammar-specific encoding 뒤 표시 namespace까지 고유해야 하며, Kanban emitted ID는
+strict Flowchart 예약어와 겹치지 않는 `kanban_` namespace를 native/Scene/fallback에서 공유합니다.
+GitGraph generic operation record는 prompt 편의를 위해 모든 known field를 열거하지만, serializer는
+commit/branch/merge별 허용 field 집합을 닫아 irrelevant known field가 자동 결과에서 조용히 사라지지 않게
+합니다.
+
 알려진 scalar field에는 object/list를 넣을 수 없고, record와 child container의 종류도 고정합니다. `bbox`는
 정확히 네 개의 finite number, `evidence_ids`와 membership은 string list여야 합니다. `extra="allow"`를
 사용하므로 style, geometry, plugin 또는 향후 Mermaid field 같은 미등록 metadata는 삭제하지 않습니다.
@@ -308,11 +358,11 @@ message만 serializer와 Scene에 함께 전달하고, raw message ID와 무관�
 부여합니다. 따라서 Mermaid에서 합쳐진 actor나 생략된 message를 평가 Scene이 별도 구조로 세지 않습니다.
 
 현재 Marker `response_schema`의 외부 envelope는 여전히 `TypedIRCandidate.ir: dict`입니다. 따라서 이 단계는
-모든 Phase 2 type과 Phase 3 chart(Pie·XY·Quadrant·Sankey·Radar·Treemap·Venn)의 prompt와 응답 후 검증을
-중첩 구조까지
+모든 Phase 2 type, Phase 3 chart(Pie·XY·Quadrant·Sankey·Radar·Treemap·Venn)와
+Journey·Kanban·GitGraph의 prompt와 응답 후 검증을 중첩 구조까지
 확장하지만 provider에 모든 Mermaid 유형을 하나의 discriminated JSON Schema로 직접 노출하거나 generic
-envelope reserve를 늘리지는 않습니다. 나머지 planning/special type인
-Journey·Kanban·GitGraph·Packet·Ishikawa·Wardley·Cynefin·TreeView·Event Modeling·ZenUML·
+envelope reserve를 늘리지는 않습니다. 나머지 special type인
+Packet·Ishikawa·Wardley·Cynefin·TreeView·Event Modeling·ZenUML·
 Railroad·Organization·Data Lineage는 아직 schema-light root contract입니다. Envelope-level discriminated
 schema도 후속 작업이므로 Phase 2에 root-only type이 남지 않아도 `ARCH-001`은 여전히 부분 완화
 상태입니다.

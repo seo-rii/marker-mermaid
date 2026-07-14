@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from marker_mermaid.config import SecurityProfile
+from marker_mermaid.security import MermaidSecurityScanner
 from marker_mermaid.serialization import (
     SerializationContractError,
     SerializationRegistry,
@@ -376,3 +378,58 @@ def test_architecture_runtime_fallback_keeps_labels_and_plain_topology() -> None
     assert 'cache["Hidden fallback-only alias"]' in result.code
     assert "api --> db" in result.code
     assert "api -->|" not in result.code
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "kanban",
+            {
+                "title": "Release board",
+                "columns": [{"id": "ready lane", "title": "Ready & / : % @"}],
+                "cards": [
+                    {
+                        "id": "write docs",
+                        "text": "Write & / : % @",
+                        "column_id": "ready lane",
+                    }
+                ],
+            },
+        ),
+        (
+            "gitgraph",
+            {
+                "title": "Release history",
+                "initial_branch": "main",
+                "operations": [
+                    {"type": "commit", "branch": "main", "id": "root"},
+                    {"type": "branch", "name": "feature/api", "from": "main"},
+                    {"type": "commit", "branch": "feature/api", "id": "work"},
+                    {"type": "commit", "branch": "main", "id": "docs"},
+                    {
+                        "type": "merge",
+                        "source": "feature/api",
+                        "target": "main",
+                        "id": "merge",
+                    },
+                ],
+            },
+        ),
+    ],
+)
+def test_planning_runtime_fallback_dispatch_records_complete_route(
+    diagram_type: str, ir: dict[str, object]
+) -> None:
+    result = serialize_runtime_fallback_result(diagram_type, ir, experimental=True)
+
+    assert result is not None
+    assert result.requested_type == diagram_type
+    assert result.emitted_type == "flowchart"
+    assert result.fallback_chain == (diagram_type, "flowchart")
+    assert result.used_fallback
+    assert result.stability == "experimental"
+    assert result.code.startswith("flowchart ")
+    assert any("CandidateValidator rejected native" in warning for warning in result.warnings)
+    assert any("not preserved" in warning for warning in result.warnings)
+    assert MermaidSecurityScanner(SecurityProfile.STRICT).scan(result.code).safe

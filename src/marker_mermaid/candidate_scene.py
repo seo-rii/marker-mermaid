@@ -33,6 +33,7 @@ from marker_mermaid.serializers_phase2 import (
     plan_requirement_records,
     plan_usecase_fallback,
 )
+from marker_mermaid.serializers_planning import plan_gitgraph_records, plan_kanban_records
 from marker_mermaid.serializers_special import (
     plan_eventmodeling_frames,
     plan_eventmodeling_relations,
@@ -92,6 +93,7 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
     edge_records: list[dict[str, Any]] = []
     group_records: list[dict[str, Any]] = []
     flowchart_structure: FlowchartStructurePlan | None = None
+    scene_direction_override: str | None = None
     if diagram_type in {"flowchart", "generic_network"}:
         node_records = [
             {
@@ -342,30 +344,100 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
         for section_index, section in enumerate(ir.get("sections") or [], start=1):
             if not isinstance(section, dict):
                 continue
+            member_ids: list[str] = []
             for task_index, task in enumerate(section.get("tasks") or [], start=1):
                 if isinstance(task, dict):
+                    task_id = str(task.get("id") or f"section_{section_index}_task_{task_index}")
                     node_records.append(
                         {
                             **task,
-                            "id": task.get("id") or f"section_{section_index}_task_{task_index}",
+                            "id": task_id,
+                            "label": task.get("label") or task.get("text"),
                         }
                     )
+                    member_ids.append(task_id)
+            group_records.append(
+                {
+                    **section,
+                    "id": f"journey_section_{section_index}",
+                    "label": section.get("title") or section.get("label"),
+                    "role": "section",
+                    "member_ids": member_ids,
+                }
+            )
     elif diagram_type == "kanban":
-        columns = _ordered_records(ir.get("columns"), prefix="column_")
-        cards = _ordered_records(ir.get("cards"), prefix="card_")
-        node_records = [*columns, *cards]
-        column_ids = {str(item["id"]) for item in columns}
-        for card in cards:
-            column_id = str(card.get("column_id") or "")
-            if column_id in column_ids:
+        try:
+            kanban_plan = plan_kanban_records(ir)
+        except ValueError:
+            return None
+        node_records = [
+            {
+                **column.source_record,
+                "id": column.emitted_id,
+                "label": column.label,
+                "role": "column",
+            }
+            for column in kanban_plan.columns
+        ]
+        node_records.extend(
+            {
+                **card.source_record,
+                "id": card.emitted_id,
+                "label": card.label,
+                "role": "card",
+            }
+            for card in kanban_plan.cards
+        )
+        edge_records = [
+            {
+                "source": card.column_emitted_id,
+                "target": card.emitted_id,
+                "semantic_relation": "containment",
+                "evidence_ids": list(card.source_record.get("evidence_ids") or []),
+            }
+            for card in kanban_plan.cards
+        ]
+        scene_direction_override = "LR"
+    elif diagram_type == "gitgraph":
+        try:
+            gitgraph_plan = plan_gitgraph_records(ir)
+        except ValueError:
+            return None
+        node_records = [
+            {
+                **commit.source_record,
+                "id": commit.element_id,
+                "label": commit.semantic_id,
+                "role": "commit",
+            }
+            for commit in gitgraph_plan.commits
+        ]
+        relation_index = 0
+        for commit in gitgraph_plan.commits:
+            for parent_id in commit.parent_element_ids:
+                relation_index += 1
                 edge_records.append(
                     {
-                        "source": column_id,
-                        "target": str(card["id"]),
-                        "semantic_relation": "containment",
-                        "evidence_ids": list(card.get("evidence_ids") or []),
+                        "id": f"git_relation_{relation_index}",
+                        "source": parent_id,
+                        "target": commit.element_id,
+                        "semantic_relation": "sequence",
+                        "arrow_at_end": False,
+                        "evidence_ids": list(commit.source_record.get("evidence_ids") or []),
                     }
                 )
+        group_records = [
+            {
+                **(branch.source_record or {}),
+                "id": f"git_branch_{index}",
+                "label": branch.source_id,
+                "role": "branch",
+                "member_ids": list(branch.member_element_ids),
+            }
+            for index, branch in enumerate(gitgraph_plan.branches, start=1)
+            if branch.member_element_ids
+        ]
+        scene_direction_override = gitgraph_plan.direction or "LR"
     elif diagram_type == "eventmodeling":
         lanes, frames, frame_map = plan_eventmodeling_frames(ir)
         planned_relations = plan_eventmodeling_relations(ir, frame_map)
@@ -454,7 +526,7 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
     else:
         return None
 
-    if diagram_type in {"treemap", "venn"}:
+    if diagram_type in {"journey", "treemap", "venn"}:
         attribution_ids = [
             str(node.get("id") or f"N{index}")
             for index, node in enumerate(node_records, start=1)
@@ -653,7 +725,7 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
                 )
             )
             known_group_ids.add(group_id)
-    if diagram_type == "gantt":
+    if diagram_type in {"gantt", "journey"}:
         for index, group_record in enumerate(group_records, start=1):
             group_id = str(group_record.get("id") or f"section_{index}")
             member_ids = [
@@ -678,7 +750,41 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
                 SceneGroup(
                     id=group_id,
                     role=str(group_record.get("role") or "section"),
-                    label=str(group_record.get("label") or "Tasks"),
+                    label=str(
+                        group_record.get("label")
+                        or ("Tasks" if diagram_type == "gantt" else "[unreadable section]")
+                    ),
+                    bbox=bbox,
+                    member_ids=member_ids,
+                )
+            )
+            known_group_ids.add(group_id)
+    if diagram_type == "gitgraph":
+        for group_record in group_records:
+            group_id = str(group_record["id"])
+            member_ids = [
+                str(member_id)
+                for member_id in group_record.get("member_ids") or []
+                if str(member_id) in known_ids
+            ]
+            if not member_ids or group_id in known_group_ids:
+                return None
+            explicit_bbox = group_record.get("bbox")
+            if isinstance(explicit_bbox, list | tuple) and len(explicit_bbox) == 4:
+                bbox = _bbox(explicit_bbox)
+            else:
+                member_boxes = [elements_by_id[member_id].bbox for member_id in member_ids]
+                bbox = (
+                    min(item[0] for item in member_boxes),
+                    min(item[1] for item in member_boxes),
+                    max(item[2] for item in member_boxes),
+                    max(item[3] for item in member_boxes),
+                )
+            groups.append(
+                SceneGroup(
+                    id=group_id,
+                    role="branch",
+                    label=str(group_record["label"]),
                     bbox=bbox,
                     member_ids=member_ids,
                 )
@@ -686,10 +792,14 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
             known_group_ids.add(group_id)
     if diagram_type == "eventmodeling":
         direction = "LR"
+    elif diagram_type == "journey":
+        direction = "timeline"
     elif diagram_type == "usecase":
         direction = ir.get("direction", "LR")
         if direction not in {"TB", "BT", "LR", "RL"}:
             direction = "TB"
+    elif scene_direction_override is not None:
+        direction = scene_direction_override
     else:
         direction = ir.get("direction", "unknown")
         if direction not in {"TB", "BT", "LR", "RL", "radial", "timeline", "unknown"}:
@@ -806,6 +916,38 @@ def typed_ir_semantic_texts(
             for task_index, task in enumerate(section.get("tasks") or [], start=1):
                 if isinstance(task, dict):
                     yield str(task.get("label") or f"Task {task_index}")
+        return
+    if diagram_type == "journey":
+        if ir.get("title"):
+            yield str(ir["title"])
+        for section in ir.get("sections") or []:
+            if not isinstance(section, dict):
+                continue
+            section_title = section.get("title") or section.get("label")
+            if section_title is not None and section_title != "":
+                yield str(section_title)
+            for task in section.get("tasks") or []:
+                if not isinstance(task, dict):
+                    continue
+                task_label = task.get("label") or task.get("text")
+                if task_label is not None and task_label != "":
+                    yield str(task_label)
+                score = task.get("score")
+                if score is not None:
+                    yield f"Score {score}"
+                actors = task.get("actors")
+                if isinstance(actors, list) and actors:
+                    yield "Actors " + ", ".join(str(actor) for actor in actors)
+        return
+    if diagram_type == "gitgraph":
+        plan = plan_gitgraph_records(ir)
+        for branch in plan.branches:
+            yield branch.source_id
+        for commit in plan.commits:
+            if commit.semantic_id is not None:
+                yield commit.semantic_id
+            if commit.tag is not None:
+                yield commit.tag
         return
     if diagram_type == "c4":
         for group in scene.groups:
