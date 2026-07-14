@@ -374,9 +374,61 @@ def test_usecase_final_ids_avoid_second_order_actor_namespace_collisions() -> No
 
     assert 'a_b(["a-b"])' in code
     assert 'usecase_y(["usecase_y"])' in code
-    assert 'usecase_a_b(["a b"])' in code
-    assert 'usecase_y_2(["y"])' in code
+    assert 'usecase_a_b("a b")' in code
+    assert 'usecase_y_2("y")' in code
     assert "usecase_y -->|association| usecase_y_2" in code
+
+
+def test_usecase_fallback_emits_distinct_shapes_and_suppresses_system_boundaries() -> None:
+    ir = {
+        "actors": [{"id": "shopper", "label": "Shopper"}],
+        "use_cases": [{"id": "checkout", "label": "Checkout"}],
+        "relations": [{"source": "shopper", "target": "checkout"}],
+        "groups": [
+            {
+                "id": "hidden-system",
+                "label": "Hidden system boundary",
+                "member_ids": ["checkout"],
+            }
+        ],
+        "system_boundary": "Hidden checkout system",
+        "system_boundaries": [{"id": "hidden", "label": "Hidden boundary record"}],
+    }
+
+    code, emitted_type, reason = serialize_phase2("usecase", ir)
+
+    assert emitted_type == "flowchart"
+    assert reason is not None and "system boundaries" in reason
+    assert 'shopper(["Shopper"])' in code
+    assert 'checkout("Checkout")' in code
+    assert "shopper --> checkout" in code
+    assert "subgraph" not in code
+    assert "Hidden system boundary" not in code
+    assert "Hidden checkout system" not in code
+    assert "Hidden boundary record" not in code
+
+
+@pytest.mark.parametrize(
+    ("relation", "message"),
+    [
+        ("not-an-object", "relations must be objects"),
+        ({"source": "actor", "target": "missing"}, "unknown endpoint"),
+        ({"source": "missing", "target": "case"}, "unknown endpoint"),
+    ],
+)
+def test_usecase_fallback_rejects_malformed_or_dangling_relations(
+    relation: object,
+    message: str,
+) -> None:
+    with pytest.raises(SerializationError, match=message):
+        serialize_phase2(
+            "usecase",
+            {
+                "actors": [{"id": "actor"}],
+                "use_cases": [{"id": "case"}],
+                "relations": [relation],
+            },
+        )
 
 
 def test_c4_architecture_rejection_preserves_boundary_as_flowchart_subgraph() -> None:

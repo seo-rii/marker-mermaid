@@ -31,7 +31,7 @@ from marker_mermaid.serializers_phase2 import (
     plan_c4_architecture_fallback,
     plan_phase2_record_ids,
     plan_requirement_records,
-    plan_usecase_records,
+    plan_usecase_fallback,
 )
 from marker_mermaid.serializers_special import (
     plan_eventmodeling_frames,
@@ -232,42 +232,12 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
         edge_records = list(ir.get("edges") or [])
     elif diagram_type == "usecase":
         try:
-            actors, use_cases, id_map = plan_usecase_records(ir)
+            usecase_plan = plan_usecase_fallback(ir)
         except ValueError:
             return None
-        node_records = [
-            {
-                "id": output_id,
-                "label": record.get("label") or record.get("name") or source_id,
-                "role": "node",
-                "shape": "stadium",
-                "bbox": record.get("bbox"),
-                "evidence_ids": list(record.get("evidence_ids") or []),
-            }
-            for record, source_id, output_id in actors
-        ]
-        node_records.extend(
-            {
-                "id": output_id,
-                "label": record.get("label") or record.get("name") or source_id,
-                "role": "node",
-                "shape": "round",
-                "bbox": record.get("bbox"),
-                "evidence_ids": list(record.get("evidence_ids") or []),
-            }
-            for record, source_id, output_id in use_cases
-        )
-        edge_records = [
-            {
-                "id": edge.get("id"),
-                "source": id_map.get(str(edge.get("source"))),
-                "target": id_map.get(str(edge.get("target"))),
-                "label": edge.get("type") or edge.get("label"),
-                "evidence_ids": list(edge.get("evidence_ids") or []),
-            }
-            for edge in ir.get("relations") or []
-            if isinstance(edge, dict)
-        ]
+        node_records = list(usecase_plan.nodes)
+        edge_records = list(usecase_plan.edges)
+        group_records = []
     elif diagram_type == "sankey":
         node_records = list(ir.get("nodes") or [])
         edge_records = list(ir.get("flows") or ir.get("links") or [])

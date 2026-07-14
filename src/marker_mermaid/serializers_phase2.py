@@ -97,6 +97,14 @@ class C4ArchitectureFallbackPlan:
     structure: ArchitectureStructurePlan
 
 
+@dataclass(frozen=True, slots=True)
+class UseCaseFallbackPlan:
+    """Exact Flowchart node and edge projection shared by serialization and scoring."""
+
+    nodes: tuple[dict[str, Any], ...]
+    edges: tuple[dict[str, Any], ...]
+
+
 def _identifier(value: Any, fallback: str) -> str:
     normalized = re.sub(r"[^A-Za-z0-9_]", "_", str(value)).strip("_")
     if not normalized:
@@ -227,6 +235,60 @@ def plan_usecase_records(
         remapped_use_cases.append((record, source_id, emitted_id))
         remapped_use_case_ids.setdefault(source_id, emitted_id)
     return actors, remapped_use_cases, {**actor_ids, **remapped_use_case_ids}
+
+
+def plan_usecase_fallback(ir: dict[str, Any]) -> UseCaseFallbackPlan:
+    """Build the exact bounded Use-case structure emitted through Flowchart."""
+
+    actors, use_cases, id_map = plan_usecase_records(ir)
+    nodes = [
+        {
+            "id": output_id,
+            "label": record.get("label") or record.get("name") or source_id,
+            "role": "node",
+            "shape": "stadium",
+            "bbox": record.get("bbox"),
+            "evidence_ids": (
+                list(record["evidence_ids"]) if isinstance(record.get("evidence_ids"), list) else []
+            ),
+        }
+        for record, source_id, output_id in actors
+    ]
+    nodes.extend(
+        {
+            "id": output_id,
+            "label": record.get("label") or record.get("name") or source_id,
+            "role": "node",
+            "shape": "round",
+            "bbox": record.get("bbox"),
+            "evidence_ids": (
+                list(record["evidence_ids"]) if isinstance(record.get("evidence_ids"), list) else []
+            ),
+        }
+        for record, source_id, output_id in use_cases
+    )
+
+    relations = ir.get("relations", [])
+    if not isinstance(relations, list):
+        raise SerializationError("use-case relations must be a list")
+    edges: list[dict[str, Any]] = []
+    for relation in relations:
+        if not isinstance(relation, dict):
+            raise SerializationError("use-case relations must be objects")
+        source, target = _resolve_relation(relation, id_map, field="use-case")
+        edges.append(
+            {
+                "source": source,
+                "target": target,
+                "label": relation.get("type") or relation.get("label"),
+                "evidence_ids": (
+                    list(relation["evidence_ids"])
+                    if isinstance(relation.get("evidence_ids"), list)
+                    else []
+                ),
+            }
+        )
+    return UseCaseFallbackPlan(tuple(nodes), tuple(edges))
 
 
 def plan_c4_architecture_fallback(ir: dict[str, Any]) -> C4ArchitectureFallbackPlan:
@@ -723,35 +785,15 @@ def serialize_component(
 
 
 def serialize_usecase(ir: dict[str, Any], *, experimental: bool = False) -> Phase2Serialization:
-    actors, use_cases, id_map = plan_usecase_records(ir)
-    nodes = [
-        {
-            "id": output_id,
-            "label": record.get("label") or record.get("name") or source_id,
-            "shape": "stadium",
-        }
-        for record, source_id, output_id in actors
-    ]
-    nodes.extend(
-        {
-            "id": output_id,
-            "label": record.get("label") or record.get("name") or source_id,
-            "shape": "round",
-        }
-        for record, source_id, output_id in use_cases
-    )
-    relations = ir.get("relations", [])
-    if not isinstance(relations, list):
-        raise SerializationError("use-case relations must be a list")
-    edges: list[dict[str, Any]] = []
-    for relation in relations:
-        if not isinstance(relation, dict):
-            raise SerializationError("use-case relations must be objects")
-        source, target = _resolve_relation(relation, id_map, field="use-case")
-        relation_type = relation.get("type") or relation.get("label")
-        edges.append({"source": source, "target": target, "label": relation_type})
+    plan = plan_usecase_fallback(ir)
     code = serialize_flowchart(
-        {**ir, "nodes": nodes, "edges": edges, "direction": ir.get("direction", "LR")},
+        {
+            **ir,
+            "nodes": list(plan.nodes),
+            "groups": [],
+            "edges": list(plan.edges),
+            "direction": ir.get("direction", "LR"),
+        },
         experimental=experimental,
     )
     return (

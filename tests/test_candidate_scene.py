@@ -839,6 +839,7 @@ def test_usecase_scene_uses_serializer_relation_label_precedence() -> None:
         ],
         "relations": [
             {
+                "id": "raw-association",
                 "source": "shopper",
                 "target": "checkout",
                 "type": "association",
@@ -846,17 +847,42 @@ def test_usecase_scene_uses_serializer_relation_label_precedence() -> None:
                 "bidirectional": True,
                 "arrow_at_end": False,
                 "style": "dashed",
+                "evidence_ids": ["arrow-checkout"],
             },
-            {"source": "shopper", "target": "refund", "label": "requests"},
+            {
+                "id": "raw-request",
+                "source": "shopper",
+                "target": "refund",
+                "label": "requests",
+                "evidence_ids": ["arrow-refund"],
+            },
         ],
     }
 
     scene = typed_ir_to_scene("usecase", ir)
+    code = serialize_phase2("usecase", ir)[0]
 
     assert scene is not None
     assert scene.reading_direction == "LR"
     assert scene.elements[0].role == "node" and scene.elements[0].shape == "stadium"
+    assert [element.shape for element in scene.elements[1:]] == ["round", "round"]
+    assert 'shopper(["Shopper"])' in code
+    assert 'checkout("Checkout")' in code
+    assert 'refund("Refund")' in code
+    assert "shopper -->|association| checkout" in code
+    assert "shopper -->|requests| refund" in code
+    assert "<-->" not in code and "-.->" not in code
+    assert "raw-association" not in code and "raw-request" not in code
+    assert "Hidden relation alias" not in code
+    assert [relation.id for relation in scene.relations] == [
+        "generated-relation-1",
+        "generated-relation-2",
+    ]
     assert [relation.label for relation in scene.relations] == ["association", "requests"]
+    assert [relation.evidence_ids for relation in scene.relations] == [
+        ["arrow-checkout"],
+        ["arrow-refund"],
+    ]
     assert [(relation.arrow_at_start, relation.arrow_at_end) for relation in scene.relations] == [
         (False, True),
         (False, True),
@@ -869,6 +895,88 @@ def test_usecase_scene_uses_serializer_relation_label_precedence() -> None:
     texts = list(typed_ir_semantic_texts("usecase", ir, scene))
     assert ocr_recall(["association requests"], "", generated_texts=texts) == 1
     assert ocr_recall(["Hidden relation alias"], "", generated_texts=texts) == 0
+
+
+def test_usecase_scene_and_code_suppress_unsupported_system_boundaries() -> None:
+    ir = {
+        "actors": [
+            {
+                "id": "shopper",
+                "label": "Shopper",
+                "bbox": [10, 20, 30, 40],
+                "evidence_ids": ["ocr-shopper"],
+                "stereotype": "primary actor",
+            }
+        ],
+        "use_cases": [
+            {
+                "id": "checkout",
+                "label": "Checkout",
+                "bbox": [50, 60, 70, 80],
+                "evidence_ids": ["ocr-checkout"],
+                "system_boundary": "Hidden per-case boundary",
+            }
+        ],
+        "relations": [
+            {
+                "source": "shopper",
+                "target": "checkout",
+                "type": "association",
+                "evidence_ids": ["arrow-association"],
+            }
+        ],
+        "groups": [
+            {
+                "id": "hidden-system",
+                "label": "Hidden system boundary",
+                "member_ids": ["checkout"],
+            }
+        ],
+        "system_boundary": "Hidden checkout system",
+        "system_boundaries": [{"id": "hidden", "label": "Hidden boundary record"}],
+    }
+
+    scene = typed_ir_to_scene("usecase", ir)
+    code = serialize_phase2("usecase", ir)[0]
+
+    assert scene is not None
+    assert scene.groups == []
+    assert [(element.bbox, element.evidence_ids) for element in scene.elements] == [
+        ((10, 20, 30, 40), ["ocr-shopper"]),
+        ((50, 60, 70, 80), ["ocr-checkout"]),
+    ]
+    assert scene.relations[0].evidence_ids == ["arrow-association"]
+    assert "subgraph" not in code
+    texts = list(typed_ir_semantic_texts("usecase", ir, scene))
+    assert texts == ["Shopper", "Checkout", "association"]
+    assert (
+        ocr_recall(
+            ["Hidden enclosure zone record per-case primary stereotype"],
+            "",
+            generated_texts=texts,
+        )
+        == 0
+    )
+
+
+@pytest.mark.parametrize(
+    "relation",
+    [
+        "not-an-object",
+        {"source": "actor", "target": "missing"},
+        {"source": "missing", "target": "case"},
+    ],
+)
+def test_usecase_scene_rejects_malformed_or_dangling_relations(relation: object) -> None:
+    ir = {
+        "actors": [{"id": "actor"}],
+        "use_cases": [{"id": "case"}],
+        "relations": [relation],
+    }
+
+    with pytest.raises(SerializationError):
+        serialize_phase2("usecase", ir)
+    assert typed_ir_to_scene("usecase", ir) is None
 
 
 @pytest.mark.parametrize("direction", [None, "sideways"])

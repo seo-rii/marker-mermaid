@@ -213,7 +213,7 @@ def serialize_flowchart(ir: dict[str, Any], *, experimental: bool = False) -> st
         raise SerializationError(str(exc)) from exc
     id_map: dict[str, str] = {}
     shapes = {
-        "round": ('(["', '"])'),
+        "round": ('("', '")'),
         "stadium": '(["',
         "circle": '(("',
         "diamond": '{"',
