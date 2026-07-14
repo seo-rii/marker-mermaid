@@ -1792,7 +1792,7 @@ def test_numeric_diagram_without_source_numeric_evidence_requires_review():
     assert supported.selected.aggregate_score is not None
 
 
-def test_numeric_diagram_with_conflicting_source_values_requires_review(fake_runtime):
+def test_numeric_diagram_with_conflicting_source_values_requires_review():
     class PieEngine:
         name = "pie"
 
@@ -1807,11 +1807,23 @@ def test_numeric_diagram_with_conflicting_source_values_requires_review(fake_run
                 ],
             )
 
+    class PieRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="pie",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
     config = MermaidConfig(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [PieEngine()],
-        CandidateValidator(fake_runtime, config.security_profile),
+        CandidateValidator(PieRuntime(), config.security_profile),
     ).reconstruct(
         "source",
         "source.png",
@@ -1824,6 +1836,315 @@ def test_numeric_diagram_with_conflicting_source_values_requires_review(fake_run
     assert result.selected.aggregate_score is None
     assert not result.publish
     assert any("numeric consistency" in warning for warning in result.selected.warnings)
+
+
+@pytest.mark.parametrize(
+    ("ocr_texts", "evidence"),
+    [
+        (
+            ["20", "20"],
+            [
+                VisualEvidence(
+                    id="vector-context-duplicate",
+                    kind="vector_text",
+                    text="20",
+                    bbox=(0, 0, 10, 10),
+                )
+            ],
+        ),
+        (
+            [],
+            [
+                VisualEvidence(
+                    id="ocr-first",
+                    kind="ocr_token",
+                    text="20",
+                    bbox=(0, 0, 10, 10),
+                ),
+                VisualEvidence(
+                    id="vector-first-duplicate",
+                    kind="vector_text",
+                    text="20",
+                    bbox=(0, 0, 10, 10),
+                ),
+                VisualEvidence(
+                    id="vector-second",
+                    kind="vector_text",
+                    text="20",
+                    bbox=(20, 0, 30, 10),
+                ),
+            ],
+        ),
+    ],
+)
+def test_numeric_reference_preserves_occurrences_without_recounting_spatial_duplicates(
+    ocr_texts: list[str],
+    evidence: list[VisualEvidence],
+) -> None:
+    class RepeatedNumberEngine:
+        name = "repeated-number"
+
+        def observe(self, context):
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["pie"], scores=[0.9]),
+                direct_candidates=[
+                    DirectMermaidCandidate(
+                        diagram_type="pie",
+                        code='pie\n    "First" : 20\n    "Second" : 20\n',
+                    )
+                ],
+                evidence=evidence,
+            )
+
+    class PieRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="pie",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    result = ReconstructionPipeline(
+        config,
+        [RepeatedNumberEngine()],
+        CandidateValidator(PieRuntime(), config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        ocr_texts=ocr_texts,
+    )
+
+    assert result.selected is not None
+    assert result.selected.scores["numeric_consistency"] == 1
+
+
+def test_repeated_source_number_missing_from_generated_code_is_penalized() -> None:
+    class SingleNumberEngine:
+        name = "single-number"
+
+        def observe(self, context):
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["pie"], scores=[0.9]),
+                direct_candidates=[
+                    DirectMermaidCandidate(
+                        diagram_type="pie",
+                        code='pie\n    "Approved" : 20\n',
+                    )
+                ],
+            )
+
+    class PieRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="pie",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    config = MermaidConfig(
+        candidate_count=1,
+        enable_fusion=False,
+        publish_min_score=0.7,
+    )
+    result = ReconstructionPipeline(
+        config,
+        [SingleNumberEngine()],
+        CandidateValidator(PieRuntime(), config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        ocr_texts=["20", "20"],
+    )
+
+    assert result.selected is not None
+    assert result.selected.scores["numeric_consistency"] == pytest.approx(2 / 3)
+    assert result.selected.aggregate_score is None
+    assert any("numeric consistency" in item for item in result.selected.warnings)
+
+
+def test_direct_runtime_numeric_type_drift_uses_validated_type_for_scoring() -> None:
+    class MislabeledFlowchartEngine:
+        name = "mislabeled-flowchart"
+
+        def observe(self, context):
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[0.9]),
+                direct_candidates=[
+                    DirectMermaidCandidate(
+                        diagram_type="flowchart",
+                        code='pie\n    "Approved" : 20\n    "Rejected" : 80\n',
+                    )
+                ],
+            )
+
+    class PieRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="pie",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    result = ReconstructionPipeline(
+        config,
+        [MislabeledFlowchartEngine()],
+        CandidateValidator(PieRuntime(), config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        ocr_texts=["20 80"],
+    )
+
+    assert result.selected is not None
+    assert result.selected.diagram_type == "flowchart"
+    assert result.selected.emitted_diagram_type == "pie"
+    assert result.selected.scores["type_fitness"] == 0
+    assert result.selected.scores["numeric_consistency"] == 1
+    assert not any("attribution is unavailable" in item for item in result.selected.warnings)
+
+
+def test_direct_runtime_structural_type_drift_drops_requested_numeric_gate() -> None:
+    class MislabeledPieEngine:
+        name = "mislabeled-pie"
+
+        def observe(self, context):
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["pie"], scores=[0.9]),
+                direct_candidates=[
+                    DirectMermaidCandidate(
+                        diagram_type="pie",
+                        code='flowchart LR\n    A["Start"] --> B["End"]\n',
+                    )
+                ],
+            )
+
+    class FlowchartRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="flowchart-v2",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    result = ReconstructionPipeline(
+        config,
+        [MislabeledPieEngine()],
+        CandidateValidator(FlowchartRuntime(), config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        ocr_texts=["Start End"],
+    )
+
+    assert result.selected is not None
+    assert result.selected.diagram_type == "pie"
+    assert result.selected.emitted_diagram_type == "flowchart"
+    assert result.selected.scores["type_fitness"] == 0
+    assert "numeric_consistency" not in result.selected.scores
+    assert not any("numeric diagram" in item for item in result.selected.warnings)
+    assert any("attribution is unavailable" in item for item in result.selected.warnings)
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "source_numbers"),
+    [
+        (
+            "pie",
+            {
+                "slices": [
+                    {"label": "Approved", "value": 20},
+                    {"label": "Rejected", "value": 80},
+                ]
+            },
+            "20 80",
+        ),
+        (
+            "xychart",
+            {
+                "x_axis": {"min": 0, "max": 10},
+                "y_axis": {"min": 0, "max": 10},
+                "series": [{"kind": "line", "values": [1, 2]}],
+            },
+            "0 10 0 10 1 2",
+        ),
+        (
+            "quadrant",
+            {
+                "x_axis": {"low": "Low reach", "high": "High reach"},
+                "y_axis": {"low": "Low confidence", "high": "High confidence"},
+                "quadrants": ["Expand", "Promote", "Improve", "Defer"],
+                "points": [{"label": "Project A", "x": 0.25, "y": 0.75}],
+            },
+            "0.25 0.75",
+        ),
+    ],
+)
+def test_typed_core_charts_reach_numeric_consistency_gate(
+    diagram_type: str,
+    ir: dict[str, object],
+    source_numbers: str,
+) -> None:
+    class CoreChartRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            runtime_type = {
+                "pie": "pie",
+                "xychart": "xychart",
+                "quadrant": "quadrantChart",
+            }[diagram_type]
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type=runtime_type,
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=[diagram_type], scores=[1.0]),
+        typed_candidates=[TypedIRCandidate(diagram_type=diagram_type, ir=ir)],
+    )
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(CoreChartRuntime(), config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        ocr_texts=[source_numbers],
+    )
+
+    assert result.selected is not None
+    assert result.selected.diagram_type == diagram_type
+    assert result.selected.generated_scene_ir is None
+    assert result.selected.scores["numeric_consistency"] == 1
+    assert result.selected.aggregate_score is not None
 
 
 def test_geometry_evidence_is_available_to_later_engines(fake_runtime):

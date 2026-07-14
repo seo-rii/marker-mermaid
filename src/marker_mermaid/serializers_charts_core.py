@@ -139,6 +139,8 @@ def _xy_series_values(
     index: int,
     x_min: Decimal | None,
     x_max: Decimal | None,
+    y_min: Decimal,
+    y_max: Decimal,
 ) -> list[str]:
     has_values = "values" in series
     has_points = "points" in series
@@ -148,10 +150,18 @@ def _xy_series_values(
         values = series["values"]
         if not isinstance(values, list) or not values:
             raise SerializationError(f"xychart series {index}.values must be a non-empty list")
-        return [
-            _number(value, field=f"xychart series {index}.values[{offset}]")[1]
-            for offset, value in enumerate(values)
-        ]
+        rendered: list[str] = []
+        for offset, value in enumerate(values):
+            number, number_text = _number(
+                value,
+                field=f"xychart series {index}.values[{offset}]",
+            )
+            if not y_min <= number <= y_max:
+                raise SerializationError(
+                    f"xychart series {index}.values[{offset}] must be within y_axis bounds"
+                )
+            rendered.append(number_text)
+        return rendered
 
     if x_min is None or x_max is None:
         raise SerializationError("xychart points require a numeric x_axis")
@@ -165,7 +175,14 @@ def _xy_series_values(
         if not isinstance(point, dict):
             raise SerializationError(f"xychart series {index}.points must be objects")
         x, _ = _number(point.get("x"), field=f"xychart series {index}.points[{offset}].x")
-        _, y_text = _number(point.get("y"), field=f"xychart series {index}.points[{offset}].y")
+        y, y_text = _number(
+            point.get("y"),
+            field=f"xychart series {index}.points[{offset}].y",
+        )
+        if not y_min <= y <= y_max:
+            raise SerializationError(
+                f"xychart series {index}.points[{offset}].y must be within y_axis bounds"
+            )
         coordinates.append((x, y_text))
     intervals = len(coordinates) - 1
     step = (x_max - x_min) / intervals
@@ -203,7 +220,10 @@ def serialize_xychart(ir: dict[str, Any], *, experimental: bool = False) -> Char
     else:
         x_min, x_max, minimum_text, maximum_text = _axis_bounds(x_axis, field="xychart x_axis")
         x_spec = f"{minimum_text} --> {maximum_text}"
-    _, _, y_minimum_text, y_maximum_text = _axis_bounds(ir.get("y_axis"), field="xychart y_axis")
+    y_min, y_max, y_minimum_text, y_maximum_text = _axis_bounds(
+        ir.get("y_axis"),
+        field="xychart y_axis",
+    )
     x_label = x_axis.get("label")
     y_axis = ir["y_axis"]
     y_label = y_axis.get("label")
@@ -228,7 +248,14 @@ def serialize_xychart(ir: dict[str, Any], *, experimental: bool = False) -> Char
         kind = str(series.get("kind") or "").lower()
         if kind not in {"line", "bar"}:
             raise SerializationError(f"xychart series {index} kind must be line or bar")
-        values = _xy_series_values(series, index=index, x_min=x_min, x_max=x_max)
+        values = _xy_series_values(
+            series,
+            index=index,
+            x_min=x_min,
+            x_max=x_max,
+            y_min=y_min,
+            y_max=y_max,
+        )
         if categories is not None and len(values) != len(categories):
             raise SerializationError(
                 f"xychart series {index} has {len(values)} values for {len(categories)} categories"
@@ -255,6 +282,8 @@ def _quadrant_labels(value: Any) -> dict[int, str]:
         if key not in {"1", "2", "3", "4"}:
             raise SerializationError(f"unsupported quadrant label key {raw_key!r}")
         number = int(key)
+        if number in labels:
+            raise SerializationError(f"duplicate quadrant label alias for quadrant-{number}")
         labels[number] = _required_text(raw_label, field=f"quadrant label {number}")
     return labels
 

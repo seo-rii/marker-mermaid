@@ -37,5 +37,9 @@ parse, render한 뒤 canonical runtime type이 지원 grammar임을 확인하고
 보강된 source는 다시 전체 validation을 통과하고 runtime type이 유지될 때만 채택합니다. 실패 또는 type
 drift가 있으면 원본 valid 후보를 유지하고 warning을 남깁니다.
 
-접근성 metadata 안의 숫자는 chart data가 아니므로 `numeric_consistency` multiset에서는 제외합니다.
-OCR recall은 원 label coverage를 계속 평가합니다.
+접근성 metadata 안의 숫자는 chart data가 아닙니다. 따라서 detected grammar가 해당 directive를 지원할 때만
+`accTitle: ...`, 한 줄 `accDescr: ...`, block `accDescr { ... }`의 본문 전체를 `numeric_consistency`
+generated multiset에서 제외합니다. Native `title ...`와 colon `title: ...`도 grammar가 지원하는 metadata
+경계에서만 제외하며 chart label과 좌표/value 안의 실제 숫자는 유지합니다. Sankey처럼 이 directive를
+지원하지 않는 grammar의 metadata-like CSV label은 실제 data이므로 제거하지 않습니다. OCR recall은 원 label
+coverage를 계속 평가합니다.

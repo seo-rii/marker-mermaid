@@ -87,6 +87,7 @@ from marker_mermaid.scoring import (
     bounded_ocr_token_multiset,
     decide_publication,
     numeric_consistency,
+    numeric_token_multiset,
     ocr_recall,
     semantic_score,
 )
@@ -134,7 +135,7 @@ class _CandidateEvaluation:
 
 @dataclass(frozen=True, slots=True)
 class _ReferenceTexts:
-    general: list[str]
+    numeric_tokens: Counter[str]
     ocr_tokens: Counter[str] | None
     warning: str | None = None
 
@@ -147,16 +148,16 @@ _PIL_IMAGE_DICT_DESCRIPTOR = Image.Image.__dict__["__dict__"]
 
 
 def _reference_text_sets(ocr_texts: list[str], evidence: list[VisualEvidence]) -> _ReferenceTexts:
-    """Return general source text plus occurrence-preserving OCR recall tokens."""
+    """Return occurrence-preserving numeric and OCR source token multisets."""
 
     budget_warning = (
         "OCR/vector reference text exceeds the semantic scoring budget; review is required"
     )
     if len(ocr_texts) > _MAX_OCR_REFERENCE_TEXTS:
-        return _ReferenceTexts([], None, budget_warning)
+        return _ReferenceTexts(Counter(), None, budget_warning)
     reference_chars = sum(len(text) for text in ocr_texts)
     if reference_chars > _MAX_OCR_REFERENCE_CHARS:
-        return _ReferenceTexts([], None, budget_warning)
+        return _ReferenceTexts(Counter(), None, budget_warning)
     evidence_texts: list[str] = []
     seen_observations: set[tuple[str, object]] = set()
     for item in evidence:
@@ -173,9 +174,11 @@ def _reference_text_sets(ocr_texts: list[str], evidence: list[VisualEvidence]) -
             len(ocr_texts) + len(evidence_texts) + 1 > _MAX_OCR_REFERENCE_TEXTS
             or reference_chars > _MAX_OCR_REFERENCE_CHARS
         ):
-            return _ReferenceTexts([], None, budget_warning)
+            return _ReferenceTexts(Counter(), None, budget_warning)
         evidence_texts.append(item.text)
-    general = list(dict.fromkeys([*ocr_texts, *evidence_texts]))
+    context_numbers = numeric_token_multiset(ocr_texts)
+    evidence_numbers = numeric_token_multiset(evidence_texts)
+    numeric_tokens = context_numbers | evidence_numbers
     token_budget = {
         "max_texts": _MAX_OCR_REFERENCE_TEXTS,
         "max_chars": _MAX_OCR_REFERENCE_CHARS,
@@ -185,18 +188,32 @@ def _reference_text_sets(ocr_texts: list[str], evidence: list[VisualEvidence]) -
     evidence_tokens = bounded_ocr_token_multiset(evidence_texts, **token_budget)
     if context_tokens is None or evidence_tokens is None:
         return _ReferenceTexts(
-            [],
+            Counter(),
             None,
             "OCR/vector reference tokens exceed the semantic scoring budget; review is required",
         )
     merged_tokens: Counter[str] = context_tokens | evidence_tokens
     if merged_tokens.total() > _MAX_OCR_REFERENCE_TOKENS:
         return _ReferenceTexts(
-            [],
+            Counter(),
             None,
             "OCR/vector reference tokens exceed the semantic scoring budget; review is required",
         )
-    return _ReferenceTexts(general, merged_tokens)
+    return _ReferenceTexts(numeric_tokens, merged_tokens)
+
+
+def _evaluation_gate_diagram_type(
+    *,
+    method: str,
+    semantic_type: str,
+    emitted_type: str | None,
+    runtime_type: str | None,
+) -> str:
+    """Use validated direct grammar for gates without changing typed semantic adapters."""
+
+    if method == "direct_mermaid":
+        return runtime_type or emitted_type or semantic_type
+    return semantic_type
 
 
 def _canonical_rgb_image_snapshot(
@@ -2403,12 +2420,19 @@ class ReconstructionPipeline:
             type_fitness = prediction_scores.get(draft.diagram_type)
             if contract_mismatch and type_fitness is not None:
                 type_fitness = 0.0
+            gate_diagram_type = _evaluation_gate_diagram_type(
+                method=draft.method,
+                semantic_type=draft.diagram_type,
+                emitted_type=candidate.emitted_diagram_type,
+                runtime_type=runtime_type,
+            )
             evaluation = self._evaluate_candidate(
                 code=candidate_code,
                 runtime=runtime,
                 syntax_valid=candidate.syntax_valid,
                 render_valid=candidate.render_valid,
-                diagram_type=draft.diagram_type,
+                semantic_diagram_type=draft.diagram_type,
+                gate_diagram_type=gate_diagram_type,
                 method=draft.method,
                 typed_ir=draft.typed_ir,
                 source_scene=draft.observation.scene_ir,
@@ -2527,7 +2551,8 @@ class ReconstructionPipeline:
         runtime: RuntimeResult,
         syntax_valid: bool,
         render_valid: bool,
-        diagram_type: str,
+        semantic_diagram_type: str,
+        gate_diagram_type: str,
         method: str,
         typed_ir: dict | None,
         source_scene: DiagramSceneIR | None,
@@ -2552,7 +2577,7 @@ class ReconstructionPipeline:
         generated_scene_failed = False
         if typed_ir is not None:
             try:
-                generated_scene = typed_ir_to_scene(diagram_type, typed_ir)
+                generated_scene = typed_ir_to_scene(semantic_diagram_type, typed_ir)
             except Exception as exc:
                 generated_scene_failed = True
                 warnings.append(f"generated semantic scene conversion was isolated: {exc}")
@@ -2563,7 +2588,11 @@ class ReconstructionPipeline:
         generated_text_projection_failed = False
         if generated_scene is not None:
             if typed_ir is not None:
-                semantic_labels = typed_ir_semantic_texts(diagram_type, typed_ir, generated_scene)
+                semantic_labels = typed_ir_semantic_texts(
+                    semantic_diagram_type,
+                    typed_ir,
+                    generated_scene,
+                )
             else:
                 semantic_labels = chain(
                     (element.text for element in generated_scene.elements if element.text),
@@ -2595,8 +2624,8 @@ class ReconstructionPipeline:
         )
         if recall is not None:
             scores["ocr_recall"] = recall
-        numeric = numeric_consistency(references.general, code)
-        if numeric is not None and diagram_type in _NUMERIC_TYPES:
+        numeric = numeric_consistency(references.numeric_tokens, code)
+        if numeric is not None and gate_diagram_type in _NUMERIC_TYPES:
             scores["numeric_consistency"] = numeric
         provenance = _generated_node_provenance_score(
             generated_scene,
@@ -2642,20 +2671,20 @@ class ReconstructionPipeline:
         if references.warning is not None:
             aggregate = None
             warnings.append(references.warning)
-        if self.config.mode != Mode.STRICT and diagram_type in _PROVENANCE_GATED_TYPES:
+        if self.config.mode != Mode.STRICT and gate_diagram_type in _PROVENANCE_GATED_TYPES:
             if provenance is None:
                 aggregate = None
                 warnings.append("generated-node attribution is unavailable; review is required")
             elif provenance < 0.8:
                 aggregate = None
                 warnings.append("generated-node provenance gate requires at least 80% attribution")
-        if diagram_type in _NUMERIC_TYPES and numeric is None:
+        if gate_diagram_type in _NUMERIC_TYPES and numeric is None:
             aggregate = None
             warnings.append(
                 "numeric diagram lacks OCR/vector numeric evidence and cannot auto-publish"
             )
         elif (
-            diagram_type in _NUMERIC_TYPES
+            gate_diagram_type in _NUMERIC_TYPES
             and numeric is not None
             and numeric < self.config.publish_min_score
         ):
@@ -2908,12 +2937,19 @@ class ReconstructionPipeline:
                     )
                 )
                 return attempted
+            gate_diagram_type = _evaluation_gate_diagram_type(
+                method=current.generation_method,
+                semantic_type=current.diagram_type,
+                emitted_type=current.emitted_diagram_type,
+                runtime_type=runtime_type,
+            )
             evaluation = self._evaluate_candidate(
                 code=proposal_code,
                 runtime=outcome.runtime,
                 syntax_valid=outcome.runtime.syntax_valid,
                 render_valid=outcome.runtime.render_valid,
-                diagram_type=current.diagram_type,
+                semantic_diagram_type=current.diagram_type,
+                gate_diagram_type=gate_diagram_type,
                 method=current.generation_method,
                 typed_ir=validated_ir,
                 source_scene=current.scene_ir,

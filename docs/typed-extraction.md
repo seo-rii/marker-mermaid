@@ -3,9 +3,9 @@
 Structured VLM은 `diagram_type`만 맞춘 임의 JSON을 내보내지 않습니다. 활성화된 Mermaid 유형마다
 root 필드와 container 종류를 고정한 `TypedIRContract`를 prompt로 받고, 응답은 Pydantic 모델 생성
 시점에 같은 registry로 다시 검사됩니다. Phase 1 유형, stable Core UML 유형(State, Class, ER),
-native Phase 2의 Requirement·Block과 C4·Deployment·Component·Use-case fallback은 record 내부의 알려진
-필드와 recursive container도 전용 Pydantic model로 검사합니다. serializer의 세부 의미 검사는 그 다음
-단계에서 수행합니다.
+native Phase 2의 Requirement·Block, C4·Deployment·Component·Use-case fallback, Phase 3 core chart인
+Pie·XY·Quadrant는 record 내부의 알려진 필드와 recursive container도 전용 Pydantic model로 검사합니다.
+serializer의 세부 의미 검사는 그 다음 단계에서 수행합니다.
 
 이 경계는 두 문제를 분리합니다.
 
@@ -38,6 +38,9 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | C4 fallback | element/boundary/relation record, level·kind token, Architecture port side |
 | Deployment / Component fallback | service-like primary/secondary record, group, canonical relation과 Architecture port side |
 | Use-case fallback | actor/use-case/relation record와 portable Flowchart projection |
+| Pie | slice label/value와 `show_data` boolean |
+| XY | categorical 또는 numeric axis, line/bar series, numeric point |
+| Quadrant | low/high axis, quadrant label, normalized point |
 
 ### Requirement·Block record 계약
 
@@ -197,6 +200,36 @@ source ID 분리, normalization 및 `usecase_` prefix 뒤의 2차 collision, rel
 `plan_usecase_fallback`과 serializer가 최종 판정합니다. 기본 방향은 `LR`이고 허용되지 않은 값은 portable
 Flowchart와 generated Scene에서 `TB`로 정규화됩니다.
 
+### Pie·XY·Quadrant native chart 계약
+
+세 core chart는 다음 root와 record를 provider prompt에 정확히 공개하고 응답 후 같은 strict nested
+model로 검사합니다.
+
+| Type | 필수 root | 선택 root | Prompt record |
+| --- | --- | --- | --- |
+| Pie | `slices: list` | `show_data` | `show_data: boolean`; `slices[]: {label:string,value:number,bbox:number[4],evidence_ids:string[]}` |
+| XY | `x_axis: object`, `y_axis: object`, `series: list` | 없음 | `x_axis`의 `label`·`categories`·`min`·`max`; `y_axis`의 `label`·`min`·`max`; `series[]`의 `kind:line\|bar`·`values`·`points`; `points[]`의 `x`·`y`; 각 record의 bbox/evidence |
+| Quadrant | `x_axis: object`, `y_axis: object`, `points: list` | `quadrants` | 축의 `low`·`high`; `quadrants: string[4]\|{quadrant-1:string,quadrant-2:string,quadrant-3:string,quadrant-4:string}`; point의 `label`·`x`·`y`; 각 record의 bbox/evidence |
+
+Structured extraction의 `number`는 strict finite JSON `int` 또는 `float`입니다. Boolean, 숫자 문자열,
+NaN과 Infinity는 거부합니다. 직접 serializer API가 내부적으로 `Decimal`도 받을 수 있다는 사실은 provider
+응답 계약을 넓히지 않습니다. XY `kind`는 `line`/`bar`를 대소문자 구분 없이 검사하지만 입력 casing은
+바꾸지 않습니다. Root container를 제외한 chart record field와 evidence는 partial candidate 호환을 위해
+model에서 선택입니다.
+
+Nested contract는 형만 확정합니다. Pie의 non-empty·고유 label·non-negative value·positive total, XY의
+축 mode와 bounds·모든 y의 범위 포함·series 선택 및 길이·uniform numeric grid, Quadrant의 non-empty 고유
+label과 `[0,1]` 좌표 및 같은 quadrant slot의 alias 충돌 같은 표현 가능성은 serializer가 계속 fail closed로
+판정합니다. 세 serializer는 각각 native `pie`, `xychart-beta`, `quadrantChart`만 방출하며 의미 오류나
+runtime 실패를 table/prose/Flowchart로 낮추지 않습니다.
+
+Chart record의 bbox와 `evidence_ids`는 strict 형으로 검증되어 원본 typed IR/review sidecar에 보존되지만,
+현재 Pie·XY·Quadrant용 generated Scene adapter는 없습니다. 따라서 이 metadata를 Scene node/relation
+attribution이나 구조 점수로 승격했다고 해석하면 안 됩니다. 공통 accessibility root와 미등록 metadata는
+`extra="allow"` 규칙으로 계속 받을 수 있고 검증 model도 원본 dict를 대체하지 않습니다. 그러나
+accessibility/extra metadata 안의 숫자나 typed value의 evidence ID만으로 source numeric gate가 충족되지는
+않습니다. 자동 게시는 별도의 source OCR/vector 숫자 관측과 generated 숫자 일치를 요구합니다.
+
 알려진 scalar field에는 object/list를 넣을 수 없고, record와 child container의 종류도 고정합니다. `bbox`는
 정확히 네 개의 finite number, `evidence_ids`와 membership은 string list여야 합니다. `extra="allow"`를
 사용하므로 style, geometry, plugin 또는 향후 Mermaid field 같은 미등록 metadata는 삭제하지 않습니다.
@@ -233,10 +266,13 @@ message만 serializer와 Scene에 함께 전달하고, raw message ID와 무관�
 부여합니다. 따라서 Mermaid에서 합쳐진 actor나 생략된 message를 평가 Scene이 별도 구조로 세지 않습니다.
 
 현재 Marker `response_schema`의 외부 envelope는 여전히 `TypedIRCandidate.ir: dict`입니다. 따라서 이 단계는
-모든 Phase 2 type의 prompt와 응답 후 검증을 중첩 구조까지 확장하지만 provider에 모든
-Mermaid 유형을 하나의 discriminated JSON Schema로 직접 노출하거나 generic envelope reserve를
-늘리지는 않습니다. 더 뒤의 planning/chart/special type 전용 model과 envelope-level discriminated schema는
-후속 작업이므로 Phase 2에 root-only type이 남지 않아도 `ARCH-001`은 여전히 부분 완화 상태입니다.
+모든 Phase 2 type과 Phase 3 core chart(Pie·XY·Quadrant)의 prompt와 응답 후 검증을 중첩 구조까지
+확장하지만 provider에 모든 Mermaid 유형을 하나의 discriminated JSON Schema로 직접 노출하거나 generic
+envelope reserve를 늘리지는 않습니다. Phase 3의 Sankey·Radar·Treemap·Venn과 나머지 planning/special
+type인 Journey·Kanban·GitGraph·Packet·Ishikawa·Wardley·Cynefin·TreeView·Event Modeling·ZenUML·
+Railroad·Organization·Data Lineage는 아직 schema-light root contract입니다. Envelope-level discriminated
+schema도 후속 작업이므로 Phase 2에 root-only type이 남지 않아도 `ARCH-001`은 여전히 부분 완화
+상태입니다.
 
 Marker 1.10.2의 stock Ollama service는 원래 schema의 최상위 `properties`와 `required`만 복사해 `$defs`를
 버립니다. 이 adapter를 감지하면 local `#/$defs/*` 참조를 재귀적으로 inline한 schema-only

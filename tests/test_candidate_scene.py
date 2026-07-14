@@ -217,6 +217,34 @@ def test_unsupported_or_empty_typed_ir_is_unavailable():
     assert typed_ir_to_scene("flowchart", {"nodes": []}) is None
 
 
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        ("pie", {"slices": [{"label": "A", "value": 1}]}),
+        (
+            "xychart",
+            {
+                "x_axis": {"categories": ["A"]},
+                "y_axis": {"min": 0, "max": 1},
+                "series": [{"kind": "line", "values": [1]}],
+            },
+        ),
+        (
+            "quadrant",
+            {
+                "x_axis": {"low": "Low", "high": "High"},
+                "y_axis": {"low": "Low", "high": "High"},
+                "points": [{"label": "A", "x": 0.5, "y": 0.5}],
+            },
+        ),
+    ],
+)
+def test_phase_three_core_charts_have_no_structural_scene_adapter(
+    diagram_type: str, ir: dict[str, object]
+) -> None:
+    assert typed_ir_to_scene(diagram_type, ir) is None
+
+
 def test_gantt_scene_preserves_task_and_section_labels_without_schedule_metadata():
     scene = typed_ir_to_scene(
         "gantt",

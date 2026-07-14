@@ -98,9 +98,16 @@ generated Scene attribution에서 제외합니다.
 - Typed semantic projection이 malformed data나 adapter defect로 예외를 내면 해당 candidate의 OCR을
   direct-code fallback으로 바꾸지 않습니다. 예외를 candidate warning으로 격리하고 aggregate를
   unavailable로 유지하여 다른 candidate 선택과 문서 변환은 계속합니다.
-- numeric consistency는 source/generated 숫자 multiset의 precision·recall F1입니다. source에 실제
-  숫자가 있을 때만 사용하며 추가 생성한 숫자도 precision을 낮춥니다. `accTitle`/`accDescr`/title
-  metadata 안의 숫자는 chart data multiset에서 제외합니다.
+- numeric consistency는 source/generated 숫자 occurrence multiset의 precision·recall F1입니다. Bounded
+  evidence 안의 동일 normalized text+bbox는 한 관측으로 합치고, OCR context와 evidence 채널의 numeric
+  Counter는 token별 최대 occurrence로 병합합니다. 따라서 위치가 다른 반복값은 보존하면서 채널 간 중복
+  보고는 다시 세지 않습니다. 생성한 숫자가 source에 없거나 occurrence 수가 다르면 precision/recall을
+  낮춥니다. Generated projection은 Mermaid `%%` comment를 제외하고, detected grammar가 지원할 때만
+  `title ...`/`title: ...`, `accTitle: ...`, 한 줄 `accDescr: ...`와 block `accDescr { ... }`를 chart
+  metadata로 제외합니다. Sankey의 metadata-like CSV label과 weight는 실제 data로 보존합니다. Quadrant의
+  `quadrant-1`~`quadrant-4` slot index도 문법 토큰으로 제외하지만 directive label과 point 좌표 안의 실제
+  숫자는 보존합니다. Block metadata 뒤 같은 줄의 statement는 다시 평가하며 bounded suffix budget이
+  소진되면 부분 점수 대신 `0.0`으로 fail closed합니다.
 - visual entailment precision은 생성된 node를 source node ID 또는 유일한 정규화 label로 정렬한
   evidence coverage proxy입니다. source scene 자체를 후보 precision으로 재사용하지 않습니다. model scorer는 후속입니다.
 - 구조 edge를 평가할 수 없고 render PNG가 있으면 raster edge IoU를 fallback으로 사용합니다.
@@ -118,6 +125,9 @@ aggregate·semantic threshold와 provenance/numeric hold를 적용한 뒤, publi
 선택합니다. 같은 class 안에서는 aggregate, OCR recall, generation method, candidate ID 순서를 유지합니다.
 따라서 metric availability가 적은 높은 total 후보가 실제 게시 가능한 evidence-rich 대안을 가리고 문서
 전체를 review 상태로 내리지 않습니다. 강제 review/sidecar 정책은 이 class 우선순위를 사용하지 않습니다.
+Typed/Scene 후보의 numeric hold는 fallback grammar와 무관하게 semantic type을 유지합니다. Direct 후보는
+typed semantic contract가 없으므로 prediction/requested type 대신 parse/render validation으로 확인한
+emitted/runtime grammar type을 기준으로 결정합니다.
 
 Semantic repair 후보도 초기 후보와 같은 reference text 집합과 평가 함수를 사용합니다. OCR/vector,
 provenance, edge, arrow, layout, path, numeric gate를 새 typed IR에서 다시 계산하며 aggregate 엄격 개선과
@@ -132,5 +142,6 @@ Label repair도 trusted Marker OCR/built-in Vector origin, source block, bbox co
 통과해야 합니다. Proposal typed IR은 입력과 같은 resource budget을 다시 통과하고 code가 deterministic
 재직렬화 결과와 정확히 일치해야 평가 단계로 진입합니다.
 
-Gantt/Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn/Packet 후보는 OCR/vector numeric evidence가 하나도
-없거나 numeric consistency가 게시 threshold보다 낮으면 aggregate를 `None`으로 두어 자동 게시하지 않습니다.
+Typed/Scene semantic type 또는 direct 후보의 validated emitted/runtime type이
+Gantt/Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn/Packet이면 OCR/vector numeric evidence가 하나도 없거나
+numeric consistency가 게시 threshold보다 낮을 때 aggregate를 `None`으로 두어 자동 게시하지 않습니다.

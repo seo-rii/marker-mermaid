@@ -19,6 +19,7 @@ from marker_mermaid.config import ALL_TYPES, PHASE_ONE_TYPES
 RootKind = Literal["list", "object", "string"]
 BBoxList = Annotated[list[FiniteFloat], Field(min_length=4, max_length=4)]
 BBoxValue = BBoxList | tuple[FiniteFloat, FiniteFloat, FiniteFloat, FiniteFloat]
+_ChartNumber = int | FiniteFloat
 
 
 class _TypedIRRecord(BaseModel):
@@ -534,6 +535,73 @@ class _UsecaseIR(_TypedIRRoot):
     relations: list[_UsecaseRelation] = Field(default_factory=list)
 
 
+class _PieSlice(_TypedIRRecord):
+    label: str | None = None
+    value: _ChartNumber | None = None
+
+
+class _PieIR(_TypedIRRoot):
+    slices: list[_PieSlice]
+    show_data: bool = False
+
+
+class _XYXAxis(_TypedIRRecord):
+    label: str | None = None
+    categories: list[str] | None = None
+    min: _ChartNumber | None = None
+    max: _ChartNumber | None = None
+
+
+class _XYYAxis(_TypedIRRecord):
+    label: str | None = None
+    min: _ChartNumber | None = None
+    max: _ChartNumber | None = None
+
+
+class _XYPoint(_TypedIRRecord):
+    x: _ChartNumber | None = None
+    y: _ChartNumber | None = None
+
+
+class _XYSeries(_TypedIRRecord):
+    kind: str | None = None
+    values: list[_ChartNumber] | None = None
+    points: list[_XYPoint] | None = None
+
+    @field_validator("kind")
+    @classmethod
+    def kind_is_supported(cls, value: str | None) -> str | None:
+        return _validate_casefolded_token(
+            value,
+            frozenset({"line", "bar"}),
+            field="xychart series kind",
+        )
+
+
+class _XYChartIR(_TypedIRRoot):
+    x_axis: _XYXAxis
+    y_axis: _XYYAxis
+    series: list[_XYSeries]
+
+
+class _QuadrantAxis(_TypedIRRecord):
+    low: str | None = None
+    high: str | None = None
+
+
+class _QuadrantPoint(_TypedIRRecord):
+    label: str | None = None
+    x: _ChartNumber | None = None
+    y: _ChartNumber | None = None
+
+
+class _QuadrantIR(_TypedIRRoot):
+    x_axis: _QuadrantAxis
+    y_axis: _QuadrantAxis
+    points: list[_QuadrantPoint]
+    quadrants: list[str] | dict[str, str] | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class TypedIRContract:
     required: tuple[tuple[str, RootKind], ...]
@@ -796,15 +864,41 @@ TYPED_IR_CONTRACTS: dict[str, TypedIRContract] = {
         (("initial_branch", "string"), ("operations", "list")),
         guidance="ordered branch/commit/merge operations",
     ),
-    "pie": TypedIRContract((("slices", "list"),), guidance="labels with explicit values"),
+    "pie": TypedIRContract(
+        (("slices", "list"),),
+        ("show_data",),
+        "labels with explicit values",
+        _PieIR,
+        (
+            "show_data: boolean",
+            "slices[]: {label:string,value:number,bbox:number[4],evidence_ids:string[]}",
+        ),
+    ),
     "xychart": TypedIRContract(
         (("x_axis", "object"), ("y_axis", "object"), ("series", "list")),
         guidance="explicit axes and series values",
+        nested_model=_XYChartIR,
+        prompt_records=(
+            "x_axis: {label:string,categories:string[],min:number,max:number,"
+            "bbox:number[4],evidence_ids:string[]}",
+            "y_axis: {label:string,min:number,max:number,bbox:number[4],evidence_ids:string[]}",
+            "series[]: {kind:line|bar,values:number[],points:point[],bbox:number[4],"
+            "evidence_ids:string[]}",
+            "series[].points[]: {x:number,y:number,bbox:number[4],evidence_ids:string[]}",
+        ),
     ),
     "quadrant": TypedIRContract(
         (("x_axis", "object"), ("y_axis", "object"), ("points", "list")),
         ("quadrants",),
         "normalized positioned points",
+        _QuadrantIR,
+        (
+            "x_axis: {low:string,high:string,bbox:number[4],evidence_ids:string[]}",
+            "y_axis: {low:string,high:string,bbox:number[4],evidence_ids:string[]}",
+            "quadrants: string[4]|{quadrant-1:string,quadrant-2:string,"
+            "quadrant-3:string,quadrant-4:string}",
+            "points[]: {label:string,x:number,y:number,bbox:number[4],evidence_ids:string[]}",
+        ),
     ),
     "sankey": TypedIRContract(
         (("nodes", "list"), ("flows", "list")), ("links",), "weighted directed flows"
@@ -849,11 +943,13 @@ PHASE_ONE_NESTED_TYPES = PHASE_ONE_TYPES | {"generic_network"}
 CORE_UML_NESTED_TYPES = frozenset({"state", "class", "er"})
 PHASE_TWO_NATIVE_NESTED_TYPES = frozenset({"requirement", "block"})
 PHASE_TWO_FALLBACK_NESTED_TYPES = frozenset({"c4", "component", "deployment", "usecase"})
+PHASE_THREE_CORE_NESTED_TYPES = frozenset({"pie", "quadrant", "xychart"})
 NESTED_TYPED_IR_TYPES = (
     PHASE_ONE_NESTED_TYPES
     | CORE_UML_NESTED_TYPES
     | PHASE_TWO_NATIVE_NESTED_TYPES
     | PHASE_TWO_FALLBACK_NESTED_TYPES
+    | PHASE_THREE_CORE_NESTED_TYPES
 )
 
 for _diagram_type in NESTED_TYPED_IR_TYPES:  # pragma: no cover - import-time invariant

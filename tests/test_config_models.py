@@ -1531,6 +1531,337 @@ def test_generic_candidate_envelopes_apply_phase_two_native_nested_contracts() -
         )
 
 
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "location"),
+    [
+        ("pie", {"slices": {"label": "A", "value": 1}}, "slices"),
+        ("pie", {"slices": ["not-an-object"]}, "slices[0]"),
+        ("pie", {"slices": [{"label": 1}]}, "slices[0].label"),
+        ("pie", {"slices": [{"value": "1"}]}, "slices[0].value"),
+        ("pie", {"slices": [{"value": True}]}, "slices[0].value"),
+        ("pie", {"slices": [{"bbox": [0, 0, 10]}]}, "slices[0].bbox"),
+        ("pie", {"slices": [{"evidence_ids": [1]}]}, "slices[0].evidence_ids[0]"),
+        ("pie", {"slices": [], "show_data": 1}, "show_data"),
+        (
+            "xychart",
+            {"x_axis": [], "y_axis": {}, "series": []},
+            "x_axis",
+        ),
+        (
+            "xychart",
+            {"x_axis": {"categories": "Q1"}, "y_axis": {}, "series": []},
+            "x_axis.categories",
+        ),
+        (
+            "xychart",
+            {"x_axis": {"categories": [1]}, "y_axis": {}, "series": []},
+            "x_axis.categories[0]",
+        ),
+        (
+            "xychart",
+            {"x_axis": {"label": 1}, "y_axis": {}, "series": []},
+            "x_axis.label",
+        ),
+        (
+            "xychart",
+            {"x_axis": {"min": "0"}, "y_axis": {}, "series": []},
+            "x_axis.min",
+        ),
+        (
+            "xychart",
+            {"x_axis": {}, "y_axis": {"max": True}, "series": []},
+            "y_axis.max",
+        ),
+        (
+            "xychart",
+            {"x_axis": {}, "y_axis": {}, "series": "not-a-list"},
+            "series",
+        ),
+        (
+            "xychart",
+            {"x_axis": {}, "y_axis": {}, "series": ["not-an-object"]},
+            "series[0]",
+        ),
+        (
+            "xychart",
+            {"x_axis": {}, "y_axis": {}, "series": [{"kind": ["line"]}]},
+            "series[0].kind",
+        ),
+        (
+            "xychart",
+            {"x_axis": {}, "y_axis": {}, "series": [{"kind": "area"}]},
+            "series[0].kind",
+        ),
+        (
+            "xychart",
+            {"x_axis": {}, "y_axis": {}, "series": [{"values": "1,2"}]},
+            "series[0].values",
+        ),
+        (
+            "xychart",
+            {"x_axis": {}, "y_axis": {}, "series": [{"values": [True]}]},
+            "series[0].values[0]",
+        ),
+        (
+            "xychart",
+            {"x_axis": {}, "y_axis": {}, "series": [{"points": ["0,1"]}]},
+            "series[0].points[0]",
+        ),
+        (
+            "xychart",
+            {"x_axis": {}, "y_axis": {}, "series": [{"points": [{"x": "0"}]}]},
+            "series[0].points[0].x",
+        ),
+        (
+            "xychart",
+            {"x_axis": {}, "y_axis": {}, "series": [{"points": [{"y": True}]}]},
+            "series[0].points[0].y",
+        ),
+        (
+            "xychart",
+            {"x_axis": {}, "y_axis": {}, "series": [{"bbox": [0, False, 10, 10]}]},
+            "series[0].bbox",
+        ),
+        (
+            "xychart",
+            {"x_axis": {}, "y_axis": {}, "series": [{"evidence_ids": [1]}]},
+            "series[0].evidence_ids[0]",
+        ),
+        (
+            "quadrant",
+            {"x_axis": {}, "y_axis": {}, "points": "not-a-list"},
+            "points",
+        ),
+        (
+            "quadrant",
+            {"x_axis": {"low": 0}, "y_axis": {}, "points": []},
+            "x_axis.low",
+        ),
+        (
+            "quadrant",
+            {"x_axis": {}, "y_axis": {"high": ["High"]}, "points": []},
+            "y_axis.high",
+        ),
+        (
+            "quadrant",
+            {"x_axis": {}, "y_axis": {}, "points": ["not-an-object"]},
+            "points[0]",
+        ),
+        (
+            "quadrant",
+            {"x_axis": {}, "y_axis": {}, "points": [{"label": 1}]},
+            "points[0].label",
+        ),
+        (
+            "quadrant",
+            {"x_axis": {}, "y_axis": {}, "points": [{"x": "0.5"}]},
+            "points[0].x",
+        ),
+        (
+            "quadrant",
+            {"x_axis": {}, "y_axis": {}, "points": [{"y": True}]},
+            "points[0].y",
+        ),
+        (
+            "quadrant",
+            {"x_axis": {}, "y_axis": {}, "points": [{"bbox": [0, 0, "10", 10]}]},
+            "points[0].bbox",
+        ),
+        (
+            "quadrant",
+            {"x_axis": {}, "y_axis": {}, "points": [{"evidence_ids": [1]}]},
+            "points[0].evidence_ids[0]",
+        ),
+        (
+            "quadrant",
+            {"x_axis": {}, "y_axis": {}, "points": [], "quadrants": "Q1"},
+            "quadrants",
+        ),
+        (
+            "quadrant",
+            {"x_axis": {}, "y_axis": {}, "points": [], "quadrants": [1]},
+            "quadrants",
+        ),
+        (
+            "quadrant",
+            {"x_axis": {}, "y_axis": {}, "points": [], "quadrants": {"1": 1}},
+            "quadrants",
+        ),
+    ],
+)
+def test_phase_three_core_chart_nested_contracts_reject_strict_wrong_shapes(
+    diagram_type: str,
+    ir: dict[str, object],
+    location: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    assert location in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        ("pie", {"slices": [{"value": math.inf}]}),
+        (
+            "xychart",
+            {"x_axis": {}, "y_axis": {}, "series": [{"points": [{"y": math.nan}]}]},
+        ),
+        (
+            "quadrant",
+            {"x_axis": {}, "y_axis": {}, "points": [{"x": -math.inf}]},
+        ),
+    ],
+)
+def test_phase_three_core_chart_contracts_reject_non_finite_numbers_at_canonical_boundary(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError, match="finite and bounded"):
+        TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "pie",
+            {
+                "show_data": True,
+                "slices": [
+                    {
+                        "bbox": [0, 0, 10, 10],
+                        "evidence_ids": ["ocr-a"],
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+        (
+            "xychart",
+            {
+                "x_axis": {
+                    "label": "Quarter",
+                    "categories": [],
+                    "future_metadata": {"kept": True},
+                },
+                "y_axis": {"min": 0, "future_metadata": {"kept": True}},
+                "series": [
+                    {
+                        "kind": "LINE",
+                        "values": [],
+                        "points": [],
+                        "bbox": [0, 0, 10, 10],
+                        "evidence_ids": ["series-1"],
+                        "name": "forward-compatible diagnostic",
+                    }
+                ],
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+        (
+            "quadrant",
+            {
+                "x_axis": {"low": "Low", "future_metadata": {"kept": True}},
+                "y_axis": {},
+                "points": [
+                    {
+                        "bbox": [0, 0, 10, 10],
+                        "evidence_ids": ["point-1"],
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "quadrants": {"QUADRANT-1": "Expand", "2": "Promote"},
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+    ],
+)
+def test_phase_three_core_chart_nested_contracts_preserve_partial_and_extra_ir(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    assert candidate.ir == ir
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "mutation", "location"),
+    [
+        (
+            "pie",
+            {"slices": [{"label": "A", "value": 1}]},
+            lambda ir: ir["slices"][0].__setitem__("label", 1),
+            r"slices\[0\]\.label",
+        ),
+        (
+            "xychart",
+            {"x_axis": {}, "y_axis": {}, "series": [{"kind": "LINE"}]},
+            lambda ir: ir["series"][0].__setitem__("kind", "area"),
+            r"series\[0\]\.kind",
+        ),
+        (
+            "quadrant",
+            {"x_axis": {}, "y_axis": {}, "points": [{"x": 0.5}]},
+            lambda ir: ir["points"][0].__setitem__("x", "0.5"),
+            r"points\[0\]\.x",
+        ),
+    ],
+)
+def test_canonical_key_revalidates_mutated_phase_three_core_chart_contracts(
+    diagram_type: str,
+    ir: dict[str, object],
+    mutation,
+    location: str,
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+    mutation(candidate.ir)
+
+    with pytest.raises(ValidationError, match=location):
+        candidate.canonical_key()
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "invalid_ir", "location"),
+    [
+        ("pie", {"slices": [], "show_data": 1}, r"show_data"),
+        (
+            "xychart",
+            {"x_axis": {}, "y_axis": {}, "series": [{"kind": "area"}]},
+            r"series\[0\]\.kind",
+        ),
+        (
+            "quadrant",
+            {"x_axis": {}, "y_axis": {}, "points": [{"x": "0.5"}]},
+            r"points\[0\]\.x",
+        ),
+    ],
+)
+def test_generic_candidate_envelopes_apply_phase_three_core_chart_contracts(
+    diagram_type: str,
+    invalid_ir: dict[str, object],
+    location: str,
+) -> None:
+    prediction = DiagramTypePrediction(candidates=[diagram_type], scores=[1.0])
+
+    with pytest.raises(ValidationError, match=location):
+        EngineObservation(
+            prediction=prediction,
+            typed_candidates=[{"diagram_type": diagram_type, "ir": invalid_ir}],
+        )
+
+    with pytest.raises(ValidationError, match=location):
+        MermaidCandidate(
+            candidate_id=f"candidate-{diagram_type}",
+            generation_method="typed_ir",
+            diagram_type=diagram_type,
+            typed_ir=invalid_ir,
+        )
+
+
 def test_canonical_key_uses_a_bounded_digest_without_model_dump(
     monkeypatch,
 ) -> None:

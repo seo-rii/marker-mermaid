@@ -177,3 +177,25 @@ Actor/UseCase source ID 분리, normalized ID와 `usecase_` prefix 이후의 2�
 node/relation cap은 공용 plan과 serializer가 계속 fail closed로 판정합니다. 기본 direction은 `LR`이고
 허용되지 않은 값은 serializer와 Scene 모두 `TB`를 사용합니다. 이 계약으로 모든 Phase 2 type이 nested
 검증을 갖지만, provider envelope는 계속 generic `TypedIRCandidate.ir: dict`입니다.
+
+### Pie·XY·Quadrant의 native-only 경계
+
+Pie·XY·Quadrant는 strict nested extraction contract를 통과한 뒤 각각 `pie`, `xychart-beta`,
+`quadrantChart` native grammar만 방출합니다. 실패 시 emitted type을 table, prose 또는 Flowchart로 바꾸는
+fallback은 없습니다. Contract는 record/container, strict finite JSON `int`/`float`, boolean, bbox/evidence와
+XY `line|bar` token의 형을 검사합니다. Direct serializer가 받을 수 있는 `Decimal`은 provider structured
+input 계약이 아닙니다.
+
+Pie의 non-empty·고유 label·non-negative value·positive total, XY의 categorical/numeric x-axis 배타성,
+axis bounds와 모든 y의 범위 포함 여부, exactly-one values/points, category 길이 또는 uniform numeric grid,
+Quadrant의 non-empty·고유 point label과 `[0,1]` 좌표는 serializer 소유 의미 검사입니다. XY series의
+`label`/`name`은 Mermaid 11.16에 strict-safe series-label syntax가 없어 거부합니다. Quadrant label은
+정확히 네 항목인 list 또는 canonical key를 가진 object로 prompt에 노출합니다. Object는 부분 label을
+허용하지만 `1`과 `quadrant-1`처럼 같은 slot을 가리키는 alias가 함께 오면 모호한 덮어쓰기 대신 거부합니다.
+
+Chart bbox/evidence는 typed IR/review sidecar에 보존되지만 Pie·XY·Quadrant용 generated Scene adapter는 아직
+없습니다. 따라서 자동 Scene attribution을 주장하지 않습니다. 공통 accessibility/extra metadata와 원본
+dict 보존은 유지되지만 그 숫자나 typed evidence reference가 별도 source OCR/vector numeric gate를 대신하지
+않습니다. Source numeric evidence가 없거나 일치도가 낮으면 native parse/render 성공과 무관하게 review에
+남습니다. Numeric projection은 Quadrant directive의 구조 번호 `quadrant-1`~`quadrant-4`를 제외하되 label과
+point 좌표의 실제 숫자는 유지합니다.

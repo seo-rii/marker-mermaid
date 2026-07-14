@@ -11,6 +11,7 @@ from marker_mermaid.scoring import (
     aggregate_scores,
     decide_publication,
     numeric_consistency,
+    numeric_token_multiset,
     ocr_recall,
     semantic_score,
 )
@@ -117,6 +118,230 @@ def test_reference_free_text_scores_do_not_invent_numbers():
         )
         == 1
     )
+
+
+def test_numeric_consistency_ignores_only_quadrant_grammar_slot_numbers() -> None:
+    code = """quadrantChart
+    accDescr: Portfolio 99
+    quadrant-1 "Expand 2026"
+    quadrant-4 "Improve"
+    "Project 3": [0.2, 0.4]
+"""
+
+    assert numeric_consistency(["2026 Project 3 0.2 0.4"], code) == 1
+    assert (
+        numeric_consistency(
+            ["1 2 3 4"],
+            """quadrantChart
+    quadrant-1 "One"
+    quadrant-2 "Two"
+    quadrant-3 "Three"
+    quadrant-4 "Four"
+""",
+        )
+        == 0
+    )
+
+
+def test_numeric_consistency_preserves_quadrant_like_numbers_outside_grammar_slots() -> None:
+    assert (
+        numeric_consistency(
+            ["1 20 4 80"],
+            'pie\n    "quadrant-1" : 20\n    "quadrant-4" : 80\n',
+        )
+        == 1
+    )
+    assert (
+        numeric_consistency(
+            ["5 0.5 0.5"],
+            'quadrantChart\n    quadrant-5 "Outlier"\n    "Point": [0.5, 0.5]\n',
+        )
+        == 1
+    )
+
+
+def test_numeric_consistency_comments_cannot_copy_source_numbers() -> None:
+    code = """pie
+    %% hostile direct candidate copied 999 from source
+    "Actual 2 %% label text": 20 %% copied 999 again
+"""
+
+    assert numeric_consistency(["999"], code) == 0
+    assert numeric_consistency(["Actual 2 20"], code) == 1
+
+
+@pytest.mark.parametrize(
+    ("header", "data_line", "source_text"),
+    [
+        ("pie", '"Slice 2" : 20', "Slice 2 20"),
+        (
+            "xychart-beta",
+            "x-axis [1, 2]\ny-axis 0 --> 20\nline [5, 10]",
+            "1 2 0 20 5 10",
+        ),
+        ("gantt", "Task 2 : task, 2026-01-01, 1d", "Task 2 2026-01-01 1d"),
+        ("packet-beta", '0-7: "Field 2"', "0-7 Field 2"),
+        ("treemap-beta", '"Region 2": 20', "Region 2 20"),
+        ("venn-beta", 'set A["Set 2"]: 20', "Set 2 20"),
+    ],
+)
+def test_numeric_consistency_native_titles_do_not_lower_valid_data_scores(
+    header: str,
+    data_line: str,
+    source_text: str,
+) -> None:
+    code = f"{header}\n    title Metadata 999\n    {data_line}\n"
+
+    assert numeric_consistency([source_text], code) == 1
+
+
+def test_numeric_consistency_preserves_sankey_metadata_like_csv_rows() -> None:
+    code = """sankey-beta
+title 2026,Target,20
+title: 2027,Target,21
+accTitle: 2028,Target,22
+accDescr {A},Target 2029,23
+"""
+
+    assert numeric_consistency(["2026 20 2027 21 2028 22 2029 23"], code) == 1
+
+
+@pytest.mark.parametrize("header", ["flowchart LR", "graph TB"])
+def test_numeric_consistency_excludes_accessibility_metadata_in_numeric_fallbacks(
+    header: str,
+) -> None:
+    code = f"""{header}
+    accTitle: Fallback 999
+    accDescr {{ Hidden 998 }}; A["Observed 2"]
+"""
+
+    assert numeric_consistency(["Observed 2"], code) == 1
+    assert numeric_consistency(["999 998"], code) == 0
+
+
+def test_numeric_consistency_preserves_title_text_inside_actual_labels() -> None:
+    code = 'pie\n    title Metadata 999\n    "title 2" : 20\n'
+
+    assert numeric_consistency(["title 2 20"], code) == 1
+    assert numeric_consistency(["999"], code) == 0
+
+
+def test_numeric_consistency_excludes_native_title_metadata_after_data_lines() -> None:
+    code = """xychart-beta
+    x-axis [1, 2]
+    y-axis 0 --> 20
+    line [5, 10]
+    title Late metadata 999
+"""
+
+    assert numeric_consistency(["1 2 0 20 5 10"], code) == 1
+    assert numeric_consistency(["999"], code) == 0
+
+
+def test_numeric_consistency_excludes_colon_and_block_accessibility_metadata() -> None:
+    code = """quadrantChart
+    accTitle: Portfolio 999
+    title: Colon metadata 998
+    accDescr {
+        Source-only values 997 and 996
+        remain metadata 995
+    }
+    title Native metadata 994
+    quadrant-1 "Group 4"
+    "Point 2": [0.2, 0.4]
+"""
+
+    assert numeric_consistency(["Group 4 Point 2 0.2 0.4"], code) == 1
+    assert numeric_consistency(["999 998 997 996 995 994"], code) == 0
+
+
+def test_numeric_consistency_preserves_data_before_inline_accessibility_metadata() -> None:
+    xychart = """xychart-beta
+    x-axis [1, 2]
+    y-axis 0 --> 20
+    line [5, 10]; accTitle: Hidden 999
+    bar [6, 11]; accDescr { Hidden 998 }; line [7, 12]
+    bar [8, 13]; accDescr {
+        Hidden 997
+    }; line [9, 14]
+    bar [10, 15]; title Hidden 996
+"""
+    quadrant = """quadrantChart
+    x-axis "Low" --> "High"
+    y-axis "Low" --> "High"
+    quadrant-1 "Group 4"
+    "Point 2": [0.2, 0.4]; accDescr { Hidden 995 }; "Point 3": [0.6, 0.8]
+"""
+
+    assert numeric_consistency(["1 2 0 20 5 10 6 11 7 12 8 13 9 14 10 15"], xychart) == 1
+    assert numeric_consistency(["Group 4 Point 2 0.2 0.4 Point 3 0.6 0.8"], quadrant) == 1
+    assert numeric_consistency(["999 998 997 996"], xychart) == 0
+    assert numeric_consistency(["995"], quadrant) == 0
+
+
+def test_numeric_consistency_fails_closed_when_metadata_suffix_budget_is_exhausted() -> None:
+    metadata_chain = "; ".join(f"accDescr {{ Hidden {value} }}" for value in range(1000, 1033))
+    code = f"xychart-beta\nline [1]; {metadata_chain}; line [999]\n"
+
+    # The final hallucinated data statement must not disappear behind bounded scanning.
+    assert numeric_consistency(["1"], code) == 0
+
+
+@pytest.mark.integration
+def test_numeric_metadata_capabilities_match_mermaid_11_16_runtime() -> None:
+    valid_cases = [
+        (
+            f'{header}\naccTitle: Hidden 999\naccDescr {{ Hidden 998 }}; A["Observed 2"]\n',
+            "flowchart-v2",
+        )
+        for header in ("flowchart LR", "graph TB")
+    ] + [
+        (
+            "xychart-beta\nline [5]; accDescr { Hidden 997 }; bar [6]\n",
+            "xychart",
+        ),
+        (
+            'quadrantChart\n"Point 2": [0.2, 0.4]; '
+            'accDescr { Hidden 996 }; "Point 3": [0.6, 0.8]\n',
+            "quadrantChart",
+        ),
+        (
+            "sankey-beta\n"
+            "title 2026,Target,20\n"
+            "title: 2027,Target,21\n"
+            "accTitle: 2028,Target,22\n"
+            "accDescr {A},Target 2029,23\n",
+            "sankey",
+        ),
+    ]
+    invalid_codes = [
+        f'{header}\n{title}\nA["Observed 2"]\n'
+        for header in ("flowchart LR", "graph TB")
+        for title in ("title: Hidden 997", "title Hidden 996")
+    ]
+    runtime = NodeMermaidRuntime()
+    try:
+        valid_results = [
+            runtime.validate_and_render(code, 20) for code, _expected_type in valid_cases
+        ]
+        invalid_results = [runtime.validate_and_render(code, 20) for code in invalid_codes]
+    finally:
+        runtime.close()
+
+    assert all(result.render_valid for result in valid_results)
+    assert [result.diagram_type for result in valid_results] == [
+        expected_type for _code, expected_type in valid_cases
+    ]
+    assert all(not result.syntax_valid for result in invalid_results)
+
+
+def test_numeric_consistency_accepts_detached_source_token_counters() -> None:
+    source = numeric_token_multiset(["-2 20% 0.5 0.5"])
+    before = source.copy()
+
+    assert source == Counter({"0.5": 2, "-2": 1, "20%": 1})
+    assert numeric_consistency(source, "xychart-beta\nline [-2, 20%, 0.5, 0.5]\n") == 1
+    assert source == before
 
 
 def test_ocr_recall_preserves_occurrences_and_normalizes_unicode_labels():

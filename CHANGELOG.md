@@ -111,6 +111,17 @@
 - Use-case fallback typed IR now has a strict nested actor/use-case/relation contract with open
   type-over-label relation text, optional evidence, and original extra metadata preservation, while
   non-empty, collision, endpoint, and resource-cap semantics remain owned by the shared fallback plan.
+- Pie, XY, and Quadrant typed IR now have strict nested prompt/post-validation contracts for finite
+  JSON chart numbers, axes, series, slices, points, and canonical quadrant labels. Their native-only
+  completeness and representability checks remain serializer-owned; record evidence stays in typed
+  sidecars because these chart types have no generated Scene adapter, and publication still requires
+  independent source OCR/vector numeric evidence. XY values must remain inside the declared y-axis,
+  ambiguous Quadrant label aliases fail closed, and grammar-aware numeric projection excludes comments,
+  supported native/colon titles, supported colon/block accessibility metadata, and Quadrant slot indices
+  while retaining visible labels/data and Sankey metadata-like CSV labels. Spatially distinct source
+  occurrences remain multiplicity-preserving without double-counting the same OCR/vector observation.
+  Direct candidates use their validated emitted/runtime type for publication holds, while typed
+  fallbacks retain their semantic type, including Venn.
 - Serializer-visible Scene text now includes Architecture group labels, excludes hidden
   Deployment/Component relation labels, and mirrors Use-case Flowchart relation type-over-label
   precedence; hidden role/shape/style/semantic metadata cannot enter the projected Scene, and
@@ -167,7 +178,8 @@
 - Review HTTP sockets have header deadlines, explicit wildcard Host allowlists, descriptor-based static serving, and bounded lightweight listing.
 - Scene/evidence/VLM inputs reject oversized identifiers, collections, paths, text, non-finite coordinates, and non-finite JSON.
 - Hostile or decompression-bomb Marker previews are omitted without failing document conversion.
-- Numeric consistency ignores accessibility/title metadata so repeated descriptive numbers do not reduce chart agreement.
+- Numeric consistency excludes Mermaid comments plus only the title/accessibility directives supported by
+  the detected grammar, while preserving visible chart labels, data values, and Sankey metadata-like CSV rows.
 - Initial and repaired candidates share OCR/vector, provenance, structural, numeric, and publication-gate evaluation.
 - Structured review operations reject stale revisions before interpretation and require exact Scene-to-Mermaid mappings.
 - Review undo/redo now restores provenance presence and content in the same boundary as code, IR, and renders.
