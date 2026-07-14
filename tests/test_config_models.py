@@ -668,6 +668,130 @@ def test_phase_one_nested_contracts_preserve_partial_and_forward_compatible_ir(
     assert candidate.ir == ir
 
 
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "location"),
+    [
+        (
+            "state",
+            {
+                "states": [{"id": "pending", "kind": "decision"}],
+                "transitions": [],
+            },
+            "states[0].kind",
+        ),
+        (
+            "state",
+            {
+                "states": [{"id": "pending"}],
+                "transitions": [{"source": ["pending"], "target": "[*]"}],
+            },
+            "transitions[0].source",
+        ),
+        (
+            "class",
+            {"classes": [{"members": [{"name": "authorize", "parameters": "amount"}]}]},
+            "classes[0].members[0].parameters",
+        ),
+        (
+            "class",
+            {
+                "classes": [{"id": "Service"}],
+                "relations": [{"source": "Service", "target": "Service", "type": "guessed"}],
+            },
+            "relations[0].type",
+        ),
+        (
+            "er",
+            {"entities": [{"attributes": [{"type": "uuid", "keys": ["PK", "INDEX"]}]}]},
+            "entities[0].attributes[0].keys[1]",
+        ),
+        (
+            "er",
+            {
+                "entities": [{"id": "A"}, {"id": "B"}],
+                "relationships": [{"source": "A", "target": "B", "identifying": 1}],
+            },
+            "relationships[0].identifying",
+        ),
+    ],
+)
+def test_core_uml_nested_contracts_reject_wrong_shapes_and_closed_tokens(
+    diagram_type: str,
+    ir: dict[str, object],
+    location: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    message = str(exc_info.value)
+    assert "violates its nested contract" in message
+    assert location in message
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "state",
+            {
+                "states": [{"kind": "choice", "future_metadata": {"kept": True}}],
+                "transitions": [{"source": "[*]", "target": "choice"}],
+            },
+        ),
+        (
+            "class",
+            {
+                "classes": [
+                    {
+                        "members": [
+                            {
+                                "kind": "method",
+                                "visibility": "+",
+                                "parameters": ["amount"],
+                                "classifier": "abstract",
+                                "future_metadata": {"kept": True},
+                            }
+                        ],
+                        "plugin_style": "stereotype",
+                    }
+                ],
+                "relations": [{"type": "realization"}],
+            },
+        ),
+        (
+            "er",
+            {
+                "entities": [
+                    {
+                        "attributes": [
+                            {
+                                "keys": ["PK", "FK"],
+                                "future_metadata": {"kept": True},
+                            }
+                        ],
+                        "plugin_style": "weak-entity",
+                    }
+                ],
+                "relationships": [
+                    {
+                        "source_cardinality": "only_one",
+                        "target_cardinality": "zero_or_more",
+                        "identifying": False,
+                    }
+                ],
+            },
+        ),
+    ],
+)
+def test_core_uml_nested_contracts_preserve_partial_and_forward_compatible_ir(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    assert candidate.ir == ir
+
+
 @pytest.mark.parametrize("bbox", [[0, 0, 10], [0, 0, True, 10], ["0", 0, 10, 10]])
 def test_phase_one_nested_contracts_require_four_strict_finite_bbox_numbers(bbox) -> None:
     with pytest.raises(ValidationError, match="bbox"):
@@ -685,6 +809,17 @@ def test_canonical_key_revalidates_mutated_nested_contracts() -> None:
     candidate.ir["events"][0]["events"] = "Launch"
 
     with pytest.raises(ValidationError, match=r"events\[0\]\.events"):
+        candidate.canonical_key()
+
+
+def test_canonical_key_revalidates_mutated_core_uml_nested_contract() -> None:
+    candidate = TypedIRCandidate(
+        diagram_type="class",
+        ir={"classes": [{"members": [{"name": "authorize", "parameters": ["amount"]}]}]},
+    )
+    candidate.ir["classes"][0]["members"][0]["parameters"] = "amount"
+
+    with pytest.raises(ValidationError, match=r"classes\[0\]\.members\[0\]\.parameters"):
         candidate.canonical_key()
 
 

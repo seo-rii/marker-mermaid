@@ -2,8 +2,9 @@
 
 Structured VLM은 `diagram_type`만 맞춘 임의 JSON을 내보내지 않습니다. 활성화된 Mermaid 유형마다
 root 필드와 container 종류를 고정한 `TypedIRContract`를 prompt로 받고, 응답은 Pydantic 모델 생성
-시점에 같은 registry로 다시 검사됩니다. Phase 1 유형은 record 내부의 알려진 필드와 recursive container도
-전용 Pydantic model로 검사합니다. serializer의 세부 의미 검사는 그 다음 단계에서 수행합니다.
+시점에 같은 registry로 다시 검사됩니다. Phase 1 유형과 stable Core UML 유형(State, Class, ER)은 record
+내부의 알려진 필드와 recursive container도 전용 Pydantic model로 검사합니다. serializer의 세부 의미
+검사는 그 다음 단계에서 수행합니다.
 
 이 경계는 두 문제를 분리합니다.
 
@@ -15,7 +16,7 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 소비하지 않습니다. 공통 선택 필드는 `title`, `description`, `acc_title`, `acc_description`,
 `direction`이며 semantic node/relation record에는 prior에서 얻은 `evidence_ids`를 요구합니다.
 
-## Phase 1 중첩 계약
+## Phase 1 및 Core UML 중첩 계약
 
 다음 유형은 root container 검사 뒤 strict nested model을 통과해야 합니다.
 
@@ -28,6 +29,9 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | Timeline | event와 여러 label을 담는 `events: string[]` |
 | Gantt | section과 task/date/duration field |
 | Architecture | service, group, edge/port field |
+| State | state/kind와 transition endpoint/label |
+| Class | class/member와 relation/cardinality field |
+| ER | entity/attribute/key와 relationship/cardinality field |
 
 알려진 scalar field에는 object/list를 넣을 수 없고, record와 child container의 종류도 고정합니다. `bbox`는
 정확히 네 개의 finite number, `evidence_ids`와 membership은 string list여야 합니다. `extra="allow"`를
@@ -47,6 +51,9 @@ metadata도 OCR 구조 점수에서는 제외합니다.
 복원 placeholder로 처리할 수 있는 입력은 허용합니다. non-empty 조건, ID uniqueness, endpoint/group reference,
 Gantt 날짜와 Mermaid 표현 가능성은 serializer 및 evaluation gate가 계속 판정합니다. Architecture port는
 nested contract에서 `L/R/T/B`만 허용합니다.
+State kind, Class member visibility/kind/classifier 및 relation type, ER attribute key와 relationship
+cardinality처럼 serializer가 닫힌 집합으로 해석하는 값도 같은 enum으로 제한합니다. 필드 존재 여부와
+non-empty 같은 의미 조건은 계속 serializer가 판정하므로 partial reconstruction은 보존됩니다.
 `evidence_ids`도 prompt에서는 필수지만 legacy/partial candidate 호환을 위해 model에서는 선택 사항이며,
 실제 자동 게시 여부는 provenance gate가 결정합니다.
 
@@ -58,8 +65,9 @@ message만 serializer와 Scene에 함께 전달하고, raw message ID와 무관�
 부여합니다. 따라서 Mermaid에서 합쳐진 actor나 생략된 message를 평가 Scene이 별도 구조로 세지 않습니다.
 
 현재 Marker `response_schema`의 외부 envelope는 여전히 `TypedIRCandidate.ir: dict`입니다. 따라서 이 단계는
-prompt와 응답 후 검증을 중첩 구조까지 강화하지만, 모든 Mermaid 유형을 하나의 discriminated JSON Schema로
-직접 노출하지는 않습니다. 나머지 유형의 전용 model과 envelope-level discriminated schema는 후속 작업입니다.
+활성화된 유형의 prompt와 응답 후 검증을 중첩 구조까지 강화하지만, provider에 모든 Mermaid 유형을 하나의
+discriminated JSON Schema로 직접 노출하거나 generic envelope reserve를 늘리지는 않습니다. 나머지 유형의
+전용 model과 envelope-level discriminated schema는 후속 작업입니다.
 
 Marker 1.10.2의 stock Ollama service는 원래 schema의 최상위 `properties`와 `required`만 복사해 `$defs`를
 버립니다. 이 adapter를 감지하면 local `#/$defs/*` 참조를 재귀적으로 inline한 schema-only

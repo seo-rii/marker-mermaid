@@ -2,7 +2,7 @@
 
 Serializers remain the authoritative deep semantic validators.  These contracts form
 the earlier extraction boundary: they reject another diagram family's root shape,
-validate known Phase 1 nested records without rewriting the original dictionary, and
+validate implemented nested records without rewriting the original dictionary, and
 give the VLM a compact enabled-type-only schema catalog instead of asking it to guess
 field names.
 """
@@ -112,6 +112,98 @@ class _SequenceMessage(_TypedIRRecord):
 class _SequenceIR(_TypedIRRoot):
     participants: list[str | _SequenceParticipant]
     messages: list[_SequenceMessage]
+
+
+class _StateNode(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+    kind: Literal["state", "choice", "fork", "join"] | None = None
+
+
+class _StateTransition(_TypedIRRecord):
+    id: str | None = None
+    source: str | None = None
+    target: str | None = None
+    label: str | None = None
+
+
+class _StateIR(_TypedIRRoot):
+    states: list[_StateNode]
+    transitions: list[_StateTransition]
+
+
+class _ClassMember(_TypedIRRecord):
+    name: str | None = None
+    type: str | None = None
+    visibility: Literal["", "+", "-", "#", "~"] = ""
+    kind: Literal["field", "method"] = "field"
+    parameters: list[str] = Field(default_factory=list)
+    return_type: str | None = None
+    classifier: Literal["", "static", "abstract"] | None = None
+
+
+class _ClassNode(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+    members: list[_ClassMember] = Field(default_factory=list)
+
+
+class _ClassRelation(_TypedIRRecord):
+    id: str | None = None
+    source: str | None = None
+    target: str | None = None
+    type: (
+        Literal[
+            "association",
+            "dependency",
+            "aggregation",
+            "composition",
+            "link",
+            "inheritance",
+            "realization",
+        ]
+        | None
+    ) = None
+    label: str | None = None
+    source_cardinality: str | None = None
+    target_cardinality: str | None = None
+
+
+class _ClassIR(_TypedIRRoot):
+    classes: list[_ClassNode]
+    relations: list[_ClassRelation] = Field(default_factory=list)
+
+
+class _ERAttribute(_TypedIRRecord):
+    type: str | None = None
+    name: str | None = None
+    keys: list[Literal["PK", "FK", "UK"]] = Field(default_factory=list)
+    comment: str | None = None
+
+
+class _EREntity(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+    attributes: list[_ERAttribute] = Field(default_factory=list)
+
+
+class _ERRelationship(_TypedIRRecord):
+    id: str | None = None
+    source: str | None = None
+    target: str | None = None
+    source_cardinality: (
+        Literal["one", "only_one", "zero_or_one", "one_or_more", "zero_or_more"] | None
+    ) = None
+    target_cardinality: (
+        Literal["one", "only_one", "zero_or_one", "one_or_more", "zero_or_more"] | None
+    ) = None
+    identifying: bool | None = None
+    label: str | None = None
+
+
+class _ERIR(_TypedIRRoot):
+    entities: list[_EREntity]
+    relationships: list[_ERRelationship] = Field(default_factory=list)
 
 
 class _HierarchyNode(_TypedIRRecord):
@@ -258,11 +350,48 @@ TYPED_IR_CONTRACTS: dict[str, TypedIRContract] = {
         ),
     ),
     "state": TypedIRContract(
-        (("states", "list"), ("transitions", "list")), guidance="states and transitions"
+        (("states", "list"), ("transitions", "list")),
+        guidance="states and transitions",
+        nested_model=_StateIR,
+        prompt_records=(
+            "states[]: {id:string,label:string,kind:state|choice|fork|join,"
+            "bbox:number[4],evidence_ids:string[]}",
+            "transitions[]: {id:string,source:string,target:string,label:string,"
+            "bbox:number[4],evidence_ids:string[]}",
+        ),
     ),
-    "class": TypedIRContract((("classes", "list"),), ("relations",), "classes, members, relations"),
+    "class": TypedIRContract(
+        (("classes", "list"),),
+        ("relations",),
+        "classes, members, relations",
+        _ClassIR,
+        (
+            "classes[]: {id:string,label:string,bbox:number[4],evidence_ids:string[],"
+            "members:member[]}",
+            "classes[].members[]: {name:string,type:string,visibility:+|-|#|~,"
+            "kind:field|method,parameters:string[],return_type:string,"
+            "classifier:static|abstract,bbox:number[4],evidence_ids:string[]}",
+            "relations[]: {id:string,source:string,target:string,"
+            "type:association|dependency|aggregation|composition|link|inheritance|realization,"
+            "label:string,source_cardinality:string,target_cardinality:string,"
+            "bbox:number[4],evidence_ids:string[]}",
+        ),
+    ),
     "er": TypedIRContract(
-        (("entities", "list"),), ("relationships",), "entities and cardinalities"
+        (("entities", "list"),),
+        ("relationships",),
+        "entities and cardinalities",
+        _ERIR,
+        (
+            "entities[]: {id:string,label:string,bbox:number[4],evidence_ids:string[],"
+            "attributes:attribute[]}",
+            "entities[].attributes[]: {type:string,name:string,keys:(PK|FK|UK)[],"
+            "comment:string,bbox:number[4],evidence_ids:string[]}",
+            "relationships[]: {id:string,source:string,target:string,"
+            "source_cardinality:one|only_one|zero_or_one|one_or_more|zero_or_more,"
+            "target_cardinality:one|only_one|zero_or_one|one_or_more|zero_or_more,"
+            "identifying:boolean,label:string,bbox:number[4],evidence_ids:string[]}",
+        ),
     ),
     "architecture": TypedIRContract(
         (("services", "list"),),
@@ -387,8 +516,10 @@ if set(TYPED_IR_CONTRACTS) != set(ALL_TYPES):  # pragma: no cover - import-time 
     raise RuntimeError(f"typed IR contract registry mismatch: missing={missing}, extra={extra}")
 
 PHASE_ONE_NESTED_TYPES = PHASE_ONE_TYPES | {"generic_network"}
+CORE_UML_NESTED_TYPES = frozenset({"state", "class", "er"})
+NESTED_TYPED_IR_TYPES = PHASE_ONE_NESTED_TYPES | CORE_UML_NESTED_TYPES
 
-for _diagram_type in PHASE_ONE_NESTED_TYPES:  # pragma: no cover - import-time invariant
+for _diagram_type in NESTED_TYPED_IR_TYPES:  # pragma: no cover - import-time invariant
     _contract = TYPED_IR_CONTRACTS[_diagram_type]
     if _contract.nested_model is None or not _contract.prompt_records:
         raise RuntimeError(f"{_diagram_type} is missing its nested typed IR contract")

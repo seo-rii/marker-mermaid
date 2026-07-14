@@ -91,6 +91,9 @@
   serializing it. The three-field candidate envelope is bounded before copying, and fusion applies
   the same item/JSON limits globally across all input observations. Exact field-name checks and
   input-hidden validation errors prevent hostile dictionary-key or error-formatting hooks.
+- Stable State, Class, and ER typed IR now has strict nested extraction and post-validation
+  contracts for serializer-visible records and closed token sets, with records advertised only when
+  those diagram types are enabled and without changing the generic provider response envelope.
 
 ### Changed
 

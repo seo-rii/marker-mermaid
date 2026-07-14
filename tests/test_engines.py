@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 
 import marker_mermaid.engines as engines_module
-from marker_mermaid.config import MIN_VLM_PROMPT_CHARS, PHASE_ONE_TYPES
+from marker_mermaid.config import ALL_TYPES, MIN_VLM_PROMPT_CHARS, PHASE_ONE_TYPES
 from marker_mermaid.engines import (
     MAX_VLM_EVIDENCE_INPUT_CHARS,
     MAX_VLM_OCR_INPUT_CHARS,
@@ -28,6 +28,8 @@ from marker_mermaid.models import (
 )
 from marker_mermaid.protocols import SourceContext
 from marker_mermaid.typed_contracts import (
+    CORE_UML_NESTED_TYPES,
+    NESTED_TYPED_IR_TYPES,
     PHASE_ONE_NESTED_TYPES,
     TYPED_IR_CONTRACTS,
     typed_ir_contract_prompt,
@@ -1317,3 +1319,86 @@ def test_every_phase_one_type_and_alias_has_nested_prompt_records():
             f"  {other_type}." not in prompt
             for other_type in PHASE_ONE_NESTED_TYPES - {diagram_type}
         )
+
+
+def test_core_uml_nested_contract_prompt_is_deterministic_and_enabled_type_only():
+    first = typed_ir_contract_prompt({"state", "class", "er"})
+    second = typed_ir_contract_prompt({"er", "state", "class"})
+
+    assert first == second
+    assert (
+        "  state.states[]: {id:string,label:string,kind:state|choice|fork|join,"
+        "bbox:number[4],evidence_ids:string[]}"
+    ) in first
+    assert (
+        "  class.classes[].members[]: {name:string,type:string,visibility:+|-|#|~,"
+        "kind:field|method,parameters:string[],return_type:string,"
+        "classifier:static|abstract,bbox:number[4],evidence_ids:string[]}"
+    ) in first
+    assert (
+        "  er.relationships[]: {id:string,source:string,target:string,"
+        "source_cardinality:one|only_one|zero_or_one|one_or_more|zero_or_more,"
+        "target_cardinality:one|only_one|zero_or_one|one_or_more|zero_or_more,"
+        "identifying:boolean,label:string,bbox:number[4],evidence_ids:string[]}"
+    ) in first
+    assert "flowchart.nodes[]" not in first
+    assert "architecture.services[]" not in first
+    assert first.index("- class:") < first.index("- er:") < first.index("- state:")
+
+
+def test_every_core_uml_type_has_nested_prompt_records():
+    expected_records = {
+        "class": ("classes[]", "classes[].members[]", "relations[]"),
+        "er": ("entities[]", "entities[].attributes[]", "relationships[]"),
+        "state": ("states[]", "transitions[]"),
+    }
+
+    assert set(expected_records) == CORE_UML_NESTED_TYPES
+    assert NESTED_TYPED_IR_TYPES == PHASE_ONE_NESTED_TYPES | CORE_UML_NESTED_TYPES
+    assert {
+        diagram_type
+        for diagram_type, contract in TYPED_IR_CONTRACTS.items()
+        if contract.nested_model is not None
+    } == NESTED_TYPED_IR_TYPES
+    for diagram_type, prefixes in expected_records.items():
+        contract = TYPED_IR_CONTRACTS[diagram_type]
+        prompt = typed_ir_contract_prompt({diagram_type})
+        assert contract.nested_model is not None
+        assert tuple(record.split(":", 1)[0] for record in contract.prompt_records) == prefixes
+        assert all(f"  {diagram_type}.{record}" in prompt for record in contract.prompt_records)
+        assert all(
+            f"  {other_type}." not in prompt
+            for other_type in CORE_UML_NESTED_TYPES - {diagram_type}
+        )
+
+
+def test_all_enabled_nested_contract_prompts_fit_minimum_request_budget():
+    captured: dict[str, object] = {}
+
+    def service(**kwargs):
+        captured.update(kwargs)
+        return EngineObservation(
+            prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0])
+        ).model_dump(mode="json")
+
+    engine = MarkerStructuredVLMEngine(
+        service,
+        enabled_types=set(ALL_TYPES),
+        max_prompt_chars=MIN_VLM_PROMPT_CHARS,
+    )
+    engine.observe(
+        SourceContext(
+            source_id="figure-1",
+            source_block_ids=["/page/0/Figure/1"],
+            source_image_name="figure.png",
+            image=Image.new("RGB", (20, 20), "white"),
+            views={"original": Image.new("RGB", (20, 20), "white")},
+        )
+    )
+
+    prompt = captured["prompt"]
+    assert isinstance(prompt, str)
+    assert len(prompt) + engine.response_schema_chars_reserved <= MIN_VLM_PROMPT_CHARS
+    assert EngineObservation.model_json_schema()["$defs"]["TypedIRCandidate"]["properties"][
+        "ir"
+    ] == {"additionalProperties": True, "title": "Ir", "type": "object"}
