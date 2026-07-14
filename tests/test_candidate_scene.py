@@ -1951,6 +1951,240 @@ def test_planning_scene_adapters_fail_closed_with_the_shared_plan(
     assert typed_ir_to_scene(diagram_type, ir) is None
 
 
+def test_packet_scene_preserves_planned_ids_geometry_and_field_provenance() -> None:
+    ir = {
+        "fields": [
+            {
+                "id": "source-port",
+                "start": 0,
+                "end": 15,
+                "label": "Source port",
+                "bbox": [1, 2, 31, 12],
+                "evidence_ids": ["ocr-source", "cell-source"],
+            },
+            {
+                "start": 16,
+                "end": 31,
+                "label": "Destination port",
+                "bbox": [32, 2, 62, 12],
+                "evidence_ids": ["ocr-destination"],
+            },
+        ]
+    }
+
+    scene = typed_ir_to_scene("packet", ir)
+
+    assert scene is not None
+    assert scene.reading_direction == "LR"
+    assert scene.relations == []
+    assert [
+        (element.id, element.role, element.text, element.bbox, element.evidence_ids)
+        for element in scene.elements
+    ] == [
+        (
+            "packet_field_source_port",
+            "field",
+            "Source port",
+            (1.0, 2.0, 31.0, 12.0),
+            ["ocr-source", "cell-source"],
+        ),
+        (
+            "packet_field_field_2",
+            "field",
+            "Destination port",
+            (32.0, 2.0, 62.0, 12.0),
+            ["ocr-destination"],
+        ),
+    ]
+    assert list(typed_ir_semantic_texts("packet", ir, scene)) == [
+        "Source port",
+        "Destination port",
+    ]
+
+
+@pytest.mark.parametrize("second_id", ["same-id", "same_id"])
+def test_packet_scene_fails_closed_on_duplicate_or_normalized_field_ids(
+    second_id: str,
+) -> None:
+    assert (
+        typed_ir_to_scene(
+            "packet",
+            {
+                "fields": [
+                    {"id": "same-id", "start": 0, "end": 3, "label": "First"},
+                    {"id": second_id, "start": 4, "end": 7, "label": "Second"},
+                ]
+            },
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "expected_ids"),
+    [
+        (
+            "treeview",
+            {
+                "root": {
+                    "id": "root",
+                    "label": "Root",
+                    "evidence_ids": ["ocr-root"],
+                    "children": [
+                        {"label": "First", "evidence_ids": ["ocr-first"]},
+                        {"id": "root_1", "label": "Second"},
+                    ],
+                }
+            },
+            ["treeview_node_root", "treeview_node_node_2", "treeview_node_root_1"],
+        ),
+        (
+            "ishikawa",
+            {
+                "effect": {
+                    "id": "effect",
+                    "label": "Effect",
+                    "evidence_ids": ["ocr-effect"],
+                },
+                "categories": [
+                    {"label": "First", "evidence_ids": ["ocr-first"]},
+                    {"id": "effect_1", "label": "Second"},
+                ],
+            },
+            ["ishikawa_node_effect", "ishikawa_node_node_2", "ishikawa_node_effect_1"],
+        ),
+    ],
+)
+def test_special_hierarchy_scene_reuses_serializer_ids_for_missing_id_collisions(
+    diagram_type: str,
+    ir: dict[str, object],
+    expected_ids: list[str],
+) -> None:
+    scene = typed_ir_to_scene(diagram_type, ir)
+
+    assert scene is not None
+    assert [element.id for element in scene.elements] == expected_ids
+    assert [element.text for element in scene.elements] == [
+        "Root" if diagram_type == "treeview" else "Effect",
+        "First",
+        "Second",
+    ]
+    assert [element.evidence_ids for element in scene.elements] == [
+        ["ocr-root"] if diagram_type == "treeview" else ["ocr-effect"],
+        ["ocr-first"],
+        [],
+    ]
+    assert [
+        (relation.source_id, relation.target_id, relation.semantic_relation)
+        for relation in scene.relations
+    ] == [
+        (expected_ids[0], expected_ids[1], "containment"),
+        (expected_ids[0], expected_ids[2], "containment"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "expected_texts"),
+    [
+        (
+            "treeview",
+            {"root": {"name": "Workspace", "children": [{"name": "Package"}]}},
+            ["Workspace", "Package"],
+        ),
+        (
+            "organization",
+            {"root": {"name": "Leadership", "children": [{"name": "Engineering"}]}},
+            ["Leadership", "Engineering"],
+        ),
+        (
+            "ishikawa",
+            {"effect": {"name": "Delay"}, "categories": [{"name": "People"}]},
+            ["Delay", "People"],
+        ),
+    ],
+)
+def test_special_hierarchy_scene_preserves_serializer_name_label_aliases(
+    diagram_type: str,
+    ir: dict[str, object],
+    expected_texts: list[str],
+) -> None:
+    scene = typed_ir_to_scene(diagram_type, ir)
+
+    assert scene is not None
+    assert [element.text for element in scene.elements] == expected_texts
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "treeview",
+            {
+                "root": {
+                    "id": "root",
+                    "label": "Root",
+                    "children": [
+                        {"id": "same-id", "label": "First"},
+                        {"id": "same_id", "label": "Second"},
+                    ],
+                }
+            },
+        ),
+        (
+            "organization",
+            {
+                "root": {
+                    "id": "root",
+                    "label": "Root",
+                    "children": [
+                        {"id": "same-id", "label": "First"},
+                        {"id": "same_id", "label": "Second"},
+                    ],
+                }
+            },
+        ),
+        (
+            "treeview",
+            {
+                "root": {
+                    "id": "root",
+                    "label": "Root",
+                    "children": [
+                        {"id": "same", "label": "First"},
+                        {"id": "same", "label": "Second"},
+                    ],
+                }
+            },
+        ),
+        (
+            "ishikawa",
+            {
+                "effect": {"id": "effect", "label": "Effect"},
+                "categories": [
+                    {"id": "same", "label": "First"},
+                    {"id": "same", "label": "Second"},
+                ],
+            },
+        ),
+        (
+            "ishikawa",
+            {
+                "effect": {"id": "effect", "label": "Effect"},
+                "categories": [
+                    {"id": "same-id", "label": "First"},
+                    {"id": "same_id", "label": "Second"},
+                ],
+            },
+        ),
+    ],
+)
+def test_special_hierarchy_scene_fails_closed_on_ambiguous_planned_ids(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    assert typed_ir_to_scene(diagram_type, ir) is None
+
+
 def test_hierarchy_lineage_wardley_and_venn_scene_adapters_are_attributable():
     organization = typed_ir_to_scene(
         "organization",
@@ -1992,7 +2226,13 @@ def test_hierarchy_lineage_wardley_and_venn_scene_adapters_are_attributable():
         },
     )
 
-    assert organization is not None and organization.relations[0].target_id == "cto"
+    assert organization is not None
+    assert [element.id for element in organization.elements] == [
+        "treeview_node_ceo",
+        "treeview_node_cto",
+    ]
+    assert organization.relations[0].source_id == "treeview_node_ceo"
+    assert organization.relations[0].target_id == "treeview_node_cto"
     assert lineage is not None and lineage.relations[0].semantic_relation == "unknown"
     assert wardley is not None and wardley.relations[0].evidence_ids == ["line-api"]
     assert venn is not None and len(venn.elements) == 3 and len(venn.relations) == 2

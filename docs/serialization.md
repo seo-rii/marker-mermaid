@@ -34,8 +34,8 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 | Venn | `venn` 또는 `flowchart` | 모든 크기가 관측되면 native, 누락 시 숫자 합성 없는 set graph |
 | Journey | `timeline` | strict SVG에서 금지된 `foreignObject`를 피하고 score/actor를 event text로 보존 |
 | Kanban, GitGraph | 동일 또는 `flowchart` | native runtime 거부 시 공용 planning plan으로 같은 candidate slot에서 portable fallback |
-| Packet | `packet` 또는 `flowchart` | 명시적 contiguous bit range만 native; gap을 임의 field로 채우지 않음 |
-| Ishikawa, TreeView | 동일 | cycle/duplicate ID/depth를 검증한 hierarchy |
+| Packet | `packet` 또는 `flowchart` | 명시적 contiguous bit range만 native; fallback은 가상 gap·edge가 없는 독립 field |
+| Ishikawa, TreeView | 동일 또는 `flowchart` | cycle/object reuse/duplicate ID/depth를 검증한 hierarchy |
 | Event Modeling | `flowchart` | Mermaid 11.16 renderer 불안정으로 lane-aware fallback |
 | Wardley, Cynefin, Railroad | 동일 | 좌표/domain/rule AST evidence가 완전할 때 experimental native |
 | ZenUML | `sequence` | pinned runtime에 ZenUML extension이 없어 명시적 fallback |
@@ -220,6 +220,32 @@ glyph를 보존하고 active URL/directive/callback/entity token만 invisible se
 Kanban native markdown label은 literal quote/backtick을 보존하지 못할 때 `″`/`ˋ`를 사용합니다. Flowchart
 fallback은 native code quoting이 아니라 portable label encoder를 사용하며 literal quote/backslash를
 `″`/`∖`로 바꾼 경우 warning을 남깁니다.
+
+### Packet·Ishikawa·TreeView의 공유 projection
+
+세 유형은 strict nested extraction 후 serializer와 generated Scene이 같은 bounded plan을
+소비합니다. Native 문법은 검증된 label/range/depth를 사용하고 명시적 ID를 표현하는
+fallback과 Scene만 plan의 reserved-safe emitted ID를 사용합니다. Packet plan은
+source field record·raw ID·`packet_field_` emitted ID·label·
+explicit start/end를 묶어 contiguous 여부를 판정합니다. Gap이 있거나 native runtime이
+거부하면 모든 bit range를 ordered label로 보존하지만 필드 사이 관계를 추측하지 않는
+disconnected Flowchart를 방출합니다. Generated Scene도 같은 ID/label/bbox/evidence의
+`field` element만 `LR` 순서로 만들고 relation은 비워 둡니다.
+
+Ishikawa plan은 child가 없는 effect와 categories를 하나의 DFS tree로, TreeView plan은
+root/children tree로 검증합니다. Source ID·emitted ID·label·depth·parent·source record를
+각 row에 고정하며 serializer, Flowchart fallback과 Scene containment relation이 이 row를 공유합니다.
+따라서 missing-ID DFS 순서, reserved-safe `ishikawa_node_`/`treeview_node_` namespace와
+attribution 분모가 같습니다. Raw/normalized/emitted ID 충돌, cycle, 이미 방문한 같은
+dict object 재사용, 64 depth·2,000 node·500 fallback edge 한도를 넘으면 부분
+hierarchy를 방출하지 않고 후보 전체를 거부합니다.
+
+`label`/`name` alias가 동시에 있으면 정규화한 문자열이 같아야 하고 Ishikawa
+effect의 `children`은 category root를 덮어쓰지 못하게 거부합니다. Entity-like literal을
+pinned grammar가 안전하게 보존하지 못하면 보이는 `＆`/`＃` glyph와 compatibility warning을
+사용합니다. 원 label, alias, bbox/evidence는 typed IR·review sidecar에 변경 없이
+남습니다. Native/fallback 모두 serializer 반환 전에 50,000자·5,000줄 source budget을
+다시 검사합니다.
 
 ### Pie·XY·Quadrant의 native-only 경계
 

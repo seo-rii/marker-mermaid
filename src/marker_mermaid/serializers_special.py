@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from marker_mermaid.accessibility import resolve_accessibility
+from marker_mermaid.models import MAX_ID_CHARS
 from marker_mermaid.serialization import SerializationResult
 from marker_mermaid.serializers import SerializationError, serialize_flowchart
 
@@ -32,6 +34,10 @@ _ACTIVE_CALLBACK = re.compile(r"\b(?:call|callback)\s*\(", re.IGNORECASE)
 _CONTROL_WORD = re.compile(r"\b(?:click|style|classDef|linkStyle)\b", re.IGNORECASE)
 _CONFIG = re.compile(r"\bconfig\s*:", re.IGNORECASE)
 _ISHIKAWA_HEADER = re.compile(r"^ishikawa(?:-beta)?(?=$|\W)", re.IGNORECASE)
+_ENTITY_LITERAL = re.compile(
+    r"&(?P<body>#[0-9]+|#x[0-9A-F]+|[A-Z][A-Z0-9]+);",
+    re.IGNORECASE,
+)
 _FRAME_TYPES = {
     "command",
     "event",
@@ -41,11 +47,53 @@ _FRAME_TYPES = {
     "unknown",
 }
 _MAX_PACKET_BIT = 4_095
+_MAX_HIERARCHY_DEPTH = 64
+_MAX_HIERARCHY_NODES = 2_000
+_MAX_FLOWCHART_EDGES = 500
+MAX_SPECIAL_OUTPUT_CHARS = 50_000
+MAX_SPECIAL_OUTPUT_LINES = 5_000
 _ZERO_WIDTH_SPACE = "\u200b"
 _FLOWCHART_COMPATIBILITY_WARNING = (
     "Flowchart fallback replaced grammar-conflicting quote or backslash characters "
     "with visible compatibility glyphs."
 )
+_ENTITY_COMPATIBILITY_WARNING = (
+    "Entity-like literal text uses visible fullwidth ampersand and number-sign glyphs "
+    "(＆ and ＃) because Mermaid 11.16 cannot preserve every literal entity form."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PacketFieldPlan:
+    """One packet field whose identity and explicit bit evidence are preserved."""
+
+    source_record: Mapping[str, Any]
+    source_id: str
+    emitted_id: str
+    label: str
+    start: int
+    end: int
+
+
+@dataclass(frozen=True, slots=True)
+class PacketPlan:
+    """Validated packet fields shared by native, fallback, and Scene consumers."""
+
+    fields: tuple[PacketFieldPlan, ...]
+    contiguous: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SpecialHierarchyNodePlan:
+    """One validated node in an Ishikawa or TreeView hierarchy."""
+
+    source_record: Mapping[str, Any]
+    source_id: str
+    emitted_id: str
+    label: str
+    depth: int
+    parent_source_id: str | None
+    parent_emitted_id: str | None
 
 
 def _semantic_text(value: Any, *, context: str) -> str:
@@ -58,6 +106,58 @@ def _semantic_text(value: Any, *, context: str) -> str:
     if not text:
         raise SerializationError(f"{context} requires a label")
     return text
+
+
+def _record_label(record: Mapping[str, Any], *, context: str) -> str:
+    """Resolve the label/name compatibility alias without hiding conflicts."""
+
+    label_present = "label" in record and record.get("label") is not None
+    name_present = "name" in record and record.get("name") is not None
+    if label_present and name_present:
+        label = _semantic_text(record.get("label"), context=f"{context} label")
+        name = _semantic_text(record.get("name"), context=f"{context} name")
+        if label != name:
+            raise SerializationError(f"{context} label and name aliases must agree")
+        return label
+    if label_present:
+        return _semantic_text(record.get("label"), context=context)
+    return _semantic_text(record.get("name"), context=context)
+
+
+def _entity_compatibility_text(text: str) -> tuple[str, bool]:
+    """Keep entity-like evidence visible instead of allowing SVG entity decoding."""
+
+    substituted = _ENTITY_LITERAL.search(text) is not None
+    return (
+        _ENTITY_LITERAL.sub(
+            lambda match: (
+                f"＆＃{match.group('body')[1:]};"
+                if match.group("body").startswith("#")
+                else f"＆{match.group('body')};"
+            ),
+            text,
+        ),
+        substituted,
+    )
+
+
+def _special_directive_text(value: Any, *, context: str) -> str:
+    text, _substituted = _entity_compatibility_text(_semantic_text(value, context=context))
+    return _neutralize_active_text(text)
+
+
+def _preflight_special_code(code: str, *, diagram_type: str) -> str:
+    """Apply CandidateValidator's default source budgets before returning code."""
+
+    if code.count("\n") + 1 > MAX_SPECIAL_OUTPUT_LINES:
+        raise SerializationError(
+            f"{diagram_type} output exceeds source-line limit of {MAX_SPECIAL_OUTPUT_LINES}"
+        )
+    if len(code) > MAX_SPECIAL_OUTPUT_CHARS:
+        raise SerializationError(
+            f"{diagram_type} output exceeds source-character limit of {MAX_SPECIAL_OUTPUT_CHARS}"
+        )
+    return code
 
 
 def _neutralize_active_text(text: str) -> str:
@@ -105,11 +205,11 @@ def _flowchart_code_text(value: Any, *, context: str) -> str:
 
 
 def _packet_text(value: Any, *, context: str) -> str:
-    return _directive_text(value, context=context).replace("\\", "\\\\").replace('"', '\\"')
+    return _special_directive_text(value, context=context).replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _ishikawa_text(value: Any, *, context: str) -> str:
-    text = _directive_text(value, context=context)
+    text = _special_directive_text(value, context=context)
     if _ISHIKAWA_HEADER.match(text):
         text = f"{text[0]}{_ZERO_WIDTH_SPACE}{text[1:]}"
     return text
@@ -121,6 +221,8 @@ def _source_id(value: Any, *, fallback: str, context: str) -> str:
         raise SerializationError(
             f"{context} id must match [A-Za-z_][A-Za-z0-9_-]* without surrounding whitespace"
         )
+    if len(source_id) > MAX_ID_CHARS:
+        raise SerializationError(f"{context} id exceeds source identifier limit of {MAX_ID_CHARS}")
     return source_id
 
 
@@ -138,9 +240,40 @@ def _register_id(
         raise SerializationError(
             f"{context} ids are ambiguous after Mermaid normalization: {source_id!r}"
         )
+    if len(output_id) > MAX_ID_CHARS:
+        raise SerializationError(
+            f"{context} id exceeds normalized identifier limit of {MAX_ID_CHARS}"
+        )
     source_ids.add(source_id)
     output_ids.add(output_id)
     return output_id
+
+
+def _register_prefixed_id(
+    source_id: str,
+    prefix: str,
+    source_ids: set[str],
+    emitted_ids: set[str],
+    *,
+    context: str,
+) -> str:
+    normalized_id = _output_id(source_id)
+    emitted_id = f"{prefix}{normalized_id}"
+    if source_id in source_ids:
+        raise SerializationError(f"duplicate {context} id {source_id!r}")
+    if emitted_id in emitted_ids:
+        raise SerializationError(
+            f"{context} ids are ambiguous after Mermaid normalization: {source_id!r}"
+        )
+    if len(normalized_id) > MAX_ID_CHARS:
+        raise SerializationError(
+            f"{context} id exceeds normalized identifier limit of {MAX_ID_CHARS}"
+        )
+    if len(emitted_id) > MAX_ID_CHARS:
+        raise SerializationError(f"{context} id exceeds emitted identifier limit of {MAX_ID_CHARS}")
+    source_ids.add(source_id)
+    emitted_ids.add(emitted_id)
+    return emitted_id
 
 
 def _safe_accessibility_values(
@@ -165,6 +298,11 @@ def _safe_accessibility_values(
             "Unsafe accessible description remained in typed IR and was replaced by a generic "
             "SVG description."
         )
+    if diagram_type in {"packet", "ishikawa", "treeview"}:
+        title, title_substituted = _entity_compatibility_text(title)
+        description, description_substituted = _entity_compatibility_text(description)
+        if title_substituted or description_substituted:
+            warnings.append(_ENTITY_COMPATIBILITY_WARNING)
     return title, description, tuple(warnings)
 
 
@@ -219,12 +357,21 @@ def _serialize_flowchart_fallback(
         *(str(edge.get("label") or "") for edge in edges),
     ]
     compatibility_warnings = _flowchart_compatibility_warnings(compatibility_texts)
+    use_entity_compatibility = diagram_type in {"packet", "ishikawa", "treeview"}
+    entity_substituted = use_entity_compatibility and any(
+        _ENTITY_LITERAL.search(str(text)) for text in compatibility_texts
+    )
+
+    def safe_fallback_text(value: Any, *, context: str) -> str:
+        semantic = _semantic_text(value, context=context)
+        if use_entity_compatibility:
+            semantic, _substituted = _entity_compatibility_text(semantic)
+        return _flowchart_source_text(semantic, context=context)
+
     safe_nodes = [
         {
             **node,
-            "label": _flowchart_source_text(
-                node.get("label"), context=f"{diagram_type} fallback node"
-            ),
+            "label": safe_fallback_text(node.get("label"), context=f"{diagram_type} fallback node"),
         }
         for node in nodes
     ]
@@ -233,7 +380,7 @@ def _serialize_flowchart_fallback(
             **edge,
             **(
                 {
-                    "label": _flowchart_source_text(
+                    "label": safe_fallback_text(
                         edge["label"], context=f"{diagram_type} fallback edge"
                     ).replace("|", "∣")
                 }
@@ -256,17 +403,29 @@ def _serialize_flowchart_fallback(
             },
             experimental=experimental,
         ),
-        (*accessibility_warnings, *compatibility_warnings),
+        tuple(
+            dict.fromkeys(
+                (
+                    *accessibility_warnings,
+                    *compatibility_warnings,
+                    *((_ENTITY_COMPATIBILITY_WARNING,) if entity_substituted else ()),
+                )
+            )
+        ),
     )
 
 
-def _packet_fields(ir: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
+def plan_packet_fields(ir: dict[str, Any]) -> PacketPlan:
+    """Validate packet records without deriving missing bit ranges or identities."""
+
     fields = ir.get("fields")
     if not isinstance(fields, list) or not fields:
         raise SerializationError("packet IR requires a non-empty fields list")
-    normalized: list[dict[str, Any]] = []
+    if len(fields) > _MAX_PACKET_BIT + 1:
+        raise SerializationError("packet fields exceed deterministic resource limits")
+    normalized: list[PacketFieldPlan] = []
     source_ids: set[str] = set()
-    output_ids: set[str] = set()
+    emitted_ids: set[str] = set()
     previous_end = -1
     contiguous = True
     for index, field in enumerate(fields, start=1):
@@ -275,7 +434,13 @@ def _packet_fields(ir: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
         source_id = _source_id(
             field.get("id"), fallback=f"field_{index}", context=f"packet field {index}"
         )
-        output_id = _register_id(source_id, source_ids, output_ids, context="packet field")
+        emitted_id = _register_prefixed_id(
+            source_id,
+            "packet_field_",
+            source_ids,
+            emitted_ids,
+            context="packet field",
+        )
         if "start" not in field or "end" not in field:
             raise SerializationError(
                 f"packet field {source_id!r} requires explicit start and end bit evidence"
@@ -294,40 +459,37 @@ def _packet_fields(ir: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
             contiguous = False
         previous_end = end
         normalized.append(
-            {
-                "source_id": source_id,
-                "output_id": output_id,
-                "label": _semantic_text(field.get("label"), context=f"packet field {source_id!r}"),
-                "start": start,
-                "end": end,
-            }
+            PacketFieldPlan(
+                source_record=field,
+                source_id=source_id,
+                emitted_id=emitted_id,
+                label=_record_label(field, context=f"packet field {source_id!r}"),
+                start=start,
+                end=end,
+            )
         )
-    return normalized, contiguous
+    return PacketPlan(tuple(normalized), contiguous)
 
 
 def _packet_fallback(
     ir: dict[str, Any],
-    fields: list[dict[str, Any]],
+    fields: tuple[PacketFieldPlan, ...],
     *,
     experimental: bool,
     reason: str,
 ) -> SerializationResult:
     nodes = [
         {
-            "id": field["output_id"],
-            "label": f"{field['start']}-{field['end']}: {field['label']}",
+            "id": field.emitted_id,
+            "label": f"{field.start}-{field.end}: {field.label}",
         }
         for field in fields
-    ]
-    edges = [
-        {"source": left["output_id"], "target": right["output_id"]}
-        for left, right in zip(fields, fields[1:], strict=False)
     ]
     code, accessibility_warnings = _serialize_flowchart_fallback(
         ir,
         "packet",
         nodes,
-        edges,
+        [],
         experimental=experimental,
     )
     return SerializationResult.fallback(
@@ -336,7 +498,8 @@ def _packet_fallback(
         code,
         warnings=(
             reason,
-            "Packet bit-cell widths and grid layout were reduced to ordered range labels.",
+            "Packet bit-cell widths and grid layout were reduced to disconnected ordered "
+            "range labels without inferred relationships.",
             *accessibility_warnings,
         ),
         stability="experimental",
@@ -346,18 +509,18 @@ def _packet_fallback(
 def _serialize_packet(
     ir: dict[str, Any], *, experimental: bool, native_runtime_valid: bool
 ) -> SerializationResult:
-    fields, contiguous = _packet_fields(ir)
-    if not contiguous:
+    plan = plan_packet_fields(ir)
+    if not plan.contiguous:
         return _packet_fallback(
             ir,
-            fields,
+            plan.fields,
             experimental=experimental,
             reason="Native Mermaid packet fields must be contiguous and start at bit zero.",
         )
     if not native_runtime_valid:
         return _packet_fallback(
             ir,
-            fields,
+            plan.fields,
             experimental=experimental,
             reason="CandidateValidator rejected the native Mermaid packet candidate.",
         )
@@ -366,76 +529,150 @@ def _serialize_packet(
     )
     lines = ["packet-beta", *accessibility_lines]
     if ir.get("title"):
-        lines.append(f"    title {_directive_text(ir['title'], context='packet title')}")
+        lines.append(f"    title {_special_directive_text(ir['title'], context='packet title')}")
     lines.extend(
-        f'{field["start"]}-{field["end"]}: "'
-        f'{_packet_text(field["label"], context="packet field label")}"'
-        for field in fields
+        f'{field.start}-{field.end}: "{_packet_text(field.label, context="packet field label")}"'
+        for field in plan.fields
+    )
+    entity_warning = (
+        (_ENTITY_COMPATIBILITY_WARNING,)
+        if any(_ENTITY_LITERAL.search(field.label) for field in plan.fields)
+        or (ir.get("title") is not None and _ENTITY_LITERAL.search(str(ir["title"])))
+        else ()
     )
     return SerializationResult.native(
         "packet",
         "\n".join(lines) + "\n",
-        warnings=accessibility_warnings,
+        warnings=tuple(dict.fromkeys((*accessibility_warnings, *entity_warning))),
         stability="experimental",
     )
 
 
-def _hierarchy(
+def _plan_special_hierarchy(
     root: Any,
     *,
     context: str,
-    child_field: str = "children",
-) -> list[tuple[dict[str, Any], str, str, str, int, str | None]]:
+    emitted_prefix: str,
+    root_children: list[Any] | None = None,
+) -> tuple[SpecialHierarchyNodePlan, ...]:
     if not isinstance(root, dict):
         raise SerializationError(f"{context} requires a root object")
-    rows: list[tuple[dict[str, Any], str, str, str, int, str | None]] = []
+    rows: list[SpecialHierarchyNodePlan] = []
     active: set[int] = set()
+    seen: set[int] = set()
     source_ids: set[str] = set()
-    output_ids: set[str] = set()
+    emitted_ids: set[str] = set()
 
-    def visit(node: dict[str, Any], depth: int, parent_id: str | None) -> None:
-        if depth > 64 or len(rows) >= 2_000:
+    def visit(
+        node: dict[str, Any],
+        depth: int,
+        parent_source_id: str | None,
+        parent_emitted_id: str | None,
+    ) -> None:
+        if depth > _MAX_HIERARCHY_DEPTH or len(rows) >= _MAX_HIERARCHY_NODES:
             raise SerializationError(f"{context} hierarchy exceeds deterministic resource limits")
         identity = id(node)
         if identity in active:
             raise SerializationError(f"{context} hierarchy contains a cycle")
+        if identity in seen:
+            raise SerializationError(f"{context} hierarchy reuses a node object")
+        seen.add(identity)
         active.add(identity)
         try:
             index = len(rows) + 1
             source_id = _source_id(
                 node.get("id"), fallback=f"node_{index}", context=f"{context} node {index}"
             )
-            output_id = _register_id(source_id, source_ids, output_ids, context=f"{context} node")
-            label = _semantic_text(node.get("label", node.get("name")), context=f"{context} node")
-            rows.append((node, source_id, output_id, label, depth, parent_id))
-            children = node.get(child_field, [])
+            emitted_id = _register_prefixed_id(
+                source_id,
+                emitted_prefix,
+                source_ids,
+                emitted_ids,
+                context=f"{context} node",
+            )
+            label = _record_label(node, context=f"{context} node")
+            rows.append(
+                SpecialHierarchyNodePlan(
+                    source_record=node,
+                    source_id=source_id,
+                    emitted_id=emitted_id,
+                    label=label,
+                    depth=depth,
+                    parent_source_id=parent_source_id,
+                    parent_emitted_id=parent_emitted_id,
+                )
+            )
+            children = (
+                root_children
+                if depth == 0 and root_children is not None
+                else node.get("children", [])
+            )
             if not isinstance(children, list):
                 raise SerializationError(f"{context} node {source_id!r} children must be a list")
             for child in children:
                 if not isinstance(child, dict):
                     raise SerializationError(f"{context} children must be objects")
-                visit(child, depth + 1, output_id)
+                visit(child, depth + 1, source_id, emitted_id)
         finally:
             active.remove(identity)
 
-    visit(root, 0, None)
+    visit(root, 0, None, None)
+    return tuple(rows)
+
+
+def plan_ishikawa_hierarchy(ir: dict[str, Any]) -> tuple[SpecialHierarchyNodePlan, ...]:
+    """Validate the effect/category/cause tree shared by every Ishikawa output."""
+
+    effect = ir.get("effect")
+    if not isinstance(effect, dict):
+        raise SerializationError("ishikawa IR requires an effect object")
+    if "children" in effect:
+        raise SerializationError(
+            "ishikawa effect.children is not part of the effect/category contract"
+        )
+    categories = ir.get("categories")
+    if not isinstance(categories, list) or not categories:
+        raise SerializationError("ishikawa IR requires non-empty categories")
+    return _plan_special_hierarchy(
+        effect,
+        context="ishikawa",
+        emitted_prefix="ishikawa_node_",
+        root_children=categories,
+    )
+
+
+def plan_treeview_hierarchy(ir: dict[str, Any]) -> tuple[SpecialHierarchyNodePlan, ...]:
+    """Validate one rooted TreeView hierarchy with deterministic emitted IDs."""
+
+    rows = _plan_special_hierarchy(
+        ir.get("root"),
+        context="treeview",
+        emitted_prefix="treeview_node_",
+    )
+    if len(rows) < 2:
+        raise SerializationError("treeview requires an explicit hierarchy below the root")
     return rows
 
 
 def _hierarchy_flowchart(
     requested_type: str,
     ir: dict[str, Any],
-    rows: Iterable[tuple[dict[str, Any], str, str, str, int, str | None]],
+    rows: Iterable[SpecialHierarchyNodePlan],
     *,
     experimental: bool,
     warnings: tuple[str, ...],
 ) -> SerializationResult:
     materialized = list(rows)
-    nodes = [{"id": output_id, "label": label} for _, _, output_id, label, _, _ in materialized]
+    if max(0, len(materialized) - 1) > _MAX_FLOWCHART_EDGES:
+        raise SerializationError(
+            f"{requested_type} portable fallback exceeds Mermaid edge limit of "
+            f"{_MAX_FLOWCHART_EDGES}"
+        )
+    nodes = [{"id": node.emitted_id, "label": node.label} for node in materialized]
     edges = [
-        {"source": parent_id, "target": output_id}
-        for _, _, output_id, _, _, parent_id in materialized
-        if parent_id is not None
+        {"source": node.parent_emitted_id, "target": node.emitted_id}
+        for node in materialized
+        if node.parent_emitted_id is not None
     ]
     code, accessibility_warnings = _serialize_flowchart_fallback(
         ir,
@@ -456,15 +693,8 @@ def _hierarchy_flowchart(
 def _serialize_ishikawa(
     ir: dict[str, Any], *, experimental: bool, native_runtime_valid: bool
 ) -> SerializationResult:
-    effect = ir.get("effect")
-    if not isinstance(effect, dict):
-        raise SerializationError("ishikawa IR requires an effect object")
-    categories = ir.get("categories")
-    if not isinstance(categories, list) or not categories:
-        raise SerializationError("ishikawa IR requires non-empty categories")
-    root = {**effect, "children": categories}
-    rows = _hierarchy(root, context="ishikawa", child_field="children")
-    native_label_loss = any(any(char in label for char in "&<>") for *_, label, _, _ in rows)
+    rows = plan_ishikawa_hierarchy(ir)
+    native_label_loss = any(any(char in node.label for char in "&<>") for node in rows)
     if not native_runtime_valid or native_label_loss:
         reason = (
             "Native Mermaid Ishikawa cannot preserve one or more observed label characters."
@@ -483,25 +713,28 @@ def _serialize_ishikawa(
         )
     lines = ["ishikawa-beta"]
     lines.extend(
-        f"{'  ' * depth}{_ishikawa_text(label, context='ishikawa label')}"
-        for _, _, _, label, depth, _ in rows
+        f"{'  ' * node.depth}{_ishikawa_text(node.label, context='ishikawa label')}"
+        for node in rows
     )
-    warnings = (
+    warnings = [
         "Mermaid 11.16 Ishikawa accessibility directives are not emitted because the grammar "
         "can interpret them as cause nodes; accessibility text remains in typed IR.",
-    )
+    ]
+    if any(_ENTITY_LITERAL.search(node.label) for node in rows):
+        warnings.append(_ENTITY_COMPATIBILITY_WARNING)
     return SerializationResult.native(
-        "ishikawa", "\n".join(lines) + "\n", warnings=warnings, stability="experimental"
+        "ishikawa",
+        "\n".join(lines) + "\n",
+        warnings=tuple(warnings),
+        stability="experimental",
     )
 
 
 def _serialize_treeview(
     ir: dict[str, Any], *, experimental: bool, native_runtime_valid: bool
 ) -> SerializationResult:
-    rows = _hierarchy(ir.get("root"), context="treeview")
-    if len(rows) < 2:
-        raise SerializationError("treeview requires an explicit hierarchy below the root")
-    native_label_loss = any(any(char in label for char in '"\\') for *_, label, _, _ in rows)
+    rows = plan_treeview_hierarchy(ir)
+    native_label_loss = any(any(char in node.label for char in '"\\') for node in rows)
     if not native_runtime_valid or native_label_loss:
         reason = (
             "Native Mermaid TreeView cannot preserve one or more observed label characters."
@@ -523,13 +756,18 @@ def _serialize_treeview(
     )
     lines = ["treeView-beta", *accessibility_lines]
     lines.extend(
-        f'{"  " * depth}"{_directive_text(label, context="treeview label")}"'
-        for _, _, _, label, depth, _ in rows
+        f'{"  " * node.depth}"{_special_directive_text(node.label, context="treeview label")}"'
+        for node in rows
+    )
+    entity_warning = (
+        (_ENTITY_COMPATIBILITY_WARNING,)
+        if any(_ENTITY_LITERAL.search(node.label) for node in rows)
+        else ()
     )
     return SerializationResult.native(
         "treeview",
         "\n".join(lines) + "\n",
-        warnings=accessibility_warnings,
+        warnings=tuple(dict.fromkeys((*accessibility_warnings, *entity_warning))),
         stability="experimental",
     )
 
@@ -754,23 +992,26 @@ def serialize_special(
     if not isinstance(ir, dict):
         raise SerializationError(f"{diagram_type} IR must be an object")
     if diagram_type == "packet":
-        return _serialize_packet(
+        result = _serialize_packet(
             ir,
             experimental=experimental,
             native_runtime_valid=native_runtime_valid,
         )
-    if diagram_type == "ishikawa":
-        return _serialize_ishikawa(
+    elif diagram_type == "ishikawa":
+        result = _serialize_ishikawa(
             ir,
             experimental=experimental,
             native_runtime_valid=native_runtime_valid,
         )
-    if diagram_type == "treeview":
-        return _serialize_treeview(
+    elif diagram_type == "treeview":
+        result = _serialize_treeview(
             ir,
             experimental=experimental,
             native_runtime_valid=native_runtime_valid,
         )
-    if diagram_type == "eventmodeling":
-        return _serialize_eventmodeling(ir, experimental=experimental)
-    raise SerializationError(f"no special serializer for {diagram_type!r}")
+    elif diagram_type == "eventmodeling":
+        result = _serialize_eventmodeling(ir, experimental=experimental)
+    else:
+        raise SerializationError(f"no special serializer for {diagram_type!r}")
+    _preflight_special_code(result.code, diagram_type=diagram_type)
+    return result

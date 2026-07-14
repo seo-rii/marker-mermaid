@@ -324,6 +324,7 @@ _PROVENANCE_GATED_TYPES = frozenset(
         "kanban",
         "mindmap",
         "organization",
+        "packet",
         "railroad",
         "requirement",
         "sankey",

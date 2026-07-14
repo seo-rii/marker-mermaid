@@ -24,7 +24,7 @@ from marker_mermaid.flowchart_structure import (
     prepare_swimlane_structure,
 )
 from marker_mermaid.models import DiagramSceneIR, SceneElement, SceneGroup, SceneRelation
-from marker_mermaid.serializers import plan_architecture_structure
+from marker_mermaid.serializers import SerializationError, plan_architecture_structure
 from marker_mermaid.serializers_experimental import plan_wardley_records, plan_zenuml_records
 from marker_mermaid.serializers_phase2 import (
     REQUIREMENT_TYPE_TOKENS,
@@ -37,6 +37,9 @@ from marker_mermaid.serializers_planning import plan_gitgraph_records, plan_kanb
 from marker_mermaid.serializers_special import (
     plan_eventmodeling_frames,
     plan_eventmodeling_relations,
+    plan_ishikawa_hierarchy,
+    plan_packet_fields,
+    plan_treeview_hierarchy,
 )
 
 
@@ -84,6 +87,30 @@ def _ordered_records(
             }
         )
     return result
+
+
+def _planned_hierarchy_records(
+    records: Any,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    nodes = [
+        {
+            **record.source_record,
+            "id": record.emitted_id,
+            "label": record.label,
+        }
+        for record in records
+    ]
+    edges = [
+        {
+            "source": record.parent_emitted_id,
+            "target": record.emitted_id,
+            "semantic_relation": "containment",
+            "evidence_ids": list(record.source_record.get("evidence_ids") or []),
+        }
+        for record in records
+        if record.parent_emitted_id is not None
+    ]
+    return nodes, edges
 
 
 def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR | None:
@@ -240,6 +267,21 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
         node_records = list(usecase_plan.nodes)
         edge_records = list(usecase_plan.edges)
         group_records = []
+    elif diagram_type == "packet":
+        try:
+            packet_plan = plan_packet_fields(ir)
+        except SerializationError:
+            return None
+        node_records = [
+            {
+                **field.source_record,
+                "id": field.emitted_id,
+                "label": field.label,
+                "role": "field",
+            }
+            for field in packet_plan.fields
+        ]
+        scene_direction_override = "LR"
     elif diagram_type == "sankey":
         node_records = list(ir.get("nodes") or [])
         edge_records = list(ir.get("flows") or ir.get("links") or [])
@@ -312,13 +354,20 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
             for node in node_plan
             if node.parent_id is not None
         ]
-    elif diagram_type in {"treemap", "treeview", "organization"} and isinstance(
-        ir.get("root"), dict
-    ):
+    elif diagram_type == "treemap" and isinstance(ir.get("root"), dict):
         node_records, edge_records = _hierarchy_records(ir["root"])
-    elif diagram_type == "ishikawa" and isinstance(ir.get("effect"), dict):
-        root = {**ir["effect"], "children": list(ir.get("categories") or [])}
-        node_records, edge_records = _hierarchy_records(root, fallback_root_id="effect")
+    elif diagram_type in {"treeview", "organization"}:
+        try:
+            treeview_plan = plan_treeview_hierarchy(ir)
+        except SerializationError:
+            return None
+        node_records, edge_records = _planned_hierarchy_records(treeview_plan)
+    elif diagram_type == "ishikawa":
+        try:
+            ishikawa_plan = plan_ishikawa_hierarchy(ir)
+        except SerializationError:
+            return None
+        node_records, edge_records = _planned_hierarchy_records(ishikawa_plan)
     elif diagram_type == "timeline":
         node_records = _ordered_records(ir.get("events"), prefix="event_")
     elif diagram_type == "gantt":

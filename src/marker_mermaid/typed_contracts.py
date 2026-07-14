@@ -755,6 +755,37 @@ class _VennIR(_TypedIRRoot):
     intersections: list[_VennIntersection]
 
 
+class _PacketField(_TypedIRRecord):
+    id: str | None = None
+    start: int | None = None
+    end: int | None = None
+    label: str | None = None
+    name: str | None = None
+
+
+class _PacketIR(_TypedIRRoot):
+    fields: list[_PacketField]
+
+
+class _SpecialHierarchyLeaf(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+    name: str | None = None
+
+
+class _SpecialHierarchyNode(_SpecialHierarchyLeaf):
+    children: list[_SpecialHierarchyNode] = Field(default_factory=list)
+
+
+class _IshikawaIR(_TypedIRRoot):
+    effect: _SpecialHierarchyLeaf
+    categories: list[_SpecialHierarchyNode]
+
+
+class _TreeViewIR(_TypedIRRoot):
+    root: _SpecialHierarchyNode
+
+
 @dataclass(frozen=True, slots=True)
 class TypedIRContract:
     required: tuple[tuple[str, RootKind], ...]
@@ -1123,15 +1154,37 @@ TYPED_IR_CONTRACTS: dict[str, TypedIRContract] = {
             "bbox:number[4],evidence_ids:string[]}",
         ),
     ),
-    "packet": TypedIRContract((("fields", "list"),), guidance="explicit bit ranges"),
+    "packet": TypedIRContract(
+        (("fields", "list"),),
+        guidance="explicit bit ranges",
+        nested_model=_PacketIR,
+        prompt_records=(
+            "fields[]: {id:string,start:integer,end:integer,label:string,bbox:number[4],"
+            "evidence_ids:string[]}",
+        ),
+    ),
     "ishikawa": TypedIRContract(
-        (("effect", "object"), ("categories", "list")), guidance="effect/category/cause tree"
+        (("effect", "object"), ("categories", "list")),
+        guidance="effect/category/cause tree",
+        nested_model=_IshikawaIR,
+        prompt_records=(
+            "effect: {id:string,label:string,bbox:number[4],evidence_ids:string[]}",
+            "categories[]: {id:string,label:string,bbox:number[4],"
+            "evidence_ids:string[],children:self[]}",
+        ),
     ),
     "wardley": TypedIRContract(
         (("components", "list"),), ("links",), "components with explicit x/y coordinates"
     ),
     "cynefin": TypedIRContract((("domains", "list"),), ("transitions",), "named domains and items"),
-    "treeview": TypedIRContract((("root", "object"),), guidance="rooted hierarchy"),
+    "treeview": TypedIRContract(
+        (("root", "object"),),
+        guidance="rooted hierarchy",
+        nested_model=_TreeViewIR,
+        prompt_records=(
+            "root: {id:string,label:string,bbox:number[4],evidence_ids:string[],children:self[]}",
+        ),
+    ),
     "eventmodeling": TypedIRContract(
         (("lanes", "list"),), ("relations",), "lanes with command/event frames"
     ),
@@ -1159,6 +1212,7 @@ PHASE_TWO_FALLBACK_NESTED_TYPES = frozenset({"c4", "component", "deployment", "u
 PHASE_THREE_CORE_NESTED_TYPES = frozenset({"pie", "quadrant", "xychart"})
 PHASE_THREE_EXTENDED_NESTED_TYPES = frozenset({"sankey", "radar", "treemap", "venn"})
 PLANNING_NESTED_TYPES = frozenset({"journey", "kanban", "gitgraph"})
+SPECIAL_NATIVE_NESTED_TYPES = frozenset({"packet", "ishikawa", "treeview"})
 NESTED_TYPED_IR_TYPES = (
     PHASE_ONE_NESTED_TYPES
     | CORE_UML_NESTED_TYPES
@@ -1167,6 +1221,7 @@ NESTED_TYPED_IR_TYPES = (
     | PHASE_THREE_CORE_NESTED_TYPES
     | PHASE_THREE_EXTENDED_NESTED_TYPES
     | PLANNING_NESTED_TYPES
+    | SPECIAL_NATIVE_NESTED_TYPES
 )
 
 for _diagram_type in NESTED_TYPED_IR_TYPES:  # pragma: no cover - import-time invariant

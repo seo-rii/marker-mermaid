@@ -1359,6 +1359,224 @@ def test_native_runtime_rejection_retries_declared_portable_fallback():
     assert result.selected.repair_history[-1].operation == "runtime_portable_fallback"
 
 
+@pytest.mark.parametrize(
+    (
+        "reject_native",
+        "attributed",
+        "source_text",
+        "expected_numeric",
+        "expected_publish",
+    ),
+    [
+        (False, True, "Version 0 3 IHL 4 7", 1.0, True),
+        (True, True, "Version 0 3 IHL 4 7", 1.0, True),
+        (False, False, "Version 0 3 IHL 4 7", 1.0, False),
+        (True, False, "Version 0 3 IHL 4 7", 1.0, False),
+        (False, True, "Version IHL", None, False),
+        (True, True, "Version 90 93 IHL 94 97", 0.0, False),
+    ],
+)
+def test_packet_scene_controls_provenance_and_numeric_gates_for_native_and_fallback(
+    tmp_path,
+    reject_native: bool,
+    attributed: bool,
+    source_text: str,
+    expected_numeric: float | None,
+    expected_publish: bool,
+) -> None:
+    class PacketRuntime:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def validate_and_render(self, code, timeout_seconds):
+            self.calls.append(code)
+            if code.startswith("packet-beta") and reject_native:
+                return RuntimeResult(False, False, error="native packet rejected")
+            diagram_type = "packet" if code.startswith("packet-beta") else "flowchart-v2"
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type=diagram_type,
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    fields = [
+        {
+            "id": "version",
+            "start": 0,
+            "end": 3,
+            "label": "Version",
+            **({"evidence_ids": ["ocr-version"]} if attributed else {}),
+        },
+        {
+            "id": "ihl",
+            "start": 4,
+            "end": 7,
+            "label": "IHL",
+            **({"evidence_ids": ["ocr-ihl"]} if attributed else {}),
+        },
+    ]
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["packet"], scores=[0.9]),
+        typed_candidates=[TypedIRCandidate(diagram_type="packet", ir={"fields": fields})],
+        evidence=[
+            VisualEvidence(
+                id="ocr-version",
+                kind="ocr_token",
+                text="Version",
+                bbox=(0, 0, 20, 10),
+            ),
+            VisualEvidence(
+                id="ocr-ihl",
+                kind="ocr_token",
+                text="IHL",
+                bbox=(20, 0, 40, 10),
+            ),
+        ],
+    )
+    runtime = PacketRuntime()
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(runtime, config.security_profile),
+    ).reconstruct(
+        "packet-source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        ocr_texts=[source_text],
+    )
+
+    assert result.selected is not None
+    assert result.selected.generated_scene_ir is not None
+    assert [element.id for element in result.selected.generated_scene_ir.elements] == [
+        "packet_field_version",
+        "packet_field_ihl",
+    ]
+    assert result.selected.generated_scene_ir.relations == []
+    assert result.selected.scores["visual_entailment_precision"] == (1.0 if attributed else 0.0)
+    assert result.selected.scores.get("numeric_consistency") == expected_numeric
+    assert result.selected.emitted_diagram_type == ("flowchart" if reject_native else "packet")
+    assert result.selected.fallback_chain == (
+        ["packet", "flowchart"] if reject_native else ["packet"]
+    )
+    assert result.publish is expected_publish
+    assert (result.selected.aggregate_score is not None) is expected_publish
+    if not attributed:
+        assert any("provenance gate" in warning for warning in result.selected.warnings)
+    if expected_numeric is None:
+        assert any(
+            "lacks OCR/vector numeric evidence" in warning for warning in result.selected.warnings
+        )
+    elif expected_numeric == 0:
+        assert any("numeric consistency" in warning for warning in result.selected.warnings)
+
+    if not reject_native and attributed and expected_numeric == 1:
+        relative = SidecarStore(tmp_path).write(result)
+        generated_scene = json.loads((tmp_path / relative / "generated-scene-ir.json").read_text())
+        assert [element["evidence_ids"] for element in generated_scene["elements"]] == [
+            ["ocr-version"],
+            ["ocr-ihl"],
+        ]
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "runtime_type", "expected_ids"),
+    [
+        (
+            "treeview",
+            {
+                "root": {
+                    "id": "root",
+                    "label": "Root",
+                    "evidence_ids": ["ocr-root"],
+                    "children": [
+                        {"label": "First", "evidence_ids": ["ocr-first"]},
+                        {"id": "root_1", "label": "Second"},
+                    ],
+                }
+            },
+            "treeview",
+            ["treeview_node_root", "treeview_node_node_2", "treeview_node_root_1"],
+        ),
+        (
+            "ishikawa",
+            {
+                "effect": {
+                    "id": "effect",
+                    "label": "Effect",
+                    "evidence_ids": ["ocr-effect"],
+                },
+                "categories": [
+                    {"label": "First", "evidence_ids": ["ocr-first"]},
+                    {"id": "effect_1", "label": "Second"},
+                ],
+            },
+            "ishikawa",
+            ["ishikawa_node_effect", "ishikawa_node_node_2", "ishikawa_node_effect_1"],
+        ),
+    ],
+)
+def test_special_hierarchy_missing_id_collision_cannot_inflate_provenance(
+    diagram_type: str,
+    ir: dict[str, object],
+    runtime_type: str,
+    expected_ids: list[str],
+) -> None:
+    class SpecialRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type=runtime_type,
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    root_label = "Root" if diagram_type == "treeview" else "Effect"
+    root_evidence = "ocr-root" if diagram_type == "treeview" else "ocr-effect"
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=[diagram_type], scores=[0.9]),
+        typed_candidates=[TypedIRCandidate(diagram_type=diagram_type, ir=ir)],
+        evidence=[
+            VisualEvidence(id=root_evidence, kind="ocr_token", text=root_label),
+            VisualEvidence(id="ocr-first", kind="ocr_token", text="First"),
+        ],
+    )
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(SpecialRuntime(), config.security_profile),
+    ).reconstruct(
+        f"{diagram_type}-source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        ocr_texts=[f"{root_label} First Second"],
+    )
+
+    assert result.selected is not None
+    assert result.selected.generated_scene_ir is not None
+    assert [element.id for element in result.selected.generated_scene_ir.elements] == expected_ids
+    assert [element.text for element in result.selected.generated_scene_ir.elements] == [
+        root_label,
+        "First",
+        "Second",
+    ]
+    assert result.selected.scores["visual_entailment_precision"] == pytest.approx(2 / 3)
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert result.review_required
+    assert any("provenance gate" in warning for warning in result.selected.warnings)
+
+
 def test_nested_organization_runtime_rejection_retries_flowchart_fallback():
     class TreeViewRejectingRuntime:
         def __init__(self):

@@ -226,8 +226,8 @@ def test_organization_runtime_rejection_uses_nested_flowchart_fallback():
     assert result.emitted_type == "flowchart"
     assert result.fallback_chain == ("organization", "treeview", "flowchart")
     assert result.code.startswith("flowchart LR\n")
-    assert 'ceo["CEO"]' in result.code
-    assert "ceo --> cto" in result.code
+    assert 'treeview_node_ceo["CEO"]' in result.code
+    assert "treeview_node_ceo --> treeview_node_cto" in result.code
     assert any("CandidateValidator rejected" in warning for warning in result.warnings)
 
 

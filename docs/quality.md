@@ -26,11 +26,20 @@ connector에서 파생합니다.
 typed IR은 serializer가 실제 방출하는 node/edge 구조로 다시 변환합니다. bbox가 IR에 명시되지 않으면
 layout을 추측하지 않습니다. Scene IR portable fallback은 deterministic serializer 보존 여부를 평가할 수
 있습니다. raw/direct Mermaid는 아직 일반 AST→Scene 변환이 없으므로 구조 점수가 unavailable일 수 있습니다.
-평가 Scene adapter는 sequence/ZenUML, hierarchy/organization, planning/event, Ishikawa, Wardley,
-data-lineage, Venn까지 포함하며 typed record의 evidence ID를 보존합니다.
+평가 Scene adapter는 sequence/ZenUML, hierarchy/organization, planning/event, Packet/Ishikawa/TreeView,
+Wardley, data-lineage, Venn까지 포함하며 typed record의 evidence ID를 보존합니다.
 Event Modeling의 generated Scene은 fallback serializer와 같은 normalized frame ID, typed/time label,
 lane subgraph membership, `LR` 방향을 사용합니다. Wardley의 label 없는 component와 ZenUML의 label 없는
 participant도 임의 `text`가 아니라 serializer가 실제 표시하는 safe source ID를 사용합니다.
+
+Packet Scene은 serializer의 field plan에서 나온 reserved-safe emitted ID, label,
+bbox/evidence를 그대로 사용하고 입력에 없는 field 간 edge를 추가하지 않습니다.
+Bit range는 같은 plan에서 검증되지만 Scene element로 승격하지 않고 별도 numeric
+projection/source gate에서 비교합니다.
+Ishikawa/TreeView는 serializer와 공유하는 DFS plan의 정확한 parent/emitted ID로 containment를
+만듭니다. Duplicate/normalized collision, missing-ID ambiguity, alias conflict, cycle, object reuse 또는
+resource 한도로 planner가 거부하면 Scene adapter는 충돌 node를 조용히 제거해 attribution
+분모를 줄이지 않고 전체 metric을 unavailable로 둡니다.
 
 C4 자동 후보의 generated Scene은 진단용 native C4 macro를 재구성하지 않습니다. 자동 serializer가 실제
 게시 대상으로 만드는 Architecture와 필요 시 nested Flowchart fallback을 따라, C4 element·boundary·relation을
@@ -119,6 +128,8 @@ metric 전체를 unavailable로 둡니다.
 표시용 total score와 별도로 non-runtime semantic score를 계산합니다. syntax/render는 hard gate와 total
 score에는 참여하지만 0인 의미 점수를 게시 가능 등급으로 희석할 수 없습니다. `extended`/`maximal`의
 구조 후보는 생성 node provenance가 80% 미만이거나 계산 불가능하면 review 대상으로 둡니다.
+Packet도 이 구조 provenance gate에 포함되며, bit 숫자가 일치하는 것만으로
+unattributed field를 자동 게시하지 않습니다.
 
 `best_effort_validated`와 `strict_validated`에서 여러 parse/render 후보가 있으면 각 후보에 같은
 aggregate·semantic threshold와 provenance/numeric hold를 적용한 뒤, publish 가능한 class를 먼저

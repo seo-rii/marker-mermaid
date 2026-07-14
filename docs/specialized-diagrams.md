@@ -50,9 +50,12 @@ accessible title/description에 동일하게 적용되며 실제 SVG text integr
 
 ## 특수 유형
 
-- Packet은 각 field의 integer `start`/`end`를 요구합니다. range overlap, 역순, 누락을 거부하고
-  non-contiguous range는 gap 값을 만들지 않은 Flowchart fallback으로 보존합니다.
-- Ishikawa와 TreeView는 hierarchy ID, cycle, 최대 depth를 검증합니다.
+- Packet은 strict nested `fields[]` 계약에서 각 field의 integer `start`/`end`를 요구합니다.
+  range overlap, 역순, 누락을 거부하고 non-contiguous range는 gap 값이나 필드 간
+  화살표를 만들지 않은 disconnected Flowchart fallback으로 보존합니다.
+- Ishikawa와 TreeView는 effect/category/cause 또는 root/children을 strict recursive contract로
+  후검증합니다. 공유 hierarchy planner가 ID, normalized collision, cycle, 같은 dict
+  object 재사용, 최대 depth/node 예산을 한 번만 판정합니다.
 - Event Modeling은 lane/frame/relation을 확인한 뒤 lane-aware Flowchart로 출력합니다. pinned renderer가
   현재 native AST error를 반환하므로 native 성공으로 표시하지 않습니다. strict scanner가 금지하는
   keyword·URL-like token이 label 안에 있을 때는 실제 동작 문법이 되지 않도록 zero-width separator를
@@ -67,7 +70,8 @@ accessible title/description에 동일하게 적용되며 실제 SVG text integr
 - ZenUML은 pinned runtime에 extension이 없어 Sequence fallback을 사용합니다.
 - Organization과 Data Lineage는 각각 TreeView와 Flowchart fallback으로 hierarchy/endpoint를 보존합니다.
   Organization의 TreeView가 runtime validation에서 거절되면 같은 candidate slot에서 다시
-  `organization → treeview → flowchart` chain으로 검증합니다.
+  `organization → treeview → flowchart` chain으로 검증합니다. Organization generated Scene도
+  TreeView 공유 plan의 같은 fallback ID·parent·bbox/evidence를 사용합니다.
 
 Packet·TreeView·Ishikawa는 하나의 HTML entity encoder를 공유하지 않습니다. pinned native grammar별로
 실제 SVG text를 보존하는 quoting을 적용하고, TreeView의 quote/backslash나 Ishikawa의 ampersand/angle처럼
@@ -78,6 +82,21 @@ Flowchart 자체가 literal quote/backslash를 보존하지 못하는 경우에�
 사용합니다. unsafe URL/HTML/control token이 접근성 문구에 들어오면 원문은 typed IR/review metadata에 남기고
 자동 SVG에는 generic title/description과 warning을 넣습니다. fallback IR은 원본 type-specific root를 다시
 전달하지 않아 접근성 파생 과정에서 unsafe label이 재유입되지 않습니다.
+
+Packet·Ishikawa·TreeView의 `label`/`name` compatibility alias는 둘 다 있을 때 같은
+의미여야 하며, 충돌하면 임의의 우선순위로 선택하지 않습니다. Ishikawa effect의
+`children`도 category root를 조용히 덮어쓰지 않고 거부합니다. 공유 plan이 identity와
+parent를 한 번만 검증하고 native는 그 label/range/depth를 사용합니다. ID를 표현하는
+fallback과 generated Scene만 예약어 안전 namespace `packet_field_`, `ishikawa_node_`,
+`treeview_node_`를 공유합니다. Scene은 원 record의 bbox/evidence를 그 순서로 보존하며, Packet에는
+입력에 없는 relation을 만들지 않고 hierarchy에는 공유 parent에서만 containment를
+만듭니다. Packet도 generated-node provenance 80% 게이트의 대상이며 별도 source
+OCR/vector numeric gate를 계속 적용합니다.
+
+모든 특수 serializer 결과는 native/fallback과 무관하게 50,000자·5,000줄 source hard
+budget을 반환 전에 검사합니다. Entity-like literal을 Mermaid 11.16이 정확히
+보존하지 못하는 문법에서는 보이는 `＆`/`＃` compatibility glyph를 사용하고 warning을
+남기며, 원문·geometry·evidence는 typed IR과 sidecar에 그대로 남깁니다.
 
 대표 native/fallback fixture는 pinned Mermaid 11.16에서 실제 strict security scan, parse, render, SVG
 inspection을 통과하는 integration test로 고정합니다. Packet/Ishikawa/TreeView와 Treemap/Venn은 native

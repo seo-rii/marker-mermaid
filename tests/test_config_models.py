@@ -2621,6 +2621,295 @@ def test_generic_candidate_envelopes_apply_planning_nested_contracts(
         )
 
 
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "location"),
+    [
+        ("packet", {"fields": ["field"]}, "fields[0]"),
+        ("packet", {"fields": [{"id": 1}]}, "fields[0].id"),
+        ("packet", {"fields": [{"start": "0"}]}, "fields[0].start"),
+        ("packet", {"fields": [{"start": True}]}, "fields[0].start"),
+        ("packet", {"fields": [{"end": 3.0}]}, "fields[0].end"),
+        ("packet", {"fields": [{"label": []}]}, "fields[0].label"),
+        ("packet", {"fields": [{"name": 1}]}, "fields[0].name"),
+        ("packet", {"fields": [{"bbox": [0, 0, 10]}]}, "fields[0].bbox"),
+        ("packet", {"fields": [{"evidence_ids": [1]}]}, "evidence_ids[0]"),
+        (
+            "ishikawa",
+            {"effect": {"id": 1}, "categories": []},
+            "effect.id",
+        ),
+        (
+            "ishikawa",
+            {"effect": {"name": []}, "categories": []},
+            "effect.name",
+        ),
+        (
+            "ishikawa",
+            {"effect": {}, "categories": ["category"]},
+            "categories[0]",
+        ),
+        (
+            "ishikawa",
+            {"effect": {}, "categories": [{"children": "cause"}]},
+            "categories[0].children",
+        ),
+        (
+            "ishikawa",
+            {"effect": {}, "categories": [{"children": ["cause"]}]},
+            "categories[0].children[0]",
+        ),
+        (
+            "ishikawa",
+            {"effect": {}, "categories": [{"children": [{"name": 1}]}]},
+            "categories[0].children[0].name",
+        ),
+        (
+            "ishikawa",
+            {"effect": {}, "categories": [{"bbox": [0, 0, False, 10]}]},
+            "categories[0].bbox",
+        ),
+        (
+            "ishikawa",
+            {"effect": {"evidence_ids": [1]}, "categories": []},
+            "effect.evidence_ids[0]",
+        ),
+        ("treeview", {"root": {"id": 1}}, "root.id"),
+        ("treeview", {"root": {"name": []}}, "root.name"),
+        ("treeview", {"root": {"children": "child"}}, "root.children"),
+        ("treeview", {"root": {"children": ["child"]}}, "root.children[0]"),
+        (
+            "treeview",
+            {"root": {"children": [{"label": 1}]}},
+            "root.children[0].label",
+        ),
+        ("treeview", {"root": {"bbox": [0, 0, 10]}}, "root.bbox"),
+        (
+            "treeview",
+            {"root": {"children": [{"evidence_ids": [1]}]}},
+            "root.children[0].evidence_ids[0]",
+        ),
+    ],
+)
+def test_special_native_nested_contracts_reject_non_objects_and_strict_known_types(
+    diagram_type: str,
+    ir: dict[str, object],
+    location: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    message = str(exc_info.value)
+    assert "violates its nested contract" in message
+    assert location in message
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "packet",
+            {
+                "fields": [
+                    {
+                        "id": "version",
+                        "start": 0,
+                        "end": 3,
+                        "name": "Version",
+                        "bbox": [0, 0, 10, 10],
+                        "evidence_ids": ["ocr-version"],
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+        (
+            "ishikawa",
+            {
+                "effect": {
+                    "id": "late",
+                    "name": "Late delivery",
+                    "future_metadata": {"kept": True},
+                },
+                "categories": [
+                    {
+                        "id": "people",
+                        "name": "People",
+                        "children": [
+                            {
+                                "id": "training",
+                                "name": "Limited training",
+                                "bbox": [0, 0, 10, 10],
+                                "evidence_ids": ["ocr-training"],
+                                "future_metadata": {"kept": True},
+                            }
+                        ],
+                    }
+                ],
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+        (
+            "treeview",
+            {
+                "root": {
+                    "id": "root",
+                    "name": "Repository",
+                    "children": [
+                        {
+                            "id": "src",
+                            "name": "src",
+                            "bbox": [0, 0, 10, 10],
+                            "evidence_ids": ["ocr-src"],
+                            "future_metadata": {"kept": True},
+                        }
+                    ],
+                },
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+    ],
+)
+def test_special_native_contracts_preserve_name_alias_extra_and_original_ir(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    assert candidate.ir == ir
+    assert candidate.ir is not ir
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "root_field"),
+    [
+        ("packet", {"blocks": []}, "fields"),
+        ("ishikawa", {"result": {}, "categories": []}, "effect"),
+        ("ishikawa", {"effect": {}, "causes": []}, "categories"),
+        ("treeview", {"nodes": []}, "root"),
+    ],
+)
+def test_special_native_aliases_do_not_replace_canonical_roots(
+    diagram_type: str,
+    ir: dict[str, object],
+    root_field: str,
+) -> None:
+    with pytest.raises(ValidationError, match=rf"requires root field '{root_field}'"):
+        TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        ("packet", {"fields": []}),
+        (
+            "packet",
+            {"fields": [{"id": "field", "start": -1, "end": -2, "label": ""}]},
+        ),
+        ("ishikawa", {"effect": {"id": "effect", "label": ""}, "categories": []}),
+        (
+            "ishikawa",
+            {
+                "effect": {"id": "same", "label": "Effect"},
+                "categories": [{"id": "same", "label": "Category"}],
+            },
+        ),
+        ("treeview", {"root": {"id": "root", "label": "", "children": []}}),
+        (
+            "treeview",
+            {
+                "root": {
+                    "id": "same",
+                    "label": "Root",
+                    "children": [{"id": "same", "label": "Child"}],
+                }
+            },
+        ),
+    ],
+)
+def test_special_native_contracts_leave_semantic_requiredness_to_serializer(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    assert candidate.ir == ir
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "mutation", "location"),
+    [
+        (
+            "packet",
+            {"fields": [{"start": 0, "end": 3}]},
+            lambda ir: ir["fields"][0].__setitem__("end", "3"),
+            r"fields\[0\]\.end",
+        ),
+        (
+            "ishikawa",
+            {"effect": {}, "categories": [{"children": []}]},
+            lambda ir: ir["categories"][0]["children"].append("cause"),
+            r"categories\[0\]\.children\[0\]",
+        ),
+        (
+            "treeview",
+            {"root": {"name": "Root", "children": []}},
+            lambda ir: ir["root"].__setitem__("name", 1),
+            r"root\.name",
+        ),
+    ],
+)
+def test_canonical_key_revalidates_mutated_special_native_contracts(
+    diagram_type: str,
+    ir: dict[str, object],
+    mutation,
+    location: str,
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+    mutation(candidate.ir)
+
+    with pytest.raises(ValidationError, match=location):
+        candidate.canonical_key()
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "invalid_ir", "location"),
+    [
+        ("packet", {"fields": [{"start": True}]}, r"fields\[0\]\.start"),
+        (
+            "ishikawa",
+            {"effect": {}, "categories": [{"children": [{"name": 1}]}]},
+            r"categories\[0\]\.children\[0\]\.name",
+        ),
+        (
+            "treeview",
+            {"root": {"children": [{"evidence_ids": [1]}]}},
+            r"root\.children\[0\]\.evidence_ids\[0\]",
+        ),
+    ],
+)
+def test_generic_candidate_envelopes_apply_special_native_nested_contracts(
+    diagram_type: str,
+    invalid_ir: dict[str, object],
+    location: str,
+) -> None:
+    prediction = DiagramTypePrediction(candidates=[diagram_type], scores=[1.0])
+
+    with pytest.raises(ValidationError, match=location):
+        EngineObservation(
+            prediction=prediction,
+            typed_candidates=[{"diagram_type": diagram_type, "ir": invalid_ir}],
+        )
+
+    with pytest.raises(ValidationError, match=location):
+        MermaidCandidate(
+            candidate_id=f"candidate-{diagram_type}",
+            generation_method="typed_ir",
+            diagram_type=diagram_type,
+            typed_ir=invalid_ir,
+        )
+
+
 def test_canonical_key_uses_a_bounded_digest_without_model_dump(
     monkeypatch,
 ) -> None:

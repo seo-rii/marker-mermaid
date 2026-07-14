@@ -143,6 +143,18 @@
   native/Scene/fallback output, and every planning result enforces the validator's 50,000-character and
   5,000-line source budgets before publication. GitGraph also rejects known fields that are irrelevant to
   the declared commit, branch, or merge operation instead of silently discarding them.
+- Packet, Ishikawa, and TreeView typed IR now have strict nested prompt/post-validation contracts for
+  explicit bit ranges, an effect leaf with recursive causes, and rooted hierarchy nodes. Native output,
+  portable runtime fallback, and generated Scene attribution share identity and parent plans; the
+  fallback and Scene use their reserved-safe emitted IDs while native grammars consume the same validated
+  labels, ranges, and depth. The plans reject alias conflicts, normalized collisions, cycles, reused node
+  objects, and bounded source overflows, and preserve exact record bbox/evidence. Packet fallback no longer
+  invents arrows between fields, and Packet now participates in both provenance and numeric publication
+  gates. Every special result is preflighted against the validator's 50,000-character and 5,000-line source
+  budgets.
+  Entity-like literals use disclosed visible compatibility glyphs where Mermaid 11.16 cannot preserve the
+  original SVG text. Organization generated Scenes now consume the same TreeView identity/parent plan as
+  their nested Flowchart fallback.
 - Serializer-visible Scene text now includes Architecture group labels, excludes hidden
   Deployment/Component relation labels, and mirrors Use-case Flowchart relation type-over-label
   precedence; hidden role/shape/style/semantic metadata cannot enter the projected Scene, and

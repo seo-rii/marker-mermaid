@@ -5,7 +5,8 @@ root 필드와 container 종류를 고정한 `TypedIRContract`를 prompt로 받�
 시점에 같은 registry로 다시 검사됩니다. Phase 1 유형, stable Core UML 유형(State, Class, ER),
 native Phase 2의 Requirement·Block, C4·Deployment·Component·Use-case fallback, Phase 3 chart인
 Pie·XY·Quadrant·Sankey·Radar·Treemap·Venn과 planning 유형인 Journey·Kanban·GitGraph는 record 내부의
-알려진 필드와 recursive container도 전용 Pydantic model로 검사합니다.
+알려진 필드와 recursive container도 전용 Pydantic model로 검사합니다. Packet·Ishikawa·TreeView도
+bit-range record와 effect/category/cause 또는 root/children 계층을 같은 경계에서 후검증합니다.
 serializer의 세부 의미 검사는 그 다음 단계에서 수행합니다.
 
 이 경계는 두 문제를 분리합니다.
@@ -49,6 +50,9 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | Journey | section, scored task와 actor list |
 | Kanban | column/card와 명시적 column reference |
 | GitGraph | ordered commit/branch/merge operation과 닫힌 token |
+| Packet | explicit integer bit range와 field label |
+| Ishikawa | effect leaf와 재귀 category/cause hierarchy |
+| TreeView | 재귀 root/children hierarchy |
 
 ### Requirement·Block record 계약
 
@@ -322,6 +326,38 @@ GitGraph generic operation record는 prompt 편의를 위해 모든 known field�
 commit/branch/merge별 허용 field 집합을 닫아 irrelevant known field가 자동 결과에서 조용히 사라지지 않게
 합니다.
 
+### Packet·Ishikawa·TreeView 특수 다이어그램 계약
+
+세 특수 유형은 canonical record만 provider prompt에 공개하고 같은 strict nested model로
+응답을 후검증합니다.
+
+| Type | 필수 root | Prompt record |
+| --- | --- | --- |
+| Packet | `fields: list` | field의 `id`·`start`·`end`·`label`과 bbox/evidence |
+| Ishikawa | `effect: object`, `categories: list` | child가 없는 effect와 재귀 category/cause `children` |
+| TreeView | `root: object` | 재귀 root/children hierarchy |
+
+Packet `name`과 hierarchy node `name`은 `label` compatibility alias로 string 형을 검사하고
+원본 IR에 보존하지만 canonical prompt에는 광고하지 않습니다. `label`과 `name`이 둘 다
+있으면 whitespace 정규화 후 같아야 하며, 다른 값은 증거 우선순위로 하나를 버리지 않고
+fail closed합니다. Ishikawa `effect`는 leaf contract이므로 `children`을 넣어 category를
+덮어쓰는 입력도 거부합니다.
+
+Nested contract는 `start`/`end`를 boolean이 아닌 strict integer로, `children`을 object list로,
+`bbox`를 네 finite number로, `evidence_ids`를 string list로 확정합니다. 빈 목록,
+bit range 역전·overlap·gap, ID 형식·충돌, 순환·같은 dict object 재사용, TreeView
+자식 누락, depth/node/source budget은 serializer-owned planner가 추가로 판정합니다.
+
+Native serializer, portable Flowchart fallback과 generated Scene이 공유 planner의 같은 source
+record·label·identity·parent를 소비합니다. Native 문법은 명시적 node ID 대신 검증된
+label/range/depth를 사용하고, ID를 표현하는 fallback과 Scene은 각각 `packet_field_`,
+`ishikawa_node_`, `treeview_node_` 예약어 안전 namespace의 emitted ID를 사용합니다.
+따라서 missing ID를 각자 다른 순서로 생성하거나 충돌 node를 조용히 제거하지 않습니다.
+Packet Scene은 field를 `LR` 순서의 독립 element로 표시하고 입력에
+없는 relation을 만들지 않습니다. Ishikawa/TreeView Scene은 공유 parent 계획으로
+containment relation을 만들고 원 record의 bbox/evidence를 유지합니다. Planner가 거부하면
+Scene adapter도 부분 attribution을 만들지 않고 `unavailable`로 보냅니다.
+
 알려진 scalar field에는 object/list를 넣을 수 없고, record와 child container의 종류도 고정합니다. `bbox`는
 정확히 네 개의 finite number, `evidence_ids`와 membership은 string list여야 합니다. `extra="allow"`를
 사용하므로 style, geometry, plugin 또는 향후 Mermaid field 같은 미등록 metadata는 삭제하지 않습니다.
@@ -358,12 +394,12 @@ message만 serializer와 Scene에 함께 전달하고, raw message ID와 무관�
 부여합니다. 따라서 Mermaid에서 합쳐진 actor나 생략된 message를 평가 Scene이 별도 구조로 세지 않습니다.
 
 현재 Marker `response_schema`의 외부 envelope는 여전히 `TypedIRCandidate.ir: dict`입니다. 따라서 이 단계는
-모든 Phase 2 type, Phase 3 chart(Pie·XY·Quadrant·Sankey·Radar·Treemap·Venn)와
-Journey·Kanban·GitGraph의 prompt와 응답 후 검증을 중첩 구조까지
+모든 Phase 2 type, Phase 3 chart(Pie·XY·Quadrant·Sankey·Radar·Treemap·Venn),
+Journey·Kanban·GitGraph와 Packet·Ishikawa·TreeView의 prompt와 응답 후 검증을 중첩 구조까지
 확장하지만 provider에 모든 Mermaid 유형을 하나의 discriminated JSON Schema로 직접 노출하거나 generic
 envelope reserve를 늘리지는 않습니다. 나머지 special type인
-Packet·Ishikawa·Wardley·Cynefin·TreeView·Event Modeling·ZenUML·
-Railroad·Organization·Data Lineage는 아직 schema-light root contract입니다. Envelope-level discriminated
+Wardley·Cynefin·Event Modeling·ZenUML·Railroad·Organization·Data Lineage는
+아직 schema-light root contract입니다. Envelope-level discriminated
 schema도 후속 작업이므로 Phase 2에 root-only type이 남지 않아도 `ARCH-001`은 여전히 부분 완화
 상태입니다.
 
