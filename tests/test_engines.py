@@ -32,6 +32,7 @@ from marker_mermaid.typed_contracts import (
     NESTED_TYPED_IR_TYPES,
     PHASE_ONE_NESTED_TYPES,
     PHASE_THREE_CORE_NESTED_TYPES,
+    PHASE_THREE_EXTENDED_NESTED_TYPES,
     PHASE_TWO_FALLBACK_NESTED_TYPES,
     PHASE_TWO_NATIVE_NESTED_TYPES,
     TYPED_IR_CONTRACTS,
@@ -1363,6 +1364,7 @@ def test_every_core_uml_type_has_nested_prompt_records():
         | PHASE_TWO_NATIVE_NESTED_TYPES
         | PHASE_TWO_FALLBACK_NESTED_TYPES
         | PHASE_THREE_CORE_NESTED_TYPES
+        | PHASE_THREE_EXTENDED_NESTED_TYPES
     )
     assert {
         diagram_type
@@ -1431,6 +1433,7 @@ def test_every_phase_two_native_type_has_exact_nested_prompt_records():
         | PHASE_TWO_NATIVE_NESTED_TYPES
         | PHASE_TWO_FALLBACK_NESTED_TYPES
         | PHASE_THREE_CORE_NESTED_TYPES
+        | PHASE_THREE_EXTENDED_NESTED_TYPES
     )
     assert {
         diagram_type
@@ -1560,6 +1563,7 @@ def test_every_phase_two_fallback_type_has_exact_nested_prompt_records():
         | PHASE_TWO_NATIVE_NESTED_TYPES
         | PHASE_TWO_FALLBACK_NESTED_TYPES
         | PHASE_THREE_CORE_NESTED_TYPES
+        | PHASE_THREE_EXTENDED_NESTED_TYPES
     )
     assert {
         diagram_type
@@ -1608,6 +1612,7 @@ def test_phase_three_core_chart_nested_prompts_are_exact_and_enabled_type_only()
         | PHASE_TWO_NATIVE_NESTED_TYPES
         | PHASE_TWO_FALLBACK_NESTED_TYPES
         | PHASE_THREE_CORE_NESTED_TYPES
+        | PHASE_THREE_EXTENDED_NESTED_TYPES
     )
     assert {
         diagram_type
@@ -1629,6 +1634,73 @@ def test_phase_three_core_chart_nested_prompts_are_exact_and_enabled_type_only()
         assert all(
             f"  {other_type}." not in prompt
             for other_type in PHASE_THREE_CORE_NESTED_TYPES - {diagram_type}
+        )
+
+
+def test_phase_three_extended_chart_nested_prompts_are_exact_and_enabled_type_only() -> None:
+    expected_records = {
+        "radar": (
+            "dimensions[]: {id:string,label:string,bbox:number[4],evidence_ids:string[]}",
+            "series[]: {id:string,label:string,values:number[],bbox:number[4],"
+            "evidence_ids:string[]}",
+            "min: number",
+            "max: number",
+            "ticks: integer",
+            "show_legend: boolean",
+            "graticule: circle|polygon",
+        ),
+        "sankey": (
+            "nodes[]: {id:string,label:string,bbox:number[4],evidence_ids:string[]}",
+            "flows[]: {id:string,source:string,target:string,value:number,"
+            "bbox:number[4],evidence_ids:string[]}",
+        ),
+        "treemap": (
+            "root: {id:string,label:string,value:number,bbox:number[4],"
+            "evidence_ids:string[],children:self[]}",
+        ),
+        "venn": (
+            "sets[]: {id:string,label:string,value:number,bbox:number[4],evidence_ids:string[]}",
+            "intersections[]: {id:string,sets:string[],label:string,value:number,"
+            "bbox:number[4],evidence_ids:string[]}",
+        ),
+    }
+
+    assert set(expected_records) == PHASE_THREE_EXTENDED_NESTED_TYPES
+    assert NESTED_TYPED_IR_TYPES == (
+        PHASE_ONE_NESTED_TYPES
+        | CORE_UML_NESTED_TYPES
+        | PHASE_TWO_NATIVE_NESTED_TYPES
+        | PHASE_TWO_FALLBACK_NESTED_TYPES
+        | PHASE_THREE_CORE_NESTED_TYPES
+        | PHASE_THREE_EXTENDED_NESTED_TYPES
+    )
+    assert {
+        diagram_type
+        for diagram_type, contract in TYPED_IR_CONTRACTS.items()
+        if contract.nested_model is not None
+    } == NESTED_TYPED_IR_TYPES
+
+    combined = typed_ir_contract_prompt(set(PHASE_THREE_EXTENDED_NESTED_TYPES))
+    assert combined == typed_ir_contract_prompt({"venn", "treemap", "sankey", "radar"})
+    assert (
+        combined.index("- radar:")
+        < combined.index("- sankey:")
+        < combined.index("- treemap:")
+        < combined.index("- venn:")
+    )
+    assert "sankey.links[]" not in combined
+    assert "radar.axes[]" not in combined
+    assert "treemap.root.name" not in combined
+    assert "venn.sets[].name" not in combined
+
+    for diagram_type, records in expected_records.items():
+        contract = TYPED_IR_CONTRACTS[diagram_type]
+        prompt = typed_ir_contract_prompt({diagram_type})
+        assert contract.prompt_records == records
+        assert all(f"  {diagram_type}.{record}" in prompt for record in records)
+        assert all(
+            f"  {other_type}." not in prompt
+            for other_type in PHASE_THREE_EXTENDED_NESTED_TYPES - {diagram_type}
         )
 
 

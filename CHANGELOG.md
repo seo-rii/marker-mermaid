@@ -122,6 +122,14 @@
   occurrences remain multiplicity-preserving without double-counting the same OCR/vector observation.
   Direct candidates use their validated emitted/runtime type for publication holds, while typed
   fallbacks retain their semantic type, including Venn.
+- Sankey, Radar, Treemap, and Venn typed IR now have strict nested prompt/post-validation contracts
+  for finite weighted flows, ordered series, recursive hierarchy nodes, explicit set membership,
+  record geometry, and evidence. Canonical prompts do not advertise legacy `links`, `axes`, or
+  label aliases; serializer-owned completeness, reference, range, hierarchy-budget, and native versus
+  Flowchart fallback semantics remain unchanged. Radar ticks are capped at 100 before rendering to
+  bound the experimental runtime loop. Venn fallback intersection nodes now receive IDs
+  distinct from normalized set IDs, preventing collision-driven self-loops without inventing sizes;
+  Treemap/Venn Scene attribution fails closed on duplicate node IDs instead of under-counting them.
 - Serializer-visible Scene text now includes Architecture group labels, excludes hidden
   Deployment/Component relation labels, and mirrors Use-case Flowchart relation type-over-label
   precedence; hidden role/shape/style/semantic metadata cannot enter the projected Scene, and

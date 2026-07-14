@@ -454,6 +454,15 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
     else:
         return None
 
+    if diagram_type in {"treemap", "venn"}:
+        attribution_ids = [
+            str(node.get("id") or f"N{index}")
+            for index, node in enumerate(node_records, start=1)
+            if isinstance(node, dict)
+        ]
+        if len(attribution_ids) != len(set(attribution_ids)):
+            return None
+
     if diagram_type in {
         "flowchart",
         "generic_network",

@@ -17,7 +17,7 @@
 | accessibility | 구현 | requested type 기반 title/description 파생, direct revalidation, 비지원 grammar warning/IR 보존 |
 | type-aware visual priors | 구현 | edge/Hough/arrow/OCR/contour/threshold/grayscale, source-resolution tile과 view manifest |
 | color cluster/vector primitive | 구현 | PIL color map, Marker PyMuPDF/duck-typed provider와 page→canvas affine |
-| structured Marker VLM | 구현 | engine별 격리 source snapshot, enabled-type root contract와 Phase 1·stable State/Class/ER·모든 Phase 2 native/fallback 및 Phase 3 core chart(Pie/XY/Quadrant) nested record 후검증/prompt contract, chart finite JSON number와 XY token, C4 token/legacy `type`, Deployment/Component canonical relation/port, Use-case open relation label과 fixed Flowchart proxy 형, optional partial field/evidence와 원본 IR/extra metadata 보존, typed IR의 3-field envelope와 hook-free exact-built-in snapshot, candidate UTF-8 1 MB/escaped JSON 4 MB·observation 및 fused-output JSON 8 MB/64개 집계 예산, pipeline/fusion/accessibility/repair/sidecar sink 재검증, Marker 1.10.2 schema reserve와 stock Ollama inline-schema 호환을 포함한 request text/item/view budget, reconstruction-global evidence budget, structural quota/backfill, prompt-selected prior만의 게시 권한, durable budget notice; generic `ir` envelope와 Sankey/Radar/Treemap/Venn/Journey/Kanban/GitGraph/Packet/Ishikawa/Wardley/Cynefin/TreeView/Event Modeling/ZenUML/Railroad/Organization/Data Lineage nested schema는 후속 |
+| structured Marker VLM | 구현 | engine별 격리 source snapshot, enabled-type root contract와 Phase 1·stable State/Class/ER·모든 Phase 2 native/fallback 및 Phase 3 chart(Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn) nested record 후검증/prompt contract, chart finite JSON number와 closed token, C4 token/legacy `type`, Deployment/Component canonical relation/port, Use-case open relation label과 fixed Flowchart proxy 형, optional partial field/evidence와 원본 IR/extra metadata 보존, typed IR의 3-field envelope와 hook-free exact-built-in snapshot, candidate UTF-8 1 MB/escaped JSON 4 MB·observation 및 fused-output JSON 8 MB/64개 집계 예산, pipeline/fusion/accessibility/repair/sidecar sink 재검증, Marker 1.10.2 schema reserve와 stock Ollama inline-schema 호환을 포함한 request text/item/view budget, reconstruction-global evidence budget, structural quota/backfill, prompt-selected prior만의 게시 권한, durable budget notice; generic `ir` envelope와 Journey/Kanban/GitGraph/Packet/Ishikawa/Wardley/Cynefin/TreeView/Event Modeling/ZenUML/Railroad/Organization/Data Lineage nested schema는 후속 |
 | Direct Mermaid | 구현 | extended/maximal, 동일 hard gate |
 | Fusion engine | 구현 | source-explicit Scene consensus; prior payload의 bbox/text 정합 source evidence와 owner-local spatial contour, 최소 IoU 0.45, noncolliding provenance를 요구하는 flat Flowchart/Generic Network full/injective node-ID remap, atomic refusal, direction-conflict 전파와 hash-bound mapping/provenance sidecar. nested/non-flow remap은 후속 |
 | Flowchart | 구현 | typed serializer, validated flat/disjoint group→subgraph emission과 SceneGroup round-trip + real render fixture |
@@ -27,7 +27,7 @@
 | Timeline/Gantt | 구현 | typed serializer + real render fixture |
 | BPMN/Swimlane | 구현 | portable flowchart subgraph fallback |
 | Phase 2 software types | 구현 | State/Class/ER/Requirement/Block native와 C4/Deployment/Component/Use-case fallback 모두 strict nested extraction contract 구현; C4와 Deployment/Component는 bounded record/Architecture plan의 emitted identity·group·unlabeled topology를 사용하고 runtime 거부 시 nested Flowchart로 재시도하며 특수 notation과 relation label은 typed IR에 보존, 진단용 native C4는 publication metric에서 분리; Use-case는 strict relation/endpoint plan을 serializer와 Scene이 공유하고 unsupported group을 억제하며 stadium actor와 round use-case를 구분하는 Flowchart 명시 fallback |
-| Phase 3 charts | 구현 | Pie/XY/Quadrant는 strict nested extraction 뒤 native-only serializer와 별도 source OCR/vector numeric gate를 사용하며 chart Scene adapter는 없음; Sankey/Radar/Treemap/Venn은 schema-light root contract의 typed native/fallback, 일부 runtime fallback과 numeric gate |
+| Phase 3 charts | 구현 | Pie/XY/Quadrant는 strict nested extraction 뒤 native-only serializer를 사용하고 Scene adapter가 없음; Sankey/Radar/Treemap/Venn도 strict nested extraction 뒤 typed native/fallback을 사용하며 Sankey/Treemap/Venn은 generated Scene attribution을 제공하고 Radar는 sidecar provenance만 보존; 7개 유형 모두 별도 source OCR/vector numeric gate 적용 |
 | Planning types | 구현 | Journey→Timeline fallback, native Kanban/GitGraph와 evidence-strict reference 검사 |
 | Phase 5 special types | 구현 | Packet/Ishikawa/TreeView native+runtime fallback, Wardley/Cynefin/Railroad native, EventModeling/ZenUML fallback |
 | Organization/Data Lineage | 구현 | TreeView/Flowchart portable fallback과 endpoint 검증; Organization TreeView runtime rejection은 중첩 Flowchart fallback으로 재검증 |
@@ -52,9 +52,8 @@
 ## 릴리스 해석
 
 현재 버전은 Phase 1~5 serializer를 제공하는 experimental engineering baseline이지 MMX-001의 모든
-end-to-end 기능 gate를 달성한 production `extended` 릴리스가 아닙니다. 특히 Phase 3의
-Sankey·Radar·Treemap·Venn과 나머지 planning/special 유형의 nested contract, generic `ir` envelope의
-discriminated extraction schema, 아직 fallback
+end-to-end 기능 gate를 달성한 production `extended` 릴리스가 아닙니다. 특히 나머지 planning/special
+유형의 nested contract, generic `ir` envelope의 discriminated extraction schema, 아직 fallback
 adapter가 없는 experimental grammar, 연구 데이터셋 규모의 실제 corpus와 trusted runner 측정이
 필요합니다. precision/recall 목표와 유형별 최소 fixture 수량을 판정하는 고정 평가기는
 제공합니다. 자동 게시 hard gate, 원본 보존, candidate failure

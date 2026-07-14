@@ -25,6 +25,7 @@ SankeyNode = tuple[str, str]
 SankeyFlow = tuple[str, str, str, Decimal]
 RadarDimension = tuple[str, str]
 RadarSeries = tuple[str, str, tuple[str, ...], tuple[Decimal, ...]]
+MAX_RADAR_TICKS = 100
 
 SANKEY_ACCESSIBILITY_LIMITATION = (
     "Mermaid 11.16 Sankey grammar cannot encode title, accTitle, or accDescr; "
@@ -314,6 +315,8 @@ def _radar_data(
         ticks = ir["ticks"]
         if isinstance(ticks, bool) or not isinstance(ticks, int) or ticks < 1:
             raise SerializationError("Radar ticks must be a positive integer")
+        if ticks > MAX_RADAR_TICKS:
+            raise SerializationError(f"Radar ticks must not exceed {MAX_RADAR_TICKS}")
         options["ticks"] = ticks
     if "show_legend" in ir and not isinstance(ir["show_legend"], bool):
         raise SerializationError("Radar show_legend must be boolean")

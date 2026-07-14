@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from marker_mermaid.config import SecurityProfile
 from marker_mermaid.security import MermaidSecurityScanner
 from marker_mermaid.serializers import SerializationError
 from marker_mermaid.serializers_charts_sets import serialize_chart_set
+from marker_mermaid.typed_contracts import validate_typed_ir_contract
 from marker_mermaid.validation import CandidateValidator, NodeMermaidRuntime
 
 TREEMAP_IR = {
@@ -77,16 +80,16 @@ def test_venn_output_uses_explicit_set_and_intersection_sizes() -> None:
 
 
 def test_treemap_rejects_missing_leaf_values_instead_of_inventing_them() -> None:
+    ir = {
+        "root": {
+            "label": "Root",
+            "children": [{"label": "Unmeasured"}],
+        }
+    }
+
+    validate_typed_ir_contract("treemap", ir)
     with pytest.raises(SerializationError, match="explicit numeric value"):
-        serialize_chart_set(
-            "treemap",
-            {
-                "root": {
-                    "label": "Root",
-                    "children": [{"label": "Unmeasured"}],
-                }
-            },
-        )
+        serialize_chart_set("treemap", ir)
 
 
 def test_treemap_requires_a_hierarchy_below_the_root() -> None:
@@ -112,6 +115,33 @@ def test_internal_treemap_value_uses_explicit_flowchart_fallback() -> None:
     assert "Core (value: 12)" in code
 
 
+def test_treemap_prefers_label_but_keeps_name_compatibility() -> None:
+    canonical = {
+        "root": {
+            "label": "Canonical root",
+            "name": "Legacy root",
+            "children": [{"label": "Canonical leaf", "name": "Legacy leaf", "value": 2}],
+        }
+    }
+
+    validate_typed_ir_contract("treemap", canonical)
+    canonical_code = serialize_chart_set("treemap", canonical)[0]
+    assert '"Canonical root"' in canonical_code
+    assert '"Canonical leaf": 2' in canonical_code
+    assert "Legacy" not in canonical_code
+
+    legacy = {
+        "root": {
+            "name": "Legacy root",
+            "children": [{"name": "Legacy leaf", "value": 3}],
+        }
+    }
+    validate_typed_ir_contract("treemap", legacy)
+    legacy_code = serialize_chart_set("treemap", legacy)[0]
+    assert '"Legacy root"' in legacy_code
+    assert '"Legacy leaf": 3' in legacy_code
+
+
 @pytest.mark.parametrize(
     ("diagram_type", "ir"),
     [("treemap", TREEMAP_IR), ("venn", VENN_IR)],
@@ -128,16 +158,16 @@ def test_runtime_rejection_selects_a_disclosed_portable_fallback(
 
 
 def test_venn_without_sizes_falls_back_without_fabricating_numbers() -> None:
-    code, emitted_type, fallback = serialize_chart_set(
-        "venn",
-        {
-            "sets": [
-                {"id": "a", "label": "A"},
-                {"id": "b", "label": "B"},
-            ],
-            "intersections": [{"sets": ["a", "b"], "label": "Shared"}],
-        },
-    )
+    ir = {
+        "sets": [
+            {"id": "a", "label": "A"},
+            {"id": "b", "label": "B"},
+        ],
+        "intersections": [{"sets": ["a", "b"], "label": "Shared"}],
+    }
+
+    validate_typed_ir_contract("venn", ir)
+    code, emitted_type, fallback = serialize_chart_set("venn", ir)
 
     assert emitted_type == "flowchart"
     assert fallback is not None and "not observed" in fallback
@@ -164,22 +194,79 @@ def test_venn_rejects_unknown_or_duplicate_intersections() -> None:
         {"id": "a", "label": "A", "value": 5},
         {"id": "b", "label": "B", "value": 5},
     ]
+    unknown = {"sets": sets, "intersections": [{"sets": ["a", "missing"], "value": 1}]}
+    validate_typed_ir_contract("venn", unknown)
     with pytest.raises(SerializationError, match="unknown set"):
-        serialize_chart_set(
-            "venn",
-            {"sets": sets, "intersections": [{"sets": ["a", "missing"], "value": 1}]},
-        )
+        serialize_chart_set("venn", unknown)
+
+    duplicate = {
+        "sets": sets,
+        "intersections": [
+            {"sets": ["a", "b"], "value": 1},
+            {"sets": ["b", "a"], "value": 1},
+        ],
+    }
+    validate_typed_ir_contract("venn", duplicate)
     with pytest.raises(SerializationError, match="duplicate venn intersection"):
-        serialize_chart_set(
-            "venn",
+        serialize_chart_set("venn", duplicate)
+
+
+def test_venn_contract_defers_normalized_id_collisions_to_serializer() -> None:
+    ir = {
+        "sets": [
+            {"id": "a b", "label": "A", "value": 2},
+            {"id": "a_b", "label": "B", "value": 2},
+        ],
+        "intersections": [{"sets": ["a b", "a_b"], "value": 1}],
+    }
+
+    validate_typed_ir_contract("venn", ir)
+    with pytest.raises(SerializationError, match="collide after Mermaid normalization"):
+        serialize_chart_set("venn", ir)
+
+
+def test_venn_prefers_labels_but_keeps_name_compatibility() -> None:
+    ir = {
+        "sets": [
+            {"id": "a", "label": "Canonical A", "name": "Legacy A", "value": 2},
+            {"id": "b", "name": "Legacy B", "value": 2},
+        ],
+        "intersections": [
             {
-                "sets": sets,
-                "intersections": [
-                    {"sets": ["a", "b"], "value": 1},
-                    {"sets": ["b", "a"], "value": 1},
-                ],
-            },
-        )
+                "id": "shared",
+                "sets": ["a", "b"],
+                "label": "Canonical shared",
+                "name": "Legacy shared",
+                "value": 1,
+            }
+        ],
+    }
+
+    validate_typed_ir_contract("venn", ir)
+    code = serialize_chart_set("venn", ir)[0]
+    assert 'set a["Canonical A"]: 2' in code
+    assert 'set b["Legacy B"]: 2' in code
+    assert 'union a,b["Canonical shared"]: 1' in code
+    assert "Legacy A" not in code
+    assert "Legacy shared" not in code
+
+
+def test_venn_fallback_reserves_set_ids_before_creating_intersection_nodes() -> None:
+    code = serialize_chart_set(
+        "venn",
+        {
+            "sets": [
+                {"id": "intersection_1", "label": "A"},
+                {"id": "b", "label": "B"},
+            ],
+            "intersections": [{"id": "shared", "sets": ["intersection_1", "b"], "label": "Shared"}],
+        },
+    )[0]
+
+    edges = re.findall(r"^\s*(\S+) -->\|intersects\| (\S+)$", code, flags=re.MULTILINE)
+    assert {source for source, _ in edges} == {"intersection_1", "b"}
+    assert len({target for _, target in edges}) == 1
+    assert all(source != target for source, target in edges)
 
 
 @pytest.mark.parametrize("value", [True, "10", float("nan"), float("inf"), -1])

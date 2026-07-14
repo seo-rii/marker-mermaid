@@ -1862,6 +1862,377 @@ def test_generic_candidate_envelopes_apply_phase_three_core_chart_contracts(
         )
 
 
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "location"),
+    [
+        ("sankey", {"nodes": ["node"], "flows": []}, "nodes[0]"),
+        (
+            "sankey",
+            {"nodes": [], "flows": [{"source": [], "target": "B", "value": 1}]},
+            "flows[0].source",
+        ),
+        (
+            "sankey",
+            {"nodes": [], "flows": [{"source": "A", "target": "B", "value": "1"}]},
+            "flows[0].value",
+        ),
+        (
+            "sankey",
+            {"nodes": [], "flows": [{"source": "A", "target": "B", "value": True}]},
+            "flows[0].value",
+        ),
+        (
+            "radar",
+            {"dimensions": [{"id": 1}], "series": []},
+            "dimensions[0].id",
+        ),
+        (
+            "radar",
+            {"dimensions": [], "series": [{"values": ["1"]}]},
+            "series[0].values[0]",
+        ),
+        (
+            "radar",
+            {"dimensions": [], "series": [{"values": [True]}]},
+            "series[0].values[0]",
+        ),
+        (
+            "radar",
+            {"dimensions": [], "series": [], "ticks": True},
+            "ticks",
+        ),
+        (
+            "radar",
+            {"dimensions": [], "series": [], "show_legend": 1},
+            "show_legend",
+        ),
+        (
+            "radar",
+            {"dimensions": [], "series": [], "graticule": "CIRCLE"},
+            "graticule",
+        ),
+        ("treemap", {"root": {"children": "child"}}, "root.children"),
+        ("treemap", {"root": {"label": 1}}, "root.label"),
+        ("treemap", {"root": {"value": "1"}}, "root.value"),
+        ("treemap", {"root": {"value": True}}, "root.value"),
+        (
+            "treemap",
+            {"root": {"children": [{"evidence_ids": [1]}]}},
+            "root.children[0].evidence_ids[0]",
+        ),
+        ("venn", {"sets": [{"id": 1}], "intersections": []}, "sets[0].id"),
+        (
+            "venn",
+            {"sets": [{"value": "1"}], "intersections": []},
+            "sets[0].value",
+        ),
+        (
+            "venn",
+            {"sets": [], "intersections": [{"sets": "A"}]},
+            "intersections[0].sets",
+        ),
+        (
+            "venn",
+            {"sets": [], "intersections": [{"sets": ["A", 1]}]},
+            "intersections[0].sets[1]",
+        ),
+        (
+            "venn",
+            {"sets": [], "intersections": [{"value": True}]},
+            "intersections[0].value",
+        ),
+    ],
+)
+def test_phase_three_extended_chart_contracts_reject_strict_wrong_shapes(
+    diagram_type: str,
+    ir: dict[str, object],
+    location: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    message = str(exc_info.value)
+    assert "violates its nested contract" in message
+    assert location in message
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "sankey",
+            {"nodes": [], "flows": [{"source": "A", "target": "B", "value": math.inf}]},
+        ),
+        (
+            "radar",
+            {"dimensions": [], "series": [{"values": [math.nan]}]},
+        ),
+        ("treemap", {"root": {"children": [{"value": -math.inf}]}}),
+        (
+            "venn",
+            {"sets": [], "intersections": [{"sets": [], "value": math.inf}]},
+        ),
+    ],
+)
+def test_phase_three_extended_chart_contracts_reject_non_finite_numbers(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError, match="finite and bounded"):
+        TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "location"),
+    [
+        (
+            "sankey",
+            {"nodes": [{"bbox": [0, 0, 10]}], "flows": []},
+            "nodes[0].bbox",
+        ),
+        (
+            "radar",
+            {"dimensions": [], "series": [{"evidence_ids": [1]}]},
+            "series[0].evidence_ids[0]",
+        ),
+        (
+            "treemap",
+            {"root": {"children": [{"bbox": [0, 0, "10", 10]}]}},
+            "root.children[0].bbox",
+        ),
+        (
+            "venn",
+            {"sets": [], "intersections": [{"bbox": [0, 0, 10, True]}]},
+            "intersections[0].bbox",
+        ),
+    ],
+)
+def test_phase_three_extended_chart_records_require_strict_bbox_and_evidence(
+    diagram_type: str,
+    ir: dict[str, object],
+    location: str,
+) -> None:
+    with pytest.raises(ValidationError, match=location.replace("[", r"\[").replace("]", r"\]")):
+        TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "sankey",
+            {
+                "nodes": [
+                    {
+                        "id": "source",
+                        "bbox": [0, 0, 10, 10],
+                        "evidence_ids": ["ocr-source"],
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "flows": [],
+                "links": [
+                    {
+                        "id": "compat-link",
+                        "source": "source",
+                        "target": "sink",
+                        "value": 1,
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+        (
+            "radar",
+            {
+                "dimensions": [
+                    {
+                        "id": "speed",
+                        "bbox": [0, 0, 10, 10],
+                        "evidence_ids": ["ocr-speed"],
+                    }
+                ],
+                "axes": [{"id": "compat-axis", "future_metadata": {"kept": True}}],
+                "series": [
+                    {
+                        "id": "v1",
+                        "values": [],
+                        "bbox": [10, 0, 20, 10],
+                        "evidence_ids": ["line-v1"],
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "min": 0,
+                "max": 1,
+                "ticks": 4,
+                "show_legend": False,
+                "graticule": "polygon",
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+        (
+            "treemap",
+            {
+                "root": {
+                    "id": "root",
+                    "name": "Compatibility name",
+                    "bbox": [0, 0, 20, 20],
+                    "evidence_ids": ["contour-root"],
+                    "children": [
+                        {
+                            "id": "leaf",
+                            "value": 1,
+                            "bbox": [1, 1, 5, 5],
+                            "evidence_ids": ["ocr-leaf"],
+                            "future_metadata": {"kept": True},
+                        }
+                    ],
+                    "future_metadata": {"kept": True},
+                },
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+        (
+            "venn",
+            {
+                "sets": [
+                    {
+                        "id": "A",
+                        "name": "Compatibility name",
+                        "value": 1,
+                        "bbox": [0, 0, 10, 10],
+                        "evidence_ids": ["ocr-a"],
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "intersections": [
+                    {
+                        "id": "AB",
+                        "sets": ["A", "B"],
+                        "name": "Compatibility intersection",
+                        "value": 0,
+                        "bbox": [5, 0, 15, 10],
+                        "evidence_ids": ["ocr-ab"],
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+    ],
+)
+def test_phase_three_extended_chart_contracts_preserve_alias_extra_and_original_ir(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    assert candidate.ir == ir
+    assert candidate.ir is not ir
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "root_field"),
+    [
+        ("sankey", {"nodes": [], "links": []}, "flows"),
+        ("radar", {"axes": [], "series": []}, "dimensions"),
+    ],
+)
+def test_phase_three_extended_chart_aliases_do_not_replace_canonical_roots(
+    diagram_type: str,
+    ir: dict[str, object],
+    root_field: str,
+) -> None:
+    with pytest.raises(ValidationError, match=rf"requires root field '{root_field}'"):
+        TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "mutation", "location"),
+    [
+        (
+            "sankey",
+            {"nodes": [], "flows": [{"value": 1}]},
+            lambda ir: ir["flows"][0].__setitem__("value", "1"),
+            r"flows\[0\]\.value",
+        ),
+        (
+            "radar",
+            {"dimensions": [], "series": [{"values": [1]}]},
+            lambda ir: ir["series"][0]["values"].__setitem__(0, True),
+            r"series\[0\]\.values\[0\]",
+        ),
+        (
+            "treemap",
+            {"root": {"children": [{"value": 1}]}},
+            lambda ir: ir["root"]["children"][0].__setitem__("value", "1"),
+            r"root\.children\[0\]\.value",
+        ),
+        (
+            "venn",
+            {"sets": [], "intersections": [{"sets": ["A"]}]},
+            lambda ir: ir["intersections"][0].__setitem__("sets", "A"),
+            r"intersections\[0\]\.sets",
+        ),
+    ],
+)
+def test_canonical_key_revalidates_mutated_phase_three_extended_chart_contracts(
+    diagram_type: str,
+    ir: dict[str, object],
+    mutation,
+    location: str,
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+    mutation(candidate.ir)
+
+    with pytest.raises(ValidationError, match=location):
+        candidate.canonical_key()
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "invalid_ir", "location"),
+    [
+        (
+            "sankey",
+            {"nodes": [], "flows": [{"value": "1"}]},
+            r"flows\[0\]\.value",
+        ),
+        (
+            "radar",
+            {"dimensions": [], "series": [], "graticule": "square"},
+            "graticule",
+        ),
+        ("treemap", {"root": {"children": ["leaf"]}}, r"root\.children\[0\]"),
+        (
+            "venn",
+            {"sets": [], "intersections": [{"sets": [1]}]},
+            r"intersections\[0\]\.sets\[0\]",
+        ),
+    ],
+)
+def test_generic_candidate_envelopes_apply_phase_three_extended_chart_contracts(
+    diagram_type: str,
+    invalid_ir: dict[str, object],
+    location: str,
+) -> None:
+    prediction = DiagramTypePrediction(candidates=[diagram_type], scores=[1.0])
+
+    with pytest.raises(ValidationError, match=location):
+        EngineObservation(
+            prediction=prediction,
+            typed_candidates=[{"diagram_type": diagram_type, "ir": invalid_ir}],
+        )
+
+    with pytest.raises(ValidationError, match=location):
+        MermaidCandidate(
+            candidate_id=f"candidate-{diagram_type}",
+            generation_method="typed_ir",
+            diagram_type=diagram_type,
+            typed_ir=invalid_ir,
+        )
+
+
 def test_canonical_key_uses_a_bounded_digest_without_model_dump(
     monkeypatch,
 ) -> None:

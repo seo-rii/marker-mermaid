@@ -2,7 +2,8 @@
 
 차트 typed IR은 OCR/VLM이 읽지 못한 값을 보간하지 않습니다. Structured VLM 경계의 숫자는 bool이나
 숫자 문자열을 허용하지 않는 strict finite JSON `int`/`float`이며 잘못된 값은 candidate validation에서
-거부됩니다. 직접 serializer API는 `Decimal`도 받지만 provider 응답 계약에는 포함하지 않습니다. 이 API는
+거부됩니다. Pie·XY·Quadrant·Sankey·Radar의 직접 serializer API는 `Decimal`도 받지만 provider 응답 계약에는
+포함하지 않습니다. Treemap/Venn 직접 API는 `Decimal`을 지원하지 않습니다. 각 API는
 NaN/Infinity, unknown endpoint, series 길이 불일치, 잘못된 축 범위를 `SerializationError`로 거부합니다.
 
 | type | native 조건 | fallback |
@@ -34,6 +35,30 @@ prose 또는 Flowchart fallback이 없고 각각 native `pie`, `xychart-beta`, `
 Scene adapter가 없으므로 Scene attribution이나 구조 점수에는 연결되지 않습니다. 공통 accessibility root와
 미등록 extra metadata도 원본 dict에 보존되지만, 그 안의 숫자는 누락된 slice/axis/point 값을 채우는 chart
 data evidence가 아닙니다.
+
+## Extended chart structured extraction
+
+Sankey·Radar·Treemap·Venn도 provider prompt와 응답 후 검증이 공유하는 strict nested contract를 사용합니다.
+
+| type | nested contract | serializer가 판정하는 의미 조건과 fallback |
+| --- | --- | --- |
+| Sankey | `nodes[]`의 `id`·`label`, `flows[]`의 exact endpoint·`value`, bbox/evidence | non-empty·ID/endpoint, 모든 node 참여, label 안전성, positive DAG를 판정; native 조건을 벗어난 valid graph는 exact-weight Flowchart |
+| Radar | `dimensions[]`의 `id`·`label`, `series[]`의 ordered `values`, finite `min`/`max`, strict `ticks`/`show_legend`, `circle|polygon` graticule, bbox/evidence | 3개 이상 dimension, ID·series 길이·bounds·option 의미와 `ticks <= 100` resource cap을 판정; valid negative domain은 edge 없는 tabular Flowchart |
+| Treemap | 재귀 `root` node의 `id`·`label`·`value`·`children`과 bbox/evidence | root/internal/leaf, positive value, cycle·depth·size를 판정; internal value 또는 native runtime 실패는 value-label hierarchy Flowchart |
+| Venn | `sets[]`와 `intersections[]`의 ID·membership·label·optional finite value, bbox/evidence | non-negative value, set/member·canonical intersection uniqueness와 size containment를 판정; size가 하나라도 없거나 native runtime 실패면 숫자를 만들지 않는 Flowchart |
+
+Nested model은 JSON 구조와 known scalar/container의 형만 검사합니다. 개별 semantic field는 partial/legacy
+후보 격리를 위해 선택이며 completeness와 native/fallback 결정은 serializer가 맡습니다. Sankey `links`,
+Radar `axes`, Treemap/Venn `name`은 direct compatibility metadata로 검증·보존할 수 있지만 canonical prompt에는
+광고하지 않습니다. Alias를 canonical root로 복사하거나 누락 collection을 채우지 않으므로 serializer의
+key-presence 우선순위도 그대로입니다.
+
+Sankey·Treemap·Venn의 bbox/evidence는 generated Scene attribution에도 연결됩니다. Radar에는 Scene adapter가
+없어 같은 metadata가 typed IR/review sidecar에만 남습니다. Radar fallback은 모든 dimension label과 series
+value를 보존하지만 bounds, ticks, legend, graticule과 Radar geometry를 Mermaid code에 표현하지 않습니다.
+Treemap/Venn의 attribution ID가 충돌하면 Scene node를 합치지 않고 adapter를 unavailable로 처리해 자동
+provenance 점수 대신 review로 보냅니다. Sankey native grammar의 접근성 제한과 모든 numeric type의 독립
+source evidence gate도 그대로 적용됩니다.
 
 모든 native/fallback 대표 fixture는 Mermaid 11.16 strict `CandidateValidator`의 parse/render/SVG 검사를
 통과합니다. Sankey grammar는 title/accTitle/accDescr를 표현하지 못하므로 해당 text를 typed IR과 warning에

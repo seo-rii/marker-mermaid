@@ -3,8 +3,9 @@
 Structured VLM은 `diagram_type`만 맞춘 임의 JSON을 내보내지 않습니다. 활성화된 Mermaid 유형마다
 root 필드와 container 종류를 고정한 `TypedIRContract`를 prompt로 받고, 응답은 Pydantic 모델 생성
 시점에 같은 registry로 다시 검사됩니다. Phase 1 유형, stable Core UML 유형(State, Class, ER),
-native Phase 2의 Requirement·Block, C4·Deployment·Component·Use-case fallback, Phase 3 core chart인
-Pie·XY·Quadrant는 record 내부의 알려진 필드와 recursive container도 전용 Pydantic model로 검사합니다.
+native Phase 2의 Requirement·Block, C4·Deployment·Component·Use-case fallback, Phase 3 chart인
+Pie·XY·Quadrant·Sankey·Radar·Treemap·Venn은 record 내부의 알려진 필드와 recursive container도 전용
+Pydantic model로 검사합니다.
 serializer의 세부 의미 검사는 그 다음 단계에서 수행합니다.
 
 이 경계는 두 문제를 분리합니다.
@@ -41,6 +42,10 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | Pie | slice label/value와 `show_data` boolean |
 | XY | categorical 또는 numeric axis, line/bar series, numeric point |
 | Quadrant | low/high axis, quadrant label, normalized point |
+| Sankey | node와 explicit weighted flow |
+| Radar | dimension, ordered numeric series, native option scalar |
+| Treemap | 재귀 root/children hierarchy와 explicit value |
+| Venn | set, intersection membership와 explicit value |
 
 ### Requirement·Block record 계약
 
@@ -230,6 +235,43 @@ attribution이나 구조 점수로 승격했다고 해석하면 안 됩니다. �
 accessibility/extra metadata 안의 숫자나 typed value의 evidence ID만으로 source numeric gate가 충족되지는
 않습니다. 자동 게시는 별도의 source OCR/vector 숫자 관측과 generated 숫자 일치를 요구합니다.
 
+### Sankey·Radar·Treemap·Venn chart 계약
+
+나머지 Phase 3 chart도 canonical root와 nested record를 provider prompt에 공개하고 같은 model로 응답을
+검사합니다.
+
+| Type | 필수 root | 선택 root | Prompt record |
+| --- | --- | --- | --- |
+| Sankey | `nodes: list`, `flows: list` | 없음 | node의 `id`·`label`; flow의 `source`·`target`·`value`; 각 record의 bbox/evidence |
+| Radar | `dimensions: list`, `series: list` | `min`, `max`, `ticks`, `show_legend`, `graticule` | dimension의 `id`·`label`; series의 `id`·`label`·ordered `values`; 각 record의 bbox/evidence |
+| Treemap | `root: object` | 없음 | 재귀 node의 `id`·`label`·`value`·`children`과 bbox/evidence |
+| Venn | `sets: list`, `intersections: list` | 없음 | set의 `id`·`label`·`value`; intersection의 `id`·`sets`·`label`·`value`; 각 record의 bbox/evidence |
+
+Structured extraction은 Sankey의 canonical `flows`와 Radar의 canonical `dimensions`만 광고합니다. Direct
+serializer는 canonical key가 없을 때 legacy `links`와 `axes`를 읽지만, 이 alias는 structured contract의
+필수 root를 대신하지 못하고 prompt에도 노출되지 않습니다. Treemap `name`과 Venn set/intersection
+`name`도 `label` compatibility metadata로 형을 검사해
+원본 dict에 보존하되 canonical prompt에는 광고하지 않습니다. 검증 model은 이 alias를 canonical key로
+복사하거나 누락 collection을 default list로 삽입하지 않으므로 기존 key-presence 우선순위가 바뀌지 않습니다.
+
+Chart number는 core chart와 같은 strict finite JSON `int`/`float`입니다. Sankey flow weight, Radar series와
+bounds, Treemap value, Venn set/intersection value에 boolean·숫자 문자열·NaN·Infinity를 넣으면 candidate
+경계에서 거부합니다. Radar `ticks`는 strict integer, `show_legend`는 strict boolean이고 `graticule`은
+serializer가 소비하는 exact `circle|polygon` token입니다. 최소 record 수, 누락 semantic field, ID·label
+고유성, endpoint/member reference, series 길이와 bounds, 양수/비음수 조건, hierarchy cycle/depth/resource
+budget과 Radar의 `ticks <= 100` render resource cap은 serializer가 계속 fail closed로 판정합니다. 특히 음수
+Radar domain, non-positive/cyclic Sankey,
+internal value가 있는 Treemap, 일부 size가 없는 Venn은 구조 오류가 아니라 문서화된 Flowchart fallback을
+선택할 수 있으므로 extraction model에서 금지하지 않습니다.
+
+Sankey·Treemap·Venn record의 ID와 evidence는 기존 generated Scene adapter의 node/relation attribution에
+사용됩니다. Radar는 generated Scene adapter가 없어 bbox/evidence를 typed IR/review sidecar에만 보존합니다.
+Treemap/Venn의 explicit/fallback attribution ID가 충돌하면 Scene adapter는 중복 node를 제거해 점수를
+부풀리지 않고 `unavailable`을 반환해 review로 보냅니다. 어느 경우에도 typed value나 그 record의 evidence
+reference가 독립 source OCR/vector numeric gate를 대신하지 않습니다. 현재 Marker response envelope는 계속
+generic `TypedIRCandidate.ir: dict`이며 recursive Treemap model도 provider에 diagram-type discriminated
+recursive schema를 직접 노출한다는 뜻은 아닙니다.
+
 알려진 scalar field에는 object/list를 넣을 수 없고, record와 child container의 종류도 고정합니다. `bbox`는
 정확히 네 개의 finite number, `evidence_ids`와 membership은 string list여야 합니다. `extra="allow"`를
 사용하므로 style, geometry, plugin 또는 향후 Mermaid field 같은 미등록 metadata는 삭제하지 않습니다.
@@ -266,10 +308,11 @@ message만 serializer와 Scene에 함께 전달하고, raw message ID와 무관�
 부여합니다. 따라서 Mermaid에서 합쳐진 actor나 생략된 message를 평가 Scene이 별도 구조로 세지 않습니다.
 
 현재 Marker `response_schema`의 외부 envelope는 여전히 `TypedIRCandidate.ir: dict`입니다. 따라서 이 단계는
-모든 Phase 2 type과 Phase 3 core chart(Pie·XY·Quadrant)의 prompt와 응답 후 검증을 중첩 구조까지
+모든 Phase 2 type과 Phase 3 chart(Pie·XY·Quadrant·Sankey·Radar·Treemap·Venn)의 prompt와 응답 후 검증을
+중첩 구조까지
 확장하지만 provider에 모든 Mermaid 유형을 하나의 discriminated JSON Schema로 직접 노출하거나 generic
-envelope reserve를 늘리지는 않습니다. Phase 3의 Sankey·Radar·Treemap·Venn과 나머지 planning/special
-type인 Journey·Kanban·GitGraph·Packet·Ishikawa·Wardley·Cynefin·TreeView·Event Modeling·ZenUML·
+envelope reserve를 늘리지는 않습니다. 나머지 planning/special type인
+Journey·Kanban·GitGraph·Packet·Ishikawa·Wardley·Cynefin·TreeView·Event Modeling·ZenUML·
 Railroad·Organization·Data Lineage는 아직 schema-light root contract입니다. Envelope-level discriminated
 schema도 후속 작업이므로 Phase 2에 root-only type이 남지 않아도 `ARCH-001`은 여전히 부분 완화
 상태입니다.

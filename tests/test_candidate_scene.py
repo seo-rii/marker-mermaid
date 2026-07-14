@@ -245,6 +245,65 @@ def test_phase_three_core_charts_have_no_structural_scene_adapter(
     assert typed_ir_to_scene(diagram_type, ir) is None
 
 
+def test_radar_has_no_structural_scene_adapter() -> None:
+    assert (
+        typed_ir_to_scene(
+            "radar",
+            {
+                "dimensions": [{"id": "speed", "label": "Speed"}],
+                "series": [{"id": "car", "label": "Car", "values": [1]}],
+            },
+        )
+        is None
+    )
+
+
+def test_sankey_scene_preserves_node_flow_geometry_and_provenance() -> None:
+    scene = typed_ir_to_scene(
+        "sankey",
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "label": "Source",
+                    "bbox": [1, 2, 11, 12],
+                    "evidence_ids": ["ocr-source", "contour-source"],
+                },
+                {
+                    "id": "sink",
+                    "label": "Sink",
+                    "bbox": [21, 2, 31, 12],
+                    "evidence_ids": ["ocr-sink"],
+                },
+            ],
+            "flows": [
+                {
+                    "id": "flow-1",
+                    "source": "source",
+                    "target": "sink",
+                    "value": 3,
+                    "evidence_ids": ["line-flow-1"],
+                }
+            ],
+        },
+    )
+
+    assert scene is not None
+    assert [(item.id, item.text, item.bbox, item.evidence_ids) for item in scene.elements] == [
+        ("source", "Source", (1, 2, 11, 12), ["ocr-source", "contour-source"]),
+        ("sink", "Sink", (21, 2, 31, 12), ["ocr-sink"]),
+    ]
+    assert [
+        (
+            relation.id,
+            relation.source_id,
+            relation.target_id,
+            relation.evidence_ids,
+        )
+        for relation in scene.relations
+    ] == [("flow-1", "source", "sink", ["line-flow-1"])]
+
+
 def test_gantt_scene_preserves_task_and_section_labels_without_schedule_metadata():
     scene = typed_ir_to_scene(
         "gantt",
@@ -1718,6 +1777,118 @@ def test_hierarchy_lineage_wardley_and_venn_scene_adapters_are_attributable():
     assert lineage is not None and lineage.relations[0].semantic_relation == "unknown"
     assert wardley is not None and wardley.relations[0].evidence_ids == ["line-api"]
     assert venn is not None and len(venn.elements) == 3 and len(venn.relations) == 2
+
+
+def test_treemap_scene_uses_explicit_recursive_ids_and_child_attribution() -> None:
+    scene = typed_ir_to_scene(
+        "treemap",
+        {
+            "root": {
+                "id": "portfolio",
+                "label": "Portfolio",
+                "bbox": [0, 0, 40, 40],
+                "evidence_ids": ["contour-portfolio"],
+                "children": [
+                    {
+                        "id": "product",
+                        "label": "Product",
+                        "value": 4,
+                        "bbox": [2, 2, 20, 20],
+                        "evidence_ids": ["ocr-product", "contour-product"],
+                    }
+                ],
+            }
+        },
+    )
+
+    assert scene is not None
+    assert [(item.id, item.bbox, item.evidence_ids) for item in scene.elements] == [
+        ("portfolio", (0, 0, 40, 40), ["contour-portfolio"]),
+        ("product", (2, 2, 20, 20), ["ocr-product", "contour-product"]),
+    ]
+    assert [
+        (
+            relation.source_id,
+            relation.target_id,
+            relation.semantic_relation,
+            relation.evidence_ids,
+        )
+        for relation in scene.relations
+    ] == [("portfolio", "product", "containment", ["ocr-product", "contour-product"])]
+
+
+def test_venn_scene_uses_explicit_intersection_id_geometry_and_attribution() -> None:
+    scene = typed_ir_to_scene(
+        "venn",
+        {
+            "sets": [
+                {
+                    "id": "A",
+                    "label": "Set A",
+                    "bbox": [0, 0, 20, 20],
+                    "evidence_ids": ["contour-a"],
+                },
+                {
+                    "id": "B",
+                    "label": "Set B",
+                    "bbox": [10, 0, 30, 20],
+                    "evidence_ids": ["contour-b"],
+                },
+            ],
+            "intersections": [
+                {
+                    "id": "both",
+                    "sets": ["A", "B"],
+                    "label": "Both",
+                    "value": 2,
+                    "bbox": [10, 2, 20, 18],
+                    "evidence_ids": ["ocr-both", "contour-both"],
+                }
+            ],
+        },
+    )
+
+    assert scene is not None
+    assert [(item.id, item.bbox, item.evidence_ids) for item in scene.elements] == [
+        ("A", (0, 0, 20, 20), ["contour-a"]),
+        ("B", (10, 0, 30, 20), ["contour-b"]),
+        ("both", (10, 2, 20, 18), ["ocr-both", "contour-both"]),
+    ]
+    assert [
+        (relation.source_id, relation.target_id, relation.evidence_ids)
+        for relation in scene.relations
+    ] == [
+        ("A", "both", ["ocr-both", "contour-both"]),
+        ("B", "both", ["ocr-both", "contour-both"]),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "treemap",
+            {
+                "root": {
+                    "id": "same",
+                    "label": "Root",
+                    "children": [{"id": "same", "label": "Leaf", "value": 1}],
+                }
+            },
+        ),
+        (
+            "venn",
+            {
+                "sets": [{"id": "A", "label": "A"}, {"id": "B", "label": "B"}],
+                "intersections": [{"id": "A", "sets": ["A", "B"], "label": "Both"}],
+            },
+        ),
+    ],
+)
+def test_treemap_and_venn_scenes_fail_closed_on_duplicate_attribution_ids(
+    diagram_type: str, ir: dict[str, object]
+) -> None:
+    assert typed_ir_to_scene(diagram_type, ir) is None
 
 
 def test_phase2_sources_keep_requested_structure_even_when_code_falls_back():

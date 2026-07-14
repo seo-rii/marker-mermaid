@@ -602,6 +602,78 @@ class _QuadrantIR(_TypedIRRoot):
     quadrants: list[str] | dict[str, str] | None = None
 
 
+class _SankeyNode(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+
+
+class _SankeyFlow(_TypedIRRecord):
+    id: str | None = None
+    source: str | None = None
+    target: str | None = None
+    value: _ChartNumber | None = None
+
+
+class _SankeyIR(_TypedIRRoot):
+    nodes: list[_SankeyNode]
+    flows: list[_SankeyFlow]
+    links: list[_SankeyFlow] = Field(default_factory=list)
+
+
+class _RadarDimension(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+
+
+class _RadarSeries(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+    values: list[_ChartNumber] | None = None
+
+
+class _RadarIR(_TypedIRRoot):
+    dimensions: list[_RadarDimension]
+    series: list[_RadarSeries]
+    axes: list[_RadarDimension] = Field(default_factory=list)
+    min: _ChartNumber | None = None
+    max: _ChartNumber | None = None
+    ticks: int | None = None
+    show_legend: bool | None = None
+    graticule: Literal["circle", "polygon"] | None = None
+
+
+class _TreemapNode(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+    name: str | None = None
+    value: _ChartNumber | None = None
+    children: list[_TreemapNode] | None = None
+
+
+class _TreemapIR(_TypedIRRoot):
+    root: _TreemapNode
+
+
+class _VennSet(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+    name: str | None = None
+    value: _ChartNumber | None = None
+
+
+class _VennIntersection(_TypedIRRecord):
+    id: str | None = None
+    sets: list[str] | None = None
+    label: str | None = None
+    name: str | None = None
+    value: _ChartNumber | None = None
+
+
+class _VennIR(_TypedIRRoot):
+    sets: list[_VennSet]
+    intersections: list[_VennIntersection]
+
+
 @dataclass(frozen=True, slots=True)
 class TypedIRContract:
     required: tuple[tuple[str, RootKind], ...]
@@ -901,14 +973,49 @@ TYPED_IR_CONTRACTS: dict[str, TypedIRContract] = {
         ),
     ),
     "sankey": TypedIRContract(
-        (("nodes", "list"), ("flows", "list")), ("links",), "weighted directed flows"
+        (("nodes", "list"), ("flows", "list")),
+        guidance="weighted directed flows",
+        nested_model=_SankeyIR,
+        prompt_records=(
+            "nodes[]: {id:string,label:string,bbox:number[4],evidence_ids:string[]}",
+            "flows[]: {id:string,source:string,target:string,value:number,bbox:number[4],"
+            "evidence_ids:string[]}",
+        ),
     ),
     "radar": TypedIRContract(
-        (("dimensions", "list"), ("series", "list")), guidance="dimensions and explicit values"
+        (("dimensions", "list"), ("series", "list")),
+        ("min", "max", "ticks", "show_legend", "graticule"),
+        "dimensions and explicit values",
+        _RadarIR,
+        (
+            "dimensions[]: {id:string,label:string,bbox:number[4],evidence_ids:string[]}",
+            "series[]: {id:string,label:string,values:number[],bbox:number[4],"
+            "evidence_ids:string[]}",
+            "min: number",
+            "max: number",
+            "ticks: integer",
+            "show_legend: boolean",
+            "graticule: circle|polygon",
+        ),
     ),
-    "treemap": TypedIRContract((("root", "object"),), guidance="valued hierarchy"),
+    "treemap": TypedIRContract(
+        (("root", "object"),),
+        guidance="valued hierarchy",
+        nested_model=_TreemapIR,
+        prompt_records=(
+            "root: {id:string,label:string,value:number,bbox:number[4],"
+            "evidence_ids:string[],children:self[]}",
+        ),
+    ),
     "venn": TypedIRContract(
-        (("sets", "list"), ("intersections", "list")), guidance="sets and explicit intersections"
+        (("sets", "list"), ("intersections", "list")),
+        guidance="sets and explicit intersections",
+        nested_model=_VennIR,
+        prompt_records=(
+            "sets[]: {id:string,label:string,value:number,bbox:number[4],evidence_ids:string[]}",
+            "intersections[]: {id:string,sets:string[],label:string,value:number,"
+            "bbox:number[4],evidence_ids:string[]}",
+        ),
     ),
     "packet": TypedIRContract((("fields", "list"),), guidance="explicit bit ranges"),
     "ishikawa": TypedIRContract(
@@ -944,12 +1051,14 @@ CORE_UML_NESTED_TYPES = frozenset({"state", "class", "er"})
 PHASE_TWO_NATIVE_NESTED_TYPES = frozenset({"requirement", "block"})
 PHASE_TWO_FALLBACK_NESTED_TYPES = frozenset({"c4", "component", "deployment", "usecase"})
 PHASE_THREE_CORE_NESTED_TYPES = frozenset({"pie", "quadrant", "xychart"})
+PHASE_THREE_EXTENDED_NESTED_TYPES = frozenset({"sankey", "radar", "treemap", "venn"})
 NESTED_TYPED_IR_TYPES = (
     PHASE_ONE_NESTED_TYPES
     | CORE_UML_NESTED_TYPES
     | PHASE_TWO_NATIVE_NESTED_TYPES
     | PHASE_TWO_FALLBACK_NESTED_TYPES
     | PHASE_THREE_CORE_NESTED_TYPES
+    | PHASE_THREE_EXTENDED_NESTED_TYPES
 )
 
 for _diagram_type in NESTED_TYPED_IR_TYPES:  # pragma: no cover - import-time invariant

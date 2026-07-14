@@ -7,11 +7,13 @@ import pytest
 from marker_mermaid.config import SecurityProfile
 from marker_mermaid.serializers import SerializationError
 from marker_mermaid.serializers_charts_flow import (
+    MAX_RADAR_TICKS,
     SANKEY_ACCESSIBILITY_LIMITATION,
     serialize_chart_flow,
     serialize_radar,
     serialize_sankey,
 )
+from marker_mermaid.typed_contracts import validate_typed_ir_contract
 from marker_mermaid.validation import CandidateValidator, NodeMermaidRuntime
 
 SANKEY_IR = {
@@ -132,6 +134,39 @@ def test_sankey_rejects_unknown_endpoint_and_duplicate_node_id() -> None:
         )
 
 
+def test_sankey_contract_defers_endpoint_semantics_to_serializer() -> None:
+    ir = {
+        "nodes": [{"id": "A"}, {"id": "B"}],
+        "flows": [{"source": "A", "target": "missing", "value": 1}],
+    }
+
+    validate_typed_ir_contract("sankey", ir)
+    with pytest.raises(SerializationError, match="unknown endpoint"):
+        serialize_sankey(ir)
+
+
+def test_sankey_prefers_canonical_flows_but_keeps_direct_links_compatibility() -> None:
+    canonical = {
+        "nodes": [{"id": "A"}, {"id": "B"}],
+        "flows": [{"source": "A", "target": "B", "value": 2}],
+        "links": [{"source": "B", "target": "A", "value": 99}],
+    }
+
+    validate_typed_ir_contract("sankey", canonical)
+    canonical_result = serialize_sankey(canonical)
+    assert "A,B,2" in canonical_result.code
+    assert "99" not in canonical_result.code
+
+    legacy = {
+        "nodes": [{"id": "A"}, {"id": "B"}],
+        "links": [{"source": "A", "target": "B", "value": 3}],
+    }
+    legacy_result = serialize_sankey(legacy)
+    assert "A,B,3" in legacy_result.code
+    with pytest.raises(ValueError, match="requires root field 'flows'"):
+        validate_typed_ir_contract("sankey", legacy)
+
+
 def test_radar_native_output_is_deterministic_and_preserves_explicit_options() -> None:
     first = serialize_radar(RADAR_IR, experimental=True)
     second = serialize_radar(deepcopy(RADAR_IR), experimental=True)
@@ -194,6 +229,72 @@ def test_radar_rejects_duplicate_ids_and_inconsistent_bounds() -> None:
     clipped["max"] = 50
     with pytest.raises(SerializationError, match="must not exceed"):
         serialize_radar(clipped)
+
+
+def test_radar_contract_defers_value_alignment_and_option_ranges_to_serializer() -> None:
+    misaligned = deepcopy(RADAR_IR)
+    misaligned["series"][0]["values"] = [1, 2]
+    validate_typed_ir_contract("radar", misaligned)
+    with pytest.raises(SerializationError, match="2 values for 3 dimensions"):
+        serialize_radar(misaligned)
+
+    invalid_ticks = deepcopy(RADAR_IR)
+    invalid_ticks["ticks"] = 0
+    validate_typed_ir_contract("radar", invalid_ticks)
+    with pytest.raises(SerializationError, match="positive integer"):
+        serialize_radar(invalid_ticks)
+
+    excessive_ticks = deepcopy(RADAR_IR)
+    excessive_ticks["ticks"] = MAX_RADAR_TICKS + 1
+    validate_typed_ir_contract("radar", excessive_ticks)
+    with pytest.raises(SerializationError, match=rf"must not exceed {MAX_RADAR_TICKS}"):
+        serialize_radar(excessive_ticks)
+
+    bounded_ticks = deepcopy(RADAR_IR)
+    bounded_ticks["ticks"] = MAX_RADAR_TICKS
+    assert f"ticks {MAX_RADAR_TICKS}" in serialize_radar(bounded_ticks).code
+
+
+def test_radar_prefers_dimensions_but_keeps_direct_axes_compatibility() -> None:
+    canonical = deepcopy(RADAR_IR)
+    canonical["axes"] = [
+        {"id": "legacy-a", "label": "Legacy A"},
+        {"id": "legacy-b", "label": "Legacy B"},
+        {"id": "legacy-c", "label": "Legacy C"},
+    ]
+
+    validate_typed_ir_contract("radar", canonical)
+    assert (
+        'axis accuracy["Accuracy"], speed["Speed"], safety["Safety"]'
+        in serialize_radar(canonical).code
+    )
+
+    legacy = deepcopy(RADAR_IR)
+    legacy["axes"] = legacy.pop("dimensions")
+    assert (
+        'axis accuracy["Accuracy"], speed["Speed"], safety["Safety"]'
+        in serialize_radar(legacy).code
+    )
+    with pytest.raises(ValueError, match="requires root field 'dimensions'"):
+        validate_typed_ir_contract("radar", legacy)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "location"),
+    [
+        ("ticks", True, "ticks"),
+        ("show_legend", 1, "show_legend"),
+        ("graticule", "Polygon", "graticule"),
+    ],
+)
+def test_radar_nested_contract_rejects_noncanonical_option_types(
+    field: str, value: object, location: str
+) -> None:
+    ir = deepcopy(RADAR_IR)
+    ir[field] = value
+
+    with pytest.raises(ValueError, match=rf"at {location}"):
+        validate_typed_ir_contract("radar", ir)
 
 
 def test_chart_flow_dispatch_rejects_unknown_type() -> None:

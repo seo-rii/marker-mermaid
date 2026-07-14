@@ -320,8 +320,15 @@ def _venn_flowchart_fallback(
         for _, output_id, label, value in sets
     ]
     edges: list[dict[str, Any]] = []
+    reserved_ids = {output_id for _, output_id, _, _ in sets}
     for index, (_, members, label, value) in enumerate(intersections, start=1):
-        intersection_id = f"intersection_{index}"
+        base_id = f"intersection_{index}"
+        intersection_id = base_id
+        suffix = 2
+        while intersection_id in reserved_ids:
+            intersection_id = f"{base_id}_{suffix}"
+            suffix += 1
+        reserved_ids.add(intersection_id)
         rendered_label = label or " ∩ ".join(members)
         if value is not None:
             rendered_label += f" (value: {_format_number(value)})"

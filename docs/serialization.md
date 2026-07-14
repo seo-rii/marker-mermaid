@@ -199,3 +199,31 @@ dict 보존은 유지되지만 그 숫자나 typed evidence reference가 별도 
 않습니다. Source numeric evidence가 없거나 일치도가 낮으면 native parse/render 성공과 무관하게 review에
 남습니다. Numeric projection은 Quadrant directive의 구조 번호 `quadrant-1`~`quadrant-4`를 제외하되 label과
 point 좌표의 실제 숫자는 유지합니다.
+
+### Sankey·Radar·Treemap·Venn의 fallback 경계
+
+네 extended chart도 strict nested extraction 뒤 기존 serializer가 의미 completeness와 native 표현 가능성을
+판정합니다. Sankey는 canonical `nodes`/`flows`, Radar는 `dimensions`/`series`, Treemap은 recursive `root`,
+Venn은 `sets`/`intersections`를 사용합니다. Nested contract는 finite JSON number, record/container,
+bbox/evidence와 Radar option scalar만 검사하며 non-empty, ID/reference, 값 범위, hierarchy budget과
+native/fallback 선택은 serializer에 남깁니다. Radar `ticks`는 Mermaid renderer의 tick loop를 제한하기 위해
+serializer에서 최대 100으로 제한합니다.
+
+Sankey의 positive weighted DAG가 아니거나 native-safe 고유 label·모든 node 참여 조건이 맞지 않으면 각
+weight를 edge label로 보존하는 Flowchart를 만듭니다. Radar는 음수 value 또는 bound도 valid data로 받아
+edge 없는 tabular Flowchart에 dimension label과 모든 series value를 보존합니다. 이 fallback은 bounds,
+ticks, legend, graticule과 Radar geometry를 code에 표현하지 않으므로 해당 option은 typed IR/review metadata에
+남습니다.
+
+Treemap leaf는 explicit positive value가 필요합니다. Internal-node value가 있거나 strict runtime이 native
+grammar를 거부하면 각 value를 label에 표시한 hierarchy Flowchart로 낮춥니다. Venn은 모든 set/intersection
+size가 관측될 때만 native area notation을 사용합니다. 하나라도 빠졌거나 runtime이 native grammar를 거부하면
+숫자를 합성하지 않는 set/intersection Flowchart를 만들고 set node와 intersection node가 충돌하지 않도록
+portable ID를 분리합니다.
+
+Direct serializer의 Sankey `links`, Radar `axes`, Treemap/Venn `name` 호환 입력은 canonical key가 없을 때의
+기존 해석을 유지하지만 structured prompt에는 광고하지 않습니다. Sankey native grammar의 접근성 제한은
+typed IR warning으로 남고, Radar는 generated Scene adapter가 없어 record provenance가 sidecar에만 남습니다.
+Treemap/Venn attribution ID 충돌은 Scene adapter가 fail closed로 거부해 provenance 자동 점수를 만들지
+않습니다. Sankey·Treemap·Venn Scene attribution과 관계없이 네 유형 모두 독립 source OCR/vector numeric
+evidence gate를 통과해야 자동 게시할 수 있습니다.
