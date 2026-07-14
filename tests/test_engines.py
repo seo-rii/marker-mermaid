@@ -31,6 +31,7 @@ from marker_mermaid.typed_contracts import (
     CORE_UML_NESTED_TYPES,
     NESTED_TYPED_IR_TYPES,
     PHASE_ONE_NESTED_TYPES,
+    PHASE_TWO_NATIVE_NESTED_TYPES,
     TYPED_IR_CONTRACTS,
     typed_ir_contract_prompt,
 )
@@ -1354,7 +1355,9 @@ def test_every_core_uml_type_has_nested_prompt_records():
     }
 
     assert set(expected_records) == CORE_UML_NESTED_TYPES
-    assert NESTED_TYPED_IR_TYPES == PHASE_ONE_NESTED_TYPES | CORE_UML_NESTED_TYPES
+    assert NESTED_TYPED_IR_TYPES == (
+        PHASE_ONE_NESTED_TYPES | CORE_UML_NESTED_TYPES | PHASE_TWO_NATIVE_NESTED_TYPES
+    )
     assert {
         diagram_type
         for diagram_type, contract in TYPED_IR_CONTRACTS.items()
@@ -1369,6 +1372,70 @@ def test_every_core_uml_type_has_nested_prompt_records():
         assert all(
             f"  {other_type}." not in prompt
             for other_type in CORE_UML_NESTED_TYPES - {diagram_type}
+        )
+
+
+def test_phase_two_native_nested_prompt_is_deterministic_and_enabled_type_only():
+    first = typed_ir_contract_prompt({"requirement", "block"})
+    second = typed_ir_contract_prompt({"block", "requirement"})
+
+    assert first == second
+    assert "  block.columns: auto|integer" in first
+    assert (
+        "  block.blocks[]: {id:string,label:string,text:string,"
+        "shape:rectangle|round|stadium|circle|diamond|hexagon|cylinder|subroutine,"
+        "bbox:number[4],evidence_ids:string[]}"
+    ) in first
+    assert (
+        "  block.edges[]: {id:string,source:string,target:string,label:string,style:string,"
+        "bidirectional:boolean,bbox:number[4],evidence_ids:string[]}"
+    ) in first
+    assert (
+        "  requirement.requirements[]: {id:string,requirement_id:string,text:string,"
+        "label:string,type:requirement|functional|functional_requirement|interface|"
+        "interface_requirement|performance|performance_requirement|physical|"
+        "physical_requirement|design_constraint,risk:low|medium|high,"
+        "verify_method:analysis|demonstration|inspection|test,bbox:number[4],"
+        "evidence_ids:string[]}"
+    ) in first
+    assert (
+        "  requirement.elements[]: {id:string,type:string,label:string,docref:string,"
+        "bbox:number[4],evidence_ids:string[]}"
+    ) in first
+    assert (
+        "  requirement.relations[]: {id:string,source:string,target:string,"
+        "type:contains|copies|derives|satisfies|verifies|refines|traces,"
+        "bbox:number[4],evidence_ids:string[]}"
+    ) in first
+    assert "flowchart.nodes[]" not in first
+    assert "class.classes[]" not in first
+    assert first.index("- block:") < first.index("- requirement:")
+
+
+def test_every_phase_two_native_type_has_exact_nested_prompt_records():
+    expected_records = {
+        "block": ("columns", "blocks[]", "edges[]"),
+        "requirement": ("requirements[]", "elements[]", "relations[]"),
+    }
+
+    assert set(expected_records) == PHASE_TWO_NATIVE_NESTED_TYPES
+    assert NESTED_TYPED_IR_TYPES == (
+        PHASE_ONE_NESTED_TYPES | CORE_UML_NESTED_TYPES | PHASE_TWO_NATIVE_NESTED_TYPES
+    )
+    assert {
+        diagram_type
+        for diagram_type, contract in TYPED_IR_CONTRACTS.items()
+        if contract.nested_model is not None
+    } == NESTED_TYPED_IR_TYPES
+    for diagram_type, prefixes in expected_records.items():
+        contract = TYPED_IR_CONTRACTS[diagram_type]
+        prompt = typed_ir_contract_prompt({diagram_type})
+        assert contract.nested_model is not None
+        assert tuple(record.split(":", 1)[0] for record in contract.prompt_records) == prefixes
+        assert all(f"  {diagram_type}.{record}" in prompt for record in contract.prompt_records)
+        assert all(
+            f"  {other_type}." not in prompt
+            for other_type in PHASE_TWO_NATIVE_NESTED_TYPES - {diagram_type}
         )
 
 

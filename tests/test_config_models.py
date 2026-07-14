@@ -792,6 +792,150 @@ def test_core_uml_nested_contracts_preserve_partial_and_forward_compatible_ir(
     assert candidate.ir == ir
 
 
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "location"),
+    [
+        ("requirement", {"requirements": ["not-an-object"]}, "requirements[0]"),
+        (
+            "requirement",
+            {"requirements": [{"text": ["wrong"]}]},
+            "requirements[0].text",
+        ),
+        (
+            "requirement",
+            {"requirements": [{"bbox": [0, 0, 10]}]},
+            "requirements[0].bbox",
+        ),
+        (
+            "requirement",
+            {"requirements": [], "elements": {"id": "API"}},
+            "elements",
+        ),
+        (
+            "requirement",
+            {"requirements": [], "relations": [{"source": ["API"]}]},
+            "relations[0].source",
+        ),
+        (
+            "requirement",
+            {"requirements": [{"type": "business"}]},
+            "requirements[0].type",
+        ),
+        (
+            "requirement",
+            {"requirements": [{"risk": "urgent"}]},
+            "requirements[0].risk",
+        ),
+        (
+            "requirement",
+            {"requirements": [{"verify_method": "review"}]},
+            "requirements[0].verify_method",
+        ),
+        (
+            "requirement",
+            {"requirements": [{"verifymethod": "review"}]},
+            "requirements[0].verifymethod",
+        ),
+        (
+            "requirement",
+            {"requirements": [], "relations": [{"type": "depends"}]},
+            "relations[0].type",
+        ),
+        ("block", {"blocks": ["not-an-object"]}, "blocks[0]"),
+        ("block", {"blocks": [{"label": {"wrong": True}}]}, "blocks[0].label"),
+        ("block", {"blocks": [{"shape": "cloud"}]}, "blocks[0].shape"),
+        ("block", {"blocks": [], "edges": {"source": "A"}}, "edges"),
+        (
+            "block",
+            {"blocks": [], "edges": [{"source": ["A"]}]},
+            "edges[0].source",
+        ),
+        (
+            "block",
+            {"blocks": [], "edges": [{"bidirectional": 1}]},
+            "edges[0].bidirectional",
+        ),
+        (
+            "block",
+            {"blocks": [], "edges": [{"evidence_ids": [1]}]},
+            "edges[0].evidence_ids[0]",
+        ),
+        ("block", {"blocks": [], "columns": 2.5}, "columns"),
+        ("block", {"blocks": [], "columns": True}, "columns"),
+        ("block", {"blocks": [], "columns": []}, "columns"),
+    ],
+)
+def test_phase_two_native_nested_contracts_reject_wrong_shapes_and_closed_tokens(
+    diagram_type: str,
+    ir: dict[str, object],
+    location: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    message = str(exc_info.value)
+    assert "violates its nested contract" in message
+    assert location in message
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "requirement",
+            {
+                "requirements": [
+                    {
+                        "type": "FUNCTIONAL_REQUIREMENT",
+                        "risk": "HIGH",
+                        "verifymethod": "TEST",
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "elements": [{"plugin_style": "external"}],
+                "relations": [
+                    {
+                        "source": "unknown",
+                        "target": "also-unknown",
+                        "type": "SATISFIES",
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+        (
+            "block",
+            {
+                "blocks": [
+                    {
+                        "shape": "CYLINDER",
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "edges": [
+                    {
+                        "source": "unknown",
+                        "target": "also-unknown",
+                        "style": "future-style",
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "columns": "2",
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+    ],
+)
+def test_phase_two_native_nested_contracts_preserve_partial_alias_and_forward_ir(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+
+    assert candidate.ir == ir
+
+
 @pytest.mark.parametrize("bbox", [[0, 0, 10], [0, 0, True, 10], ["0", 0, 10, 10]])
 def test_phase_one_nested_contracts_require_four_strict_finite_bbox_numbers(bbox) -> None:
     with pytest.raises(ValidationError, match="bbox"):
@@ -821,6 +965,59 @@ def test_canonical_key_revalidates_mutated_core_uml_nested_contract() -> None:
 
     with pytest.raises(ValidationError, match=r"classes\[0\]\.members\[0\]\.parameters"):
         candidate.canonical_key()
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "mutation", "location"),
+    [
+        (
+            "requirement",
+            {"requirements": [{"type": "functional"}]},
+            lambda ir: ir["requirements"][0].__setitem__("type", "business"),
+            r"requirements\[0\]\.type",
+        ),
+        (
+            "block",
+            {"blocks": [{"shape": "rectangle"}]},
+            lambda ir: ir["blocks"][0].__setitem__("shape", "cloud"),
+            r"blocks\[0\]\.shape",
+        ),
+    ],
+)
+def test_canonical_key_revalidates_mutated_phase_two_native_nested_contract(
+    diagram_type: str,
+    ir: dict[str, object],
+    mutation,
+    location: str,
+) -> None:
+    candidate = TypedIRCandidate(diagram_type=diagram_type, ir=ir)
+    mutation(candidate.ir)
+
+    with pytest.raises(ValidationError, match=location):
+        candidate.canonical_key()
+
+
+def test_generic_candidate_envelopes_apply_phase_two_native_nested_contracts() -> None:
+    prediction = DiagramTypePrediction(candidates=["requirement"], scores=[1.0])
+
+    with pytest.raises(ValidationError, match=r"requirements\[0\]\.risk"):
+        EngineObservation(
+            prediction=prediction,
+            typed_candidates=[
+                {
+                    "diagram_type": "requirement",
+                    "ir": {"requirements": [{"risk": "urgent"}]},
+                }
+            ],
+        )
+
+    with pytest.raises(ValidationError, match=r"blocks\[0\]\.shape"):
+        MermaidCandidate(
+            candidate_id="candidate-block",
+            generation_method="typed_ir",
+            diagram_type="block",
+            typed_ir={"blocks": [{"shape": "cloud"}]},
+        )
 
 
 def test_canonical_key_uses_a_bounded_digest_without_model_dump(

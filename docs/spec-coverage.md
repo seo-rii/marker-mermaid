@@ -17,7 +17,7 @@
 | accessibility | 구현 | requested type 기반 title/description 파생, direct revalidation, 비지원 grammar warning/IR 보존 |
 | type-aware visual priors | 구현 | edge/Hough/arrow/OCR/contour/threshold/grayscale, source-resolution tile과 view manifest |
 | color cluster/vector primitive | 구현 | PIL color map, Marker PyMuPDF/duck-typed provider와 page→canvas affine |
-| structured Marker VLM | 구현 | engine별 격리 source snapshot, enabled-type root contract와 Phase 1 및 stable State/Class/ER nested record 후검증·prompt contract, typed IR의 3-field envelope와 hook-free exact-built-in snapshot, candidate UTF-8 1 MB/escaped JSON 4 MB·observation 및 fused-output JSON 8 MB/64개 집계 예산, pipeline/fusion/accessibility/repair/sidecar sink 재검증, Marker 1.10.2 schema reserve와 stock Ollama inline-schema 호환을 포함한 request text/item/view budget, reconstruction-global evidence budget, structural quota/backfill, prompt-selected prior만의 게시 권한, durable budget notice; generic `ir` envelope와 나머지 유형의 discriminated schema는 후속 |
+| structured Marker VLM | 구현 | engine별 격리 source snapshot, enabled-type root contract와 Phase 1·stable State/Class/ER·native Requirement/Block nested record 후검증·prompt contract, case-insensitive serializer token 호환, optional partial field/evidence와 원본 IR/extra metadata 보존, typed IR의 3-field envelope와 hook-free exact-built-in snapshot, candidate UTF-8 1 MB/escaped JSON 4 MB·observation 및 fused-output JSON 8 MB/64개 집계 예산, pipeline/fusion/accessibility/repair/sidecar sink 재검증, Marker 1.10.2 schema reserve와 stock Ollama inline-schema 호환을 포함한 request text/item/view budget, reconstruction-global evidence budget, structural quota/backfill, prompt-selected prior만의 게시 권한, durable budget notice; generic `ir` envelope와 나머지 later-phase 유형의 discriminated schema는 후속 |
 | Direct Mermaid | 구현 | extended/maximal, 동일 hard gate |
 | Fusion engine | 구현 | source-explicit Scene consensus; prior payload의 bbox/text 정합 source evidence와 owner-local spatial contour, 최소 IoU 0.45, noncolliding provenance를 요구하는 flat Flowchart/Generic Network full/injective node-ID remap, atomic refusal, direction-conflict 전파와 hash-bound mapping/provenance sidecar. nested/non-flow remap은 후속 |
 | Flowchart | 구현 | typed serializer, validated flat/disjoint group→subgraph emission과 SceneGroup round-trip + real render fixture |
@@ -26,7 +26,7 @@
 | Mindmap | 구현 | typed serializer; Mermaid 11.16 accessibility 제한 문서화 |
 | Timeline/Gantt | 구현 | typed serializer + real render fixture |
 | BPMN/Swimlane | 구현 | portable flowchart subgraph fallback |
-| Phase 2 software types | 구현 | State/Class/ER/Requirement/Block native; C4 자동 게시·평가 Scene은 공용 bounded Architecture service/group/edge plan을 사용하고 runtime 거부 시 같은 plan으로 nested Flowchart 재시도, 진단용 native C4는 publication metric에서 분리; Deployment/Component도 Architecture fallback, Use-case는 bounded collision-free Actor/UseCase plan을 공유하는 Flowchart 명시 fallback |
+| Phase 2 software types | 구현 | State/Class/ER/Requirement/Block native; Requirement/Block은 strict nested extraction contract까지 구현했고 C4/Deployment/Component/Use-case는 아직 root contract; C4 자동 게시·평가 Scene은 공용 bounded Architecture service/group/edge plan을 사용하고 runtime 거부 시 같은 plan으로 nested Flowchart 재시도, 진단용 native C4는 publication metric에서 분리; Deployment/Component도 Architecture fallback, Use-case는 bounded collision-free Actor/UseCase plan을 공유하는 Flowchart 명시 fallback |
 | Phase 3 charts | 구현 | Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn typed native/fallback, 일부 runtime fallback과 numeric gate |
 | Planning types | 구현 | Journey→Timeline fallback, native Kanban/GitGraph와 evidence-strict reference 검사 |
 | Phase 5 special types | 구현 | Packet/Ishikawa/TreeView native+runtime fallback, Wardley/Cynefin/Railroad native, EventModeling/ZenUML fallback |
@@ -52,9 +52,9 @@
 ## 릴리스 해석
 
 현재 버전은 Phase 1~5 serializer를 제공하는 experimental engineering baseline이지 MMX-001의 모든
-end-to-end 기능 gate를 달성한 production `extended` 릴리스가 아닙니다. 특히 Phase 1 밖 유형 및 generic
-`ir` envelope의 discriminated extraction schema, 아직 fallback adapter가 없는 experimental grammar,
-연구 데이터셋 규모의 실제 corpus와 trusted
-runner 측정이 필요합니다. precision/recall 목표와 유형별 최소 fixture 수량을 판정하는 고정 평가기는
+end-to-end 기능 gate를 달성한 production `extended` 릴리스가 아닙니다. 특히 나머지 later-phase
+유형의 nested contract, generic `ir` envelope의 discriminated extraction schema, 아직 fallback
+adapter가 없는 experimental grammar, 연구 데이터셋 규모의 실제 corpus와 trusted runner 측정이
+필요합니다. precision/recall 목표와 유형별 최소 fixture 수량을 판정하는 고정 평가기는
 제공합니다. 자동 게시 hard gate, 원본 보존, candidate failure
 isolation, budget, sidecar/review 가능성은 현재 test 대상으로 삼습니다.

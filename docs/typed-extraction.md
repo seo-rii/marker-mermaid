@@ -2,9 +2,9 @@
 
 Structured VLM은 `diagram_type`만 맞춘 임의 JSON을 내보내지 않습니다. 활성화된 Mermaid 유형마다
 root 필드와 container 종류를 고정한 `TypedIRContract`를 prompt로 받고, 응답은 Pydantic 모델 생성
-시점에 같은 registry로 다시 검사됩니다. Phase 1 유형과 stable Core UML 유형(State, Class, ER)은 record
-내부의 알려진 필드와 recursive container도 전용 Pydantic model로 검사합니다. serializer의 세부 의미
-검사는 그 다음 단계에서 수행합니다.
+시점에 같은 registry로 다시 검사됩니다. Phase 1 유형, stable Core UML 유형(State, Class, ER),
+그리고 native Phase 2 중 Requirement·Block은 record 내부의 알려진 필드와 recursive container도
+전용 Pydantic model로 검사합니다. serializer의 세부 의미 검사는 그 다음 단계에서 수행합니다.
 
 이 경계는 두 문제를 분리합니다.
 
@@ -16,7 +16,7 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 소비하지 않습니다. 공통 선택 필드는 `title`, `description`, `acc_title`, `acc_description`,
 `direction`이며 semantic node/relation record에는 prior에서 얻은 `evidence_ids`를 요구합니다.
 
-## Phase 1 및 Core UML 중첩 계약
+## 중첩 계약 적용 범위
 
 다음 유형은 root container 검사 뒤 strict nested model을 통과해야 합니다.
 
@@ -32,6 +32,47 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | State | state/kind와 transition endpoint/label |
 | Class | class/member와 relation/cardinality field |
 | ER | entity/attribute/key와 relationship/cardinality field |
+| Requirement | requirement/element/relation record와 닫힌 type·risk·verify·relation token |
+| Block | block/edge record, shape token, `columns` scalar 형식 |
+
+### Requirement·Block record 계약
+
+Provider prompt와 응답 후 중첩 검증이 공유하는 canonical record는 다음과 같습니다. Root에서
+Requirement는 `requirements: list`를, Block은 `blocks: list`를 필수로 요구합니다. Requirement의
+`elements`·`relations`와 Block의 `edges`·`columns`는 선택 root field입니다.
+
+| Record | Prompt에 공개하고 형을 검사하는 field |
+| --- | --- |
+| `requirements[]` | `id`, `requirement_id`, `text`, `label`, `type`, `risk`, `verify_method`, `bbox`, `evidence_ids` |
+| `elements[]` | `id`, `type`, `label`, `docref`, `bbox`, `evidence_ids` |
+| `relations[]` | `id`, `source`, `target`, `type`, `bbox`, `evidence_ids` |
+| `blocks[]` | `id`, `label`, `text`, `shape`, `bbox`, `evidence_ids` |
+| `edges[]` | `id`, `source`, `target`, `label`, `style`, `bidirectional`, `bbox`, `evidence_ids` |
+
+닫힌 token 집합은 serializer가 이미 받아들이는 값과 같습니다.
+
+- Requirement `type`: `requirement`, `functional`, `functional_requirement`, `interface`,
+  `interface_requirement`, `performance`, `performance_requirement`, `physical`,
+  `physical_requirement`, `design_constraint`
+- Requirement `risk`: `low`, `medium`, `high`
+- Requirement `verify_method`: `analysis`, `demonstration`, `inspection`, `test`
+- Requirement relation `type`: `contains`, `copies`, `derives`, `satisfies`, `verifies`,
+  `refines`, `traces`
+- Block `shape`: `rectangle`, `round`, `stadium`, `circle`, `diamond`, `hexagon`, `cylinder`,
+  `subroutine`
+
+이 token들은 serializer의 lowercase 해석과 맞추어 대소문자를 구분하지 않고 검증하며,
+입력 문자열의 casing은 바꾸지 않습니다. Legacy Requirement 필드 `verifymethod`도
+`verify_method`와 같은 token 집합으로 응답 후 검증하지만 canonical prompt에는 추가하지
+않습니다. `relations[].label`도 string compatibility metadata로 형을 검사하지만 prompt와
+Requirement Mermaid output에는 포함하지 않습니다. Requirement element의 `type`·`label`, Block edge의
+`style`과 같은 자유 text field는 scalar 형만 여기서 검사하고 최종 표현 가능성은
+serializer가 판정합니다.
+
+Block `columns` prompt는 `auto|integer`를 요구합니다. Nested model은 이 경계에서
+string·integer·null이라는 scalar 형을 먼저 검사하고, serializer가 누락을 `auto`로 처리하며
+명시값이 `auto` 또는 양의 정수로 해석 가능한지 최종 판정합니다. 즉 extraction 계약의
+구조 검사와 serializer의 의미 검사를 혼동하지 않습니다.
 
 알려진 scalar field에는 object/list를 넣을 수 없고, record와 child container의 종류도 고정합니다. `bbox`는
 정확히 네 개의 finite number, `evidence_ids`와 membership은 string list여야 합니다. `extra="allow"`를
@@ -39,10 +80,11 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 검증 결과 model은 원본 IR을 대체하지 않습니다. 기존 dict를 그대로 serializer, repair, canonical hash,
 sidecar에 전달하므로 coercion이나 field stripping이 일어나지 않습니다.
 
-Prompt의 record 목록은 각 serializer가 실제 출력하는 canonical field만 광고합니다. Nested model은 보존할
-style/compatibility metadata의 알려진 type도 추가로 검사할 수 있으므로 Pydantic field 집합과 prompt 문자열을
-기계적으로 동일하게 만들지는 않습니다. 예를 들어 Architecture `name`과 relation `label`, Sequence participant
-`text`, Flow edge의 raw arrow hint처럼 compatibility metadata의 type도 검사합니다. Architecture `name`은
+Prompt의 record 목록은 serializer-visible 구조와 provenance/evaluation에서 canonical하게 소비하는 field만
+광고합니다. Nested model은 보존할 style/compatibility metadata의 알려진 type도 추가로 검사할 수 있으므로
+Pydantic field 집합과 prompt 문자열을 기계적으로 동일하게 만들지는 않습니다. 예를 들어 Architecture
+`name`과 relation `label`, Sequence participant `text`, Flow edge의 raw arrow hint처럼 compatibility
+metadata의 type도 검사합니다. Architecture `name`은
 `label`의 serializer-visible alias지만 relation `label`, Sequence participant `text`, raw arrow hint는 원
 IR/sidecar에 남아도 node/relation label 또는 구조 방향으로 평가하지 않습니다. 접근성 description에 보존된
 metadata도 OCR 구조 점수에서는 제외합니다.
@@ -52,8 +94,10 @@ metadata도 OCR 구조 점수에서는 제외합니다.
 Gantt 날짜와 Mermaid 표현 가능성은 serializer 및 evaluation gate가 계속 판정합니다. Architecture port는
 nested contract에서 `L/R/T/B`만 허용합니다.
 State kind, Class member visibility/kind/classifier 및 relation type, ER attribute key와 relationship
-cardinality처럼 serializer가 닫힌 집합으로 해석하는 값도 같은 enum으로 제한합니다. 필드 존재 여부와
-non-empty 같은 의미 조건은 계속 serializer가 판정하므로 partial reconstruction은 보존됩니다.
+cardinality, Requirement·Block의 위 token처럼 serializer가 닫힌 집합으로 해석하는 값도
+같은 집합으로 제한합니다. Root list 이외의 record field는 partial reconstruction을 위해 선택이며,
+필드 존재, non-empty, 표시 text, ID 중복, endpoint 참조 같은 의미 조건은 계속 serializer가
+판정합니다.
 `evidence_ids`도 prompt에서는 필수지만 legacy/partial candidate 호환을 위해 model에서는 선택 사항이며,
 실제 자동 게시 여부는 provenance gate가 결정합니다.
 
@@ -65,9 +109,10 @@ message만 serializer와 Scene에 함께 전달하고, raw message ID와 무관�
 부여합니다. 따라서 Mermaid에서 합쳐진 actor나 생략된 message를 평가 Scene이 별도 구조로 세지 않습니다.
 
 현재 Marker `response_schema`의 외부 envelope는 여전히 `TypedIRCandidate.ir: dict`입니다. 따라서 이 단계는
-활성화된 유형의 prompt와 응답 후 검증을 중첩 구조까지 강화하지만, provider에 모든 Mermaid 유형을 하나의
-discriminated JSON Schema로 직접 노출하거나 generic envelope reserve를 늘리지는 않습니다. 나머지 유형의
-전용 model과 envelope-level discriminated schema는 후속 작업입니다.
+활성화된 Requirement·Block의 prompt와 응답 후 검증을 중첩 구조까지 확장하지만, provider에 모든
+Mermaid 유형을 하나의 discriminated JSON Schema로 직접 노출하거나 generic envelope reserve를
+늘리지는 않습니다. C4·Deployment·Component·Use-case 등 나머지 later-phase 유형의
+전용 model과 envelope-level discriminated schema는 후속 작업이므로 `ARCH-001`은 여전히 부분 완화 상태입니다.
 
 Marker 1.10.2의 stock Ollama service는 원래 schema의 최상위 `properties`와 `required`만 복사해 `$defs`를
 버립니다. 이 adapter를 감지하면 local `#/$defs/*` 참조를 재귀적으로 inline한 schema-only

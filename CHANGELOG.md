@@ -94,6 +94,10 @@
 - Stable State, Class, and ER typed IR now has strict nested extraction and post-validation
   contracts for serializer-visible records and closed token sets, with records advertised only when
   those diagram types are enabled and without changing the generic provider response envelope.
+- Native Requirement and Block typed IR now has strict nested prompt/post-validation contracts for
+  serializer-visible records and case-insensitive closed tokens, while preserving optional partial
+  fields, evidence, extra metadata, and the original generic `ir` dictionary; Block column layout
+  semantics remain serializer-owned.
 - Serializer-visible Scene text now includes Architecture group labels, excludes hidden
   Deployment/Component relation labels, and mirrors Use-case Flowchart relation type-over-label
   precedence; hidden role/shape/style/semantic metadata cannot enter the projected Scene, and

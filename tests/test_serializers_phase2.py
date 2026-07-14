@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from marker_mermaid.config import SecurityProfile
+from marker_mermaid.models import TypedIRCandidate
 from marker_mermaid.security import MermaidSecurityScanner
 from marker_mermaid.serializers import SerializationError, serialize_runtime_fallback_result
 from marker_mermaid.serializers_phase2 import (
@@ -180,6 +181,173 @@ def test_unsupported_requirement_enum_fails() -> None:
 
     with pytest.raises(SerializationError, match="unsupported risk"):
         serialize_phase2("requirement", broken)
+
+
+@pytest.mark.parametrize(
+    ("source_type", "emitted_type"),
+    [
+        ("requirement", "requirement"),
+        ("functional", "functionalRequirement"),
+        ("functional_requirement", "functionalRequirement"),
+        ("interface", "interfaceRequirement"),
+        ("interface_requirement", "interfaceRequirement"),
+        ("performance", "performanceRequirement"),
+        ("performance_requirement", "performanceRequirement"),
+        ("physical", "physicalRequirement"),
+        ("physical_requirement", "physicalRequirement"),
+        ("design_constraint", "designConstraint"),
+    ],
+)
+def test_requirement_nested_contract_tracks_every_serializer_type_alias(
+    source_type: str,
+    emitted_type: str,
+) -> None:
+    ir = {"requirements": [{"id": "REQ", "text": "Must work", "type": source_type}]}
+
+    assert TypedIRCandidate(diagram_type="requirement", ir=ir).ir == ir
+    assert f"{emitted_type} REQ {{" in serialize_phase2("requirement", ir)[0]
+
+
+@pytest.mark.parametrize("risk", ["low", "medium", "high"])
+def test_requirement_nested_contract_tracks_every_serializer_risk(risk: str) -> None:
+    ir = {"requirements": [{"id": "REQ", "text": "Must work", "risk": risk}]}
+
+    assert TypedIRCandidate(diagram_type="requirement", ir=ir).ir == ir
+    assert f"risk: {risk}" in serialize_phase2("requirement", ir)[0]
+
+
+@pytest.mark.parametrize("field", ["verify_method", "verifymethod"])
+@pytest.mark.parametrize("verify_method", ["analysis", "demonstration", "inspection", "test"])
+def test_requirement_nested_contract_tracks_every_serializer_verify_method_and_alias(
+    field: str,
+    verify_method: str,
+) -> None:
+    ir = {"requirements": [{"id": "REQ", "text": "Must work", field: verify_method}]}
+
+    assert TypedIRCandidate(diagram_type="requirement", ir=ir).ir == ir
+    assert f"verifyMethod: {verify_method}" in serialize_phase2("requirement", ir)[0]
+
+
+@pytest.mark.parametrize(
+    "relation_type",
+    ["contains", "copies", "derives", "satisfies", "verifies", "refines", "traces"],
+)
+def test_requirement_nested_contract_tracks_every_serializer_relation_type(
+    relation_type: str,
+) -> None:
+    ir = {
+        "requirements": [
+            {"id": "A", "text": "First"},
+            {"id": "B", "text": "Second"},
+        ],
+        "relations": [{"source": "A", "target": "B", "type": relation_type}],
+    }
+
+    assert TypedIRCandidate(diagram_type="requirement", ir=ir).ir == ir
+    assert f"A - {relation_type} -> B" in serialize_phase2("requirement", ir)[0]
+
+
+@pytest.mark.parametrize(
+    ("shape", "emitted_node"),
+    [
+        ("rectangle", 'node["Node"]'),
+        ("round", 'node("Node")'),
+        ("stadium", 'node(["Node"])'),
+        ("circle", 'node(("Node"))'),
+        ("diamond", 'node{"Node"}'),
+        ("hexagon", 'node{{"Node"}}'),
+        ("cylinder", 'node[("Node")]'),
+        ("subroutine", 'node[["Node"]]'),
+    ],
+)
+def test_block_nested_contract_tracks_every_serializer_shape(
+    shape: str,
+    emitted_node: str,
+) -> None:
+    ir = {"blocks": [{"id": "node", "label": "Node", "shape": shape}]}
+
+    assert TypedIRCandidate(diagram_type="block", ir=ir).ir == ir
+    assert emitted_node in serialize_phase2("block", ir)[0]
+
+
+@pytest.mark.parametrize(
+    ("columns", "emitted_columns"),
+    [("auto", "auto"), (1, "1"), (12, "12"), ("2", "2")],
+)
+def test_block_nested_contract_preserves_supported_serializer_column_scalars(
+    columns: str | int,
+    emitted_columns: str,
+) -> None:
+    ir = {"blocks": [{"id": "node"}], "columns": columns}
+
+    assert TypedIRCandidate(diagram_type="block", ir=ir).ir == ir
+    assert f"columns {emitted_columns}" in serialize_phase2("block", ir)[0]
+
+
+def test_phase_two_nested_contract_case_insensitive_tokens_match_serializers() -> None:
+    requirement_ir = {
+        "requirements": [
+            {
+                "id": "A",
+                "text": "First",
+                "type": "FUNCTIONAL_REQUIREMENT",
+                "risk": "HIGH",
+                "verifymethod": "TEST",
+            },
+            {"id": "B", "text": "Second"},
+        ],
+        "relations": [{"source": "A", "target": "B", "type": "SATISFIES"}],
+    }
+    block_ir = {"blocks": [{"id": "db", "label": "Database", "shape": "CYLINDER"}]}
+
+    assert TypedIRCandidate(diagram_type="requirement", ir=requirement_ir).ir == requirement_ir
+    assert TypedIRCandidate(diagram_type="block", ir=block_ir).ir == block_ir
+    requirement_code = serialize_phase2("requirement", requirement_ir)[0]
+    block_code = serialize_phase2("block", block_ir)[0]
+    assert "functionalRequirement A {" in requirement_code
+    assert "risk: high" in requirement_code
+    assert "verifyMethod: test" in requirement_code
+    assert "A - satisfies -> B" in requirement_code
+    assert 'db[("Database")]' in block_code
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir", "message"),
+    [
+        ("requirement", {"requirements": []}, "non-empty list"),
+        ("block", {"blocks": []}, "non-empty list"),
+        (
+            "requirement",
+            {
+                "requirements": [{"id": "REQ", "text": "Must work"}],
+                "relations": [{"source": "REQ", "target": "missing"}],
+            },
+            "unknown endpoint",
+        ),
+        (
+            "block",
+            {
+                "blocks": [{"id": "node"}],
+                "edges": [{"source": "node", "target": "missing"}],
+            },
+            "unknown endpoint",
+        ),
+        (
+            "block",
+            {"blocks": [{"id": "node"}], "columns": 0},
+            "positive integer",
+        ),
+    ],
+)
+def test_phase_two_nested_contract_leaves_semantic_validation_to_serializer(
+    diagram_type: str,
+    ir: dict[str, object],
+    message: str,
+) -> None:
+    assert TypedIRCandidate(diagram_type=diagram_type, ir=ir).ir == ir
+
+    with pytest.raises(SerializationError, match=message):
+        serialize_phase2(diagram_type, ir)
 
 
 def test_overlapping_semantic_ids_fail_instead_of_rerouting_relations() -> None:

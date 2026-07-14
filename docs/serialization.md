@@ -46,6 +46,21 @@ State/Class/ER serializer는 provenance 없는 구조를 문법적으로 만들 
 endpoint, 추측 cardinality, ER의 identifying flag 누락도 `SerializationError`입니다. Requirement/Block과
 fallback serializer 역시 unknown relation endpoint를 임의 node로 만들지 않습니다.
 
+Requirement·Block은 serializer 전에 strict nested extraction 계약을 통과합니다. Requirement의
+requirement/element/relation과 Block의 block/edge는 각각 object list여야 하고, 알려진 scalar,
+`bbox`, `evidence_ids`의 형을 검사합니다. Requirement `type`·`risk`·verify method·relation
+type과 Block `shape`는 serializer가 이미 수용하는 닫힌 token을 대소문자 구분 없이 검사하며,
+원본 문자열은 재작성하지 않습니다. Legacy `verifymethod`도 같은 verify token으로 후처리
+검증하지만 provider prompt에는 canonical `verify_method`만 보입니다.
+
+Root list를 제외한 개별 field와 `evidence_ids`는 partial/legacy candidate 호환을 위해 model에서
+선택으로 남겨 둡니다. 추가 metadata는 `extra="allow"`로 보존하고, validation result로 IR을
+대체하지 않아 serializer와 sidecar에 원본 dict를 그대로 전달합니다. 따라서 non-empty,
+필수 label, ID/endpoint 정합성과 provenance 게시 여부는 각각 serializer와 publication gate가
+계속 판정합니다. Block `columns` 계약은 provider에 `auto|integer`를 요구하고 nested
+validation에서 scalar 형만 확인하며, 누락/자동 배치와 양의 정수 조건은 serializer가 최종
+판정합니다.
+
 Flowchart `groups`는 명시적 `id`, label, non-empty `member_ids`가 있는 flat/disjoint group만 portable
 `subgraph`로 방출합니다. 공용 emission plan이 source node/group ID를 한 번만 정규화하고 serializer와
 generated Scene adapter가 emitted node/group/relation/member ID까지 같은 mapping으로 사용합니다. Unknown

@@ -2,9 +2,9 @@
 
 Serializers remain the authoritative deep semantic validators.  These contracts form
 the earlier extraction boundary: they reject another diagram family's root shape,
-validate implemented nested records without rewriting the original dictionary, and
-give the VLM a compact enabled-type-only schema catalog instead of asking it to guess
-field names.
+progressively validate implemented nested records (including native Phase 2 records)
+without rewriting the original dictionary, and give the VLM a compact
+enabled-type-only schema catalog instead of asking it to guess field names.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, ValidationError, field_validator
 
 from marker_mermaid.config import ALL_TYPES, PHASE_ONE_TYPES
 
@@ -204,6 +204,135 @@ class _ERRelationship(_TypedIRRecord):
 class _ERIR(_TypedIRRoot):
     entities: list[_EREntity]
     relationships: list[_ERRelationship] = Field(default_factory=list)
+
+
+_REQUIREMENT_TYPES = frozenset(
+    {
+        "requirement",
+        "functional",
+        "functional_requirement",
+        "interface",
+        "interface_requirement",
+        "performance",
+        "performance_requirement",
+        "physical",
+        "physical_requirement",
+        "design_constraint",
+    }
+)
+_REQUIREMENT_RISKS = frozenset({"low", "medium", "high"})
+_REQUIREMENT_VERIFY_METHODS = frozenset({"analysis", "demonstration", "inspection", "test"})
+_REQUIREMENT_RELATION_TYPES = frozenset(
+    {"contains", "copies", "derives", "satisfies", "verifies", "refines", "traces"}
+)
+_BLOCK_SHAPES = frozenset(
+    {
+        "rectangle",
+        "round",
+        "stadium",
+        "circle",
+        "diamond",
+        "hexagon",
+        "cylinder",
+        "subroutine",
+    }
+)
+
+
+def _validate_casefolded_token(
+    value: str | None,
+    allowed: frozenset[str],
+    *,
+    field: str,
+) -> str | None:
+    """Validate a serializer-normalized token without rewriting the source IR."""
+
+    if value not in {None, ""} and value.lower() not in allowed:
+        raise ValueError(f"{field} has an unsupported token")
+    return value
+
+
+class _RequirementRecord(_TypedIRRecord):
+    id: str | None = None
+    requirement_id: str | None = None
+    text: str | None = None
+    label: str | None = None
+    type: str | None = None
+    risk: str | None = None
+    verify_method: str | None = None
+    verifymethod: str | None = None
+
+    @field_validator("type", "risk", "verify_method", "verifymethod")
+    @classmethod
+    def closed_token_is_supported(cls, value: str | None, info: Any) -> str | None:
+        allowed = {
+            "type": _REQUIREMENT_TYPES,
+            "risk": _REQUIREMENT_RISKS,
+            "verify_method": _REQUIREMENT_VERIFY_METHODS,
+            "verifymethod": _REQUIREMENT_VERIFY_METHODS,
+        }[info.field_name]
+        return _validate_casefolded_token(
+            value,
+            allowed,
+            field=f"requirement {info.field_name}",
+        )
+
+
+class _RequirementElement(_TypedIRRecord):
+    id: str | None = None
+    type: str | None = None
+    label: str | None = None
+    docref: str | None = None
+
+
+class _RequirementRelation(_TypedIRRecord):
+    id: str | None = None
+    source: str | None = None
+    target: str | None = None
+    label: str | None = None
+    type: str | None = None
+
+    @field_validator("type")
+    @classmethod
+    def relation_type_is_supported(cls, value: str | None) -> str | None:
+        return _validate_casefolded_token(
+            value,
+            _REQUIREMENT_RELATION_TYPES,
+            field="requirement relation type",
+        )
+
+
+class _RequirementIR(_TypedIRRoot):
+    requirements: list[_RequirementRecord]
+    elements: list[_RequirementElement] = Field(default_factory=list)
+    relations: list[_RequirementRelation] = Field(default_factory=list)
+
+
+class _BlockNode(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+    text: str | None = None
+    shape: str | None = None
+
+    @field_validator("shape")
+    @classmethod
+    def shape_is_supported(cls, value: str | None) -> str | None:
+        return _validate_casefolded_token(value, _BLOCK_SHAPES, field="block shape")
+
+
+class _BlockEdge(_TypedIRRecord):
+    id: str | None = None
+    source: str | None = None
+    target: str | None = None
+    label: str | None = None
+    style: str | None = None
+    bidirectional: bool | None = None
+
+
+class _BlockIR(_TypedIRRoot):
+    blocks: list[_BlockNode]
+    edges: list[_BlockEdge] = Field(default_factory=list)
+    columns: str | int | None = None
 
 
 class _HierarchyNode(_TypedIRRecord):
@@ -411,9 +540,38 @@ TYPED_IR_CONTRACTS: dict[str, TypedIRContract] = {
         (("elements", "list"),), ("boundaries", "relations", "level"), "C4 elements"
     ),
     "requirement": TypedIRContract(
-        (("requirements", "list"),), ("elements", "relations"), "requirements and relations"
+        (("requirements", "list"),),
+        ("elements", "relations"),
+        "requirements and relations",
+        _RequirementIR,
+        (
+            "requirements[]: {id:string,requirement_id:string,text:string,label:string,"
+            "type:requirement|functional|functional_requirement|interface|"
+            "interface_requirement|performance|performance_requirement|physical|"
+            "physical_requirement|design_constraint,risk:low|medium|high,"
+            "verify_method:analysis|demonstration|inspection|test,bbox:number[4],"
+            "evidence_ids:string[]}",
+            "elements[]: {id:string,type:string,label:string,docref:string,bbox:number[4],"
+            "evidence_ids:string[]}",
+            "relations[]: {id:string,source:string,target:string,"
+            "type:contains|copies|derives|satisfies|verifies|refines|traces,"
+            "bbox:number[4],evidence_ids:string[]}",
+        ),
     ),
-    "block": TypedIRContract((("blocks", "list"),), ("edges", "columns"), "blocks and ports"),
+    "block": TypedIRContract(
+        (("blocks", "list"),),
+        ("edges", "columns"),
+        "blocks and connections",
+        _BlockIR,
+        (
+            "columns: auto|integer",
+            "blocks[]: {id:string,label:string,text:string,"
+            "shape:rectangle|round|stadium|circle|diamond|hexagon|cylinder|subroutine,"
+            "bbox:number[4],evidence_ids:string[]}",
+            "edges[]: {id:string,source:string,target:string,label:string,style:string,"
+            "bidirectional:boolean,bbox:number[4],evidence_ids:string[]}",
+        ),
+    ),
     "deployment": TypedIRContract(
         (("nodes", "list"),), ("artifacts", "links", "edges"), "deployment nodes/artifacts"
     ),
@@ -517,7 +675,10 @@ if set(TYPED_IR_CONTRACTS) != set(ALL_TYPES):  # pragma: no cover - import-time 
 
 PHASE_ONE_NESTED_TYPES = PHASE_ONE_TYPES | {"generic_network"}
 CORE_UML_NESTED_TYPES = frozenset({"state", "class", "er"})
-NESTED_TYPED_IR_TYPES = PHASE_ONE_NESTED_TYPES | CORE_UML_NESTED_TYPES
+PHASE_TWO_NATIVE_NESTED_TYPES = frozenset({"requirement", "block"})
+NESTED_TYPED_IR_TYPES = (
+    PHASE_ONE_NESTED_TYPES | CORE_UML_NESTED_TYPES | PHASE_TWO_NATIVE_NESTED_TYPES
+)
 
 for _diagram_type in NESTED_TYPED_IR_TYPES:  # pragma: no cover - import-time invariant
     _contract = TYPED_IR_CONTRACTS[_diagram_type]
