@@ -181,9 +181,11 @@ generated Scene attribution에서 제외합니다.
   Cynefin native는 고정 template·실제 visible item(`confusion`은 세 개+`+N more`)·transition label을,
   Flowchart fallback은 supplied domain label을 한 번씩, 모든 explicit item과 transition label을 셉니다. ZenUML은
   Sequence fallback의 participant alias·message label만 셉니다. Packet은 terminal이 native일 때만 canvas
-  title을 field label 앞에 세고 Flowchart fallback에서는 제외합니다. 내부 endpoint ID, 좌표, anchor 같은 문법
-  구조와 접근성 text는 OCR 의미 증거로 세지 않습니다. 각 유형의 record planning은 serializer와 projection이
-  같은 deterministic helper를 공유합니다.
+  title을 field label 앞에 세고 Flowchart fallback에서는 제외합니다. Sankey native terminal은 node label과
+  renderer가 표시하는 `max(incoming, outgoing)` 합계를 세되 개별 flow weight는 세지 않고, Flowchart terminal은
+  node label과 exact edge-weight label을 셉니다. 두 Sankey 경로 모두 title/description을 canvas text로 세지
+  않습니다. 내부 endpoint ID, 좌표, anchor 같은 문법 구조와 접근성 text는 OCR 의미 증거로 세지 않습니다.
+  각 유형의 record planning은 serializer와 projection이 같은 deterministic helper를 공유합니다.
 - Typed semantic projection이 malformed data나 adapter defect로 예외를 내면 해당 candidate의 OCR을
   direct-code fallback으로 바꾸지 않습니다. 예외를 candidate warning으로 격리하고 aggregate를
   unavailable로 유지하여 다른 candidate 선택과 문서 변환은 계속합니다.
@@ -197,6 +199,14 @@ generated Scene attribution에서 제외합니다.
   `quadrant-1`~`quadrant-4` slot index도 문법 토큰으로 제외하지만 directive label과 point 좌표 안의 실제
   숫자는 보존합니다. Block metadata 뒤 같은 줄의 statement는 다시 평가하며 bounded suffix budget이
   소진되면 부분 점수 대신 `0.0`으로 fail closed합니다.
+- Sankey 구조 metric도 검증된 terminal grammar를 따릅니다. Native는 source node identity와 marker-less
+  `data_flow` topology, 고정 `LR`, 무라벨 relation을 사용하고 node Scene text에는 파생 합계를 섞지 않습니다.
+  Flowchart fallback은 공용 planner의 collision-safe emitted ID, exact weight relation label, end-arrow와
+  정규화된 requested direction을 사용합니다. Node/flow record의 evidence만 attribution에 연결하며 입력의
+  미방출 role/shape/style/arrow/semantic hint와 title/description은 구조·OCR 점수를 높일 수 없습니다.
+  Malformed/oversized evidence list는 문자 단위 ID로 coercion하지 않고 해당 record에서만 빈 provenance로
+  격리하며, relation count와 relation ID도 Scene resource 경계 안에서 serializer와 함께 검증합니다.
+  Flowchart projection이 pinned runtime의 500-edge cap을 넘으면 partial Scene을 만들지 않고 unavailable입니다.
 - Packet은 위 전역 숫자 occurrence multiset을 사용하지 않고 field-local association으로 대체합니다.
   Native Packet과 같은 candidate slot의 Flowchart fallback, semantic repair proposal은 모두 동일한
   field plan과 평가 경로를 사용합니다. 각 field가 candidate publication authority 안의 `ocr_token` 또는

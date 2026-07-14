@@ -118,6 +118,17 @@
   title, while a same-slot Flowchart fallback excludes that native-only text. Native serialization and scoring
   share entity-compatible title normalization; invisible source-security separators are omitted from OCR tokens,
   and field labels plus field-local numeric binding remain unchanged.
+- Sankey serialization, generated Scene attribution, and semantic OCR projection now share one bounded terminal
+  plan. Native Mermaid 11.16 output keeps source node identities, marker-less data-flow topology, fixed `LR`
+  layout, and the renderer-visible per-node maximum of incoming/outgoing totals rounded to two decimals; individual
+  weights, title, description, and unsupported style metadata are not invented as canvas text. Portable Flowchart
+  output instead uses collision-safe emitted IDs, the requested normalized direction, exact edge-weight labels,
+  and end arrows. Decimal values that JavaScript would underflow, overflow, or visibly round are kept in the exact
+  fallback; flow counts and Scene IDs are bounded, while malformed record provenance is quarantined instead of
+  manufacturing attribution or invalidating otherwise serializable evidence. Portable projection fails before
+  serialization above Mermaid's 500-edge Flowchart runtime limit, without restricting a valid native Sankey.
+  A native runtime rejection retries that Flowchart once in the same candidate slot while retaining the Sankey
+  semantic type, complete fallback metadata, record provenance, and numeric publication gate.
 - Bounded pre-validation source repair with audit events, diagnostics, idempotence, and AST adapter seam.
 - Page-level missed-diagram proposals with occupied-region exclusion and virtual source crops.
 - Profile-gated flowchart fill, border, and link style recovery with strict CSS allowlists.

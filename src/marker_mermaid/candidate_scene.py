@@ -30,6 +30,7 @@ from marker_mermaid.serializers import (
     plan_architecture_structure,
     plan_gantt_records,
 )
+from marker_mermaid.serializers_charts_flow import plan_sankey_records
 from marker_mermaid.serializers_experimental import (
     CYNEFIN_DOMAIN_LABELS,
     CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS,
@@ -345,8 +346,45 @@ def typed_ir_to_scene(
         ]
         scene_direction_override = "LR"
     elif diagram_type == "sankey":
-        node_records = list(ir.get("nodes") or [])
-        edge_records = list(ir.get("flows") or ir.get("links") or [])
+        try:
+            sankey_plan = plan_sankey_records(ir)
+        except SerializationError:
+            return None
+        sankey_uses_flowchart = (
+            not sankey_plan.native_supported
+            if emitted_diagram_type is None
+            else emitted_diagram_type.casefold().startswith("flowchart")
+        )
+        if not sankey_uses_flowchart and any(
+            node.native_total_text is None for node in sankey_plan.nodes
+        ):
+            return None
+        if sankey_uses_flowchart and not sankey_plan.flowchart_supported:
+            return None
+        node_records = [
+            {
+                "id": node.fallback_id if sankey_uses_flowchart else node.source_id,
+                "label": node.label,
+                "role": "node",
+                "bbox": node.source_record.get("bbox"),
+                "evidence_ids": list(node.evidence_ids),
+            }
+            for node in sankey_plan.nodes
+        ]
+        edge_records = [
+            {
+                "id": flow.scene_id,
+                "source": (flow.source_fallback_id if sankey_uses_flowchart else flow.source_id),
+                "target": (flow.target_fallback_id if sankey_uses_flowchart else flow.target_id),
+                "label": flow.value_text if sankey_uses_flowchart else None,
+                "semantic_relation": "data_flow",
+                "arrow_at_start": False,
+                "arrow_at_end": sankey_uses_flowchart,
+                "evidence_ids": list(flow.evidence_ids),
+            }
+            for flow in sankey_plan.flows
+        ]
+        scene_direction_override = sankey_plan.fallback_direction if sankey_uses_flowchart else "LR"
     elif diagram_type == "zenuml":
         try:
             zenuml_plan = plan_zenuml_structure(ir)
@@ -1426,6 +1464,29 @@ def typed_ir_semantic_texts(
                 yield native_title
         for field in plan.fields:
             yield field.label
+        return
+    if diagram_type == "sankey":
+        plan = plan_sankey_records(ir)
+        sankey_uses_flowchart = (
+            not plan.native_supported
+            if emitted_diagram_type is None
+            else emitted_diagram_type.casefold().startswith("flowchart")
+        )
+        if sankey_uses_flowchart:
+            if not plan.flowchart_supported:
+                raise SerializationError(
+                    "Sankey Flowchart projection exceeds the runtime edge limit"
+                )
+            for node in plan.nodes:
+                yield node.label
+            for flow in plan.flows:
+                yield flow.value_text
+        else:
+            for node in plan.nodes:
+                if node.native_total_text is None:
+                    raise SerializationError("native Sankey node total cannot be reproduced safely")
+                yield node.label
+                yield node.native_total_text
         return
     if diagram_type == "railroad":
         plan = plan_railroad_records(ir)

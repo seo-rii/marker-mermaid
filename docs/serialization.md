@@ -28,7 +28,7 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 | Deployment, Component | `deployment/component → architecture → flowchart` | primary/secondary record를 service로 평탄화; Architecture runtime 거부 시 nested fallback, 특수 notation/relation label은 typed IR에 유지 |
 | Use-case | `flowchart` | stadium actor/round use-case proxy와 typed relation label; actor glyph, system boundary, group/style/bidirectional metadata는 typed IR에 유지 |
 | Pie, XY, Quadrant | 동일 | explicit finite values/axis/coordinates 필수 |
-| Sankey | `sankey` 또는 `flowchart` | native-safe positive DAG, 그 외 exact-weight fallback |
+| Sankey | `sankey` 또는 `flowchart` | native-safe positive DAG, 그 외 및 native runtime 거부 시 same-slot exact-weight fallback |
 | Radar | `radar` 또는 `flowchart` | non-negative native domain, 음수 domain은 tabular fallback |
 | Treemap | `treemap` 또는 `flowchart` | leaf value 필수, internal-node value는 fallback에서 보존 |
 | Venn | `venn` 또는 `flowchart` | 모든 크기가 관측되면 native, 누락 시 숫자 합성 없는 set graph |
@@ -416,11 +416,36 @@ bbox/evidence와 Radar option scalar만 검사하며 non-empty, ID/reference, �
 native/fallback 선택은 serializer에 남깁니다. Radar `ticks`는 Mermaid renderer의 tick loop를 제한하기 위해
 serializer에서 최대 100으로 제한합니다.
 
-Sankey의 positive weighted DAG가 아니거나 native-safe 고유 label·모든 node 참여 조건이 맞지 않으면 각
-weight를 edge label로 보존하는 Flowchart를 만듭니다. Radar는 음수 value 또는 bound도 valid data로 받아
-edge 없는 tabular Flowchart에 dimension label과 모든 series value를 보존합니다. 이 fallback은 bounds,
-ticks, legend, graticule과 Radar geometry를 code에 표현하지 않으므로 해당 option은 typed IR/review metadata에
-남습니다.
+Sankey는 serializer, generated Scene, semantic OCR이 같은 bounded plan을 사용합니다. Plan은 source node와
+flow record를 한 번 검증하고 native source ID, Flowchart collision-safe emitted ID, exact decimal weight,
+record-local evidence, collision-free relation Scene ID를 고정합니다. Positive weighted DAG, native-safe 고유
+label, 모든 node 참여뿐 아니라 Mermaid 11.16이 표시하는 node 합계를 안전하게 재현할 수 있어야 native를
+선택합니다. Native canvas의 node total은 binary float incoming/outgoing 합계 중 큰 값에
+`Math.round(value * 100) / 100`을 적용한 결과이며, 개별 flow weight와 arrow marker는 보이지 않습니다.
+따라서 native Scene은 source node ID, 무라벨·marker-less `data_flow`, 고정 `LR`을 사용하고 OCR은 node label과
+표시 합계만 투영합니다. `parseFloat` 변환에서 positive value가 0/무한대로 소실되거나 shortest decimal이
+달라지고, 또는 합계의 cent 단위 문자열을 JavaScript와 동일하게 만들 수 없으면 native 지원 조건을 닫고
+exact fallback을 사용합니다.
+
+Plan은 flow 수를 Scene relation 상한에서 먼저 거부하고 optional flow ID를 bounded unique Scene slot으로
+정규화합니다. 비문자·초과 길이·잘못된 Unicode ID는 deterministic `sankey_flow_N`으로 격리하고 중복은
+bounded suffix를 붙입니다. Node/flow `evidence_ids`가 bounded string list 계약을 어기면 code와 topology를
+버리지 않고 해당 record의 evidence tuple만 비워, malformed metadata가 허위 provenance나 Scene 전체 실패를
+만들지 못하게 합니다. Native Sankey는 공통 Scene relation 상한까지 허용하되, portable projection은 pinned
+Mermaid worker의 `maxEdges=500`을 넘으면 code를 반환하지 않습니다. 따라서 501개 이상의 valid native flow는
+native로 남을 수 있지만, 같은 후보의 runtime fallback이 필요하면 명시적으로 unavailable 처리됩니다.
+
+Native 조건을 벗어나거나 native runtime validation이 거부하면 각 exact weight를 directed edge label로
+보존하는 Flowchart를 만듭니다. 이 경로는 공용 plan의 emitted node ID, end-arrow와 정규화된 requested
+direction을 Scene/OCR에도 공유합니다. Runtime 재시도는 같은 candidate slot에서 한 번만 수행하고 새
+candidate/type/repair budget을 소비하지 않으며, strict source scan과 parse/render/SVG/terminal-type gate를
+전부 다시 적용합니다. 성공 시 requested type은 `sankey`, emitted/runtime type은 `flowchart` 계열,
+fallback chain은 `sankey → flowchart`로 기록됩니다. Sankey title/description은 native canvas에 없고 fallback
+SVG에서는 accessibility metadata일 뿐이므로 어느 terminal에서도 content OCR label로 세지 않습니다.
+
+Radar는 음수 value 또는 bound도 valid data로 받아 edge 없는 tabular Flowchart에 dimension label과 모든
+series value를 보존합니다. 이 fallback은 bounds, ticks, legend, graticule과 Radar geometry를 code에 표현하지
+않으므로 해당 option은 typed IR/review metadata에 남습니다.
 
 Treemap leaf는 explicit positive value가 필요합니다. Internal-node value가 있거나 strict runtime이 native
 grammar를 거부하면 각 value를 label에 표시한 hierarchy Flowchart로 낮춥니다. Venn은 모든 set/intersection

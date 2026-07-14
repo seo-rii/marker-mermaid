@@ -870,6 +870,15 @@ def serialize_runtime_fallback_result(
             warnings=tuple(dict.fromkeys((*initial.warnings, runtime_warning))),
             stability=initial.stability,
         )
+    if diagram_type == "sankey":
+        from marker_mermaid.serializers_charts_flow import serialize_sankey
+
+        result = serialize_sankey(
+            ir,
+            experimental=experimental,
+            native_runtime_valid=False,
+        )
+        return result if result.used_fallback else None
     if diagram_type in {"treemap", "venn"}:
         from marker_mermaid.serializers_charts_sets import serialize_chart_set
 

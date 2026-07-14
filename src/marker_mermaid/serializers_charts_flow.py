@@ -12,20 +12,27 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
 from marker_mermaid.accessibility import resolve_accessibility
 from marker_mermaid.config import SecurityProfile
+from marker_mermaid.flowchart_structure import (
+    FlowchartStructureError,
+    plan_flowchart_structure,
+)
+from marker_mermaid.models import MAX_ID_CHARS, MAX_SCENE_RELATIONS, MAX_TEXT_CHARS
+from marker_mermaid.resource_limits import MAX_EVIDENCE_REFS
 from marker_mermaid.security import MermaidSecurityScanner
 from marker_mermaid.serialization import SerializationResult
 from marker_mermaid.serializers import SerializationError, serialize_flowchart
 
-SankeyNode = tuple[str, str]
-SankeyFlow = tuple[str, str, str, Decimal]
 RadarDimension = tuple[str, str]
 RadarSeries = tuple[str, str, tuple[str, ...], tuple[Decimal, ...]]
 MAX_RADAR_TICKS = 100
+MAX_SANKEY_FLOWCHART_EDGES = 500
+_MAX_EXACT_NATIVE_SANKEY_TOTAL = (2**53 - 1) / 100
 
 SANKEY_ACCESSIBILITY_LIMITATION = (
     "Mermaid 11.16 Sankey grammar cannot encode title, accTitle, or accDescr; "
@@ -35,10 +42,52 @@ SANKEY_FALLBACK_WARNING = (
     "Sankey was emitted as a weighted flowchart because its evidence cannot be "
     "represented by Mermaid 11.16 Sankey without loss."
 )
+SANKEY_RUNTIME_FALLBACK_WARNING = (
+    "CandidateValidator rejected native Sankey; exact weighted flows were re-emitted "
+    "as a portable Flowchart in the same candidate slot."
+)
 RADAR_FALLBACK_WARNING = (
     "Radar was emitted as a tabular flowchart because its numeric domain cannot "
     "be represented by Mermaid 11.16 radar syntax without loss."
 )
+
+
+@dataclass(frozen=True, slots=True)
+class SankeyNodePlan:
+    """One source node and its terminal-specific visible identity/text."""
+
+    source_record: Mapping[str, Any]
+    source_id: str
+    fallback_id: str
+    label: str
+    native_total_text: str | None
+    evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SankeyFlowPlan:
+    """One exact weighted relation shared by native, fallback, and Scene consumers."""
+
+    source_record: Mapping[str, Any]
+    scene_id: str
+    source_id: str
+    target_id: str
+    source_fallback_id: str
+    target_fallback_id: str
+    value_text: str
+    value: Decimal
+    evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SankeyPlan:
+    """Validated Sankey emission plan for both terminal grammars."""
+
+    nodes: tuple[SankeyNodePlan, ...]
+    flows: tuple[SankeyFlowPlan, ...]
+    native_supported: bool
+    flowchart_supported: bool
+    fallback_direction: str
 
 
 def _required_records(value: Any, *, field: str) -> list[Mapping[str, Any]]:
@@ -132,40 +181,10 @@ def _strict_source(code: str) -> str:
     return code
 
 
-def _sankey_data(ir: Mapping[str, Any]) -> tuple[list[SankeyNode], list[SankeyFlow]]:
-    records = _required_records(ir.get("nodes"), field="Sankey nodes")
-    nodes: list[SankeyNode] = []
-    seen_ids: set[str] = set()
-    for record in records:
-        source_id = _explicit_id(record, field="Sankey node")
-        if source_id in seen_ids:
-            raise SerializationError(f"Sankey node id {source_id!r} is duplicated")
-        seen_ids.add(source_id)
-        nodes.append((source_id, _label(record, source_id, field="Sankey node")))
-
-    raw_flows = ir.get("flows", ir.get("links"))
-    flow_records = _required_records(raw_flows, field="Sankey flows")
-    flows: list[SankeyFlow] = []
-    for index, record in enumerate(flow_records, start=1):
-        source = record.get("source")
-        target = record.get("target")
-        if not isinstance(source, str) or not isinstance(target, str):
-            raise SerializationError(f"Sankey flow {index} requires source and target ids")
-        if source not in seen_ids or target not in seen_ids:
-            raise SerializationError(
-                f"Sankey flow {index} references unknown endpoint: {source!r} -> {target!r}"
-            )
-        if "value" not in record:
-            raise SerializationError(f"Sankey flow {index} lacks explicit numeric value evidence")
-        rendered, decimal = _finite_number(record["value"], field=f"Sankey flow {index} value")
-        flows.append((source, target, rendered, decimal))
-    return nodes, flows
-
-
-def _is_dag(node_ids: Sequence[str], flows: Sequence[SankeyFlow]) -> bool:
+def _is_dag(node_ids: Sequence[str], flows: Sequence[tuple[str, str]]) -> bool:
     adjacency = {node_id: [] for node_id in node_ids}
     indegree = {node_id: 0 for node_id in node_ids}
-    for source, target, _, _ in flows:
+    for source, target in flows:
         adjacency[source].append(target)
         indegree[target] += 1
     pending = [node_id for node_id in node_ids if indegree[node_id] == 0]
@@ -180,65 +199,278 @@ def _is_dag(node_ids: Sequence[str], flows: Sequence[SankeyFlow]) -> bool:
     return visited == len(node_ids)
 
 
+def _native_sankey_total_text(total: float) -> str | None:
+    """Mirror Mermaid's positive ``Math.round(value * 100) / 100`` label."""
+
+    if not math.isfinite(total) or total < 0 or total > _MAX_EXACT_NATIVE_SANKEY_TOTAL:
+        return None
+    scaled = total * 100
+    if not math.isfinite(scaled) or scaled > 2**53 - 1:
+        return None
+    lower_units = math.floor(scaled)
+    rounded_units = lower_units + int(scaled - lower_units >= 0.5)
+    if rounded_units == 0:
+        return "0"
+    rendered = repr(rounded_units / 100)
+    return rendered.removesuffix(".0")
+
+
+def plan_sankey_records(ir: Mapping[str, Any]) -> SankeyPlan:
+    """Validate Sankey records and freeze native/fallback visible semantics."""
+
+    records = _required_records(ir.get("nodes"), field="Sankey nodes")
+    node_rows: list[tuple[Mapping[str, Any], str, str, tuple[str, ...]]] = []
+    seen_ids: set[str] = set()
+    for record in records:
+        source_id = _explicit_id(record, field="Sankey node")
+        if source_id in seen_ids:
+            raise SerializationError(f"Sankey node id {source_id!r} is duplicated")
+        seen_ids.add(source_id)
+        label = _label(record, source_id, field="Sankey node")
+        if len(label) > MAX_TEXT_CHARS:
+            raise SerializationError("Sankey node label exceeds the Scene text limit")
+        raw_evidence_ids = record.get("evidence_ids")
+        evidence_ids: tuple[str, ...] = ()
+        if (
+            isinstance(raw_evidence_ids, list)
+            and len(raw_evidence_ids) <= MAX_EVIDENCE_REFS
+            and all(
+                type(evidence_id) is str and bool(evidence_id) and len(evidence_id) <= MAX_ID_CHARS
+                for evidence_id in raw_evidence_ids
+            )
+        ):
+            try:
+                for evidence_id in raw_evidence_ids:
+                    evidence_id.encode("utf-8")
+            except UnicodeEncodeError:
+                pass
+            else:
+                evidence_ids = tuple(raw_evidence_ids)
+        node_rows.append((record, source_id, label, evidence_ids))
+
+    try:
+        fallback_structure = plan_flowchart_structure(
+            [
+                {"id": source_id, "label": label}
+                for _record, source_id, label, _evidence_ids in node_rows
+            ],
+            [],
+        )
+    except FlowchartStructureError as exc:
+        raise SerializationError(str(exc)) from exc
+    fallback_id_by_source = {node.source_id: node.emitted_id for node in fallback_structure.nodes}
+
+    raw_flows = ir.get("flows", ir.get("links"))
+    flow_records = _required_records(raw_flows, field="Sankey flows")
+    if len(flow_records) > MAX_SCENE_RELATIONS:
+        raise SerializationError("Sankey flow count exceeds the Scene relation limit")
+    flow_rows: list[tuple[Mapping[str, Any], str, str, str, Decimal, tuple[str, ...]]] = []
+    for index, record in enumerate(flow_records, start=1):
+        source = record.get("source")
+        target = record.get("target")
+        if not isinstance(source, str) or not isinstance(target, str):
+            raise SerializationError(f"Sankey flow {index} requires source and target ids")
+        if source not in seen_ids or target not in seen_ids:
+            raise SerializationError(
+                f"Sankey flow {index} references unknown endpoint: {source!r} -> {target!r}"
+            )
+        if "value" not in record:
+            raise SerializationError(f"Sankey flow {index} lacks explicit numeric value evidence")
+        rendered, decimal = _finite_number(record["value"], field=f"Sankey flow {index} value")
+        raw_evidence_ids = record.get("evidence_ids")
+        evidence_ids = ()
+        if (
+            isinstance(raw_evidence_ids, list)
+            and len(raw_evidence_ids) <= MAX_EVIDENCE_REFS
+            and all(
+                type(evidence_id) is str and bool(evidence_id) and len(evidence_id) <= MAX_ID_CHARS
+                for evidence_id in raw_evidence_ids
+            )
+        ):
+            try:
+                for evidence_id in raw_evidence_ids:
+                    evidence_id.encode("utf-8")
+            except UnicodeEncodeError:
+                pass
+            else:
+                evidence_ids = tuple(raw_evidence_ids)
+        flow_rows.append((record, source, target, rendered, decimal, evidence_ids))
+
+    incoming: dict[str, list[float]] = {source_id: [] for source_id in seen_ids}
+    outgoing: dict[str, list[float]] = {source_id: [] for source_id in seen_ids}
+    numeric_values_safe = True
+    for _record, source, target, _rendered, decimal, _evidence_ids in flow_rows:
+        try:
+            numeric_value = float(decimal)
+        except (OverflowError, ValueError):
+            numeric_values_safe = False
+            numeric_value = math.inf
+        if (
+            not math.isfinite(numeric_value)
+            or (decimal > 0 and numeric_value <= 0)
+            or (math.isfinite(numeric_value) and Decimal(str(numeric_value)) != decimal)
+        ):
+            numeric_values_safe = False
+        outgoing[source].append(numeric_value)
+        incoming[target].append(numeric_value)
+
+    native_total_by_source: dict[str, str | None] = {}
+    for source_id in seen_ids:
+        if not numeric_values_safe:
+            native_total_by_source[source_id] = None
+            continue
+        incoming_total = 0.0
+        for numeric_value in incoming[source_id]:
+            incoming_total += numeric_value
+        outgoing_total = 0.0
+        for numeric_value in outgoing[source_id]:
+            outgoing_total += numeric_value
+        native_total_by_source[source_id] = _native_sankey_total_text(
+            max(incoming_total, outgoing_total)
+        )
+
+    nodes = tuple(
+        SankeyNodePlan(
+            source_record=record,
+            source_id=source_id,
+            fallback_id=fallback_id_by_source[source_id],
+            label=label,
+            native_total_text=native_total_by_source[source_id],
+            evidence_ids=evidence_ids,
+        )
+        for record, source_id, label, evidence_ids in node_rows
+    )
+    used_scene_ids: set[str] = set()
+    flows: list[SankeyFlowPlan] = []
+    for index, (record, source, target, rendered, decimal, evidence_ids) in enumerate(
+        flow_rows, start=1
+    ):
+        raw_scene_id = record.get("id")
+        if type(raw_scene_id) is str and raw_scene_id and len(raw_scene_id) <= MAX_ID_CHARS:
+            try:
+                raw_scene_id.encode("utf-8")
+            except UnicodeEncodeError:
+                base_scene_id = f"sankey_flow_{index}"
+            else:
+                base_scene_id = raw_scene_id
+        else:
+            base_scene_id = f"sankey_flow_{index}"
+        scene_id = base_scene_id
+        suffix = 2
+        while scene_id in used_scene_ids:
+            suffix_text = f"_{suffix}"
+            scene_id = f"{base_scene_id[: MAX_ID_CHARS - len(suffix_text)]}{suffix_text}"
+            suffix += 1
+        used_scene_ids.add(scene_id)
+        flows.append(
+            SankeyFlowPlan(
+                source_record=record,
+                scene_id=scene_id,
+                source_id=source,
+                target_id=target,
+                source_fallback_id=fallback_id_by_source[source],
+                target_fallback_id=fallback_id_by_source[target],
+                value_text=rendered,
+                value=decimal,
+                evidence_ids=evidence_ids,
+            )
+        )
+
+    labels = [node.label for node in nodes]
+    linked_ids = {endpoint for flow in flows for endpoint in (flow.source_id, flow.target_id)}
+    native_supported = (
+        numeric_values_safe
+        and len(labels) == len(set(labels))
+        and all(all(0x20 <= ord(character) <= 0x7E for character in label) for label in labels)
+        and all(flow.value > 0 for flow in flows)
+        and linked_ids == seen_ids
+        and _is_dag(
+            [node.source_id for node in nodes],
+            [(flow.source_id, flow.target_id) for flow in flows],
+        )
+        and all(node.native_total_text is not None for node in nodes)
+    )
+    raw_direction = ir.get("direction", "LR")
+    fallback_direction = (
+        raw_direction
+        if isinstance(raw_direction, str) and raw_direction in {"TB", "BT", "LR", "RL"}
+        else "TB"
+    )
+    return SankeyPlan(
+        nodes,
+        tuple(flows),
+        native_supported,
+        len(flows) <= MAX_SANKEY_FLOWCHART_EDGES,
+        fallback_direction,
+    )
+
+
 def _csv_field(value: str) -> str:
     if any(character in value for character in ',"\r\n'):
         return f'"{value.replace(chr(34), chr(34) * 2)}"'
     return value
 
 
-def _native_sankey_supported(nodes: Sequence[SankeyNode], flows: Sequence[SankeyFlow]) -> bool:
-    labels = [label for _, label in nodes]
-    linked_ids = {endpoint for source, target, _, _ in flows for endpoint in (source, target)}
-    return (
-        len(labels) == len(set(labels))
-        and all(all(0x20 <= ord(character) <= 0x7E for character in label) for label in labels)
-        and all(value > 0 for _, _, _, value in flows)
-        and linked_ids == {node_id for node_id, _ in nodes}
-        and _is_dag([node_id for node_id, _ in nodes], flows)
-    )
-
-
 def _sankey_flowchart(
     ir: Mapping[str, Any],
-    nodes: Sequence[SankeyNode],
-    flows: Sequence[SankeyFlow],
+    plan: SankeyPlan,
     *,
     experimental: bool,
 ) -> str:
+    if not plan.flowchart_supported:
+        raise SerializationError(
+            f"Sankey portable fallback exceeds Mermaid edge limit of {MAX_SANKEY_FLOWCHART_EDGES}"
+        )
     accessibility = resolve_accessibility(ir, "sankey", experimental=experimental)
     return serialize_flowchart(
         {
             "acc_title": accessibility.title,
             "acc_description": accessibility.description,
-            "direction": ir.get("direction", "LR"),
-            "nodes": [{"id": node_id, "label": label} for node_id, label in nodes],
+            "direction": plan.fallback_direction,
+            "nodes": [{"id": node.source_id, "label": node.label} for node in plan.nodes],
             "edges": [
-                {"source": source, "target": target, "label": value}
-                for source, target, value, _ in flows
+                {
+                    "source": flow.source_id,
+                    "target": flow.target_id,
+                    "label": flow.value_text,
+                }
+                for flow in plan.flows
             ],
         },
         experimental=experimental,
     )
 
 
-def serialize_sankey(ir: Mapping[str, Any], *, experimental: bool = False) -> SerializationResult:
+def serialize_sankey(
+    ir: Mapping[str, Any],
+    *,
+    experimental: bool = False,
+    native_runtime_valid: bool = True,
+) -> SerializationResult:
     """Serialize weighted flows, falling back when native Sankey would lose data."""
 
-    nodes, flows = _sankey_data(ir)
-    if not _native_sankey_supported(nodes, flows):
-        code = _strict_source(_sankey_flowchart(ir, nodes, flows, experimental=experimental))
+    if not isinstance(native_runtime_valid, bool):
+        raise SerializationError("native_runtime_valid must be a boolean")
+    plan = plan_sankey_records(ir)
+    if not native_runtime_valid or not plan.native_supported:
+        code = _strict_source(_sankey_flowchart(ir, plan, experimental=experimental))
         return SerializationResult.fallback(
             "sankey",
             "flowchart",
             code,
-            warnings=(SANKEY_FALLBACK_WARNING,),
+            warnings=(
+                SANKEY_RUNTIME_FALLBACK_WARNING
+                if not native_runtime_valid
+                else SANKEY_FALLBACK_WARNING,
+            ),
             stability="experimental",
         )
 
-    labels = dict(nodes)
+    node_labels = {node.source_id: node.label for node in plan.nodes}
     code = "sankey-beta\n" + "".join(
-        f"{_csv_field(labels[source])},{_csv_field(labels[target])},{value}\n"
-        for source, target, value, _ in flows
+        f"{_csv_field(node_labels[flow.source_id])},"
+        f"{_csv_field(node_labels[flow.target_id])},{flow.value_text}\n"
+        for flow in plan.flows
     )
     return SerializationResult.native(
         "sankey",

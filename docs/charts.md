@@ -57,12 +57,35 @@ Sankey·Treemap·Venn의 bbox/evidence는 generated Scene attribution에도 연�
 없어 같은 metadata가 typed IR/review sidecar에만 남습니다. Radar fallback은 모든 dimension label과 series
 value를 보존하지만 bounds, ticks, legend, graticule과 Radar geometry를 Mermaid code에 표현하지 않습니다.
 Treemap/Venn의 attribution ID가 충돌하면 Scene node를 합치지 않고 adapter를 unavailable로 처리해 자동
-provenance 점수 대신 review로 보냅니다. Sankey native grammar의 접근성 제한과 모든 numeric type의 독립
-source evidence gate도 그대로 적용됩니다.
+provenance 점수 대신 review로 보냅니다. 모든 numeric type의 독립 source evidence gate도 그대로 적용됩니다.
+
+Sankey serializer와 Scene/OCR adapter는 한 번 검증한 terminal plan을 공유합니다. Native `sankey-beta`는
+source node ID와 label을 유지하지만 Mermaid 11.16 canvas에는 각 node마다 label과
+`max(sum(incoming), sum(outgoing))`만 보입니다. 합계는 runtime의 binary float 합산과
+`Math.round(value * 100) / 100` 결과를 안전하게 재현할 수 있을 때만 native를 선택합니다. Native Scene의
+flow는 `data_flow`이지만 개별 weight label과 arrow marker가 없고, runtime이 고정하는 방향에 맞춰 `LR`입니다.
+Semantic OCR projection은 node label과 이 표시 합계만 세며, relation의 exact value는 typed IR과 provenance에
+남깁니다. JavaScript number로 변환할 때 0·무한대가 되거나 shortest decimal 자체가 달라지는 exact value와
+안전한 cent 단위 표시 범위를 벗어난 합계는 native로 보내지 않습니다.
+
+Flowchart terminal은 같은 plan의 collision-safe emitted node ID를 쓰고 각 exact decimal weight를 directed
+edge label로 표시합니다. Scene도 그 endpoint, label, end-arrow와 `TB`/`BT`/`LR`/`RL`로 정규화한 requested
+direction을 그대로 사용합니다. Node/flow record의 bbox와 evidence만 attribution에 연결하고 raw `text`,
+role, shape, flow label/style/bidirectional/arrow hint 같은 미방출 metadata는 Scene으로 승격하지 않습니다.
+Native runtime이 parse/render gate에서 거부되면 새 후보를 만들지 않고 같은 candidate slot에서 이
+Flowchart를 한 번 재직렬화하고 전체 security/parse/render/SVG/type gate를 다시 통과시킵니다.
+
+공용 plan은 Scene relation 상한을 serializer 이전에 적용하고 relation ID를 bounded unique slot으로
+할당합니다. 비문자·초과 길이 ID는 deterministic `sankey_flow_N` slot을 사용하고 중복 ID는 suffix로
+분리합니다. Record의 `evidence_ids`가 string list가 아니거나 개수·ID·Unicode 경계를 위반하면 Mermaid와
+구조 자체는 유지하되 그 record의 provenance만 빈 목록으로 격리합니다. Native는 Scene relation 상한까지
+평가할 수 있지만, Flowchart terminal은 pinned worker의 500-edge limit을 넘기 전에 serializer와 Scene이 함께
+unavailable로 닫습니다.
 
 모든 native/fallback 대표 fixture는 Mermaid 11.16 strict `CandidateValidator`의 parse/render/SVG 검사를
 통과합니다. Sankey grammar는 title/accTitle/accDescr를 표현하지 못하므로 해당 text를 typed IR과 warning에
-남깁니다. Treemap/Venn의 experimental native grammar도 runtime type을 sidecar에 기록합니다.
+남깁니다. Flowchart fallback은 접근성 metadata를 SVG에 보존하지만 canvas OCR label로 세지 않습니다.
+Treemap/Venn의 experimental native grammar도 runtime type을 sidecar에 기록합니다.
 
 pipeline의 numeric consistency는 source와 generated 숫자 occurrence multiset F1입니다. Bounded evidence
 안에서는 동일 normalized text+bbox를 한 관측으로 합치고, OCR context와 evidence 채널의 token Counter는
