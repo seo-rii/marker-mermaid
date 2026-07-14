@@ -242,9 +242,16 @@
   Custom extractors, reported work metadata, direct vector observations, and warning collections
   are defensively rebound at the engine/Scene boundary with at most one lookahead per iterable.
   Direct/dict/words duck-typed span strings are read once into a plain snapshot and charged before
-  parsing, huge integer coordinates/IDs fail closed before float or decimal conversion, and nested
-  providers reuse one source-local placement lookup. Exact source page IDs reject block-matched and
-  sole mismatched placements, while present-but-invalid page identities reject mapping altogether.
+  parsing, and huge integer coordinates/IDs fail closed before float or decimal conversion. Built-in
+  reconstruction now builds one observe-local bounded index of exact-dict placement references and
+  resolves every source with O(1) page/block/page+block dictionary lookups. Transform parsing is
+  deferred until a unique placement is selected; nested providers then reuse that resolved mapping.
+  Exactly 256 placements and 256 block IDs per placement are accepted, while the +1 placement
+  invalidates the whole index and the +1 block ID atomically withholds that placement's block keys.
+  Because transform validity does not filter the index, malformed placements still contribute to
+  ambiguity instead of creating false uniqueness; an invalid selected affine falls back to bbox.
+  Exact source page IDs reject block-matched and sole mismatched placements, while present-but-invalid
+  page identities reject mapping altogether, without adding a public configuration or API surface.
 - Fusion now bounds Scene element/relation evidence and VisualEvidence source-block unions before
   assignment. Source-block unions are decided atomically across every matching input, and an
   overflowing cluster keeps its deterministic precedence winner without partial provenance

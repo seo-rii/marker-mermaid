@@ -69,15 +69,35 @@ custom extractor, PyMuPDF `get_text()`/`get_drawings()` 자체의 실행과 내�
 별도 process로 격리되지 않으므로 trusted local integration 경계로 취급합니다.
 
 panel/merged source는 `source-map.json`과 같은 assembly placement의 `page_to_canvas` affine을 사용합니다.
-Placement는 최대 256개를 원자적으로 검사하며 Marker 1.10.2 `BlockId`는 임의 `str()` 호출 없이
-`page_id`/`block_type.name`/`block_id` 필드에서 canonical path로 복원합니다.
-한 source의 placement lookup 결과는 `page`/`document_page`/`page_ref` provider가 공유해 같은 bounded
-placement 목록을 반복 검색하지 않습니다.
-block/page mapping이 모호하거나 없으면 bbox fallback warning을 남기며, primitive가 없으면 unknown empty
-observation으로 종료합니다. Source가 exact page ID를 제공하면 같은 page placement만 허용하며 단일
-placement나 block-ID match여도 page ID가 다르면 bbox fallback합니다. Page identity가 명시됐지만
-exact bounded integer가 아니어도 mapping 전체를 fail closed합니다. PyMuPDF cubic curve에서
-ellipse를 추측하거나 raster 선을 vector로 간주하지 않습니다.
+Built-in `VectorPrimitiveEngine.observe()`는 source를 순회하기 전에 reconstruction-local bounded
+placement index를 한 번만 만듭니다. Index는 exact-dict placement reference를
+all/page/block/page+block candidate tuple로 보존하며, 각 source는 page/block dictionary를 O(1)로
+조회해 유일한 placement를 선택합니다. Index build 중에는 transform을 파싱하지 않습니다. 선택된
+placement의 affine/bbox만 지연 파싱하고, 그 결과는 해당 source의
+`page`/`document_page`/`page_ref` provider가 모두 공유합니다. 따라서 최대 256 source와 placement
+조합에서도 placement/source-ID 목록을 source별로 다시 스캔하지 않습니다.
+Standalone `extract_vector_observation()`도 page-coordinate mapping이 필요하면 해당 호출 내에서
+같은 index를 한 번 만듭니다. Custom extractor는 built-in mapping index를 만들지 않습니다.
+
+Placement input은 exact built-in list/tuple로 256개까지 손실 없이 받고 257번째를
+한 개 lookahead하면 index 전체를 invalid로 둡니다. 각 placement의 `source_block_ids`도 256개까지
+받으며 257개면 그 placement의 block/page+block key 전체를 생성하지 않습니다. 일부 ID
+prefix만 authority로 사용하지 않지만 해당 placement은 all/page ambiguity에는 계속 포함됩니다.
+Transform validity는 index candidate를 걸러내는 조건이 아니므로 malformed placement도 ambiguity에
+남고, 이를 미리 제외해 허위로 유일한 placement를 만들지 않습니다. Match가 유일할 때 선택
+placement의 affine/bbox를 파싱하며, 선택 affine이 invalid이거나 match가 0개/여러 개이면 bbox
+fallback warning을 남깁니다.
+
+Placement index key는 exact bounded string만 받습니다. Source identity의 exact bounded integer는
+decimal string으로 바꾸고, Marker 1.10.2 `BlockId`는 임의 `str()` 호출 없이
+`page_id`/`block_type.name`/`block_id`에서 canonical path로 복원합니다. Subclass
+hash/equality/coercion hook은 실행하지 않습니다. Invalid·empty·surrogate·over-256-character
+placement block ID는 index key에서 제외하고 한 placement 안의 duplicate는 한 번만 등록합니다.
+Source가 exact page ID를 제공하면 같은 page placement만 허용하며, block-ID match여도
+다른 page를 가로지 않습니다. Page identity가 명시됐지만 exact bounded integer가 아니면
+유일 placement이 있어도 mapping을 fail closed합니다. 이 index는 공개 config/API를 추가하지 않는
+built-in 통합 내부 구조입니다. PyMuPDF cubic curve에서 ellipse를 추측하거나 raster 선을
+vector로 간주하지 않습니다.
 
 ## FusionEngine
 

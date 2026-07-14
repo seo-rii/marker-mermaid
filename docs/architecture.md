@@ -34,7 +34,7 @@ flowchart TB
 | `marker_discovery.py` | Marker block/current_children adapter, source registry와 dedupe |
 | `source_assembly.py` | panel/merged canvas 조립과 source/page affine mapping |
 | `geometry.py` | contour, Hough line, arrowhead의 보수적 Scene IR/provenance 변환 |
-| `vector.py` | reconstruction-global raw-work budget으로 제한한 duck-typed PDF vector/text primitive 추출과 canvas affine 변환 |
+| `vector.py` | reconstruction-global raw-work budget, observe-local placement index, O(1) page/block lookup으로 제한한 PDF vector/text 추출과 canvas affine 변환 |
 | `fusion.py` | vector/geometry/OCR/VLM Scene IR 결정적 병합과 제한된 Flowchart/Generic Network node-ID 정합화 |
 | `mapping_validation.py` | node-ID mapping의 공용 bbox/text/contour provenance 정합성 gate |
 | `views.py` | type-aware thumbnail/edge/threshold/overlay와 source-resolution tile 생성 |
@@ -156,9 +156,15 @@ warning collection 256개도 공유합니다. Exact duplicate hash 뒤 approxima
 text/node와 endpoint matching은 각각 1,000,000회 비교로 닫힙니다. Built-in extractor가 남긴
 work count, custom extractor output, 직접 `VectorObservation`은 engine·Scene 경계에서 다시 bound됩니다.
 Direct/dict/words의 duck-typed span label은 한 번 읽은 plain snapshot으로 파싱하며 aggregate
-문자 예산에 포함되고, source 하나의 page-to-canvas placement lookup은 모든 nested provider가
-공유합니다. 초대형 exact integer coordinate/ID도
-부동소수·decimal 변환 전에 fail closed됩니다.
+문자 예산에 포함됩니다. Built-in vector `observe()`는 최대 256개 placement와 placement당
+256개 block ID를 한 번 순회해 exact-dict placement reference의 all/page/block/page+block
+index를 만든 뒤, 최대 256 source에서 O(1) dictionary lookup을 사용합니다. Index build 중에는
+transform을 파싱하지 않습니다. Source의 유일 placement를 선택한 뒤에만 affine/bbox를 지연
+파싱하고, 그 결과를 모든 nested provider가 공유합니다. Placement 257번째는 index 전체를
+invalid로 만들고, placement 하나의 block ID 257번째는 해당 block/page+block key를 원자적으로
+생략합니다. 따라서 malformed transform placement도 후보에서 미리 빠지지 않아 허위 unique
+match를 만들지 않으며, lookup이 유일하지 않거나 선택 mapping이 invalid이면 bbox fallback합니다.
+초대형 exact integer coordinate/ID도 부동소수·decimal 변환 전에 fail closed됩니다.
 세부 설정은 공개 Marker JSON key가 아니라 `VectorPrimitiveEngine` 생성자/통합 계층에
 속합니다.
 

@@ -148,6 +148,25 @@ direct attribute와 `get_text("dict"/"words")` 모두 label을 한 번 읽어 pl
 뒤 파싱과 `strip()` 전에 그 exact-string 길이를 raw character work에 합산합니다. Numeric scalar는
 finite float로 안전하게 변환 가능한 exact `int`/`float`만 허용해 초대형 정수도 격리합니다.
 
+Source mapping도 vector source별 linear scan 대신 built-in `observe()` 호출에서 한 번만 bounded
+index로 고정합니다. Exact built-in placement list/tuple은 256개까지 받고 한 개 lookahead로
+초과를 판정하며, 257번째가 있으면 일부 prefix를 쓰지 않고 index 전체를 invalid로 둡니다.
+각 placement의 exact list/tuple `source_block_ids`도 256개까지 index하고 257개면 그
+placement의 block/page+block key 전체를 생략합니다. Placement 자체와 유효한 page key는
+all/page ambiguity에 계속 남아 partial block-ID authority나 허위 unique match를 만들지 않습니다.
+Index는 exact-dict placement reference만 보존하고 build 중 affine/bbox를 파싱하지 않습니다.
+따라서 malformed transform placement도 후보에서 미리 제외되지 않아 ambiguity를 없애지 않습니다.
+
+Index는 all/page/block/page+block tuple을 생성하고 각 source에서 O(1) dictionary lookup만
+수행합니다. Source의 explicit page ID가 있으면 해당 page를 먼저 고정하며 block key가
+다른 page placement로 우회할 수 없습니다. Present-but-invalid page ID는 sole placement도
+선택하지 않습니다. Placement block key는 exact bounded string만 사용하고, source identity는
+exact bounded string/integer 또는 필드가 검증된 Marker `BlockId`에서 canonical string으로
+만듭니다. 이 과정에서 arbitrary `str()`/hash/equality hook을 호출하지 않습니다. 조회 결과가
+유일할 때만 선택 placement의 affine/bbox를 지연 파싱하고, 선택 affine이 invalid하면 bbox
+fallback으로 fail closed합니다. 이 index는 공개 config/API 표면을 늘리지 않는 built-in 통합
+내부 방어입니다.
+
 단, 이 상한은 provider가 반환한 값의 소비부터 적용됩니다. Duck-typed property/callable,
 custom extractor, `get_text()`/`get_drawings()` 호출 및 라이브러리 내부 materialization 자체에는
 아직 wall-clock/RSS 격리가 없습니다. 따라서 provider 구현은 trusted local code여야 하며,

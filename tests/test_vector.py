@@ -516,10 +516,10 @@ def test_vector_source_mapping_is_resolved_once_across_nested_providers(
     calls = 0
     original = vector_module._mapping_transform
 
-    def counting_mapping_transform(source_mapping, source):  # type: ignore[no-untyped-def]
+    def counting_mapping_transform(mapping_index, source):  # type: ignore[no-untyped-def]
         nonlocal calls
         calls += 1
-        return original(source_mapping, source)
+        return original(mapping_index, source)
 
     monkeypatch.setattr(vector_module, "_mapping_transform", counting_mapping_transform)
 
@@ -544,6 +544,318 @@ def test_vector_source_mapping_is_resolved_once_across_nested_providers(
     )
 
     assert calls == 1
+
+
+def test_vector_engine_builds_one_mapping_index_for_all_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Block:
+        bbox = (0, 0, 100, 100)
+        vector_coordinate_space = "page"
+        vector_primitives: list[object] = []
+
+        def __init__(self, index: int) -> None:
+            self.id = f"block-{index}"
+            self.page_id = index
+
+    sources = [Block(index) for index in range(MAX_EVIDENCE_REFS)]
+    placements = [
+        {
+            "page_id": index,
+            "source_block_ids": [f"block-{index}"],
+            "page_bbox": [0, 0, 100, 100],
+            "page_to_canvas": [1, 0, 0, 0, 1, 0],
+        }
+        for index in range(MAX_EVIDENCE_REFS)
+    ]
+    context = _context(None)
+    context.vector_sources = sources
+    context.source_mapping = {"assembly": {"placements": placements}}
+    calls = 0
+    original = vector_module._build_vector_mapping_index
+
+    def counting_index(source_mapping):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        return original(source_mapping)
+
+    monkeypatch.setattr(vector_module, "_build_vector_mapping_index", counting_index)
+
+    result = VectorPrimitiveEngine(
+        max_primitives=1,
+        max_texts=1,
+        max_text_chars=1,
+    ).observe(context)
+
+    assert calls == 1
+    assert result.scene_ir is None
+
+
+def test_custom_vector_extractor_does_not_build_a_mapping_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_if_called(_source_mapping):
+        raise AssertionError("custom extractors must not build the built-in mapping index")
+
+    monkeypatch.setattr(vector_module, "_build_vector_mapping_index", fail_if_called)
+
+    result = VectorPrimitiveEngine(
+        extractor=lambda _source, size: VectorObservation(canvas_size=size),
+    ).observe(_context(object()))
+
+    assert result.scene_ir is None
+
+
+def test_duplicate_mapping_block_ids_select_one_placement_once() -> None:
+    class Block:
+        id = "target"
+        bbox = (0, 0, 100, 100)
+        vector_coordinate_space = "page"
+        vector_primitives = [{"kind": "rectangle", "bbox": (10, 10, 20, 20)}]
+
+    observation = extract_vector_observation(
+        Block(),
+        (100, 100),
+        max_primitives=1,
+        max_texts=0,
+        max_text_chars=0,
+        source_mapping={
+            "assembly": {
+                "placements": [
+                    {
+                        "source_block_ids": ["target", "target"],
+                        "page_bbox": [0, 0, 100, 100],
+                        "page_to_canvas": [1, 0, 10, 0, 1, 10],
+                    },
+                    {
+                        "source_block_ids": ["other"],
+                        "page_bbox": [0, 0, 100, 100],
+                        "page_to_canvas": [1, 0, 50, 0, 1, 50],
+                    },
+                ]
+            }
+        },
+    )
+
+    assert observation.primitives[0].bbox == (20.0, 20.0, 30.0, 30.0)
+    assert not any("bbox fallback" in warning for warning in observation.warnings)
+
+
+@pytest.mark.parametrize("source_id_count", [MAX_EVIDENCE_REFS, MAX_EVIDENCE_REFS + 1])
+def test_mapping_source_id_limit_is_atomic(source_id_count: int) -> None:
+    class Block:
+        id = "target"
+        bbox = (0, 0, 100, 100)
+        vector_coordinate_space = "page"
+        vector_primitives = [{"kind": "rectangle", "bbox": (10, 10, 20, 20)}]
+
+    source_ids = ["target", *(f"id-{index}" for index in range(source_id_count - 1))]
+    observation = extract_vector_observation(
+        Block(),
+        (100, 100),
+        max_primitives=1,
+        max_texts=0,
+        max_text_chars=0,
+        source_mapping={
+            "assembly": {
+                "placements": [
+                    {
+                        "source_block_ids": source_ids,
+                        "page_bbox": [0, 0, 100, 100],
+                        "page_to_canvas": [1, 0, 10, 0, 1, 10],
+                    },
+                    {
+                        "source_block_ids": ["other"],
+                        "page_bbox": [0, 0, 100, 100],
+                        "page_to_canvas": [1, 0, 50, 0, 1, 50],
+                    },
+                ]
+            }
+        },
+    )
+
+    if source_id_count == MAX_EVIDENCE_REFS:
+        assert observation.primitives[0].bbox == (20.0, 20.0, 30.0, 30.0)
+        assert not any("bbox fallback" in warning for warning in observation.warnings)
+    else:
+        assert observation.primitives[0].bbox == (10.0, 10.0, 20.0, 20.0)
+        assert any("bbox fallback" in warning for warning in observation.warnings)
+
+
+def test_mapping_index_rejects_noncanonical_ids_before_hashing() -> None:
+    hooks: list[str] = []
+
+    class HashBomb(str):
+        def __hash__(self) -> int:
+            hooks.append("hash")
+            raise AssertionError("string subclass hashing must not run")
+
+    class Block:
+        id = "target"
+        bbox = (0, 0, 100, 100)
+        vector_coordinate_space = "page"
+        vector_primitives = [{"kind": "rectangle", "bbox": (10, 10, 20, 20)}]
+
+    observation = extract_vector_observation(
+        Block(),
+        (100, 100),
+        max_primitives=1,
+        max_texts=0,
+        max_text_chars=0,
+        source_mapping={
+            "assembly": {
+                "placements": [
+                    {
+                        "source_block_ids": [
+                            HashBomb("target"),
+                            "x" * (MAX_VECTOR_TOKEN_CHARS + 1),
+                            "\ud800",
+                            "target",
+                        ],
+                        "page_bbox": [0, 0, 100, 100],
+                        "page_to_canvas": [1, 0, 10, 0, 1, 10],
+                    },
+                    {
+                        "source_block_ids": ["other"],
+                        "page_bbox": [0, 0, 100, 100],
+                        "page_to_canvas": [1, 0, 50, 0, 1, 50],
+                    },
+                ]
+            }
+        },
+    )
+
+    assert hooks == []
+    assert observation.primitives[0].bbox == (20.0, 20.0, 30.0, 30.0)
+
+
+def test_invalid_mapping_transform_still_contributes_to_ambiguity() -> None:
+    class Block:
+        id = object()
+        bbox = (0, 0, 100, 100)
+        vector_coordinate_space = "page"
+        vector_primitives = [{"kind": "rectangle", "bbox": (10, 10, 20, 20)}]
+
+    observation = extract_vector_observation(
+        Block(),
+        (100, 100),
+        max_primitives=1,
+        max_texts=0,
+        max_text_chars=0,
+        source_mapping={
+            "assembly": {
+                "placements": [
+                    {
+                        "source_block_ids": [],
+                        "page_bbox": [0, 0, 100, 100],
+                        "page_to_canvas": [1, 0],
+                    },
+                    {
+                        "source_block_ids": [],
+                        "page_bbox": [0, 0, 100, 100],
+                        "page_to_canvas": [1, 0, 50, 0, 1, 50],
+                    },
+                ]
+            }
+        },
+    )
+
+    assert observation.primitives[0].bbox == (10.0, 10.0, 20.0, 20.0)
+    assert any("bbox fallback" in warning for warning in observation.warnings)
+
+
+def test_mapping_index_defers_transform_parsing_until_placement_is_selected() -> None:
+    class BBoxBomb:
+        @property
+        def x0(self) -> float:
+            raise RuntimeError("unused placement bbox must not be read")
+
+        y0 = 0.0
+        x1 = 100.0
+        y1 = 100.0
+
+    class Block:
+        id = "target"
+        page_id = 1
+        bbox = (0, 0, 100, 100)
+        vector_coordinate_space = "page"
+        vector_primitives = [{"kind": "rectangle", "bbox": (10, 10, 20, 20)}]
+
+    observation = extract_vector_observation(
+        Block(),
+        (100, 100),
+        max_primitives=1,
+        max_texts=0,
+        max_text_chars=0,
+        source_mapping={
+            "assembly": {
+                "placements": [
+                    {
+                        "page_id": 1,
+                        "source_block_ids": ["target"],
+                        "page_bbox": [0, 0, 100, 100],
+                        "page_to_canvas": [1, 0, 10, 0, 1, 10],
+                    },
+                    {
+                        "page_id": 2,
+                        "source_block_ids": ["other"],
+                        "page_bbox": BBoxBomb(),
+                        "page_to_canvas": [1, 0, 50, 0, 1, 50],
+                    },
+                ]
+            }
+        },
+    )
+
+    assert observation.primitives[0].bbox == (20.0, 20.0, 30.0, 30.0)
+    assert not any("bbox fallback" in warning for warning in observation.warnings)
+
+
+def test_direct_and_engine_mapping_index_paths_are_equivalent() -> None:
+    class Block:
+        id = "target"
+        page_id = 1
+        bbox = (0, 0, 100, 100)
+        vector_coordinate_space = "page"
+        vector_primitives = [{"kind": "rectangle", "bbox": (10, 10, 20, 20)}]
+
+    source = Block()
+    source_mapping = {
+        "assembly": {
+            "placements": [
+                {
+                    "page_id": 1,
+                    "source_block_ids": ["target"],
+                    "page_bbox": [0, 0, 100, 100],
+                    "page_to_canvas": [1, 0, 10, 0, 1, 10],
+                }
+            ]
+        }
+    }
+    direct = extract_vector_observation(
+        source,
+        (200, 100),
+        max_primitives=1,
+        max_texts=0,
+        max_text_chars=0,
+        source_mapping=source_mapping,
+    ).to_engine_observation(
+        ["block-1"],
+        max_primitives=1,
+        max_texts=0,
+        max_text_chars=0,
+    )
+    context = _context(source)
+    context.vector_sources = [source]
+    context.source_mapping = source_mapping
+
+    indexed = VectorPrimitiveEngine(
+        max_primitives=1,
+        max_texts=0,
+        max_text_chars=0,
+    ).observe(context)
+
+    assert indexed.model_dump(mode="json") == direct.model_dump(mode="json")
 
 
 def test_vector_mapping_page_match_does_not_invoke_equality_hooks() -> None:

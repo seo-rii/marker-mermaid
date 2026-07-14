@@ -645,6 +645,9 @@ class VectorPrimitiveEngine:
 
     def observe(self, context: SourceContext) -> EngineObservation:
         sources, source_warnings = _context_sources(context)
+        mapping_index = (
+            _build_vector_mapping_index(context.source_mapping) if self.extractor is None else None
+        )
         primitives: list[VectorPrimitive] = []
         texts: list[VectorText] = []
         warnings = list(source_warnings)
@@ -670,7 +673,7 @@ class VectorPrimitiveEngine:
             if self.extractor is not None:
                 raw_observation = self.extractor(source, context.image.size)
             else:
-                raw_observation = extract_vector_observation(
+                raw_observation = _extract_vector_observation(
                     source,
                     context.image.size,
                     max_primitives=remaining_primitives,
@@ -678,6 +681,7 @@ class VectorPrimitiveEngine:
                     max_text_chars=remaining_text_chars,
                     max_points=remaining_points,
                     source_mapping=context.source_mapping,
+                    _mapping_index=mapping_index,
                 )
             bounded = _combine_observations(
                 (raw_observation,),
@@ -1050,6 +1054,29 @@ def extract_vector_observation(
     coordinates unless ``vector_coordinate_space == "page"`` is set.
     """
 
+    return _extract_vector_observation(
+        source,
+        canvas_size,
+        max_primitives=max_primitives,
+        max_texts=max_texts,
+        max_text_chars=max_text_chars,
+        max_points=max_points,
+        source_mapping=source_mapping,
+    )
+
+
+def _extract_vector_observation(
+    source: Any,
+    canvas_size: tuple[int, int],
+    *,
+    max_primitives: int,
+    max_texts: int,
+    max_text_chars: int,
+    max_points: int,
+    source_mapping: Mapping[str, Any] | None,
+    _mapping_index: _VectorPlacementIndex | None = None,
+) -> VectorObservation:
+
     _validate_vector_budgets(
         max_primitives,
         max_texts,
@@ -1075,9 +1102,15 @@ def extract_vector_observation(
         page_coordinates = nested or coordinate_space == "page"
         mapping_required = mapping_required or page_coordinates
         providers.append((provider, page_coordinates))
-    mapped_source_transform = (
-        _mapping_transform(source_mapping, source) if mapping_required else None
-    )
+    if mapping_required:
+        mapping_index = (
+            _mapping_index
+            if _mapping_index is not None
+            else _build_vector_mapping_index(source_mapping)
+        )
+        mapped_source_transform = _mapping_transform(mapping_index, source)
+    else:
+        mapped_source_transform = None
     texts: list[VectorText] = []
     primitives: list[VectorPrimitive] = []
     malformed = 0
@@ -1277,6 +1310,16 @@ class _Transform:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _VectorPlacementIndex:
+    valid: bool
+    placements: tuple[dict[str, Any], ...]
+    all_indices: tuple[int, ...]
+    by_page: dict[int, tuple[int, ...]]
+    by_block: dict[str, tuple[int, ...]]
+    by_page_block: dict[tuple[int, str], tuple[int, ...]]
+
+
 def _providers(source: Any) -> list[tuple[Any, bool]]:
     result = [(source, False)]
     seen = {id(source)}
@@ -1311,60 +1354,92 @@ def _provider_transform(
     )
 
 
-def _mapping_transform(
+def _build_vector_mapping_index(
     source_mapping: Mapping[str, Any] | None,
-    source: Any,
-) -> _Transform | None:
+) -> _VectorPlacementIndex:
+    invalid = _VectorPlacementIndex(False, (), (), {}, {}, {})
     if type(source_mapping) is not dict:
-        return None
+        return invalid
     assembly = source_mapping.get("assembly")
     if type(assembly) is not dict:
-        return None
+        return invalid
     placements = assembly.get("placements")
     if type(placements) not in {list, tuple}:
-        return None
+        return invalid
     placement_inputs, placements_truncated, _placement_chars = _bounded_items(
         placements,
         MAX_VECTOR_SOURCES,
     )
     if placements_truncated:
+        return invalid
+    placement_inputs = [item for item in placement_inputs if type(item) is dict]
+    pages: dict[int, list[int]] = {}
+    blocks: dict[str, list[int]] = {}
+    page_blocks: dict[tuple[int, str], list[int]] = {}
+    for index, placement in enumerate(placement_inputs):
+        page_value = placement.get("page_id")
+        page_id = page_value if _valid_bounded_int(page_value) else None
+        if page_id is not None:
+            pages.setdefault(page_id, []).append(index)
+        source_ids = placement.get("source_block_ids", ())
+        if type(source_ids) not in {list, tuple}:
+            continue
+        bounded_ids, ids_truncated, _id_chars = _bounded_items(
+            source_ids,
+            MAX_EVIDENCE_REFS,
+        )
+        if ids_truncated:
+            continue
+        seen_ids: set[str] = set()
+        for value in bounded_ids:
+            if (
+                type(value) is not str
+                or not value
+                or not _valid_bounded_optional_text(value)
+                or value in seen_ids
+            ):
+                continue
+            seen_ids.add(value)
+            blocks.setdefault(value, []).append(index)
+            if page_id is not None:
+                page_blocks.setdefault((page_id, value), []).append(index)
+    return _VectorPlacementIndex(
+        valid=True,
+        placements=tuple(placement_inputs),
+        all_indices=tuple(range(len(placement_inputs))),
+        by_page={key: tuple(value) for key, value in pages.items()},
+        by_block={key: tuple(value) for key, value in blocks.items()},
+        by_page_block={key: tuple(value) for key, value in page_blocks.items()},
+    )
+
+
+def _mapping_transform(
+    mapping_index: _VectorPlacementIndex,
+    source: Any,
+) -> _Transform | None:
+    if not mapping_index.valid:
         return None
     block_id = _source_block_id(source)
     page_id, invalid_page_id = _source_page_id(source)
     if invalid_page_id:
         return None
-    candidates = [item for item in placement_inputs if type(item) is dict]
+    candidates = mapping_index.all_indices
     if page_id is not None:
-        candidates = [
-            item
-            for item in candidates
-            if _valid_bounded_int(candidate_page_id := item.get("page_id"))
-            and candidate_page_id == page_id
-        ]
-    by_block: list[dict[str, Any]] = []
+        candidates = mapping_index.by_page.get(page_id, ())
     if block_id is not None:
-        for item in candidates:
-            source_ids = item.get("source_block_ids", ())
-            if type(source_ids) not in {list, tuple}:
-                continue
-            bounded_ids, ids_truncated, _id_chars = _bounded_items(
-                source_ids,
-                MAX_EVIDENCE_REFS,
-            )
-            if ids_truncated:
-                continue
-            if any(type(value) is str and value == block_id for value in bounded_ids):
-                by_block.append(item)
-    if by_block:
-        candidates = by_block
+        block_candidates = (
+            mapping_index.by_block.get(block_id, ())
+            if page_id is None
+            else mapping_index.by_page_block.get((page_id, block_id), ())
+        )
+        if block_candidates:
+            candidates = block_candidates
     if len(candidates) != 1:
         return None
-    placement = candidates[0]
+    placement = mapping_index.placements[candidates[0]]
     affine = _as_affine(placement.get("page_to_canvas"))
     page_bbox = _as_bbox(placement.get("page_bbox"))
-    if affine is None:
-        return None
-    return _Transform(page_bbox, affine=affine)
+    return _Transform(page_bbox, affine=affine) if affine is not None else None
 
 
 def _source_block_id(source: Any) -> str | None:
