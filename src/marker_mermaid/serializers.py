@@ -840,6 +840,15 @@ def serialize_runtime_fallback_result(
             native_runtime_valid=False,
         )
         return result if result.used_fallback else None
+    if diagram_type == "cynefin":
+        from marker_mermaid.serializers_experimental import serialize_cynefin
+
+        result = serialize_cynefin(
+            ir,
+            experimental=experimental,
+            native_runtime_valid=False,
+        )
+        return result if result.used_fallback else None
     return None
 
 

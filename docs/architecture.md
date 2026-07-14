@@ -146,14 +146,17 @@ mapped endpoint pair의 cross-engine direction conflict도 fused ID로 전파되
 차단합니다. nested Swimlane/BPMN과 non-flow typed IR, direct Mermaid, Scene fallback은 이 경로에서
 재작성하지 않습니다.
 
-Treemap/Venn/Packet/Ishikawa/TreeView/Wardley native validation이 실패하면 serializer가 명시한 portable fallback을
+Treemap/Venn/Packet/Ishikawa/TreeView/Wardley/Cynefin native validation이 실패하면 serializer가 명시한 portable fallback을
 같은 candidate slot에서 한 번 재검증합니다. Architecture/C4/Deployment/Component도 `architecture-beta`
 runtime validation이 실패할 때 같은 typed IR의 nested Flowchart fallback을 이 경로로 한 번만 시도합니다.
 Fallback은 source security, parse/render, SVG와 terminal runtime type gate를 전부 다시 통과해야 하며,
 실패는 해당 후보에만 격리됩니다. 성공하면 requested type은 유지하고 emitted/runtime type, 전체
-`architecture → flowchart`, `wardley → flowchart` 또는 `requested → architecture → flowchart` chain, warning과
+`architecture → flowchart`, `wardley → flowchart`, `cynefin → flowchart` 또는
+`requested → architecture → flowchart` chain, warning과
 `runtime_portable_fallback` repair history를 갱신합니다. 같은 slot을 재사용하므로 candidate budget은
-늘어나지 않습니다.
+늘어나지 않습니다. Cynefin native 성공은 fixed runtime template 때문에 계속 review-only이고, terminal
+Flowchart만 supplied domain subgraph·모든 explicit item·명시적 directed transition의 projection으로
+generated-node attribution threshold를 포함한 일반 publication gate에 들어갑니다.
 
 Marker 기본 구성에서는 PyMuPDF page provider를 연결한 VectorPrimitiveEngine과 GeometryEngine이 먼저
 구조 evidence를 만듭니다. Structured VLM은 bounded structural quota와 문자 예산이 선택한 evidence/OCR

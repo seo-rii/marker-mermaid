@@ -94,6 +94,17 @@
   visibility/evolution axes, anchor notation, and the visible native title are not fabricated: warnings disclose
   those losses, the generated fallback Scene uses zero geometry, and OCR/layout scoring follows the terminal
   Flowchart. The fallback must independently pass strict source scan, parse/render, and terminal-type checks.
+- Cynefin native runtime rejection now retries one loss-disclosed `flowchart LR` in the same candidate slot.
+  The native-success path retains Mermaid 11.16's five-domain practice/response/disorder template, confusion
+  `+N more` projection, and native-only review hold. The fallback instead creates one subgraph for each supplied
+  domain (including confusion only when explicit), preserves every explicit item without truncation, and emits
+  only explicit directed transitions between domain subgraphs; it invents neither fixed-template nodes nor
+  membership connectors. Its terminal Scene/OCR projection uses same-identity conceptual domain elements/groups,
+  counts each domain label once, retains exact item/transition visibility and record provenance, and uses zero
+  geometry with `LR` direction while warning that quadrant/layout semantics were lost. A fallback satisfying the
+  generated-node attribution threshold may publish through normal gates after independent
+  security/parse/render/type validation, while candidate
+  budgets, requested/emitted/runtime metadata, accessibility, and the native review hold remain intact.
 - Bounded pre-validation source repair with audit events, diagnostics, idempotence, and AST adapter seam.
 - Page-level missed-diagram proposals with occupied-region exclusion and virtual source crops.
 - Profile-gated flowchart fill, border, and link style recovery with strict CSS allowlists.

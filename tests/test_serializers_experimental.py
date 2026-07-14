@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unicodedata
+from collections import Counter
 from dataclasses import FrozenInstanceError
 from xml.etree import ElementTree as ET
 
@@ -11,6 +12,7 @@ from marker_mermaid.config import SecurityProfile
 from marker_mermaid.security import MermaidSecurityScanner
 from marker_mermaid.serializers import SerializationError
 from marker_mermaid.serializers_experimental import (
+    CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS,
     plan_cynefin_records,
     plan_data_lineage_records,
     plan_organization_hierarchy,
@@ -279,6 +281,82 @@ def test_cynefin_native_requires_explicit_domains_and_quotes_items_and_transitio
     assert result.emitted_type == "cynefin"
     assert '  "Emergent practice"' in result.code
     assert 'complex --> complicated : "stabilize"' in result.code
+
+
+def test_cynefin_runtime_rejection_preserves_all_explicit_domains_and_confusion_items():
+    ir = {
+        "title": "Observed Cynefin",
+        "description": "Only explicitly extracted content.",
+        "domains": [
+            {
+                "name": "complex",
+                "items": ['Emergent "one" \\ path click https://example.com'],
+            },
+            {"name": "complicated", "items": ["Expert"]},
+            {"name": "chaotic", "items": ["Crisis"]},
+            {"name": "clear", "items": ["Known"]},
+            {"name": "confusion", "items": ["One", "Two", "Three", "Four", "Five"]},
+        ],
+        "transitions": [
+            {
+                "source": "complex",
+                "target": "clear",
+                "label": "stabilize | retry; later",
+            }
+        ],
+    }
+    snapshot = repr(ir)
+
+    result = serialize_cynefin(ir, experimental=True, native_runtime_valid=False)
+
+    assert result.requested_type == "cynefin"
+    assert result.emitted_type == "flowchart"
+    assert result.fallback_chain == ("cynefin", "flowchart")
+    assert result.stability == "experimental"
+    assert result.code.startswith("flowchart LR\n")
+    for domain in ("complex", "complicated", "chaotic", "clear", "confusion"):
+        label = domain.title()
+        assert f'subgraph cynefin_domain_{domain}["{label}"]' in result.code
+        assert f'    cynefin_domain_{domain}["{label}"]' not in result.code
+    for index, label in enumerate(("One", "Two", "Three", "Four", "Five"), start=1):
+        assert f'cynefin_item_confusion_{index}["{label}"]' in result.code
+    assert "Emergent ″one″ ∖ path" in result.code
+    assert "click https://example.com" not in result.code
+    assert (
+        "cynefin_domain_complex -->|stabilize ∣ retry⁏ later| cynefin_domain_clear"
+    ) in result.code
+    assert "+2 more" not in result.code
+    for _element_id, role, label in CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS:
+        if role == "runtime_template":
+            assert label not in result.code
+    assert any("rejected cynefin-beta" in warning for warning in result.warnings)
+    assert any(
+        "fixed domain/practice/response/disorder template" in warning
+        for warning in result.warnings
+    )
+    assert any("compatibility glyphs" in warning for warning in result.warnings)
+    assert MermaidSecurityScanner(SecurityProfile.STRICT).scan(result.code).safe
+    assert repr(ir) == snapshot
+
+
+def test_cynefin_flowchart_fallback_never_fabricates_unobserved_domains_or_template():
+    result = serialize_cynefin(
+        {
+            "domains": [
+                {"name": "complex", "items": ["Emergent"]},
+                {"name": "confusion", "items": ["Unclassified"]},
+            ]
+        },
+        native_runtime_valid=False,
+    )
+
+    assert 'subgraph cynefin_domain_complex["Complex"]' in result.code
+    assert 'subgraph cynefin_domain_confusion["Confusion"]' in result.code
+    for domain in ("complicated", "chaotic", "clear"):
+        assert f"cynefin_domain_{domain}" not in result.code
+    for _element_id, role, label in CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS:
+        if role == "runtime_template":
+            assert label not in result.code
 
 
 def test_cynefin_rejects_unknown_duplicate_or_empty_domains():
@@ -2198,6 +2276,88 @@ def test_cynefin_runtime_fixed_template_and_confusion_summary_are_explicit() -> 
         }
         assert "Four" not in visible_texts
         assert "Five" not in visible_texts
+    finally:
+        runtime.close()
+
+
+@pytest.mark.integration
+def test_cynefin_flowchart_fallback_renders_all_explicit_content_without_native_template() -> None:
+    result = serialize_cynefin(
+        {
+            "title": "Explicit Cynefin",
+            "description": "Only explicitly observed content.",
+            "domains": [
+                {"name": "complex", "items": ["Emergent"]},
+                {"name": "complicated", "items": ["Expert"]},
+                {"name": "chaotic", "items": ["Crisis"]},
+                {"name": "clear", "items": ["Known"]},
+                {
+                    "name": "confusion",
+                    "items": ["One", "Two", "Three", "Four", "Five"],
+                },
+            ],
+            "transitions": [{"source": "complex", "target": "clear", "label": "stabilize"}],
+        },
+        native_runtime_valid=False,
+    )
+
+    runtime = NodeMermaidRuntime()
+    validator = CandidateValidator(runtime, SecurityProfile.STRICT)
+    try:
+        outcome = validator.validate(result.code, 20)
+        assert outcome.runtime.syntax_valid, outcome.runtime.error
+        assert outcome.runtime.render_valid, outcome.runtime.error
+        assert outcome.runtime.diagram_type.casefold().startswith("flowchart")
+        root = ET.fromstring(outcome.runtime.svg or "")
+        visible_texts = Counter(
+            "".join(element.itertext()).strip()
+            for element in root.iter()
+            if element.tag.rsplit("}", 1)[-1] in {"span", "text"}
+            and "".join(element.itertext()).strip()
+        )
+        expected_visible = {
+            "Complex",
+            "Complicated",
+            "Chaotic",
+            "Clear",
+            "Confusion",
+            "Emergent",
+            "Expert",
+            "Crisis",
+            "Known",
+            "One",
+            "Two",
+            "Three",
+            "Four",
+            "Five",
+            "stabilize",
+        }
+        assert set(visible_texts) == expected_visible
+        assert all(visible_texts[label] == 1 for label in expected_visible)
+        assert "+2 more" not in visible_texts
+        for _element_id, role, label in CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS:
+            if role == "runtime_template":
+                assert label not in visible_texts
+        links = [
+            element
+            for element in root.iter()
+            if "flowchart-link" in element.attrib.get("class", "").split()
+        ]
+        assert len(links) == 1
+        assert "marker-start" not in links[0].attrib
+        assert "marker-end" in links[0].attrib
+        title = next(
+            "".join(element.itertext())
+            for element in root.iter()
+            if element.tag.rsplit("}", 1)[-1] == "title"
+        )
+        description = next(
+            "".join(element.itertext())
+            for element in root.iter()
+            if element.tag.rsplit("}", 1)[-1] == "desc"
+        )
+        assert title == "Explicit Cynefin"
+        assert description == "Only explicitly observed content."
     finally:
         runtime.close()
 

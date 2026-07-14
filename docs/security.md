@@ -83,7 +83,13 @@ Wardley·Cynefin native serializer도 control/format/line separator를 정규화
 entity-like literal을 renderer가 손실시키는 자리에 보이는 `＆`/`＃` compatibility glyph를 사용합니다.
 대체 사실은 warning에 남고 원문은 typed IR/sidecar에 보존됩니다. Strict nested 계약은
 Wardley `x`/`y`에 boolean·NaN·infinity를, `anchor`에 integer/string coercion을 허용하지
-않으며 Cynefin domain을 닫힌 official token 집합으로 검증합니다.
+않으며 Cynefin domain을 닫힌 official token 집합으로 검증합니다. Native `cynefin-beta`가 runtime에서
+거부되면 같은 candidate slot의 explicit-domain `flowchart LR`만 한 번 생성합니다. 이 fallback에도 raw/NFKC
+source scan, strict Flowchart label neutralization, parse/render, SVG inspection과 terminal-type 검사를 새로
+적용하며 후보 budget이나 allowlist를 늘리지 않습니다. Fixed runtime template나 membership connector를
+합성하지 않고 requested/emitted/runtime metadata, fallback history와 requested-type 접근성 sanitization을
+유지합니다. 검증되고 generated-node attribution threshold를 충족한 fallback만 일반 publication gate로
+이동하며 native 결과의 template-provenance review hold는 보안 fallback 성공으로 해제하지 않습니다.
 Organization·Data Lineage fallback은 raw ID를 Mermaid identifier로 직접 방출하지 않고
 type 전용 namespace와 normalization-collision 검사를 사용합니다. label은 control/format/
 lone-surrogate를 정규화 전에 거절하고 quote·backslash·entity-like literal, relation

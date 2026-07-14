@@ -461,3 +461,35 @@ def test_wardley_runtime_fallback_dispatch_preserves_only_explicit_plain_topolog
     assert any("CandidateValidator rejected wardley-beta" in warning for warning in result.warnings)
     assert any("coordinates" in warning and "anchor" in warning for warning in result.warnings)
     assert MermaidSecurityScanner(SecurityProfile.STRICT).scan(result.code).safe
+
+
+def test_cynefin_runtime_fallback_dispatch_preserves_explicit_five_domain_structure() -> None:
+    result = serialize_runtime_fallback_result(
+        "cynefin",
+        {
+            "domains": [
+                {"name": "complex", "items": ["Emergent"]},
+                {"name": "complicated", "items": ["Expert"]},
+                {"name": "chaotic", "items": ["Crisis"]},
+                {"name": "clear", "items": ["Known"]},
+                {"name": "confusion", "items": ["One", "Two", "Three", "Four"]},
+            ],
+            "transitions": [{"source": "complex", "target": "clear", "label": "stabilize"}],
+        },
+        experimental=True,
+    )
+
+    assert result is not None
+    assert result.requested_type == "cynefin"
+    assert result.emitted_type == "flowchart"
+    assert result.fallback_chain == ("cynefin", "flowchart")
+    assert result.used_fallback
+    assert result.stability == "experimental"
+    assert result.code.startswith("flowchart LR\n")
+    assert 'subgraph cynefin_domain_confusion["Confusion"]' in result.code
+    assert 'cynefin_item_confusion_4["Four"]' in result.code
+    assert "+1 more" not in result.code
+    assert "cynefin_domain_complex -->|stabilize| cynefin_domain_clear" in result.code
+    assert any("CandidateValidator rejected cynefin-beta" in warning for warning in result.warnings)
+    assert any("every explicitly supplied domain" in warning for warning in result.warnings)
+    assert MermaidSecurityScanner(SecurityProfile.STRICT).scan(result.code).safe

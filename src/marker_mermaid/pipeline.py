@@ -2851,7 +2851,10 @@ class ReconstructionPipeline:
             elif provenance < 0.8:
                 aggregate = None
                 warnings.append("generated-node provenance gate requires at least 80% attribution")
-        if gate_diagram_type == "cynefin":
+        if (
+            gate_diagram_type == "cynefin"
+            and _canonical_runtime_type(runtime.diagram_type) == "cynefin"
+        ):
             aggregate = None
             warnings.append(_CYNEFIN_TEMPLATE_REVIEW_WARNING)
         if gate_diagram_type == "packet" and packet_binding_state == "unavailable":

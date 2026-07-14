@@ -2043,6 +2043,124 @@ def test_cynefin_scene_matches_runtime_confusion_item_summary() -> None:
     assert "Five" not in texts
 
 
+def test_cynefin_flowchart_scene_preserves_explicit_domains_items_and_transition_only() -> None:
+    ir = {
+        "domains": [
+            {
+                "name": "complex",
+                "evidence_ids": ["domain-complex"],
+                "items": [{"label": "Emergent", "evidence_ids": ["item-complex-1"]}],
+            },
+            {
+                "name": "complicated",
+                "evidence_ids": ["domain-complicated"],
+                "items": [{"label": "Expert", "evidence_ids": ["item-complicated-1"]}],
+            },
+            {
+                "name": "chaotic",
+                "evidence_ids": ["domain-chaotic"],
+                "items": [{"label": "Crisis", "evidence_ids": ["item-chaotic-1"]}],
+            },
+            {
+                "name": "clear",
+                "evidence_ids": ["domain-clear"],
+                "items": [{"label": "Known", "evidence_ids": ["item-clear-1"]}],
+            },
+            {
+                "name": "confusion",
+                "evidence_ids": ["domain-confusion"],
+                "items": [
+                    {
+                        "label": label,
+                        "evidence_ids": [f"item-confusion-{index}"],
+                    }
+                    for index, label in enumerate(["One", "Two", "Three", "Four", "Five"], start=1)
+                ],
+            },
+        ],
+        "transitions": [
+            {
+                "source": "complex",
+                "target": "clear",
+                "label": "stabilize | now",
+                "evidence_ids": ["transition-stabilize"],
+            }
+        ],
+    }
+
+    scene = typed_ir_to_scene("cynefin", ir, emitted_diagram_type="flowchart-v2")
+
+    assert scene is not None
+    assert scene.coordinate_space == "pixels"
+    assert scene.reading_direction == "LR"
+    assert all(element.bbox == (0, 0, 0, 0) for element in scene.elements)
+    domains = [element for element in scene.elements if element.role == "domain"]
+    items = [element for element in scene.elements if element.role == "item"]
+    assert [(element.id, element.text) for element in domains] == [
+        ("cynefin_domain_complex", "Complex"),
+        ("cynefin_domain_complicated", "Complicated"),
+        ("cynefin_domain_chaotic", "Chaotic"),
+        ("cynefin_domain_clear", "Clear"),
+        ("cynefin_domain_confusion", "Confusion"),
+    ]
+    assert [element.text for element in items] == [
+        "Emergent",
+        "Expert",
+        "Crisis",
+        "Known",
+        "One",
+        "Two",
+        "Three",
+        "Four",
+        "Five",
+    ]
+    assert all(element.shape == "rectangle" for element in items)
+    assert not any(element.role == "runtime_template" for element in scene.elements)
+    assert all("cynefin_runtime" not in element.id for element in scene.elements)
+    assert [element.evidence_ids for element in domains] == [
+        ["domain-complex"],
+        ["domain-complicated"],
+        ["domain-chaotic"],
+        ["domain-clear"],
+        ["domain-confusion"],
+    ]
+    assert len(scene.groups) == 5
+    assert [group.id for group in scene.groups] == [element.id for element in domains]
+    assert scene.groups[-1].member_ids == [
+        f"cynefin_item_confusion_{index}" for index in range(1, 6)
+    ]
+    [transition] = scene.relations
+    assert transition.id == "cynefin_transition_1"
+    assert (transition.source_id, transition.target_id, transition.label) == (
+        "cynefin_domain_complex",
+        "cynefin_domain_clear",
+        "stabilize ∣ now",
+    )
+    assert not transition.arrow_at_start
+    assert transition.arrow_at_end
+    assert transition.evidence_ids == ["transition-stabilize"]
+    texts = list(typed_ir_semantic_texts("cynefin", ir, scene))
+    assert texts == [
+        "Complex",
+        "Emergent",
+        "Complicated",
+        "Expert",
+        "Chaotic",
+        "Crisis",
+        "Clear",
+        "Known",
+        "Confusion",
+        "One",
+        "Two",
+        "Three",
+        "Four",
+        "Five",
+        "stabilize ∣ now",
+    ]
+    assert texts.count("Complex") == 1
+    assert "+2 more" not in texts
+
+
 @pytest.mark.parametrize(
     ("diagram_type", "ir"),
     [

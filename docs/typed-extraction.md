@@ -482,7 +482,7 @@ Packet Scene은 field를 `LR` 순서의 독립 element로 표시하고 입력에
 containment relation을 만들고 원 record의 bbox/evidence를 유지합니다. Planner가 거부하면
 Scene adapter도 부분 attribution을 만들지 않고 `unavailable`로 보냅니다.
 
-### Wardley·Cynefin experimental native 계약
+### Wardley·Cynefin experimental native/fallback 계약
 
 Wardley는 `components: list`를 필수, `links: list`를 선택 root로 사용합니다. Component
 prompt는 `id`·`label`·`x`·`y`·`anchor`·bbox/evidence, link는 `source`·`target`·`label`·
@@ -518,6 +518,16 @@ Cynefin 11.16 renderer는 입력과 무관하게 다섯 domain과 practice/respo
 `confusion` item이 네 개 이상이면 처음 세 개와 renderer가 표시하는 `+N more`만 투영합니다.
 숨겨진 item 원문은 typed IR/sidecar에 남습니다. 고정 template에 source provenance를 붙일
 계약이 없으므로 native Cynefin 후보는 점수와 무관하게 review를 요구합니다.
+
+Native runtime rejection은 extraction 계약을 완화하지 않습니다. 같은 검증된 plan으로 `flowchart LR`를
+같은 candidate slot에 한 번 만들며, 입력에 있는 domain만 subgraph로, 모든 explicit item은 축약 없는 node로,
+explicit transition만 domain subgraph 사이의 directed edge로 방출합니다. 다섯 domain template,
+practice/response/disorder text, `+N more`, membership connector를 fallback에 합성하지 않습니다. Fallback
+Scene/OCR도 이 terminal visibility를 따릅니다. Domain은 같은 ID를 공유하는 conceptual element/group으로
+표현하되 label은 OCR에서 한 번만 세고, domain/item/transition은 각 record-local evidence를 유지합니다.
+Source 위치를 subgraph quadrant로 추측하지 않으므로 bbox는 모두 0, direction은 `LR`이며 layout/Cynefin 공간
+의미 손실을 warning으로 공개합니다. 이 fallback은 provenance와 일반 hard/semantic gate를 통과하면 게시할
+수 있지만 native review hold를 해제하지 않습니다.
 
 두 nested model은 공통 strict bbox/evidence와 알려진 scalar/container만 확정하고 추가 metadata를
 원본 IR에 보존합니다. 검증 model은 입력 dict를 대체하지 않으므로 direct serializer의

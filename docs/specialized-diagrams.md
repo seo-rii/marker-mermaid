@@ -87,7 +87,8 @@ accessible title/description에 동일하게 적용되며 실제 SVG text integr
 - Cynefin은 strict nested domain/item/transition 계약에서 다섯 공식 domain과 명시적
   domain transition만 허용합니다. Canonical item은 `label`/bbox/evidence를 갖는 object이며,
   기존 scalar string item은 입력 호환을 위해 받지만 provenance를 만들지 않습니다. 공유 plan은
-  domain·item·transition ID와 표시 text, membership을 고정합니다.
+  domain·item·transition ID와 표시 text, membership을 고정합니다. Native `cynefin-beta`가 runtime에서
+  거부되면 새 후보를 만들지 않고 같은 candidate slot에서 `flowchart LR`를 한 번 재검증합니다.
 - Railroad는 strict nested rule/expression contract와 frozen preorder plan으로
   terminal/nonterminal/special/sequence/choice/optional/repetition AST를 직렬화합니다.
   Rule은 `railroad_rule_*`, expression은 `railroad_expression_N`, native source에 ID 문법이 없는
@@ -192,11 +193,24 @@ Flowchart·Sequence fallback의 namespaced ID, `LR` 방향, end-arrow topology, 
 각 source record에서만 가져옵니다.
 
 Cynefin native grammar은 item의 명시적 배치를 제공하지 않으므로 layout metric을
-unavailable로 남겨 둡니다. 또한 입력하지 않은 다섯 domain·practice/response 고정
-template를 항상 표시합니다. Scene/OCR은 이 element를 무근거로 명시하고, `confusion`의
-네 번째 이후 item은 실제 runtime처럼 `+N more`로 축약합니다. 입력 membership을 containment
-edge로 만들지 않으며, 고정 template provenance 계약이 없는 현재 native 후보는 항상
-review를 요구합니다.
+unavailable로 남겨 둡니다. Native 성공 결과에는 입력 여부와 무관한 다섯 domain,
+practice/response와 disorder 고정 template가 나타납니다. Native Scene/OCR은 이 element를
+무근거로 명시하고, `confusion`의 네 번째 이후 item은 실제 runtime처럼 `+N more`로 축약합니다.
+입력 membership을 containment edge로 만들지 않으며, 고정 template provenance 계약이 없는 native
+후보는 점수와 무관하게 항상 review를 요구합니다.
+
+Native runtime이 거부한 경우의 Flowchart fallback은 이 template를 재현하지 않습니다. Source에 명시된
+domain만 입력 순서대로 각각 하나의 subgraph로 만들며, 선택적 다섯 번째 `confusion`도 실제로 공급됐을
+때만 만듭니다. 각 subgraph는 명시된 item을 모두 개별 node로 보존하므로 `+N more` 축약이 없고,
+명시적 transition만 source/target domain subgraph 사이의 단방향 edge로 방출합니다. Domain-item membership을
+별도 connector로 만들거나 입력에 없는 fixed domain/practice/response/disorder node를 추가하지 않습니다.
+Fallback Scene은 같은 domain ID를 conceptual element와 group에 사용하고, domain/item/transition을 실제
+fallback visibility와 record-local provenance 그대로 연결합니다. Domain label은 OCR에서 한 번만 세며,
+모든 geometry는 zero bbox이고 direction은 실제 fallback의 `LR`입니다. 이 projection은 원래 quadrant 배치와
+Cynefin 공간 의미를 보존했다고 주장하지 않으며 손실 warning을 남깁니다. 생성 domain/item node가 80%
+attribution threshold를 충족하고 security·parse·render·semantic gate를 통과하면 fallback은 일반 게시 정책으로
+게시할 수 있지만,
+native 결과의 review hold는 그대로입니다.
 
 대표 native/fallback fixture는 pinned Mermaid 11.16에서 실제 strict security scan, parse, render, SVG
 inspection을 통과하는 integration test로 고정합니다. Packet/Ishikawa/TreeView와 Treemap/Venn은 native
@@ -212,6 +226,9 @@ probe, scanner/preprocessor source-active·grammar-reserved rule-name mapping, b
 `style`/`classDef` substring, NFKC quote injection neutralization과 runtime 종료를 고정합니다.
 Wardley도 native runtime rejection 뒤 공용 plan의 무방향 Flowchart를 같은 candidate slot에서
 재검증하고, terminal type·visible compatibility text·marker 없는 link를 실제 runtime fixture로
-확인합니다. Cynefin은 아직 같은-slot 대체 grammar가 없으며 runtime이 성공해도 위 고정 template
-경계 때문에 자동 Markdown 게시 대신
-review workspace/sidecar로 routing합니다.
+확인합니다. Cynefin도 native runtime rejection 뒤 명시 domain/item/transition만 보존하는 Flowchart를
+같은 candidate slot에서 재검증합니다. 이 fallback은 fixed template·confusion 축약·membership connector가
+없는지, terminal type과 directed transition을 실제 runtime fixture로 확인합니다. Native 성공은 위 고정
+template 경계 때문에 계속 자동 Markdown 게시 대신 review workspace/sidecar로 routing합니다. 두 terminal
+경로 모두 candidate budget, requested/emitted/runtime metadata, strict security와 requested-type 접근성 계약을
+그대로 유지합니다.

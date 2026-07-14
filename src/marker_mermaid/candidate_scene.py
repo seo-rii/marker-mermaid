@@ -27,6 +27,7 @@ from marker_mermaid.flowchart_structure import (
 from marker_mermaid.models import DiagramSceneIR, SceneElement, SceneGroup, SceneRelation
 from marker_mermaid.serializers import SerializationError, plan_architecture_structure
 from marker_mermaid.serializers_experimental import (
+    CYNEFIN_DOMAIN_LABELS,
     CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS,
     plan_cynefin_records,
     plan_cynefin_runtime_items,
@@ -710,63 +711,106 @@ def typed_ir_to_scene(
             cynefin_plan = plan_cynefin_records(ir)
         except SerializationError:
             return None
-        explicit_domains = {domain.emitted_id: domain for domain in cynefin_plan.domains}
-        runtime_items = plan_cynefin_runtime_items(cynefin_plan)
-        node_records.extend(
-            {
-                "id": emitted_id,
-                "label": label,
-                "role": role,
-                "bbox": (0.0, 0.0, 0.0, 0.0),
-                "evidence_ids": list(
-                    explicit_domains[emitted_id].source_record.get("evidence_ids") or []
-                )
-                if emitted_id in explicit_domains
-                else [],
-            }
-            for emitted_id, role, label in CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS
+        cynefin_uses_flowchart = (
+            emitted_diagram_type is not None
+            and emitted_diagram_type.casefold().startswith("flowchart")
         )
-        domain_labels = {
-            emitted_id: label
-            for emitted_id, role, label in CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS
-            if role == "domain"
-        }
-        for domain in cynefin_plan.domains:
-            member_ids: list[str] = []
-            for item in runtime_items[domain.emitted_id]:
-                source_record = item.source_record if item.source_record is not None else {}
+        if cynefin_uses_flowchart:
+            for domain in cynefin_plan.domains:
                 node_records.append(
                     {
-                        "id": item.emitted_id,
-                        "label": item.label,
-                        "role": "runtime_template" if item.implicit else "item",
+                        "id": domain.emitted_id,
+                        "label": CYNEFIN_DOMAIN_LABELS[domain.name],
+                        "role": "domain",
                         "bbox": (0.0, 0.0, 0.0, 0.0),
-                        "evidence_ids": list(source_record.get("evidence_ids") or []),
+                        "evidence_ids": list(domain.source_record.get("evidence_ids") or []),
                     }
                 )
-                member_ids.append(item.emitted_id)
-            group_records.append(
+                member_ids: list[str] = []
+                for item in domain.items:
+                    source_record = item.source_record if item.source_record is not None else {}
+                    node_records.append(
+                        {
+                            "id": item.emitted_id,
+                            "label": item.fallback_label,
+                            "role": "item",
+                            "shape": "rectangle",
+                            "bbox": (0.0, 0.0, 0.0, 0.0),
+                            "evidence_ids": list(source_record.get("evidence_ids") or []),
+                        }
+                    )
+                    member_ids.append(item.emitted_id)
+                group_records.append(
+                    {
+                        "id": domain.emitted_id,
+                        "label": CYNEFIN_DOMAIN_LABELS[domain.name],
+                        "role": "domain",
+                        "member_ids": member_ids,
+                        "bbox": (0.0, 0.0, 0.0, 0.0),
+                    }
+                )
+            scene_direction_override = "LR"
+        else:
+            explicit_domains = {domain.emitted_id: domain for domain in cynefin_plan.domains}
+            runtime_items = plan_cynefin_runtime_items(cynefin_plan)
+            node_records.extend(
                 {
-                    "id": domain.group_id,
-                    "label": domain_labels[domain.emitted_id],
-                    "role": "domain",
-                    "member_ids": member_ids,
+                    "id": emitted_id,
+                    "label": label,
+                    "role": role,
                     "bbox": (0.0, 0.0, 0.0, 0.0),
+                    "evidence_ids": list(
+                        explicit_domains[emitted_id].source_record.get("evidence_ids") or []
+                    )
+                    if emitted_id in explicit_domains
+                    else [],
                 }
+                for emitted_id, role, label in CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS
             )
+            domain_labels = {
+                emitted_id: label
+                for emitted_id, role, label in CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS
+                if role == "domain"
+            }
+            for domain in cynefin_plan.domains:
+                member_ids = []
+                for item in runtime_items[domain.emitted_id]:
+                    source_record = item.source_record if item.source_record is not None else {}
+                    node_records.append(
+                        {
+                            "id": item.emitted_id,
+                            "label": item.label,
+                            "role": "runtime_template" if item.implicit else "item",
+                            "bbox": (0.0, 0.0, 0.0, 0.0),
+                            "evidence_ids": list(source_record.get("evidence_ids") or []),
+                        }
+                    )
+                    member_ids.append(item.emitted_id)
+                group_records.append(
+                    {
+                        "id": domain.group_id,
+                        "label": domain_labels[domain.emitted_id],
+                        "role": "domain",
+                        "member_ids": member_ids,
+                        "bbox": (0.0, 0.0, 0.0, 0.0),
+                    }
+                )
         edge_records = [
             {
                 "id": transition.emitted_id,
                 "source": transition.source_emitted_id,
                 "target": transition.target_emitted_id,
-                "label": transition.label,
+                "label": (
+                    transition.fallback_label if cynefin_uses_flowchart else transition.label
+                ),
                 "arrow_at_start": False,
                 "arrow_at_end": True,
                 "evidence_ids": list(transition.source_record.get("evidence_ids") or []),
             }
             for transition in cynefin_plan.transitions
         ]
-        scene_direction_override = "unknown"
+        if not cynefin_uses_flowchart:
+            scene_direction_override = "unknown"
     elif diagram_type == "data_lineage":
         try:
             data_lineage_plan = plan_data_lineage_records(ir)
@@ -1330,6 +1374,18 @@ def typed_ir_semantic_texts(
         return
     if diagram_type == "cynefin":
         plan = plan_cynefin_records(ir)
+        cynefin_uses_flowchart = not any(
+            element.role == "runtime_template" for element in scene.elements
+        )
+        if cynefin_uses_flowchart:
+            for domain in plan.domains:
+                yield CYNEFIN_DOMAIN_LABELS[domain.name]
+                for item in domain.items:
+                    yield item.fallback_label
+            for transition in plan.transitions:
+                if transition.fallback_label is not None:
+                    yield transition.fallback_label
+            return
         runtime_items = plan_cynefin_runtime_items(plan)
         for _emitted_id, _role, label in CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS:
             yield label

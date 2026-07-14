@@ -37,7 +37,8 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 | Packet | `packet` 또는 `flowchart` | 명시적 contiguous bit range만 native; fallback은 가상 gap·edge가 없는 독립 field |
 | Ishikawa, TreeView | 동일 또는 `flowchart` | cycle/object reuse/duplicate ID/depth를 검증한 hierarchy |
 | Event Modeling | `flowchart` | Mermaid 11.16 renderer 불안정으로 lane-aware fallback |
-| Wardley, Cynefin | 동일 | strict positioned-component/domain plan이 검증한 experimental native |
+| Wardley | `wardley` 또는 `flowchart` | native runtime 거부 시 좌표·축·anchor 손실을 공개하는 marker-less explicit-link fallback |
+| Cynefin | `cynefin` 또는 `flowchart` | native 성공은 fixed runtime template 때문에 review-only; runtime 거부 시 explicit domain/item/directed-transition fallback |
 | Railroad | 동일 | strict recursive rule AST와 bounded shared plan이 검증한 experimental native |
 | ZenUML | `sequence` | pinned runtime에 ZenUML extension이 없어 명시적 fallback |
 | Organization | `treeview` | reporting hierarchy 보존, organization 전용 notation 없음 |
@@ -296,19 +297,30 @@ source scan, parse/render와 terminal `flowchart` type을 다시 통과할 때�
 typed IR/review metadata에만 남는다고 구분해 경고합니다.
 
 Cynefin plan은 다섯 official domain의 reserved-safe domain/group ID, 순서적 item ID,
-명시적 transition ID와 표시 text를 고정합니다. 11.16 runtime이 입력과 무관하게 만드는
-다섯 domain·practice/response·disorder template element도 generated Scene/OCR에 포함하되
-evidence는 비워 둡니다. `confusion` item은 runtime이 보이는 처음 세 개와 `+N more`만 Scene/OCR에
-넣고, 나머지 원문은 typed IR/sidecar에만 보존합니다. Domain membership을 containment edge로
-추측하지 않고 native grammar이 명시적 item 좌표를 주지 않으므로 layout metric은 unavailable입니다.
-Object item의 record evidence만 provenance로 사용하며 legacy scalar item에 evidence를 발명하지
-않습니다.
+명시적 transition ID와 표시 text를 고정합니다. Native 성공 시 11.16 runtime이 입력과 무관하게 만드는
+다섯 domain·practice/response·disorder template element도 generated Scene/OCR에 포함하되 evidence는
+비워 둡니다. `confusion` item은 native runtime이 보이는 처음 세 개와 `+N more`만 Scene/OCR에 넣고,
+나머지 원문은 typed IR/sidecar에만 보존합니다. Domain membership을 containment edge로 추측하지 않고
+native grammar이 명시적 item 좌표를 주지 않으므로 layout metric은 unavailable입니다. Object item의
+record evidence만 provenance로 사용하며 legacy scalar item에 evidence를 발명하지 않습니다.
+
+`cynefin-beta`가 runtime parse/render를 통과하지 못하면 같은 candidate slot에서 공용 plan을
+`flowchart LR`로 한 번만 재직렬화합니다. Source가 실제 제공한 domain마다 하나의 subgraph를 만들고,
+그 안에 모든 explicit item을 축약 없이 방출합니다. 따라서 source가 주지 않은 official domain이나
+practice/response/disorder template, native 전용 `+N more`, domain-item membership connector는 만들지
+않습니다. Explicit transition만 source/target subgraph 자체를 endpoint로 하는 directed edge가 됩니다.
+Fallback Scene은 각 domain을 같은 ID의 conceptual element와 group으로 나타내되 OCR은 domain label을
+한 번만 투영하고, domain/item/transition의 표시 text와 record-local provenance를 그대로 사용합니다.
+Geometry는 모두 zero bbox, direction은 `LR`이며 quadrant/layout 의미 손실을 warning으로 공개합니다.
 
 두 serializer는 source를 반환하기 전 50,000자·5,000줄 hard budget을 독립적으로
-검사합니다. Wardley는 native runtime rejection 후 위 Flowchart를 같은 candidate slot에서
-재검증합니다. Cynefin은 아직 Quadrant/Table 대체를 자동 재시도하지 않으므로 native 실패 후보가
-publication hard gate에서 격리됩니다. Cynefin native는 렌더에 성공해도 고정 template에 source provenance를 붙이는
-계약이 없어 자동 게시하지 않고 review/sidecar로만 routing합니다.
+검사합니다. Wardley와 Cynefin은 native runtime rejection 후 각 Flowchart를 같은 candidate slot에서
+재검증하므로 후보 수를 늘리지 않습니다. Fallback도 source scan, parse/render, SVG와 terminal
+`flowchart` type을 독립적으로 통과해야 하며 requested/emitted/runtime type, fallback chain, repair history,
+security profile과 requested-type 접근성 metadata를 유지합니다. Cynefin fallback은 generated-node
+attribution threshold와 일반 semantic/publication gate를 통과하면 게시할 수 있습니다. 반면 native
+Cynefin은 렌더에 성공해도 고정
+template에 source provenance를 붙이는 계약이 없어 자동 게시하지 않고 review/sidecar로만 routing합니다.
 
 ### Railroad의 recursive AST projection
 

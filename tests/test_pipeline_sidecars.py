@@ -2415,6 +2415,167 @@ def test_cynefin_generated_scene_controls_provenance_publication_and_sidecar(
         assert any("provenance gate" in item for item in result.selected.warnings)
 
 
+@pytest.mark.parametrize("attributed", [True, False])
+def test_cynefin_native_rejection_retries_explicit_flowchart_in_same_candidate_slot(
+    tmp_path,
+    attributed: bool,
+) -> None:
+    class CynefinRejectingRuntime:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def validate_and_render(self, code, timeout_seconds):
+            self.calls.append(code)
+            if code.startswith("cynefin-beta"):
+                return RuntimeResult(False, False, error="native Cynefin parser rejected")
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="flowchart-v2",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    domain_items = {
+        "complex": ["Emergent"],
+        "complicated": ["Expert"],
+        "chaotic": ["Crisis"],
+        "clear": ["Known"],
+        "confusion": ["One", "Two", "Three", "Four", "Five"],
+    }
+    domains: list[dict] = []
+    evidence: list[VisualEvidence] = []
+    source_texts: list[str] = []
+    for domain_name, labels in domain_items.items():
+        domain_evidence_id = f"ocr-domain-{domain_name}"
+        domain_label = domain_name.title()
+        evidence.append(VisualEvidence(id=domain_evidence_id, kind="ocr_token", text=domain_label))
+        source_texts.append(domain_label)
+        items: list[dict] = []
+        for index, label in enumerate(labels, start=1):
+            item_evidence_id = f"ocr-item-{domain_name}-{index}"
+            evidence.append(VisualEvidence(id=item_evidence_id, kind="ocr_token", text=label))
+            source_texts.append(label)
+            items.append(
+                {
+                    "label": label,
+                    **({"evidence_ids": [item_evidence_id]} if attributed else {}),
+                }
+            )
+        domains.append(
+            {
+                "name": domain_name,
+                "items": items,
+                **({"evidence_ids": [domain_evidence_id]} if attributed else {}),
+            }
+        )
+    evidence.append(
+        VisualEvidence(
+            id="line-transition-stabilize",
+            kind="line_segment",
+            text="stabilize",
+        )
+    )
+    source_texts.append("stabilize")
+    ir = {
+        "description": "Only explicitly observed Cynefin content.",
+        "domains": domains,
+        "transitions": [
+            {
+                "source": "complex",
+                "target": "clear",
+                "label": "stabilize",
+                **({"evidence_ids": ["line-transition-stabilize"]} if attributed else {}),
+            }
+        ],
+    }
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["cynefin"], scores=[0.9]),
+        typed_candidates=[TypedIRCandidate(diagram_type="cynefin", ir=ir)],
+        evidence=evidence,
+    )
+    runtime = CynefinRejectingRuntime()
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(runtime, config.security_profile),
+    ).reconstruct(
+        f"cynefin-fallback-{'attributed' if attributed else 'unattributed'}",
+        "source.png",
+        Image.new("RGB", (100, 100), "white"),
+        ocr_texts=[" ".join(source_texts)],
+    )
+
+    assert result.selected is not None
+    selected = result.selected
+    assert selected.candidate_id == "candidate-1"
+    assert result.alternatives == []
+    assert selected.diagram_type == "cynefin"
+    assert selected.emitted_diagram_type == "flowchart"
+    assert selected.runtime_diagram_type == "flowchart-v2"
+    assert selected.fallback_chain == ["cynefin", "flowchart"]
+    assert selected.render_valid
+    assert len(runtime.calls) == 2
+    assert runtime.calls[0].startswith("cynefin-beta")
+    assert runtime.calls[1].startswith("flowchart LR")
+    assert "cynefin_item_confusion_4" in runtime.calls[1]
+    assert "cynefin_item_confusion_5" in runtime.calls[1]
+    assert "+2 more" not in runtime.calls[1]
+    for template_text in (
+        "Probe → Sense → Respond",
+        "Emergent Practices",
+        "Sense → Analyse → Respond",
+        "Good Practices",
+        "Act → Sense → Respond",
+        "Novel Practices",
+        "Sense → Categorise → Respond",
+        "Best Practices",
+        "Disorder",
+    ):
+        assert template_text not in runtime.calls[1]
+    scene = selected.generated_scene_ir
+    assert scene is not None
+    assert scene.reading_direction == "LR"
+    assert not any(element.role == "runtime_template" for element in scene.elements)
+    assert [element.text for element in scene.elements if element.role == "item"][-5:] == [
+        "One",
+        "Two",
+        "Three",
+        "Four",
+        "Five",
+    ]
+    assert scene.groups[-1].member_ids == [
+        f"cynefin_item_confusion_{index}" for index in range(1, 6)
+    ]
+    assert len(scene.relations) == 1
+    assert scene.relations[0].arrow_at_end
+    assert selected.scores["ocr_recall"] == 1
+    assert selected.scores["visual_entailment_precision"] == (1 if attributed else 0)
+    assert "layout_similarity" not in selected.scores
+    assert not any("fixed template content" in warning for warning in selected.warnings)
+    assert any("rejected cynefin-beta" in warning for warning in selected.warnings)
+    assert result.publish is attributed
+    assert result.review_required is not attributed
+    assert (selected.aggregate_score is not None) is attributed
+    if not attributed:
+        assert any("provenance gate" in warning for warning in selected.warnings)
+    repair = selected.repair_history[-1]
+    assert repair.operation == "runtime_portable_fallback"
+    assert repair.accepted
+    assert repair.details["fallback_chain"] == ["cynefin", "flowchart"]
+    if attributed:
+        relative = SidecarStore(tmp_path).write(result)
+        generated = json.loads((tmp_path / relative / "generated-scene-ir.json").read_text())
+        assert not any(item["role"] == "runtime_template" for item in generated["elements"])
+        assert generated["groups"][-1]["member_ids"] == [
+            f"cynefin_item_confusion_{index}" for index in range(1, 6)
+        ]
+
+
 def test_cynefin_fixed_runtime_template_requires_review_even_above_provenance_threshold():
     class CynefinRuntime:
         def validate_and_render(self, code, timeout_seconds):

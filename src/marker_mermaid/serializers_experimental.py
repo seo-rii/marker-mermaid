@@ -31,6 +31,13 @@ MAX_EXPERIMENTAL_OUTPUT_CHARS = 50_000
 MAX_EXPERIMENTAL_OUTPUT_LINES = 5_000
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,127}\Z")
 _DOMAINS = {"complex", "complicated", "clear", "chaotic", "confusion"}
+CYNEFIN_DOMAIN_LABELS = {
+    "complex": "Complex",
+    "complicated": "Complicated",
+    "chaotic": "Chaotic",
+    "clear": "Clear",
+    "confusion": "Confusion",
+}
 CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS: tuple[tuple[str, str, str], ...] = (
     ("cynefin_domain_complex", "domain", "Complex"),
     ("cynefin_domain_complicated", "domain", "Complicated"),
@@ -85,6 +92,10 @@ _DATA_LINEAGE_COMPATIBILITY_WARNING = (
 )
 _WARDLEY_FLOWCHART_COMPATIBILITY_WARNING = (
     "Wardley Flowchart fallback uses visible compatibility glyphs for "
+    "grammar-conflicting label characters."
+)
+_CYNEFIN_FLOWCHART_COMPATIBILITY_WARNING = (
+    "Cynefin Flowchart fallback uses visible compatibility glyphs for "
     "grammar-conflicting label characters."
 )
 _RAILROAD_RULE_MAPPING_WARNING = (
@@ -153,6 +164,7 @@ class CynefinItemPlan:
     emitted_id: str
     label: str
     semantic_label: str
+    fallback_label: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +190,7 @@ class CynefinTransitionPlan:
     target_emitted_id: str
     label: str | None
     semantic_label: str | None
+    fallback_label: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +200,7 @@ class CynefinPlan:
     domains: tuple[CynefinDomainPlan, ...]
     transitions: tuple[CynefinTransitionPlan, ...]
     compatibility_substituted: bool
+    flowchart_compatibility_substituted: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -838,6 +852,7 @@ def plan_cynefin_records(ir: Mapping[str, Any]) -> CynefinPlan:
     normalized_domains: list[CynefinDomainPlan] = []
     item_count = 0
     compatibility_substituted = False
+    flowchart_compatibility_substituted = False
     for index, domain in enumerate(domains):
         if not isinstance(domain, Mapping):
             raise SerializationError("cynefin domains must be objects")
@@ -858,13 +873,21 @@ def plan_cynefin_records(ir: Mapping[str, Any]) -> CynefinPlan:
             value = item.get("label") if source_record is not None else item
             semantic_label = _text(value, f"domains[{index}].items[{item_index - 1}]")
             label, label_substituted = _entity_compatibility_text(semantic_label)
+            _semantic_label, fallback_label, fallback_label_substituted = _flowchart_visible_text(
+                semantic_label,
+                f"domains[{index}].items[{item_index - 1}]",
+            )
             compatibility_substituted = compatibility_substituted or label_substituted
+            flowchart_compatibility_substituted = (
+                flowchart_compatibility_substituted or fallback_label_substituted
+            )
             normalized_items.append(
                 CynefinItemPlan(
                     source_record=source_record,
                     emitted_id=f"cynefin_item_{name}_{item_index}",
                     label=label,
                     semantic_label=semantic_label,
+                    fallback_label=fallback_label,
                 )
             )
         normalized_domains.append(
@@ -880,6 +903,7 @@ def plan_cynefin_records(ir: Mapping[str, Any]) -> CynefinPlan:
     if not isinstance(transitions, list) or len(transitions) > MAX_ITEMS:
         raise SerializationError("cynefin transitions must be a bounded list")
     seen: set[tuple[str, str, str | None]] = set()
+    fallback_seen: set[tuple[str, str, str | None]] = set()
     normalized_transitions: list[CynefinTransitionPlan] = []
     for index, transition in enumerate(transitions, start=1):
         if not isinstance(transition, Mapping):
@@ -890,14 +914,25 @@ def plan_cynefin_records(ir: Mapping[str, Any]) -> CynefinPlan:
             raise SerializationError(f"invalid Cynefin transition: {source}->{target}")
         label = None
         semantic_label = None
+        fallback_label = None
         if transition.get("label") is not None:
             semantic_label = _text(transition.get("label"), f"transitions[{index - 1}].label")
             label, label_substituted = _entity_compatibility_text(semantic_label)
+            _semantic_label, fallback_label, fallback_label_substituted = _flowchart_visible_text(
+                semantic_label,
+                f"transitions[{index - 1}].label",
+                edge_label=True,
+            )
             compatibility_substituted = compatibility_substituted or label_substituted
+            flowchart_compatibility_substituted = (
+                flowchart_compatibility_substituted or fallback_label_substituted
+            )
         key = (source, target, label)
-        if key in seen:
+        fallback_key = (source, target, fallback_label)
+        if key in seen or fallback_key in fallback_seen:
             raise SerializationError(f"duplicate Cynefin transition: {source}->{target}")
         seen.add(key)
+        fallback_seen.add(fallback_key)
         normalized_transitions.append(
             CynefinTransitionPlan(
                 source_record=transition,
@@ -908,12 +943,14 @@ def plan_cynefin_records(ir: Mapping[str, Any]) -> CynefinPlan:
                 target_emitted_id=defined[target],
                 label=label,
                 semantic_label=semantic_label,
+                fallback_label=fallback_label,
             )
         )
     return CynefinPlan(
         domains=tuple(normalized_domains),
         transitions=tuple(normalized_transitions),
         compatibility_substituted=compatibility_substituted,
+        flowchart_compatibility_substituted=flowchart_compatibility_substituted,
     )
 
 
@@ -947,8 +984,95 @@ def plan_cynefin_runtime_items(
     return projected
 
 
-def serialize_cynefin(ir: Mapping[str, Any], *, experimental: bool = False) -> SerializationResult:
+def serialize_cynefin(
+    ir: Mapping[str, Any],
+    *,
+    experimental: bool = False,
+    native_runtime_valid: bool = True,
+) -> SerializationResult:
     plan = plan_cynefin_records(ir)
+    if not native_runtime_valid:
+        compatibility_substituted = plan.flowchart_compatibility_substituted
+        nodes: list[dict[str, str]] = []
+        for domain in plan.domains:
+            for item in domain.items:
+                visible_label = _neutralize_active_text(item.fallback_label)
+                compatibility_substituted = (
+                    compatibility_substituted or visible_label != item.fallback_label
+                )
+                nodes.append({"id": item.emitted_id, "label": visible_label})
+        groups = [
+            {
+                "id": domain.emitted_id,
+                "label": CYNEFIN_DOMAIN_LABELS[domain.name],
+                "member_ids": [item.emitted_id for item in domain.items],
+            }
+            for domain in plan.domains
+        ]
+        accessibility = resolve_accessibility(ir, "cynefin", experimental=experimental)
+        _semantic_title, title, title_substituted = _flowchart_visible_text(
+            accessibility.title,
+            "accessible title",
+            accessibility=True,
+        )
+        _semantic_description, description, description_substituted = _flowchart_visible_text(
+            accessibility.description,
+            "accessible description",
+            accessibility=True,
+        )
+        compatibility_substituted = (
+            compatibility_substituted or title_substituted or description_substituted
+        )
+        safe_title = _neutralize_active_text(title)
+        safe_description = _neutralize_active_text(description)
+        compatibility_substituted = (
+            compatibility_substituted or safe_title != title or safe_description != description
+        )
+        code = serialize_flowchart(
+            {
+                "nodes": nodes,
+                "edges": [],
+                "groups": groups,
+                "direction": "LR",
+                "acc_title": safe_title,
+                "acc_description": safe_description,
+            },
+            experimental=experimental,
+        ).rstrip("\n")
+        lines = code.splitlines()
+        for transition in plan.transitions:
+            connector = "-->"
+            if transition.fallback_label is not None:
+                visible_label = _neutralize_active_text(
+                    transition.fallback_label.replace("＠", "＠\N{ZERO WIDTH SPACE}")
+                )
+                compatibility_substituted = (
+                    compatibility_substituted or visible_label != transition.fallback_label
+                )
+                connector = f"-->|{visible_label}|"
+            lines.append(
+                f"    {transition.source_emitted_id} {connector} {transition.target_emitted_id}"
+            )
+        fallback_code = _preflight_experimental_code(
+            "\n".join(lines) + "\n",
+            diagram_type="cynefin",
+        )
+        warnings = [
+            "CandidateValidator rejected cynefin-beta; explicit domains, items, and "
+            "transitions were re-emitted as portable Flowchart.",
+            "Cynefin quadrant geometry and the native fixed domain/practice/response/disorder "
+            "template are not represented by the Flowchart fallback; every explicitly supplied "
+            "domain, including confusion, remains a separate subgraph.",
+        ]
+        if compatibility_substituted:
+            warnings.append(_CYNEFIN_FLOWCHART_COMPATIBILITY_WARNING)
+        return SerializationResult.fallback(
+            "cynefin",
+            "flowchart",
+            fallback_code,
+            warnings=tuple(warnings),
+            stability="experimental",
+        )
     accessibility_lines, accessibility_substituted = _compatible_accessibility(
         ir, "cynefin", experimental=experimental
     )

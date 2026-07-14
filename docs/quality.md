@@ -74,11 +74,18 @@ Native rejection 뒤 선택된 Wardley Flowchart fallback은 공용 plan의 순�
 무방향 topology를 유지하지만 좌표·축·anchor를 표현하지 않습니다. 따라서 generated Scene은 모든 node를
 zero bbox rectangle로 두고 `pixels`/`LR`를 사용합니다. `relative_layout_similarity`는 동일 중심점 때문에
 unavailable이며, fallback canvas에 보이지 않는 native title도 OCR generated label에서 제외합니다.
-Cynefin Scene은 domain·item·transition과 domain group membership을 공유 plan에서 복원하고,
+Native Cynefin Scene은 domain·item·transition과 domain group membership을 공유 plan에서 복원하고,
 runtime이 항상 만드는 고정 domain/practice/response/disorder text를 무근거 template element로
-추가합니다. `confusion` item은 처음 세 개와 `+N more`만 실제 렌더에 맞게 투영합니다.
+추가합니다. `confusion` item은 처음 세 개와 `+N more`만 native 렌더에 맞게 투영합니다.
 Native placement가 없어 zero geometry를 쓰므로 layout similarity는 unavailable이며, 고정 template의
-source provenance 계약이 없는 현재 Cynefin은 aggregate와 무관하게 review를 요구합니다.
+source provenance 계약이 없는 native 결과는 aggregate와 무관하게 review를 요구합니다.
+
+Terminal runtime type이 Flowchart인 Cynefin fallback은 별도 projection을 사용합니다. Source에 있는 domain만
+같은 ID의 conceptual element와 group으로 만들고, 모든 explicit item과 explicit directed transition을
+축약 없이 투영합니다. Fixed template와 membership relation은 추가하지 않으며 domain label도 element/group
+때문에 두 번 세지 않습니다. 모든 bbox는 0이고 direction은 실제 fallback의 `LR`이므로 layout similarity는
+unavailable이며 quadrant/Cynefin 공간 의미 손실을 warning에 남깁니다. Domain/item/transition의 record-local
+provenance와 다른 semantic hard gate가 충분하면 이 fallback에는 native 전용 review hold를 적용하지 않습니다.
 Event Modeling·ZenUML·Wardley·Cynefin의 grammar/entity-like 원문을 Mermaid 11.16 호환
 glyph로 표시하는 경우 OCR projection도
 해당 호환 label이 실제 SVG에 보이는 text를 사용합니다. 원문을 projection에 넣어 렌더러 손실을
@@ -157,8 +164,9 @@ generated Scene attribution에서 제외합니다.
   Requirement는 serializer와 같은 normalized/collision-safe output ID,
   requirement type·ID·text·risk·verification, element type·docref, relation type을 셉니다. 접근성 metadata와
   serializer가 무시한 대체 label은 포함하지 않습니다. Event Modeling은 lane label과 실제 fallback의
-  time·frame type·label 조합 및 relation label, Wardley는 native title·component·link label, Cynefin은
-  native 고정 template·실제 visible item(`confusion`은 세 개+`+N more`)·transition label, ZenUML은
+  time·frame type·label 조합 및 relation label, Wardley는 native title·component·link label을 셉니다.
+  Cynefin native는 고정 template·실제 visible item(`confusion`은 세 개+`+N more`)·transition label을,
+  Flowchart fallback은 supplied domain label을 한 번씩, 모든 explicit item과 transition label을 셉니다. ZenUML은
   Sequence fallback의 participant alias·message label만 셉니다. 내부 endpoint ID, 좌표, anchor 같은 문법
   구조와 접근성 text는 OCR 의미 증거로 세지 않습니다. 각 유형의 record planning은 serializer와 projection이
   같은 deterministic helper를 공유합니다.
