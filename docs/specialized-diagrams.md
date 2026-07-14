@@ -164,6 +164,13 @@ Wardley source는 `[visibility, evolution]` 순서이므로 serializer는 `[y, x
 소수 token 반올림도 plan 좌표에 동일하게 반영하며, typed record의 별도 bbox나 임의 extra
 geometry가 layout 점수를 오염시키지 않습니다. Wardley `->`는 Mermaid 11.16에서 화살촉 없는
 일반 link이므로 generated Scene에서도 무방향 relation으로 평가합니다.
+Native runtime이 `wardley-beta`를 거부하면 같은 plan의 component를 순서 기반
+`wardley_component_N` rectangle로, explicit link를 무방향 `---`로 옮긴 `flowchart LR`를 같은
+candidate slot에서 한 번 재검증합니다. 이 fallback Scene은 zero bbox와 `pixels` coordinate space를
+써서 좌표·축·anchor 손실을 layout 보존으로 오인하지 않으며, 해당 손실과 compatibility glyph를
+warning에 공개합니다. Native title은 fallback canvas에 별도 node로 발명하지 않고 접근성 metadata에만
+남기며, 이 visible-title 손실도 별도 warning으로 공개합니다. 서로 다른 명시적 `acc_title`이 있으면
+그 접근성 값만 `accTitle`에 보존되고 visible title은 typed IR/review metadata에만 남는다고 구분합니다.
 
 Event Modeling·ZenUML generated Scene은 requested type을 유지하면서 실제
 Flowchart·Sequence fallback의 namespaced ID, `LR` 방향, end-arrow topology, visible label만
@@ -190,7 +197,8 @@ terminal/nonterminal/special의 compatibility text, 접근성, source-only activ
 raw/NFKC-normalized strict scan, raw CandidateValidator parse/render hard gate, NFKC grammar-injection safety
 probe, scanner/preprocessor source-active·grammar-reserved rule-name mapping, bare `#word;`/`#35;`,
 `style`/`classDef` substring, NFKC quote injection neutralization과 runtime 종료를 고정합니다.
-Wardley·Cynefin은 현재 native runtime rejection 뒤
-같은 candidate slot에서 대체 grammar를 재시도하지 않으므로, 그 경우 후보는 격리되고 review에
-남습니다. Cynefin은 runtime이 성공해도 위 고정 template 경계 때문에 자동 Markdown 게시 대신
+Wardley도 native runtime rejection 뒤 공용 plan의 무방향 Flowchart를 같은 candidate slot에서
+재검증하고, terminal type·visible compatibility text·marker 없는 link를 실제 runtime fixture로
+확인합니다. Cynefin은 아직 같은-slot 대체 grammar가 없으며 runtime이 성공해도 위 고정 template
+경계 때문에 자동 Markdown 게시 대신
 review workspace/sidecar로 routing합니다.

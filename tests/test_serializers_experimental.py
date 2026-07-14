@@ -50,6 +50,73 @@ def test_wardley_native_preserves_explicit_positions_links_and_unicode_labels():
     assert "directed structure" not in result.code
 
 
+def test_wardley_runtime_rejection_uses_loss_disclosed_undirected_flowchart() -> None:
+    result = serialize_wardley(
+        {
+            "title": "Payment map",
+            "components": [
+                {
+                    "id": "user-node",
+                    "label": 'User "one"',
+                    "x": 0.9,
+                    "y": 0.8,
+                    "anchor": True,
+                },
+                {"id": "api_node", "label": "API \\ service", "x": 0.5, "y": 0.4},
+            ],
+            "links": [
+                {
+                    "source": "user-node",
+                    "target": "api_node",
+                    "label": "uses | retry later",
+                }
+            ],
+        },
+        experimental=True,
+        native_runtime_valid=False,
+    )
+
+    assert result.requested_type == "wardley"
+    assert result.emitted_type == "flowchart"
+    assert result.fallback_chain == ("wardley", "flowchart")
+    assert result.stability == "experimental"
+    assert result.code.startswith("flowchart LR\n")
+    assert 'wardley_component_1["User ″one″"]' in result.code
+    assert 'wardley_component_2["API ∖ service"]' in result.code
+    assert "wardley_component_1 ---|uses ∣ retry later| wardley_component_2" in result.code
+    assert "-->" not in result.code
+    assert "directed structure" not in result.code
+    assert "accTitle: Payment map" in result.code
+    assert "[0.8, 0.9]" not in result.code
+    assert any("coordinates" in warning and "anchor" in warning for warning in result.warnings)
+    assert any(
+        "visible Wardley title" in warning and "accTitle" in warning for warning in result.warnings
+    )
+    assert any("compatibility glyphs" in warning for warning in result.warnings)
+    assert MermaidSecurityScanner(SecurityProfile.STRICT).scan(result.code).safe
+
+
+def test_wardley_fallback_discloses_distinct_explicit_accessible_title() -> None:
+    result = serialize_wardley(
+        {
+            "title": "Visible map title",
+            "acc_title": "Different accessible title",
+            "components": [{"id": "api", "label": "API", "x": 0.5, "y": 0.4}],
+        },
+        native_runtime_valid=False,
+    )
+
+    assert "accTitle: Different accessible title" in result.code
+    assert "Visible map title" not in result.code
+    assert any(
+        "explicit accTitle is preserved" in warning and "typed IR and review metadata" in warning
+        for warning in result.warnings
+    )
+    assert not any(
+        "it remains available through accTitle metadata" in warning for warning in result.warnings
+    )
+
+
 @pytest.mark.parametrize(
     "component",
     [
@@ -148,19 +215,26 @@ def test_wardley_plan_preserves_semantic_source_visible_tokens_and_coordinates()
     assert plan.compatibility_substituted is True
     assert plan.components[0].source_record is component
     assert plan.components[0].source_id == "api"
+    assert plan.components[0].emitted_id == "wardley_component_1"
     assert plan.components[0].label == "API ＆＃35; edge"
     assert plan.components[0].semantic_label == "API &#35; edge"
+    assert plan.components[0].fallback_label == "API ＆＃35; edge"
     assert plan.components[0].kind == "component"
     assert (plan.components[0].x, plan.components[0].y) == (1.0, 0.25)
     assert (plan.components[0].x_token, plan.components[0].y_token) == ("1.0", "0.25")
     assert plan.components[0].token == '"API ＆＃35; edge"'
     assert plan.links[0].source_record is link
+    assert plan.links[0].emitted_id == "wardley_link_1"
     assert plan.links[0].source_id == "api"
     assert plan.links[0].target_id == "db"
+    assert plan.links[0].source_emitted_id == "wardley_component_1"
+    assert plan.links[0].target_emitted_id == "wardley_component_2"
     assert plan.links[0].source_token == '"API ＆＃35; edge"'
     assert plan.links[0].target_token == '"DB"'
     assert plan.links[0].label == "writes ＆＃x23; data"
     assert plan.links[0].semantic_label == "writes &#x23; data"
+    assert plan.links[0].fallback_label == "writes ＆＃x23⁏ data"
+    assert plan.flowchart_compatibility_substituted
     with pytest.raises(FrozenInstanceError):
         plan.title = "mutated"  # type: ignore[misc]
 
@@ -2035,6 +2109,44 @@ def test_wardley_runtime_uses_xy_screen_projection_and_plain_links() -> None:
         assert "marker-end" not in link.attrib
     finally:
         runtime.close()
+
+
+@pytest.mark.integration
+def test_wardley_flowchart_fallback_renders_plain_links_and_compatibility_text() -> None:
+    result = serialize_wardley(
+        {
+            "components": [
+                {"id": "a", "label": 'A "quoted"', "x": 0.2, "y": 0.8},
+                {"id": "b", "label": "B \\ path", "x": 0.8, "y": 0.2},
+            ],
+            "links": [{"source": "a", "target": "b", "label": "uses | link"}],
+        },
+        native_runtime_valid=False,
+    )
+
+    runtime = NodeMermaidRuntime()
+    validator = CandidateValidator(runtime, SecurityProfile.STRICT)
+    try:
+        outcome = validator.validate(result.code, 20)
+    finally:
+        runtime.close()
+
+    assert outcome.runtime.syntax_valid, outcome.runtime.error
+    assert outcome.runtime.render_valid, outcome.runtime.error
+    assert outcome.runtime.diagram_type.casefold().startswith("flowchart")
+    root = ET.fromstring(outcome.runtime.svg or "")
+    visible_text = " ".join("".join(element.itertext()) for element in root.iter())
+    assert "A ″quoted″" in visible_text
+    assert "B ∖ path" in visible_text
+    assert "uses ∣ link" in visible_text
+    flowchart_links = [
+        element
+        for element in root.iter()
+        if "flowchart-link" in element.attrib.get("class", "").split()
+    ]
+    assert len(flowchart_links) == 1
+    assert "marker-start" not in flowchart_links[0].attrib
+    assert "marker-end" not in flowchart_links[0].attrib
 
 
 @pytest.mark.integration

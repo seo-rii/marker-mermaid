@@ -1809,6 +1809,70 @@ def test_wardley_scene_coordinates_match_native_token_rounding() -> None:
     assert scene.elements[0].bbox[0] == scene.elements[1].bbox[0] == 0.5
 
 
+def test_wardley_flowchart_fallback_scene_drops_layout_and_anchor_semantics() -> None:
+    ir = {
+        "title": "Value map title is not visible in the fallback canvas",
+        "components": [
+            {
+                "id": "user",
+                "label": 'User "one"',
+                "x": 0.1,
+                "y": 0.2,
+                "anchor": True,
+                "bbox": [10, 20, 30, 40],
+                "evidence_ids": ["ocr-user"],
+            },
+            {
+                "id": "api",
+                "label": "API \\ service",
+                "x": 0.8,
+                "y": 0.9,
+                "bbox": [60, 70, 90, 95],
+                "evidence_ids": ["ocr-api"],
+            },
+        ],
+        "links": [
+            {
+                "source": "user",
+                "target": "api",
+                "label": "uses | retry",
+                "evidence_ids": ["line-user-api"],
+            }
+        ],
+    }
+
+    scene = typed_ir_to_scene("wardley", ir, emitted_diagram_type="flowchart")
+
+    assert scene is not None
+    assert scene.coordinate_space == "pixels"
+    assert scene.reading_direction == "LR"
+    assert [(element.id, element.role, element.text) for element in scene.elements] == [
+        ("wardley_component_1", "node", "User ″one″"),
+        ("wardley_component_2", "node", "API ∖ service"),
+    ]
+    assert all(element.shape == "rectangle" for element in scene.elements)
+    assert all(element.bbox == (0, 0, 0, 0) for element in scene.elements)
+    assert [element.evidence_ids for element in scene.elements] == [
+        ["ocr-user"],
+        ["ocr-api"],
+    ]
+    [link] = scene.relations
+    assert link.id == "wardley_link_1"
+    assert (link.source_id, link.target_id, link.label) == (
+        "wardley_component_1",
+        "wardley_component_2",
+        "uses ∣ retry",
+    )
+    assert not link.arrow_at_start
+    assert not link.arrow_at_end
+    assert link.evidence_ids == ["line-user-api"]
+    assert list(typed_ir_semantic_texts("wardley", ir, scene)) == [
+        "User ″one″",
+        "API ∖ service",
+        "uses ∣ retry",
+    ]
+
+
 def test_cynefin_scene_uses_reserved_plan_ids_groups_and_transition_only_relations():
     ir = {
         "title": "Hidden accessibility title",

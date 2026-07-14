@@ -831,6 +831,15 @@ def serialize_runtime_fallback_result(
             native_runtime_valid=False,
         )
         return result if result.emitted_type == "flowchart" else None
+    if diagram_type == "wardley":
+        from marker_mermaid.serializers_experimental import serialize_wardley
+
+        result = serialize_wardley(
+            ir,
+            experimental=experimental,
+            native_runtime_valid=False,
+        )
+        return result if result.used_fallback else None
     return None
 
 

@@ -2758,6 +2758,127 @@ def test_native_runtime_rejection_retries_declared_portable_fallback():
     assert result.selected.repair_history[-1].operation == "runtime_portable_fallback"
 
 
+def test_wardley_native_rejection_retries_loss_disclosed_plain_flowchart() -> None:
+    class WardleyRejectingRuntime:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def validate_and_render(self, code, timeout_seconds):
+            self.calls.append(code)
+            if code.startswith("wardley-beta"):
+                return RuntimeResult(False, False, error="native parser rejected wardley")
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="flowchart-v2",
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    wardley_ir = {
+        "title": "Value map title is lost from the fallback canvas",
+        "components": [
+            {
+                "id": "user",
+                "label": "Customer",
+                "x": 0.9,
+                "y": 0.8,
+                "anchor": True,
+                "evidence_ids": ["ocr-user"],
+            },
+            {
+                "id": "api",
+                "label": "API",
+                "x": 0.5,
+                "y": 0.4,
+                "evidence_ids": ["ocr-api"],
+            },
+        ],
+        "links": [
+            {
+                "source": "user",
+                "target": "api",
+                "label": "requests",
+                "evidence_ids": ["ocr-requests"],
+            }
+        ],
+    }
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["wardley"], scores=[0.9]),
+        typed_candidates=[TypedIRCandidate(diagram_type="wardley", ir=wardley_ir)],
+        evidence=[
+            VisualEvidence(
+                id="ocr-user",
+                kind="ocr_token",
+                text="Customer",
+                bbox=(0, 0, 20, 10),
+            ),
+            VisualEvidence(
+                id="ocr-api",
+                kind="ocr_token",
+                text="API",
+                bbox=(30, 0, 50, 10),
+            ),
+            VisualEvidence(
+                id="ocr-requests",
+                kind="ocr_token",
+                text="requests",
+                bbox=(20, 10, 30, 20),
+            ),
+        ],
+    )
+    runtime = WardleyRejectingRuntime()
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(runtime, config.security_profile),
+    ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
+
+    assert result.selected is not None
+    selected = result.selected
+    assert selected.diagram_type == "wardley"
+    assert selected.emitted_diagram_type == "flowchart"
+    assert selected.runtime_diagram_type == "flowchart-v2"
+    assert selected.fallback_chain == ["wardley", "flowchart"]
+    assert selected.render_valid
+    assert selected.generated_scene_ir is not None
+    scene = selected.generated_scene_ir
+    assert scene.coordinate_space == "pixels"
+    assert scene.reading_direction == "LR"
+    assert [element.id for element in scene.elements] == [
+        "wardley_component_1",
+        "wardley_component_2",
+    ]
+    assert all(element.role == "node" for element in scene.elements)
+    assert all(element.shape == "rectangle" for element in scene.elements)
+    assert all(element.bbox == (0, 0, 0, 0) for element in scene.elements)
+    assert len(scene.relations) == 1
+    assert not scene.relations[0].arrow_at_start
+    assert not scene.relations[0].arrow_at_end
+    assert selected.scores["ocr_recall"] == 1
+    assert selected.scores["visual_entailment_precision"] == 1
+    assert "layout_similarity" not in selected.scores
+    assert result.publish
+    assert len(runtime.calls) == 2
+    assert runtime.calls[0].startswith("wardley-beta")
+    assert runtime.calls[1].startswith("flowchart LR")
+    assert " --> " not in runtime.calls[1]
+    assert " ---|requests| " in runtime.calls[1]
+    assert any("coordinates" in warning and "anchor" in warning for warning in selected.warnings)
+    assert any(
+        "visible Wardley title" in warning and "accTitle" in warning
+        for warning in selected.warnings
+    )
+    repair = selected.repair_history[-1]
+    assert repair.operation == "runtime_portable_fallback"
+    assert repair.accepted
+    assert repair.details["fallback_chain"] == ["wardley", "flowchart"]
+
+
 @pytest.mark.parametrize(
     (
         "reject_native",

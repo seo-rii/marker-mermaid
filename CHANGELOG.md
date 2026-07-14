@@ -88,6 +88,12 @@
   native Cynefin review-only instead of allowing a false automatic publication. Both native grammars enforce
   validator-sized source budgets and disclose visible compatibility glyphs when Mermaid 11.16 cannot preserve
   entity-like literals in SVG text.
+- Wardley native runtime rejection now retries one loss-disclosed Flowchart in the same candidate slot. The
+  shared plan assigns ordered fallback component/relation identities and exact visible compatibility labels;
+  the fallback preserves only explicit component/link topology with marker-less connectors. Coordinates,
+  visibility/evolution axes, anchor notation, and the visible native title are not fabricated: warnings disclose
+  those losses, the generated fallback Scene uses zero geometry, and OCR/layout scoring follows the terminal
+  Flowchart. The fallback must independently pass strict source scan, parse/render, and terminal-type checks.
 - Bounded pre-validation source repair with audit events, diagnostics, idempotence, and AST adapter seam.
 - Page-level missed-diagram proposals with occupied-region exclusion and virtual source crops.
 - Profile-gated flowchart fill, border, and link style recovery with strict CSS allowlists.

@@ -492,6 +492,11 @@ endpoint·self/duplicate link와 component/link각 500개는 공유 Wardley plan
 fail closed 판정합니다. Serializer는 생성 source에 50,000자·5,000줄 preflight를 별도로
 적용합니다. `name`·`nodes`·`relations`와 같은 비공식 alias는 canonical root를
 대체하지 않습니다.
+공유 plan은 native label token과 별도로 입력 순서 기반 `wardley_component_N` fallback ID,
+`wardley_link_N` relation ID, Flowchart-visible compatibility label과 resolved fallback endpoint를
+고정합니다. Native runtime 거부 시 이 값만 사용해 `flowchart LR`의 rectangle와 무방향 link를 만들고,
+좌표·visibility/evolution 축·anchor 의미 손실을 warning으로 남깁니다. Source ID, 좌표, anchor와 원문은
+typed IR/sidecar에 그대로 보존됩니다.
 
 Cynefin은 `domains: list`를 필수, `transitions: list`를 선택 root로 사용합니다. Domain
 `name`은 `complex|complicated|clear|chaotic|confusion`만 허용하며 extraction 경계는

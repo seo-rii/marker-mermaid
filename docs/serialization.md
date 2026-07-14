@@ -283,6 +283,18 @@ token으로 반올림된 값을 plan 좌표에도 적용하며 record bbox·extr
 사용하지 않습니다. Wardley `->`는 11.16 SVG에서 marker가 없는 plain link이므로 Scene도
 무방향 relation을 만듭니다.
 
+`wardley-beta`가 runtime parse/render를 통과하지 못하면 같은 candidate slot에서 공용 plan을
+`flowchart LR`로 한 번만 재직렬화합니다. Component는 입력 순서대로
+`wardley_component_N` ID를 받고 explicit link만 `---` 또는 `---|label|`로 방출하므로 방향을
+새로 만들지 않습니다. Flowchart가 Wardley 좌표·visibility/evolution 축·anchor 표기를 표현하지
+못한다는 warning을 항상 남기고, generated Scene도 zero bbox·`pixels` coordinate space·rectangle
+node를 사용해 원래 위치를 보존한 것처럼 layout 점수를 만들지 않습니다. Quote/backslash와
+edge delimiter는 실제 fallback SVG가 표시하는 compatibility glyph로 투영합니다. Fallback은
+source scan, parse/render와 terminal `flowchart` type을 다시 통과할 때만 채택됩니다. Native의
+보이는 title도 canvas에서는 손실된다는 별도 warning을 남깁니다. 같은 title이 접근성 title로
+선택되면 `accTitle`에 보존하지만, 명시적 `acc_title`이 다르면 그 값을 우선하고 visible title은
+typed IR/review metadata에만 남는다고 구분해 경고합니다.
+
 Cynefin plan은 다섯 official domain의 reserved-safe domain/group ID, 순서적 item ID,
 명시적 transition ID와 표시 text를 고정합니다. 11.16 runtime이 입력과 무관하게 만드는
 다섯 domain·practice/response·disorder template element도 generated Scene/OCR에 포함하되
@@ -293,9 +305,9 @@ Object item의 record evidence만 provenance로 사용하며 legacy scalar item�
 않습니다.
 
 두 serializer는 source를 반환하기 전 50,000자·5,000줄 hard budget을 독립적으로
-검사합니다. 현재는 native runtime rejection 후 Wardley→Flowchart 또는 Cynefin→Quadrant/Table
-대체를 같은 candidate slot에서 자동 재시도하지 않으므로 해당 후보는 publication hard gate에서
-격리됩니다. Cynefin native는 렌더에 성공해도 고정 template에 source provenance를 붙이는
+검사합니다. Wardley는 native runtime rejection 후 위 Flowchart를 같은 candidate slot에서
+재검증합니다. Cynefin은 아직 Quadrant/Table 대체를 자동 재시도하지 않으므로 native 실패 후보가
+publication hard gate에서 격리됩니다. Cynefin native는 렌더에 성공해도 고정 template에 source provenance를 붙이는
 계약이 없어 자동 게시하지 않고 review/sidecar로만 routing합니다.
 
 ### Railroad의 recursive AST projection

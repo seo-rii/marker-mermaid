@@ -433,3 +433,31 @@ def test_planning_runtime_fallback_dispatch_records_complete_route(
     assert any("CandidateValidator rejected native" in warning for warning in result.warnings)
     assert any("not preserved" in warning for warning in result.warnings)
     assert MermaidSecurityScanner(SecurityProfile.STRICT).scan(result.code).safe
+
+
+def test_wardley_runtime_fallback_dispatch_preserves_only_explicit_plain_topology() -> None:
+    result = serialize_runtime_fallback_result(
+        "wardley",
+        {
+            "components": [
+                {"id": "user", "label": "User", "x": 0.9, "y": 0.8, "anchor": True},
+                {"id": "api", "label": "API", "x": 0.5, "y": 0.4},
+            ],
+            "links": [{"source": "user", "target": "api", "label": "uses"}],
+        },
+        experimental=True,
+    )
+
+    assert result is not None
+    assert result.requested_type == "wardley"
+    assert result.emitted_type == "flowchart"
+    assert result.fallback_chain == ("wardley", "flowchart")
+    assert result.used_fallback
+    assert result.stability == "experimental"
+    assert 'wardley_component_1["User"]' in result.code
+    assert 'wardley_component_2["API"]' in result.code
+    assert "wardley_component_1 ---|uses| wardley_component_2" in result.code
+    assert "-->" not in result.code
+    assert any("CandidateValidator rejected wardley-beta" in warning for warning in result.warnings)
+    assert any("coordinates" in warning and "anchor" in warning for warning in result.warnings)
+    assert MermaidSecurityScanner(SecurityProfile.STRICT).scan(result.code).safe

@@ -668,30 +668,43 @@ def typed_ir_to_scene(
             wardley_plan = plan_wardley_records(ir)
         except SerializationError:
             return None
+        wardley_uses_flowchart = bool(
+            emitted_diagram_type is not None
+            and emitted_diagram_type.casefold().startswith("flowchart")
+        )
         node_records = [
             {
-                "id": component.source_id,
-                "label": component.label,
-                "role": component.kind,
-                "bbox": (component.x, 1 - component.y, component.x, 1 - component.y),
+                "id": component.emitted_id if wardley_uses_flowchart else component.source_id,
+                "label": (component.fallback_label if wardley_uses_flowchart else component.label),
+                "role": "node" if wardley_uses_flowchart else component.kind,
+                "shape": "rectangle" if wardley_uses_flowchart else None,
+                "bbox": (
+                    (0.0, 0.0, 0.0, 0.0)
+                    if wardley_uses_flowchart
+                    else (component.x, 1 - component.y, component.x, 1 - component.y)
+                ),
                 "evidence_ids": list(component.source_record.get("evidence_ids") or []),
             }
             for component in wardley_plan.components
         ]
         edge_records = [
             {
-                "id": f"wardley_link_{index}",
-                "source": link.source_id,
-                "target": link.target_id,
-                "label": link.label,
+                "id": link.emitted_id,
+                "source": (link.source_emitted_id if wardley_uses_flowchart else link.source_id),
+                "target": (link.target_emitted_id if wardley_uses_flowchart else link.target_id),
+                "label": (
+                    link.fallback_label
+                    if wardley_uses_flowchart and link.fallback_label is not None
+                    else link.label
+                ),
                 "arrow_at_start": False,
                 "arrow_at_end": False,
                 "evidence_ids": list(link.source_record.get("evidence_ids") or []),
             }
-            for index, link in enumerate(wardley_plan.links, start=1)
+            for link in wardley_plan.links
         ]
-        coordinate_space = "normalized"
-        scene_direction_override = "unknown"
+        coordinate_space = "pixels" if wardley_uses_flowchart else "normalized"
+        scene_direction_override = "LR" if wardley_uses_flowchart else "unknown"
     elif diagram_type == "cynefin":
         try:
             cynefin_plan = plan_cynefin_records(ir)
@@ -1300,13 +1313,20 @@ def typed_ir_semantic_texts(
         return
     if diagram_type == "wardley":
         plan = plan_wardley_records(ir)
-        if plan.title is not None:
+        wardley_uses_flowchart = scene.coordinate_space == "pixels"
+        if plan.title is not None and not wardley_uses_flowchart:
             yield plan.title
-        for component in plan.components:
-            yield component.label
-        for link in plan.links:
-            if link.label is not None:
-                yield link.label
+        if wardley_uses_flowchart:
+            yield from (element.text for element in scene.elements if element.text is not None)
+            yield from (
+                relation.label for relation in scene.relations if relation.label is not None
+            )
+        else:
+            for component in plan.components:
+                yield component.label
+            for link in plan.links:
+                if link.label is not None:
+                    yield link.label
         return
     if diagram_type == "cynefin":
         plan = plan_cynefin_records(ir)

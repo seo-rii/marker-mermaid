@@ -70,6 +70,10 @@ Wardley Scene은 raw record bbox 대신 native 좌표를 화면에 맞게 바꾼
 `normalized` explicit position으로 씁니다. IR의 수평/수직 `x`/`y`는 native에 `[y, x]`로
 방출하고 token 반올림을 Scene 값에도 적용합니다. `->` link는 실제 SVG에 marker가 없으므로
 무방향 relation으로 평가해 arrow/path 점수를 만들지 않습니다.
+Native rejection 뒤 선택된 Wardley Flowchart fallback은 공용 plan의 순서 기반 emitted ID와 explicit
+무방향 topology를 유지하지만 좌표·축·anchor를 표현하지 않습니다. 따라서 generated Scene은 모든 node를
+zero bbox rectangle로 두고 `pixels`/`LR`를 사용합니다. `relative_layout_similarity`는 동일 중심점 때문에
+unavailable이며, fallback canvas에 보이지 않는 native title도 OCR generated label에서 제외합니다.
 Cynefin Scene은 domain·item·transition과 domain group membership을 공유 plan에서 복원하고,
 runtime이 항상 만드는 고정 domain/practice/response/disorder text를 무근거 template element로
 추가합니다. `confusion` item은 처음 세 개와 `+N more`만 실제 렌더에 맞게 투영합니다.

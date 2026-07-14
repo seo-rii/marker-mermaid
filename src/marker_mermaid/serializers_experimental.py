@@ -83,6 +83,10 @@ _DATA_LINEAGE_COMPATIBILITY_WARNING = (
     "Data Lineage Flowchart fallback uses visible compatibility glyphs for "
     "grammar-conflicting label characters."
 )
+_WARDLEY_FLOWCHART_COMPATIBILITY_WARNING = (
+    "Wardley Flowchart fallback uses visible compatibility glyphs for "
+    "grammar-conflicting label characters."
+)
 _RAILROAD_RULE_MAPPING_WARNING = (
     "Source-active or grammar-reserved Railroad rule names were mapped to reserved "
     "native identifiers; "
@@ -100,8 +104,10 @@ class WardleyComponentPlan:
 
     source_record: Mapping[str, Any]
     source_id: str
+    emitted_id: str
     label: str
     semantic_label: str
+    fallback_label: str
     kind: str
     x: float
     y: float
@@ -115,12 +121,16 @@ class WardleyLinkPlan:
     """One resolved Wardley link using the exact component tokens Mermaid receives."""
 
     source_record: Mapping[str, Any]
+    emitted_id: str
     source_id: str
     target_id: str
+    source_emitted_id: str
+    target_emitted_id: str
     source_token: str
     target_token: str
     label: str | None
     semantic_label: str | None
+    fallback_label: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +142,7 @@ class WardleyPlan:
     components: tuple[WardleyComponentPlan, ...]
     links: tuple[WardleyLinkPlan, ...]
     compatibility_substituted: bool
+    flowchart_compatibility_substituted: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -584,9 +595,11 @@ def plan_wardley_records(
     if len(components) > MAX_ITEMS:
         raise SerializationError("wardley component limit exceeded")
     tokens: dict[str, str] = {}
+    emitted_ids: dict[str, str] = {}
     labels: set[str] = set()
     normalized_components: list[WardleyComponentPlan] = []
     compatibility_substituted = title_substituted
+    flowchart_compatibility_substituted = False
     for index, component in enumerate(components):
         if not isinstance(component, Mapping):
             raise SerializationError("wardley components must be objects")
@@ -595,12 +608,21 @@ def plan_wardley_records(
             raise SerializationError(f"duplicate Wardley component id: {component_id}")
         semantic_label = _text(component.get("label", component_id), f"components[{index}].label")
         label, label_substituted = _entity_compatibility_text(semantic_label)
+        _semantic_label, fallback_label, fallback_label_substituted = _flowchart_visible_text(
+            semantic_label,
+            f"components[{index}].label",
+        )
         if label in labels:
             raise SerializationError(f"duplicate Wardley component label: {label}")
         labels.add(label)
         compatibility_substituted = compatibility_substituted or label_substituted
+        flowchart_compatibility_substituted = (
+            flowchart_compatibility_substituted or fallback_label_substituted
+        )
         token = json.dumps(label, ensure_ascii=False)
         tokens[component_id] = token
+        emitted_id = f"wardley_component_{index + 1}"
+        emitted_ids[component_id] = emitted_id
         anchor = component.get("anchor")
         if anchor is not None and type(anchor) is not bool:
             raise SerializationError(f"components[{index}].anchor must be a boolean or null")
@@ -611,8 +633,10 @@ def plan_wardley_records(
             WardleyComponentPlan(
                 source_record=component,
                 source_id=component_id,
+                emitted_id=emitted_id,
                 label=label,
                 semantic_label=semantic_label,
+                fallback_label=fallback_label,
                 kind=kind,
                 x=x,
                 y=y,
@@ -638,21 +662,34 @@ def plan_wardley_records(
         seen_links.add((source, target))
         label = None
         semantic_label = None
+        fallback_label = None
         if link.get("label") is not None:
             semantic_label = _text(link["label"], f"links[{index}].label")
             if ";" in _ENTITY_LITERAL.sub("", semantic_label):
                 raise SerializationError("Wardley link labels cannot contain separators")
             label, label_substituted = _entity_compatibility_text(semantic_label)
+            _semantic_label, fallback_label, fallback_label_substituted = _flowchart_visible_text(
+                semantic_label,
+                f"links[{index}].label",
+                edge_label=True,
+            )
             compatibility_substituted = compatibility_substituted or label_substituted
+            flowchart_compatibility_substituted = (
+                flowchart_compatibility_substituted or fallback_label_substituted
+            )
         normalized_links.append(
             WardleyLinkPlan(
                 source_record=link,
+                emitted_id=f"wardley_link_{index + 1}",
                 source_id=source,
                 target_id=target,
+                source_emitted_id=emitted_ids[source],
+                target_emitted_id=emitted_ids[target],
                 source_token=tokens[source],
                 target_token=tokens[target],
                 label=label,
                 semantic_label=semantic_label,
+                fallback_label=fallback_label,
             )
         )
     return WardleyPlan(
@@ -661,13 +698,110 @@ def plan_wardley_records(
         components=tuple(normalized_components),
         links=tuple(normalized_links),
         compatibility_substituted=compatibility_substituted,
+        flowchart_compatibility_substituted=flowchart_compatibility_substituted,
     )
 
 
-def serialize_wardley(ir: Mapping[str, Any], *, experimental: bool = False) -> SerializationResult:
+def _wardley_flowchart_result(
+    ir: Mapping[str, Any],
+    plan: WardleyPlan,
+    *,
+    experimental: bool,
+) -> SerializationResult:
+    """Project exact Wardley topology without pretending to preserve its map layout."""
+
+    compatibility_substituted = plan.flowchart_compatibility_substituted
+    nodes = [
+        {
+            "id": component.emitted_id,
+            "label": _neutralize_active_text(component.fallback_label),
+        }
+        for component in plan.components
+    ]
+
+    accessibility_ir = dict(ir)
+    accessibility_ir["links"] = []
+    accessibility = resolve_accessibility(
+        accessibility_ir,
+        "wardley",
+        experimental=experimental,
+    )
+    _semantic_title, title, title_substituted = _flowchart_visible_text(
+        accessibility.title,
+        "accessible title",
+        accessibility=True,
+    )
+    _semantic_description, description, description_substituted = _flowchart_visible_text(
+        accessibility.description,
+        "accessible description",
+        accessibility=True,
+    )
+    compatibility_substituted = (
+        compatibility_substituted or title_substituted or description_substituted
+    )
+    code = serialize_flowchart(
+        {
+            "nodes": nodes,
+            "edges": [],
+            "direction": "LR",
+            "acc_title": _neutralize_active_text(title),
+            "acc_description": _neutralize_active_text(description),
+        },
+        experimental=experimental,
+    ).rstrip("\n")
+    lines = code.splitlines()
+    for link in plan.links:
+        connector = "---"
+        if link.fallback_label is not None:
+            visible_label = _neutralize_active_text(
+                link.fallback_label.replace("＠", "＠\N{ZERO WIDTH SPACE}")
+            )
+            connector = f"---|{visible_label}|"
+        lines.append(f"    {link.source_emitted_id} {connector} {link.target_emitted_id}")
+    fallback_code = _preflight_experimental_code(
+        "\n".join(lines) + "\n",
+        diagram_type="wardley",
+    )
+    warnings = [
+        "CandidateValidator rejected wardley-beta; explicit components and links were "
+        "re-emitted as portable Flowchart.",
+        "Wardley coordinates, evolution/visibility axes, and anchor notation are not "
+        "represented by the Flowchart fallback; explicit links remain undirected.",
+    ]
+    if plan.title is not None:
+        if _semantic_title == plan.semantic_title:
+            warnings.append(
+                "The visible Wardley title is not represented on the Flowchart canvas; "
+                "it remains available through accTitle metadata."
+            )
+        else:
+            warnings.append(
+                "The visible Wardley title is not represented on the Flowchart canvas; "
+                "the explicit accTitle is preserved while the visible title remains only "
+                "in typed IR and review metadata."
+            )
+    if compatibility_substituted:
+        warnings.append(_WARDLEY_FLOWCHART_COMPATIBILITY_WARNING)
+    return SerializationResult.fallback(
+        "wardley",
+        "flowchart",
+        fallback_code,
+        warnings=tuple(warnings),
+        stability="experimental",
+    )
+
+
+def serialize_wardley(
+    ir: Mapping[str, Any],
+    *,
+    experimental: bool = False,
+    native_runtime_valid: bool = True,
+) -> SerializationResult:
     """Serialize explicitly positioned components without inferring coordinates."""
 
     plan = plan_wardley_records(ir)
+    if not native_runtime_valid:
+        return _wardley_flowchart_result(ir, plan, experimental=experimental)
     accessibility_ir = dict(ir)
     accessibility_ir["links"] = []
     accessibility_lines, accessibility_substituted = _compatible_accessibility(
