@@ -129,6 +129,22 @@
   serialization above Mermaid's 500-edge Flowchart runtime limit, without restricting a valid native Sankey.
   A native runtime rejection retries that Flowchart once in the same candidate slot while retaining the Sankey
   semantic type, complete fallback metadata, record provenance, and numeric publication gate.
+- Treemap serialization, generated Scene attribution, and semantic OCR projection now share one bounded DFS
+  preorder plan. It freezes source or collision-safe `treemap_node_N[_suffix]` Scene identities, Flowchart
+  `N1..Nn` identities, parent/child slots, exact value tokens, and record-local provenance. Source image/bbox
+  stays in typed IR and review provenance while both generated terminal Scenes use zero geometry so source
+  coordinates cannot manufacture a perfect layout score.
+  Native Mermaid 11.16 output models sections and leaves as marker-less nested regions with unknown reading
+  direction, reproduces d3-hierarchy's reverse-order binary64 sums and d3 `format(",")` canvas totals, and
+  distinguishes the visible native title from `accTitle`/`accDescr` SVG metadata. Internal-node values, unsafe
+  binary64/renderer totals, and native runtime rejection use the same-slot `flowchart TB` fallback with preorder
+  rectangle nodes, end arrows, and exact explicit ` (value: x)` suffixes. Portable projection stops above the
+  500-relation worker limit without rejecting an otherwise valid native hierarchy. Malformed evidence is
+  quarantined atomically per record, source-only security separators and disclosed terminal-visible
+  quote/angle/backslash/hash compatibility text are shared with Scene/OCR, and documentation notes that the
+  native renderer can hide text in very small cells with `display:none`. Unicode whitespace is frozen to one
+  ASCII space, accessibility metadata substitutions are disclosed too, and both terminals are preflighted at
+  50,000 source characters and 5,000 lines before runtime work.
 - Bounded pre-validation source repair with audit events, diagnostics, idempotence, and AST adapter seam.
 - Page-level missed-diagram proposals with occupied-region exclusion and virtual source crops.
 - Profile-gated flowchart fill, border, and link style recovery with strict CSS allowlists.
@@ -227,7 +243,8 @@
   Flowchart fallback semantics remain unchanged. Radar ticks are capped at 100 before rendering to
   bound the experimental runtime loop. Venn fallback intersection nodes now receive IDs
   distinct from normalized set IDs, preventing collision-driven self-loops without inventing sizes;
-  Treemap/Venn Scene attribution fails closed on duplicate node IDs instead of under-counting them.
+  Venn Scene attribution fails closed on duplicate node IDs instead of under-counting them, while
+  Treemap now moves missing, duplicate, or malformed attribution IDs into reserved-safe preorder slots.
 - Journey, Kanban, and GitGraph typed IR now have strict nested prompt/post-validation contracts for
   scored tasks, assigned cards, and ordered branch operations while preserving compatibility aliases
   and extra evidence metadata without rewriting the original IR. Shared bounded planning records align

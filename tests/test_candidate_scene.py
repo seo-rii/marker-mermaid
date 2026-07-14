@@ -3927,8 +3927,8 @@ def test_treemap_scene_uses_explicit_recursive_ids_and_child_attribution() -> No
 
     assert scene is not None
     assert [(item.id, item.bbox, item.evidence_ids) for item in scene.elements] == [
-        ("portfolio", (0, 0, 40, 40), ["contour-portfolio"]),
-        ("product", (2, 2, 20, 20), ["ocr-product", "contour-product"]),
+        ("portfolio", (0, 0, 0, 0), ["contour-portfolio"]),
+        ("product", (0, 0, 0, 0), ["ocr-product", "contour-product"]),
     ]
     assert [
         (
@@ -3987,32 +3987,33 @@ def test_venn_scene_uses_explicit_intersection_id_geometry_and_attribution() -> 
     ]
 
 
-@pytest.mark.parametrize(
-    ("diagram_type", "ir"),
-    [
-        (
-            "treemap",
-            {
-                "root": {
-                    "id": "same",
-                    "label": "Root",
-                    "children": [{"id": "same", "label": "Leaf", "value": 1}],
-                }
-            },
-        ),
-        (
+def test_treemap_scene_reserves_ids_when_source_attribution_ids_are_duplicated() -> None:
+    scene = typed_ir_to_scene(
+        "treemap",
+        {
+            "root": {
+                "id": "same",
+                "label": "Root",
+                "children": [{"id": "same", "label": "Leaf", "value": 1}],
+            }
+        },
+    )
+
+    assert scene is not None
+    assert [element.id for element in scene.elements] == ["treemap_node_1", "treemap_node_2"]
+
+
+def test_venn_scene_fails_closed_on_duplicate_attribution_ids() -> None:
+    assert (
+        typed_ir_to_scene(
             "venn",
             {
                 "sets": [{"id": "A", "label": "A"}, {"id": "B", "label": "B"}],
                 "intersections": [{"id": "A", "sets": ["A", "B"], "label": "Both"}],
             },
-        ),
-    ],
-)
-def test_treemap_and_venn_scenes_fail_closed_on_duplicate_attribution_ids(
-    diagram_type: str, ir: dict[str, object]
-) -> None:
-    assert typed_ir_to_scene(diagram_type, ir) is None
+        )
+        is None
+    )
 
 
 def test_phase2_sources_keep_requested_structure_even_when_code_falls_back():

@@ -31,6 +31,7 @@ from marker_mermaid.serializers import (
     plan_gantt_records,
 )
 from marker_mermaid.serializers_charts_flow import plan_sankey_records
+from marker_mermaid.serializers_charts_sets import plan_treemap_records
 from marker_mermaid.serializers_experimental import (
     CYNEFIN_DOMAIN_LABELS,
     CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS,
@@ -58,31 +59,6 @@ from marker_mermaid.serializers_special import (
     plan_treeview_hierarchy,
 )
 from marker_mermaid.serializers_uml import plan_state_records
-
-
-def _hierarchy_records(
-    root: dict[str, Any], *, fallback_root_id: str = "root"
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    nodes: list[dict[str, Any]] = []
-    edges: list[dict[str, Any]] = []
-    pending = [(root, None, fallback_root_id)]
-    while pending:
-        node, parent_id, fallback_id = pending.pop(0)
-        node_id = str(node.get("id") or fallback_id)
-        nodes.append({**node, "id": node_id})
-        if parent_id is not None:
-            edges.append(
-                {
-                    "source": parent_id,
-                    "target": node_id,
-                    "semantic_relation": "containment",
-                    "evidence_ids": list(node.get("evidence_ids") or []),
-                }
-            )
-        for index, child in enumerate(node.get("children") or [], start=1):
-            if isinstance(child, dict):
-                pending.append((child, node_id, f"{node_id}_{index}"))
-    return nodes, edges
 
 
 def _ordered_records(
@@ -468,7 +444,58 @@ def typed_ir_to_scene(
             if node.parent_id is not None
         ]
     elif diagram_type == "treemap" and isinstance(ir.get("root"), dict):
-        node_records, edge_records = _hierarchy_records(ir["root"])
+        try:
+            treemap_plan = plan_treemap_records(ir)
+        except SerializationError:
+            return None
+        treemap_uses_flowchart = (
+            not treemap_plan.native_supported
+            if emitted_diagram_type is None
+            else emitted_diagram_type.casefold().startswith("flowchart")
+        )
+        if treemap_uses_flowchart and not treemap_plan.flowchart_supported:
+            return None
+        node_records = [
+            {
+                **node.source_record,
+                "id": node.fallback_id if treemap_uses_flowchart else node.scene_id,
+                "label": (
+                    node.fallback_canvas_label
+                    + (f" (value: {node.value_text})" if node.value_text is not None else "")
+                    if treemap_uses_flowchart
+                    else node.native_canvas_label
+                ),
+                "role": "node" if treemap_uses_flowchart else "leaf" if node.is_leaf else "section",
+                "shape": "rectangle" if treemap_uses_flowchart else None,
+                "bbox": [0, 0, 0, 0],
+                "evidence_ids": list(node.evidence_ids),
+            }
+            for node in treemap_plan.nodes
+        ]
+        edge_records = [
+            {
+                "id": relation.scene_id,
+                "source": (
+                    relation.source_fallback_id
+                    if treemap_uses_flowchart
+                    else relation.source_scene_id
+                ),
+                "target": (
+                    relation.target_fallback_id
+                    if treemap_uses_flowchart
+                    else relation.target_scene_id
+                ),
+                "relation_type": (
+                    "generated_connector" if treemap_uses_flowchart else "logical_containment"
+                ),
+                "semantic_relation": "containment",
+                "arrow_at_start": False,
+                "arrow_at_end": treemap_uses_flowchart,
+                "evidence_ids": list(relation.evidence_ids),
+            }
+            for relation in treemap_plan.relations
+        ]
+        scene_direction_override = "TB" if treemap_uses_flowchart else "unknown"
     elif diagram_type == "treeview":
         try:
             treeview_plan = plan_treeview_hierarchy(ir)
@@ -956,7 +983,7 @@ def typed_ir_to_scene(
     else:
         return None
 
-    if diagram_type in {"journey", "treemap", "venn"}:
+    if diagram_type in {"journey", "venn"}:
         attribution_ids = [
             str(node.get("id") or f"N{index}")
             for index, node in enumerate(node_records, start=1)
@@ -1464,6 +1491,32 @@ def typed_ir_semantic_texts(
                 yield native_title
         for field in plan.fields:
             yield field.label
+        return
+    if diagram_type == "treemap":
+        plan = plan_treemap_records(ir)
+        treemap_uses_flowchart = (
+            not plan.native_supported
+            if emitted_diagram_type is None
+            else emitted_diagram_type.casefold().startswith("flowchart")
+        )
+        if treemap_uses_flowchart:
+            if not plan.flowchart_supported:
+                raise SerializationError(
+                    "Treemap Flowchart projection exceeds the runtime edge limit"
+                )
+            for node in plan.nodes:
+                label = node.fallback_canvas_label
+                if node.value_text is not None:
+                    label += f" (value: {node.value_text})"
+                yield label
+        else:
+            if plan.native_canvas_title is not None:
+                yield plan.native_canvas_title
+            for node in plan.nodes:
+                if node.native_total_text is None:
+                    raise SerializationError("native Treemap total cannot be reproduced safely")
+                yield node.native_canvas_label
+                yield node.native_total_text
         return
     if diagram_type == "sankey":
         plan = plan_sankey_records(ir)

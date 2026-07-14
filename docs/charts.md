@@ -2,8 +2,9 @@
 
 차트 typed IR은 OCR/VLM이 읽지 못한 값을 보간하지 않습니다. Structured VLM 경계의 숫자는 bool이나
 숫자 문자열을 허용하지 않는 strict finite JSON `int`/`float`이며 잘못된 값은 candidate validation에서
-거부됩니다. Pie·XY·Quadrant·Sankey·Radar의 직접 serializer API는 `Decimal`도 받지만 provider 응답 계약에는
-포함하지 않습니다. Treemap/Venn 직접 API는 `Decimal`을 지원하지 않습니다. 각 API는
+거부됩니다. Pie·XY·Quadrant·Sankey·Radar·Treemap의 직접 serializer API는 `Decimal`도
+받지만 provider 응답 계약에는 포함하지 않습니다. Venn 직접 API는 기존 `int`/`float`
+계약을 유지합니다. 각 API는
 NaN/Infinity, unknown endpoint, series 길이 불일치, 잘못된 축 범위를 `SerializationError`로 거부합니다.
 
 | type | native 조건 | fallback |
@@ -13,7 +14,7 @@ NaN/Infinity, unknown endpoint, series 길이 불일치, 잘못된 축 범위를
 | Quadrant | 두 축 low/high label, 모든 point의 explicit `[0,1]` 좌표 | 없음 |
 | Sankey | positive weighted DAG, 모든 node 참여, native-safe 고유 label | exact weight label을 가진 flowchart |
 | Radar | 3개 이상 dimension, 동일 series 길이, 일관 bounds, non-negative domain | edge 없는 tabular flowchart |
-| Treemap | hierarchy leaf마다 explicit positive value | internal-node value나 native runtime 실패 시 value-label hierarchy |
+| Treemap | hierarchy leaf마다 explicit positive value, internal value 없음, binary64/표시 합계 재현 가능 | internal-node value·unsafe numeric·native runtime 실패 시 value-label hierarchy |
 | Venn | explicit set/intersection과 모든 관측 size | size 누락 시 숫자를 합성하지 않는 set/intersection graph |
 
 ## Core chart structured extraction
@@ -44,7 +45,7 @@ Sankey·Radar·Treemap·Venn도 provider prompt와 응답 후 검증이 공유�
 | --- | --- | --- |
 | Sankey | `nodes[]`의 `id`·`label`, `flows[]`의 exact endpoint·`value`, bbox/evidence | non-empty·ID/endpoint, 모든 node 참여, label 안전성, positive DAG를 판정; native 조건을 벗어난 valid graph는 exact-weight Flowchart |
 | Radar | `dimensions[]`의 `id`·`label`, `series[]`의 ordered `values`, finite `min`/`max`, strict `ticks`/`show_legend`, `circle|polygon` graticule, bbox/evidence | 3개 이상 dimension, ID·series 길이·bounds·option 의미와 `ticks <= 100` resource cap을 판정; valid negative domain은 edge 없는 tabular Flowchart |
-| Treemap | 재귀 `root` node의 `id`·`label`·`value`·`children`과 bbox/evidence | root/internal/leaf, positive value, cycle·depth·size를 판정; internal value 또는 native runtime 실패는 value-label hierarchy Flowchart |
+| Treemap | 재귀 `root` node의 `id`·`label`·`value`·`children`과 bbox/evidence | root/internal/leaf, positive value, cycle·object reuse·depth·size를 판정; internal value·binary64/표시 합계 손실·native runtime 실패는 value-label hierarchy Flowchart |
 | Venn | `sets[]`와 `intersections[]`의 ID·membership·label·optional finite value, bbox/evidence | non-negative value, set/member·canonical intersection uniqueness와 size containment를 판정; size가 하나라도 없거나 native runtime 실패면 숫자를 만들지 않는 Flowchart |
 
 Nested model은 JSON 구조와 known scalar/container의 형만 검사합니다. 개별 semantic field는 partial/legacy
@@ -53,11 +54,14 @@ Radar `axes`, Treemap/Venn `name`은 direct compatibility metadata로 검증·�
 광고하지 않습니다. Alias를 canonical root로 복사하거나 누락 collection을 채우지 않으므로 serializer의
 key-presence 우선순위도 그대로입니다.
 
-Sankey·Treemap·Venn의 bbox/evidence는 generated Scene attribution에도 연결됩니다. Radar에는 Scene adapter가
-없어 같은 metadata가 typed IR/review sidecar에만 남습니다. Radar fallback은 모든 dimension label과 series
+Sankey·Venn의 bbox/evidence와 Treemap의 valid evidence는 generated Scene attribution에 연결됩니다.
+Treemap source bbox는 typed IR/review provenance에만 남고 generated Scene에는 복사하지 않습니다.
+Radar에는 Scene adapter가 없어 같은 metadata가 typed IR/review sidecar에만 남습니다. Radar fallback은
+모든 dimension label과 series
 value를 보존하지만 bounds, ticks, legend, graticule과 Radar geometry를 Mermaid code에 표현하지 않습니다.
-Treemap/Venn의 attribution ID가 충돌하면 Scene node를 합치지 않고 adapter를 unavailable로 처리해 자동
-provenance 점수 대신 review로 보냅니다. 모든 numeric type의 독립 source evidence gate도 그대로 적용됩니다.
+Treemap은 unique·bounded source ID를 유지하고, 누락·중복·잘못된 ID는 collision-safe
+`treemap_node_N[_suffix]` attribution slot으로 격리합니다. Venn의 attribution ID 충돌은 Scene
+adapter가 fail closed합니다. 모든 numeric type의 독립 source evidence gate도 그대로 적용됩니다.
 
 Sankey serializer와 Scene/OCR adapter는 한 번 검증한 terminal plan을 공유합니다. Native `sankey-beta`는
 source node ID와 label을 유지하지만 Mermaid 11.16 canvas에는 각 node마다 label과
@@ -75,7 +79,52 @@ role, shape, flow label/style/bidirectional/arrow hint 같은 미방출 metadata
 Native runtime이 parse/render gate에서 거부되면 새 후보를 만들지 않고 같은 candidate slot에서 이
 Flowchart를 한 번 재직렬화하고 전체 security/parse/render/SVG/type gate를 다시 통과시킵니다.
 
-공용 plan은 Scene relation 상한을 serializer 이전에 적용하고 relation ID를 bounded unique slot으로
+Treemap serializer·Scene·semantic OCR도 `plan_treemap_records()`의 같은 DFS preorder plan을
+공유합니다. Plan은 source record, logical Scene ID, Flowchart에 실제 방출할 `N1..Nn`,
+parent/child relation, terminal별 label과 value text를 한 번 고정합니다. Original image와 source bbox는
+typed IR/review provenance에 그대로 남기지만 generated terminal Scene은 생성 SVG 배치를 원본
+위치로 대체하지 않고 모두 zero bbox를 씁니다. Valid evidence ID는 element, child evidence는 해당
+containment relation에도 연결됩니다. `evidence_ids`가 exact string list·256개·ID/Unicode 경계를
+하나라도 어기면
+record 전체 evidence tuple만 비우고 직렬화·계층·다른 record provenance는 유지합니다.
+
+Native `treemap-beta`는 internal node를 section, leaf를 값을 가진 cell로 렌더합니다. Internal
+표시 합계는 Mermaid 11.16의 d3-hierarchy처럼 child를 역순으로 binary64 `+=`한 값이고,
+각 section/leaf의 canvas value는 d3 `format(",")`의 comma-grouped 12-digit 표시와 같아야 합니다.
+Decimal token이 JavaScript number로 underflow/overflow하거나, safe integer를 넘거나, shortest decimal을
+읽었을 때 원본과 다르거나, 이 표시 합계를 안전하게 재현할 수 없으면 native를
+시도하지 않습니다. Native Scene은 section/leaf text와 logical containment만 가지며 실제
+SVG에 connector path나 arrow marker가 없고, nested-area layout을 flow 방향으로 해석하지 않아
+`reading_direction=unknown`입니다. Zero Scene geometry 때문에 native/fallback 모두 generated
+layout similarity는 원본 bbox를 복사해 자기 자신을 증명하지 못합니다.
+
+Explicit native `title` directive는 canvas에 보이는 title을 만듭니다. 별도의 `accTitle`/
+`accDescr`는 SVG `<title>`/`<desc>` accessibility metadata이며 그 자체를 content OCR로 세지
+않습니다. Native semantic projection은 visible title이 있으면 그 text, 각 section/leaf label,
+d3 표시 합계를 사용합니다. 다만 실제 배치에서 너무 작은 native cell의 text는 renderer가
+`display:none`으로 숨길 수 있으므로, 모든 leaf label이 눈에 보인다고 보장하지 않습니다.
+
+Internal node에 explicit value가 있거나 native numeric contract를 만족하지 못하면 Flowchart
+terminal은 DFS preorder `N1..Nn`, `flowchart TB`, rectangle node, parent→child end-arrow를 사용합니다.
+각 node에 실제로 제공된 value만 exact fixed-decimal ` (value: x)` suffix로 표시하며 파생한
+internal total을 만들지 않습니다. Raw direction과 native-only visible title은 fallback canvas에
+복사하지 않고 title/description은 accessibility metadata로만 남습니다. Native runtime 거부도
+새 후보 없이 같은 slot의 이 fallback을 한 번 재검증합니다. Flowchart는 500 relation까지만
+가능하며, 이 제한을 넘는 valid native Treemap은 native로 남을 수 있지만 runtime fallback이
+필요해지면 unavailable입니다.
+
+Treemap text는 semantic 원문을 typed IR에 보존하고 terminal이 실제로 표시하는 호환 text를
+Scene/OCR에 사용합니다. Scanner-active token은 emitted source에만 zero-width separator로
+나누어 canvas에서는 제거하고, quote는 `″`로 표시합니다. Flowchart label은 추가로 ASCII
+angle bracket/backslash/hash를 `＜`/`＞`/`∖`/`＃`로, native title은 angle bracket을 `＜`/`＞`로
+표시합니다. URL/directive-like token과 entity-like `&...;`는 emitted source에서만 비활성화하고,
+native의 `#`도 source-only separator로 나눕니다. Native grammar가 그대로 보존하는 literal은 임의
+glyph로 바꾸지 않습니다. CR/LF와 NBSP를 포함한 Unicode whitespace run은 실제 canvas와 같이 한
+ASCII space로 고정합니다. 눈에 보이는 호환 glyph을 사용한 node/title 또는 resolved
+`accTitle`/`accDescr`가 있으면 native 결과는 candidate warning을, Flowchart는 fallback
+reason/warning을 남깁니다. 두 terminal source는 runtime 전에 50,000자·5,000줄 예산을 통과해야 합니다.
+
+공용 Sankey plan은 Scene relation 상한을 serializer 이전에 적용하고 relation ID를 bounded unique slot으로
 할당합니다. 비문자·초과 길이 ID는 deterministic `sankey_flow_N` slot을 사용하고 중복 ID는 suffix로
 분리합니다. Record의 `evidence_ids`가 string list가 아니거나 개수·ID·Unicode 경계를 위반하면 Mermaid와
 구조 자체는 유지하되 그 record의 provenance만 빈 목록으로 격리합니다. Native는 Scene relation 상한까지

@@ -611,7 +611,11 @@ def _ensure_extended_serializers() -> None:
         return
     from marker_mermaid.serializers_charts_core import serialize_chart_core
     from marker_mermaid.serializers_charts_flow import serialize_chart_flow
-    from marker_mermaid.serializers_charts_sets import serialize_chart_set
+    from marker_mermaid.serializers_charts_sets import (
+        TREEMAP_NATIVE_TEXT_COMPATIBILITY_WARNING,
+        plan_treemap_records,
+        serialize_chart_set,
+    )
     from marker_mermaid.serializers_experimental import serialize_experimental
     from marker_mermaid.serializers_phase2 import (
         BLOCK_ACCESSIBILITY_LIMITATION,
@@ -702,9 +706,16 @@ def _ensure_extended_serializers() -> None:
                 )
             stability = chart_stabilities[_requested_type]
             if emitted_type == _requested_type:
+                native_warnings: tuple[str, ...] = ()
+                if (
+                    _requested_type == "treemap"
+                    and plan_treemap_records(ir).native_compatibility_substitutions
+                ):
+                    native_warnings = (TREEMAP_NATIVE_TEXT_COMPATIBILITY_WARNING,)
                 return SerializationResult.native(
                     _requested_type,
                     code,
+                    warnings=native_warnings,
                     stability=stability,
                 )
             return SerializationResult.fallback(

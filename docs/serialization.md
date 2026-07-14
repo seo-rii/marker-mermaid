@@ -30,7 +30,7 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 | Pie, XY, Quadrant | 동일 | explicit finite values/axis/coordinates 필수 |
 | Sankey | `sankey` 또는 `flowchart` | native-safe positive DAG, 그 외 및 native runtime 거부 시 same-slot exact-weight fallback |
 | Radar | `radar` 또는 `flowchart` | non-negative native domain, 음수 domain은 tabular fallback |
-| Treemap | `treemap` 또는 `flowchart` | leaf value 필수, internal-node value는 fallback에서 보존 |
+| Treemap | `treemap` 또는 `flowchart` | leaf value 필수; internal value·unsafe binary64/표시 합계·native runtime 거부는 same-slot exact-value fallback |
 | Venn | `venn` 또는 `flowchart` | 모든 크기가 관측되면 native, 누락 시 숫자 합성 없는 set graph |
 | Journey | `timeline` | strict SVG에서 금지된 `foreignObject`를 피하고 score/actor를 event text로 보존 |
 | Kanban, GitGraph | 동일 또는 `flowchart` | native runtime 거부 시 공용 planning plan으로 같은 candidate slot에서 portable fallback |
@@ -447,15 +447,59 @@ Radar는 음수 value 또는 bound도 valid data로 받아 edge 없는 tabular F
 series value를 보존합니다. 이 fallback은 bounds, ticks, legend, graticule과 Radar geometry를 code에 표현하지
 않으므로 해당 option은 typed IR/review metadata에 남습니다.
 
-Treemap leaf는 explicit positive value가 필요합니다. Internal-node value가 있거나 strict runtime이 native
-grammar를 거부하면 각 value를 label에 표시한 hierarchy Flowchart로 낮춥니다. Venn은 모든 set/intersection
-size가 관측될 때만 native area notation을 사용합니다. 하나라도 빠졌거나 runtime이 native grammar를 거부하면
-숫자를 합성하지 않는 set/intersection Flowchart를 만들고 set node와 intersection node가 충돌하지 않도록
-portable ID를 분리합니다.
+Treemap serializer, generated Scene, semantic OCR은 `plan_treemap_records()`의 같은 bounded DFS
+preorder plan을 소비합니다. Plan은 source record·parent/child, unique bounded source ID 또는
+collision-safe `treemap_node_N[_suffix]` Scene identity, Flowchart에 실제 방출할 preorder
+`N1..Nn`, terminal별 source/canvas label, exact fixed-point value token을 한 번 고정합니다. Cycle,
+object reuse, depth·node·relation 예산을 serializer 전에 거부합니다. Source image와 record bbox는
+typed IR/review provenance에 보존하지만 generated native/fallback Scene은 모두 zero bbox를 써서
+원본 위치를 generated layout으로 오인하지 않습니다. Valid evidence는 element, child evidence는 해당
+logical containment relation에도 연결됩니다. Malformed·oversized·invalid-Unicode `evidence_ids`는 해당 record의 전체 evidence
+tuple만 비워 부분 인증을 만들지 않고 code·hierarchy·다른 record provenance는 유지합니다.
+
+Native `treemap-beta`는 internal node를 section, leaf를 value cell로 렌더합니다. Mermaid 11.16의
+d3-hierarchy가 child를 역순으로 binary64 `+=`하는 방식으로 각 internal total을 다시 계산하고,
+모든 section/leaf value는 d3 `format(",")`의 comma-grouped 12-digit text로 표시합니다.
+Plan이 emitted decimal token을 JavaScript number로 읽었을 때 underflow/overflow, safe range 초과,
+shortest-decimal 손실, 합계/표시 비재현 중 하나라도 있으면 native를 선택하지 않습니다.
+Native Scene은 section/leaf role과 logical containment을 제공하지만 실제 SVG에 connector/arrow가
+없고 spatial nesting에 flow axis를 부여하지 않아 `reading_direction=unknown`입니다. Zero Scene
+geometry는 native/fallback 모두 source bbox를 생성 배치로 복사한 거짓 layout score를 막습니다.
+
+Native의 explicit `title` directive는 canvas title을 별도로 만듭니다. `accTitle`/`accDescr`는
+SVG `<title>`/`<desc>` accessibility metadata이며 content OCR text가 아닙니다. 따라서 native
+semantic projection은 visible title, section/leaf label, d3로 표시된 합계만 포함합니다.
+Renderer는 실제 layout에서 너무 작은 cell의 text를 `display:none`으로 숨길 수 있으므로
+모든 label이 canvas에 보인다고 보장하지 않습니다.
+
+Internal node에 explicit value가 있거나 native numeric contract를 만족하지 못하면 plan은
+`flowchart TB`로 낮춥니다. Node는 DFS preorder `N1..Nn` rectangle이고 relation은 parent→child
+end-arrow이며, 입력에 실제로 있는 value만 exact ` (value: x)` suffix로 붙습니다. 파생
+internal total, raw direction, native-only visible title은 만들지 않고 title/description은 SVG accessibility
+metadata로만 남습니다. Native runtime rejection도 이 fallback을 같은 candidate slot에서 한 번
+재직렬화하고 strict source scan, parse/render/SVG/terminal-type gate를 모두 다시 적용합니다.
+Flowchart terminal은 Mermaid worker의 500-relation 상한을 적용합니다. 그보다 큰 valid native
+Treemap은 native로 남을 수 있지만 runtime fallback이 필요해지면 unavailable입니다.
+
+Treemap은 semantic 원문을 typed IR에 남기고, source scanner에 걸리는 token은 emitted source에만
+zero-width separator를 넣어 비활성화합니다. Scene/OCR은 separator를 제거한 terminal-visible
+text를 씁니다. Node quote는 `″`로 표시하고, Flowchart label의 ASCII angle bracket/backslash는
+`＜`/`＞`/`∖`, hash는 `＃`, native title의 angle bracket은 `＜`/`＞`로 표시합니다. Entity-like
+literal, `#`, URL/directive-like token은 나머지 visible text를 버리지 않습니다. URL/directive-like token과
+entity-like `&...;`는 emitted source에서만 비활성화하고, native의 `#`도 source-only separator로
+나눅니다. Native grammar가 그대로 보존하는 literal은 임의 glyph로 바꾸지 않습니다.
+Visible compatibility glyph을 사용한 native는 candidate warning을, Flowchart는 fallback reason/warning을
+남기며 Scene/OCR이 그 terminal-visible text를 공유합니다. CR/LF와 NBSP를 포함한 Unicode whitespace
+run은 한 ASCII space로 고정하고, resolved `accTitle`/`accDescr`의 visible 치환도 같은 warning 계약에
+포함합니다. Native와 fallback source는 각각 50,000자·5,000줄 preflight를 통과해야 runtime으로 갑니다.
+
+Venn은 모든 set/intersection size가 관측될 때만 native area notation을 사용합니다. 하나라도 빠졌거나
+runtime이 native grammar를 거부하면 숫자를 합성하지 않는 set/intersection Flowchart를 만들고 set
+node와 intersection node가 충돌하지 않도록 portable ID를 분리합니다.
 
 Direct serializer의 Sankey `links`, Radar `axes`, Treemap/Venn `name` 호환 입력은 canonical key가 없을 때의
 기존 해석을 유지하지만 structured prompt에는 광고하지 않습니다. Sankey native grammar의 접근성 제한은
 typed IR warning으로 남고, Radar는 generated Scene adapter가 없어 record provenance가 sidecar에만 남습니다.
-Treemap/Venn attribution ID 충돌은 Scene adapter가 fail closed로 거부해 provenance 자동 점수를 만들지
-않습니다. Sankey·Treemap·Venn Scene attribution과 관계없이 네 유형 모두 독립 source OCR/vector numeric
-evidence gate를 통과해야 자동 게시할 수 있습니다.
+Treemap은 누락·중복·잘못된 attribution ID를 reserved-safe slot으로 격리하고, Venn ID 충돌은
+Scene adapter가 fail closed합니다. Sankey·Treemap·Venn Scene attribution과 관계없이 네 유형 모두
+독립 source OCR/vector numeric evidence gate를 통과해야 자동 게시할 수 있습니다.

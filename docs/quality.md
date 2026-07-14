@@ -26,7 +26,7 @@ connector에서 파생합니다.
 typed IR은 serializer가 실제 방출하는 node/edge 구조로 다시 변환합니다. bbox가 IR에 명시되지 않으면
 layout을 추측하지 않습니다. Scene IR portable fallback은 deterministic serializer 보존 여부를 평가할 수
 있습니다. raw/direct Mermaid는 아직 일반 AST→Scene 변환이 없으므로 구조 점수가 unavailable일 수 있습니다.
-평가 Scene adapter는 sequence/ZenUML, hierarchy/organization, planning/event, Packet/Ishikawa/TreeView,
+평가 Scene adapter는 sequence/ZenUML, hierarchy/organization, planning/event, Packet/Treemap/Ishikawa/TreeView,
 Wardley/Cynefin, data-lineage, Railroad, Venn까지 포함하며 typed record의 evidence ID를 보존합니다.
 Event Modeling의 generated Scene은 fallback serializer와 같은 namespaced frame/relation ID,
 화면에 보이는 typed/time label, lane subgraph membership, `LR` 방향, end-arrow만 사용합니다.
@@ -99,6 +99,20 @@ projection/source gate에서 비교합니다. Pipeline은 검증된 terminal gra
 전달합니다. Native Packet일 때만 실제 canvas의 normalized title을 OCR text에 포함하고, disconnected
 Flowchart fallback에서는 native-only title을 제외합니다. Entity-like title은 serializer와 같은 visible
 fullwidth glyph를 사용하지만 source security용 invisible separator는 OCR token을 쪼개지 않도록 제거합니다.
+Treemap Scene은 serializer·semantic OCR과 같은 DFS preorder `TreemapPlan`을 소비합니다.
+Native terminal은 source에서 고유하고 bounded한 ID 또는 collision-safe
+`treemap_node_N[_suffix]`를 section/leaf identity로 쓰고 parent/child를 arrow가 없는 logical
+containment로 표시합니다. 실제 SVG에 connector path가 없고 영역 중첩 배치이므로
+`reading_direction`은 `unknown`입니다. Source bbox는 typed IR/source provenance에 남지만
+native/fallback generated Scene은 모두 zero bbox를 써서 source 위치를 rendered layout으로
+오인한 거짓 layout score를 만들지 않습니다. Flowchart terminal은 같은 plan의
+DFS preorder `N1..Nn`, rectangle, `TB`, parent→child end-arrow와 explicit ` (value: x)` label을
+사용합니다. Child record evidence는 element와 containment relation에 공유하며 malformed/oversized
+`evidence_ids`는 해당 record의 목록 전체만 비워 partial provenance를 만들지 않습니다.
+Quote와 Flowchart angle/backslash/hash, native title angle의 visible compatibility glyph는 Scene/OCR에
+같이 투영하고 candidate warning으로 공개합니다. Scanner용 zero-width separator는 content token에
+남기지 않습니다. Unicode whitespace run은 terminal과 semantic projection에서 한 ASCII space로
+정규화하고, resolved accessibility metadata의 visible 치환도 candidate warning에서 누락하지 않습니다.
 Ishikawa/TreeView는 serializer와 공유하는 DFS plan의 정확한 parent/emitted ID로 containment를
 만듭니다. Duplicate/normalized collision, missing-ID ambiguity, alias conflict, cycle, object reuse 또는
 resource 한도로 planner가 거부하면 Scene adapter는 충돌 node를 조용히 제거해 attribution
@@ -184,7 +198,12 @@ generated Scene attribution에서 제외합니다.
   title을 field label 앞에 세고 Flowchart fallback에서는 제외합니다. Sankey native terminal은 node label과
   renderer가 표시하는 `max(incoming, outgoing)` 합계를 세되 개별 flow weight는 세지 않고, Flowchart terminal은
   node label과 exact edge-weight label을 셉니다. 두 Sankey 경로 모두 title/description을 canvas text로 세지
-  않습니다. 내부 endpoint ID, 좌표, anchor 같은 문법 구조와 접근성 text는 OCR 의미 증거로 세지 않습니다.
+  않습니다. Treemap native terminal은 visible `title`, 각 section/leaf label, d3-hierarchy의
+  reverse-order binary64 합산을 d3 `format(",")`으로 표시한 값을 세고, Flowchart terminal은
+  preorder node의 exact value-suffix label만 셉니다. `accTitle`/`accDescr`는 SVG metadata일 뿐 content
+  label이 아닙니다. Native renderer는 작은 cell text를 `display:none`으로 숨길 수 있으므로
+  실제 render review에서는 이 제한을 같이 봅니다. 내부 endpoint ID, 좌표, anchor 같은 문법 구조와
+  접근성 text는 OCR 의미 증거로 세지 않습니다.
   각 유형의 record planning은 serializer와 projection이 같은 deterministic helper를 공유합니다.
 - Typed semantic projection이 malformed data나 adapter defect로 예외를 내면 해당 candidate의 OCR을
   direct-code fallback으로 바꾸지 않습니다. 예외를 candidate warning으로 격리하고 aggregate를
@@ -207,6 +226,12 @@ generated Scene attribution에서 제외합니다.
   Malformed/oversized evidence list는 문자 단위 ID로 coercion하지 않고 해당 record에서만 빈 provenance로
   격리하며, relation count와 relation ID도 Scene resource 경계 안에서 serializer와 함께 검증합니다.
   Flowchart projection이 pinned runtime의 500-edge cap을 넘으면 partial Scene을 만들지 않고 unavailable입니다.
+- Treemap 구조 metric은 공용 preorder plan이 고정한 terminal을 따릅니다. Native는 section/leaf
+  identity와 arrow 없는 logical containment, `unknown` direction을 쓰고, Flowchart는 `N1..Nn`,
+  `TB`, rectangle, end-arrow를 씁니다. Internal explicit value·binary64/renderer 표시 비호환은
+  exact-value Flowchart를 선택하고 native runtime rejection도 같은 candidate slot에서 그 fallback을
+  한 번 재검증합니다. Flowchart projection이 500 relation을 넘으면 unavailable이지만 같은
+  계층이 native resource 계약을 만족하면 native까지 금지하지 않습니다.
 - Packet은 위 전역 숫자 occurrence multiset을 사용하지 않고 field-local association으로 대체합니다.
   Native Packet과 같은 candidate slot의 Flowchart fallback, semantic repair proposal은 모두 동일한
   field plan과 평가 경로를 사용합니다. 각 field가 candidate publication authority 안의 `ocr_token` 또는
@@ -231,7 +256,7 @@ generated Scene attribution에서 제외합니다.
   만들지 않습니다. 둘 이상의 generated node가 같은 eligible evidence ID를 직접 참조하거나
   source alignment에서 상속하면 그 ID는 모든 claimant에서 모호한 근거로 취소합니다.
   한 node 내부의 동일 ID 반복은 한 claim으로 세고, 충돌하지 않는 eligible ID가 하나라도
-  남으면 그 node는 지지된 것으로 섹니다. Relation/group의 근거 참조는 node claim
+  남으면 그 node는 지지된 것으로 셉니다. Relation/group의 근거 참조는 node claim
   충돌에 포함하지 않아 정상적인 connector·containment 근거 공유를 손상하지 않습니다.
   Source scene 자체를 후보 precision으로 재사용하지 않습니다. model scorer는 후속입니다.
 - 구조 edge를 평가할 수 없고 render PNG가 있으면 raster edge IoU를 fallback으로 사용합니다.
