@@ -8,6 +8,7 @@ deterministic serializer into a source of semantic guesses.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from marker_mermaid.accessibility import resolve_accessibility
@@ -89,36 +90,64 @@ def _accessibility(ir: dict[str, Any], diagram_type: str, *, experimental: bool)
     ]
 
 
-def serialize_state(ir: dict[str, Any], *, experimental: bool = False) -> str:
-    """Serialize evidence-backed states and transitions to ``stateDiagram-v2``.
+@dataclass(frozen=True, slots=True)
+class StateNodePlan:
+    source_record: dict[str, Any]
+    source_id: str
+    emitted_id: str
+    kind: str
+    code_label: str
+    visible_label: str
 
-    Initial and terminal states are represented only when a transition explicitly
-    uses ``[*]`` as its source or target.
-    """
+
+@dataclass(frozen=True, slots=True)
+class StateTransitionPlan:
+    source_record: dict[str, Any]
+    emitted_id: str
+    source_id: str
+    target_id: str
+    code_label: str | None
+    visible_label: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class StatePlan:
+    nodes: tuple[StateNodePlan, ...]
+    transitions: tuple[StateTransitionPlan, ...]
+    direction: str | None
+
+
+def plan_state_records(ir: dict[str, Any]) -> StatePlan:
+    """Validate and freeze the exact State identities and visible text."""
 
     states = _objects(ir.get("states"), context="state IR", required=True)
     transitions = _objects(ir.get("transitions", []), context="state transitions")
     id_map = _id_map(states, context="state")
-    lines = ["stateDiagram-v2", *_accessibility(ir, "state", experimental=experimental)]
     direction = ir.get("direction")
-    if direction is not None:
-        if direction not in {"TB", "BT", "LR", "RL"}:
-            raise SerializationError("state direction must be TB, BT, LR, or RL")
-        lines.append(f"    direction {direction}")
+    if direction is not None and (
+        not isinstance(direction, str) or direction not in {"TB", "BT", "LR", "RL"}
+    ):
+        raise SerializationError("state direction must be TB, BT, LR, or RL")
 
-    supported_kinds = {"state", "choice", "fork", "join"}
+    planned_nodes: list[StateNodePlan] = []
     for index, state in enumerate(states, start=1):
         source_id = str(state["id"]).strip()
-        state_id = id_map[source_id]
-        label = _text(state.get("label") or source_id)
         kind = str(state.get("kind") or "state").lower()
-        if kind not in supported_kinds:
+        if kind not in {"state", "choice", "fork", "join"}:
             raise SerializationError(f"state {index} has unsupported kind: {kind}")
-        if kind == "state":
-            lines.append(f'    state "{label}" as {state_id}')
-        else:
-            lines.append(f"    state {state_id} <<{kind}>>")
+        source_label = state.get("label") or source_id
+        planned_nodes.append(
+            StateNodePlan(
+                source_record=state,
+                source_id=source_id,
+                emitted_id=id_map[source_id],
+                kind=kind,
+                code_label=_text(source_label),
+                visible_label=(str(source_label).replace("\r", " ").replace("\n", " ").strip()),
+            )
+        )
 
+    planned_transitions: list[StateTransitionPlan] = []
     for index, transition in enumerate(transitions, start=1):
         _evidence(transition, context=f"state transition {index}")
         source_raw = str(transition.get("source") or "").strip()
@@ -127,12 +156,50 @@ def serialize_state(ir: dict[str, Any], *, experimental: bool = False) -> str:
         target = "[*]" if target_raw == "[*]" else id_map.get(target_raw)
         if source is None or target is None:
             raise SerializationError(f"state transition {index} references an unknown endpoint")
-        suffix = ""
+        code_label = None
+        visible_label = None
         if transition.get("label") not in {None, ""}:
-            suffix = (
-                f" : {_relation_label(transition['label'], context=f'state transition {index}')}"
+            label = transition["label"]
+            code_label = _relation_label(label, context=f"state transition {index}")
+            visible_label = str(label).replace("\r", " ").replace("\n", " ").strip()
+        planned_transitions.append(
+            StateTransitionPlan(
+                source_record=transition,
+                emitted_id=f"state_transition_{index}",
+                source_id=source,
+                target_id=target,
+                code_label=code_label,
+                visible_label=visible_label,
             )
-        lines.append(f"    {source} --> {target}{suffix}")
+        )
+    return StatePlan(
+        nodes=tuple(planned_nodes),
+        transitions=tuple(planned_transitions),
+        direction=direction,
+    )
+
+
+def serialize_state(ir: dict[str, Any], *, experimental: bool = False) -> str:
+    """Serialize evidence-backed states and transitions to ``stateDiagram-v2``.
+
+    Initial and terminal states are represented only when a transition explicitly
+    uses ``[*]`` as its source or target.
+    """
+
+    plan = plan_state_records(ir)
+    lines = ["stateDiagram-v2", *_accessibility(ir, "state", experimental=experimental)]
+    if plan.direction is not None:
+        lines.append(f"    direction {plan.direction}")
+
+    for state in plan.nodes:
+        if state.kind == "state":
+            lines.append(f'    state "{state.code_label}" as {state.emitted_id}')
+        else:
+            lines.append(f"    state {state.emitted_id} <<{state.kind}>>")
+
+    for transition in plan.transitions:
+        suffix = f" : {transition.code_label}" if transition.code_label is not None else ""
+        lines.append(f"    {transition.source_id} --> {transition.target_id}{suffix}")
     return "\n".join(lines) + "\n"
 
 

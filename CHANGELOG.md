@@ -105,6 +105,15 @@
   generated-node attribution threshold may publish through normal gates after independent
   security/parse/render/type validation, while candidate
   budgets, requested/emitted/runtime metadata, accessibility, and the native review hold remain intact.
+- Core generated Scene/OCR projection now follows the exact serializer-visible defaults for four previously
+  divergent cases: Block reuses collision-safe emitted IDs and `[unreadable]` labels, ordinary State nodes use
+  only their rendered label/ID while choice/fork/join pseudo-states retain topology without inventing canvas text,
+  Sequence supplies `[unreadable]` for unlabeled messages, and Gantt uses the per-section `Task N` default instead
+  of hidden task text or IDs. State serialization and Scene attribution now share normalized node IDs, exact
+  transition endpoints, and boundary-transition validation; Gantt allocates collision-free Scene identities so
+  duplicate source section/task IDs cannot erase rendered records. Invalid Block endpoints and malformed State
+  records or transitions fail closed instead of producing a partial semantic Scene. Boundary markers stay out of
+  structural Scene relations while their rendered transition labels remain in the semantic OCR projection.
 - Bounded pre-validation source repair with audit events, diagnostics, idempotence, and AST adapter seam.
 - Page-level missed-diagram proposals with occupied-region exclusion and virtual source crops.
 - Profile-gated flowchart fill, border, and link style recovery with strict CSS allowlists.

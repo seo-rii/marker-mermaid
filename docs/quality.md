@@ -149,6 +149,16 @@ generated Scene attribution에서 제외합니다.
   typed semantic projection이 실제 serializer가 표시하는 Class field/method/parameter/cardinality,
   ER attribute type/name/key/comment, Timeline period/title/모든 event label을 OCR 비교에 추가합니다.
   이 projection도 생성 label 예산 안에서 소비되므로 큰 typed IR이 제한을 우회하지 못합니다.
+  Core Scene도 serializer-visible default를 그대로 사용합니다. Block은 collision-safe emitted ID와
+  `[unreadable]` fallback을 공유하고, 일반 State는 serializer가 쓰는 label/ID만 세며 choice/fork/join은
+  topology element를 유지하되 실제 canvas에 없는 source label을 OCR text로 세지 않습니다. Sequence
+  무라벨 message와 Gantt 무라벨 task는 각각 `[unreadable]`, section-local `Task N`으로 투영하며 hidden
+  `text`/task ID에 OCR credit을 주지 않습니다. State의 normalized ID와 transition endpoint는 serializer와
+  Scene이 하나의 plan을 공유하고 malformed 또는 unknown endpoint transition은 전체 Scene을 fail closed합니다.
+  `[*]` boundary marker는 structural relation으로 만들지 않지만 화면에 표시되는 transition label은 OCR
+  projection에 유지합니다.
+  Gantt section/task는 source ID가 중복되어도 collision-free Scene identity를 배정해 렌더링된 record와
+  provenance를 모두 보존합니다.
 - Requested type이 fallback으로 방출되는 경우 projection은 요청 문법이 아니라 실제 emitted serializer를
   따릅니다. C4의 `architecture` 또는 nested Flowchart 결과는 위 공용 plan의 emitted boundary group과
   service label만 세고 technology, relation label, description은 제외합니다. Architecture도 native와

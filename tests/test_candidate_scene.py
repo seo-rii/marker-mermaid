@@ -17,8 +17,11 @@ from marker_mermaid.serializers import (
     SerializationError,
     serialize_architecture,
     serialize_architecture_flowchart_fallback,
+    serialize_gantt,
+    serialize_sequence,
 )
 from marker_mermaid.serializers_phase2 import serialize_phase2
+from marker_mermaid.serializers_uml import serialize_state
 
 
 def test_flowchart_typed_ir_preserves_explicit_direction_and_arrows():
@@ -144,6 +147,42 @@ def test_sequence_scene_assigns_collision_free_emitted_message_ids() -> None:
     ]
 
 
+def test_sequence_scene_and_semantic_texts_include_unreadable_message_fallback() -> None:
+    ir = {
+        "participants": ["Client", "API"],
+        "messages": [
+            {
+                "source": "Client",
+                "target": "API",
+                "text": "Hidden message alias",
+            },
+            {"source": "API", "target": "Client", "label": "Reply"},
+        ],
+    }
+
+    scene = typed_ir_to_scene("sequence", ir)
+    code = serialize_sequence(ir)
+
+    assert scene is not None
+    assert "Hidden message alias" not in code
+    assert "Client->>API: [unreadable]" in code
+    assert [relation.label for relation in scene.relations] == ["[unreadable]", "Reply"]
+    assert list(typed_ir_semantic_texts("sequence", ir, scene)) == [
+        "Client",
+        "API",
+        "[unreadable]",
+        "Reply",
+    ]
+    assert (
+        ocr_recall(
+            ["Hidden message alias"],
+            "",
+            generated_texts=typed_ir_semantic_texts("sequence", ir, scene),
+        )
+        == 0
+    )
+
+
 def test_mindmap_scene_uses_serializer_ids_even_when_logical_ids_repeat() -> None:
     scene = typed_ir_to_scene(
         "mindmap",
@@ -213,6 +252,230 @@ def test_partial_phase_one_scenes_use_the_serializers_unreadable_label() -> None
 
         assert scene is not None
         assert [element.text for element in scene.elements] == ["[unreadable]"]
+
+
+def test_state_scene_excludes_pseudostate_labels_but_keeps_visible_state_text() -> None:
+    ir = {
+        "states": [
+            {
+                "id": "idle",
+                "label": "Idle",
+                "kind": "state",
+                "evidence_ids": ["ocr-idle"],
+            },
+            {
+                "id": "decision",
+                "label": "Ignored choice label",
+                "kind": "choice",
+                "evidence_ids": ["shape-choice"],
+            },
+            {
+                "id": "parallel",
+                "label": "Ignored fork label",
+                "kind": "fork",
+                "evidence_ids": ["shape-fork"],
+            },
+            {
+                "id": "joined",
+                "label": "Ignored join label",
+                "kind": "join",
+                "evidence_ids": ["shape-join"],
+            },
+            {
+                "id": "unlabeled",
+                "text": "Ignored normal-state text alias",
+                "kind": "state",
+                "evidence_ids": ["shape-unlabeled"],
+            },
+        ],
+        "transitions": [
+            {
+                "source": "idle",
+                "target": "decision",
+                "label": "Choose",
+                "evidence_ids": ["arrow-choose"],
+            },
+            {
+                "source": "decision",
+                "target": "parallel",
+                "evidence_ids": ["arrow-fork"],
+            },
+            {
+                "source": "parallel",
+                "target": "joined",
+                "label": "Complete",
+                "evidence_ids": ["arrow-complete"],
+            },
+        ],
+    }
+
+    scene = typed_ir_to_scene("state", ir)
+    code = serialize_state(ir)
+
+    assert scene is not None
+    assert "state decision <<choice>>" in code
+    assert "state parallel <<fork>>" in code
+    assert "state joined <<join>>" in code
+    assert 'state "unlabeled" as unlabeled' in code
+    assert [(element.id, element.text) for element in scene.elements] == [
+        ("idle", "Idle"),
+        ("decision", None),
+        ("parallel", None),
+        ("joined", None),
+        ("unlabeled", "unlabeled"),
+    ]
+    texts = list(typed_ir_semantic_texts("state", ir, scene))
+    assert texts == ["Idle", "unlabeled", "Choose", "Complete"]
+    assert ocr_recall(["Idle unlabeled Choose Complete"], "", generated_texts=texts) == 1
+    assert (
+        ocr_recall(
+            ["Ignored choice label fork join normal-state text alias"],
+            "",
+            generated_texts=texts,
+        )
+        == 0
+    )
+
+
+def test_state_scene_uses_serializer_emitted_ids_and_transition_endpoints() -> None:
+    ir = {
+        "direction": "LR",
+        "states": [
+            {
+                "id": "A-B",
+                "label": "Alpha",
+                "evidence_ids": ["ocr-alpha"],
+            },
+            {
+                "id": "C D",
+                "label": "Charlie",
+                "evidence_ids": ["ocr-charlie"],
+            },
+        ],
+        "transitions": [
+            {
+                "source": "A-B",
+                "target": "C D",
+                "label": "Advance",
+                "evidence_ids": ["arrow-advance"],
+            }
+        ],
+    }
+
+    scene = typed_ir_to_scene("state", ir)
+    code = serialize_state(ir)
+
+    assert scene is not None
+    assert scene.reading_direction == "LR"
+    assert [(element.id, element.text, element.evidence_ids) for element in scene.elements] == [
+        ("A_B", "Alpha", ["ocr-alpha"]),
+        ("C_D", "Charlie", ["ocr-charlie"]),
+    ]
+    assert 'state "Alpha" as A_B' in code
+    assert 'state "Charlie" as C_D' in code
+    assert [
+        (
+            relation.id,
+            relation.source_id,
+            relation.target_id,
+            relation.label,
+            relation.evidence_ids,
+        )
+        for relation in scene.relations
+    ] == [("state_transition_1", "A_B", "C_D", "Advance", ["arrow-advance"])]
+    assert "A_B --> C_D : Advance" in code
+    assert list(typed_ir_semantic_texts("state", ir, scene)) == [
+        "Alpha",
+        "Charlie",
+        "Advance",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("transitions", "message"),
+    [
+        ("not-a-list", "requires a list"),
+        (["not-an-object"], "items must be objects"),
+        ([{"source": "A", "target": "A"}], "requires at least one evidence id"),
+        (
+            [
+                {
+                    "source": "A",
+                    "target": "missing",
+                    "evidence_ids": ["arrow-missing"],
+                }
+            ],
+            "unknown endpoint",
+        ),
+    ],
+)
+def test_state_scene_and_serializer_fail_closed_on_invalid_transitions(
+    transitions: object,
+    message: str,
+) -> None:
+    ir = {
+        "states": [{"id": "A", "label": "Active", "evidence_ids": ["ocr-active"]}],
+        "transitions": transitions,
+    }
+
+    with pytest.raises(SerializationError, match=message):
+        serialize_state(ir)
+    assert typed_ir_to_scene("state", ir) is None
+
+
+def test_state_boundary_transitions_serialize_without_scene_relations() -> None:
+    ir = {
+        "states": [{"id": "active", "label": "Active", "evidence_ids": ["ocr-active"]}],
+        "transitions": [
+            {
+                "source": "[*]",
+                "target": "active",
+                "label": "Enter",
+                "evidence_ids": ["arrow-enter"],
+            },
+            {
+                "source": "active",
+                "target": "[*]",
+                "label": "Exit",
+                "evidence_ids": ["arrow-exit"],
+            },
+            {
+                "source": "active",
+                "target": "active",
+                "label": "Retry",
+                "evidence_ids": ["arrow-retry"],
+            },
+        ],
+    }
+
+    scene = typed_ir_to_scene("state", ir)
+    code = serialize_state(ir)
+
+    assert "[*] --> active : Enter" in code
+    assert "active --> [*] : Exit" in code
+    assert scene is not None
+    assert [
+        (relation.id, relation.source_id, relation.target_id, relation.label)
+        for relation in scene.relations
+    ] == [("state_transition_3", "active", "active", "Retry")]
+    assert scene.relations[0].evidence_ids == ["arrow-retry"]
+    assert list(typed_ir_semantic_texts("state", ir, scene)) == [
+        "Active",
+        "Enter",
+        "Exit",
+        "Retry",
+    ]
+
+
+@pytest.mark.parametrize(
+    "states",
+    [
+        [{"id": "unsupported", "kind": "history"}],
+        ["not-a-state-record"],
+    ],
+)
+def test_state_scene_fails_closed_on_malformed_or_unsupported_records(states: list[object]) -> None:
+    assert typed_ir_to_scene("state", {"states": states, "transitions": []}) is None
 
 
 def test_unsupported_or_empty_typed_ir_is_unavailable():
@@ -336,6 +599,189 @@ def test_gantt_scene_preserves_task_and_section_labels_without_schedule_metadata
     assert [(group.id, group.label, group.member_ids) for group in scene.groups] == [
         ("review", "Review phase", ["t1"])
     ]
+
+
+def test_gantt_scene_uses_serializer_task_fallback_numbering_per_section() -> None:
+    ir = {
+        "sections": [
+            {
+                "id": "build",
+                "title": "Build",
+                "tasks": [
+                    {
+                        "id": "internal-first",
+                        "text": "Hidden task alias",
+                        "start": "2026-07-01",
+                        "end": "2026-07-02",
+                    },
+                    {
+                        "id": "named",
+                        "label": "Named task",
+                        "start": "2026-07-02",
+                        "end": "2026-07-03",
+                    },
+                ],
+            },
+            {
+                "id": "ship",
+                "title": "Ship",
+                "tasks": [
+                    {
+                        "id": "internal-third",
+                        "start": "2026-07-03",
+                        "end": "2026-07-04",
+                    }
+                ],
+            },
+        ]
+    }
+
+    scene = typed_ir_to_scene("gantt", ir)
+    code = serialize_gantt(ir)
+
+    assert scene is not None
+    assert "\n    Hidden task alias :" not in code
+    assert "Task 1 :internal-first" in code
+    assert [(element.id, element.text) for element in scene.elements] == [
+        ("internal-first", "Task 1"),
+        ("named", "Named task"),
+        ("internal-third", "Task 1"),
+    ]
+    assert list(typed_ir_semantic_texts("gantt", ir, scene)) == [
+        "Build",
+        "Task 1",
+        "Named task",
+        "Ship",
+        "Task 1",
+    ]
+
+
+def test_gantt_scene_preserves_duplicate_source_ids_with_collision_free_attribution() -> None:
+    ir = {
+        "sections": [
+            {
+                "id": "phase",
+                "title": "First phase",
+                "tasks": [
+                    {
+                        "id": "shared-task",
+                        "label": "First task",
+                        "start": "2026-07-01",
+                        "end": "2026-07-02",
+                        "evidence_ids": ["ocr-first"],
+                    },
+                    {
+                        "id": "shared-task",
+                        "label": "Second task",
+                        "start": "2026-07-02",
+                        "end": "2026-07-03",
+                        "evidence_ids": ["ocr-second"],
+                    },
+                ],
+            },
+            {
+                "id": "phase",
+                "tasks": [
+                    {
+                        "id": "shared-task",
+                        "start": "2026-07-03",
+                        "end": "2026-07-04",
+                        "evidence_ids": ["ocr-third"],
+                    },
+                    {
+                        "id": "shared-task",
+                        "label": "Fourth task",
+                        "start": "2026-07-04",
+                        "end": "2026-07-05",
+                        "evidence_ids": ["ocr-fourth"],
+                    },
+                ],
+            },
+        ]
+    }
+
+    scene = typed_ir_to_scene("gantt", ir)
+    code = serialize_gantt(ir)
+
+    assert scene is not None
+    assert code.count(":shared-task,") == 4
+    assert "gantt_task_" not in code
+    assert "gantt_section_" not in code
+    assert [(element.id, element.text, element.evidence_ids) for element in scene.elements] == [
+        ("shared-task", "First task", ["ocr-first"]),
+        ("gantt_task_1_2", "Second task", ["ocr-second"]),
+        ("gantt_task_2_1", "Task 1", ["ocr-third"]),
+        ("gantt_task_2_2", "Fourth task", ["ocr-fourth"]),
+    ]
+    assert len({element.id for element in scene.elements}) == 4
+    assert [(group.id, group.label, group.member_ids) for group in scene.groups] == [
+        ("phase", "First phase", ["shared-task", "gantt_task_1_2"]),
+        ("gantt_section_2", "Tasks", ["gantt_task_2_1", "gantt_task_2_2"]),
+    ]
+    assert len({group.id for group in scene.groups}) == 2
+    assert list(typed_ir_semantic_texts("gantt", ir, scene)) == [
+        "First phase",
+        "First task",
+        "Second task",
+        "Tasks",
+        "Task 1",
+        "Fourth task",
+    ]
+
+
+def test_block_scene_uses_serializer_ids_labels_and_mapped_endpoints() -> None:
+    ir = {
+        "blocks": [
+            {
+                "id": "A-B",
+                "evidence_ids": ["ocr-unreadable"],
+            },
+            {
+                "id": "A B",
+                "label": "Visible block",
+                "evidence_ids": ["ocr-visible"],
+            },
+        ],
+        "edges": [
+            {
+                "source": "A-B",
+                "target": "A B",
+                "label": "Next",
+                "evidence_ids": ["arrow-next"],
+            }
+        ],
+    }
+
+    scene = typed_ir_to_scene("block", ir)
+    code = serialize_phase2("block", ir)[0]
+
+    assert scene is not None
+    assert [(element.id, element.text, element.evidence_ids) for element in scene.elements] == [
+        ("A_B", "[unreadable]", ["ocr-unreadable"]),
+        ("A_B_2", "Visible block", ["ocr-visible"]),
+    ]
+    assert 'A_B["[unreadable]"]' in code
+    assert 'A_B_2["Visible block"]' in code
+    assert [
+        (relation.source_id, relation.target_id, relation.label) for relation in scene.relations
+    ] == [("A_B", "A_B_2", "Next")]
+    assert scene.relations[0].evidence_ids == ["arrow-next"]
+    assert list(typed_ir_semantic_texts("block", ir, scene)) == [
+        "[unreadable]",
+        "Visible block",
+        "Next",
+    ]
+
+
+def test_block_scene_fails_closed_on_unknown_edge_endpoint() -> None:
+    ir = {
+        "blocks": [{"id": "known", "label": "Known"}],
+        "edges": [{"source": "known", "target": "missing"}],
+    }
+
+    with pytest.raises(SerializationError, match="unknown endpoint"):
+        serialize_phase2("block", ir)
+    assert typed_ir_to_scene("block", ir) is None
 
 
 def test_class_semantic_texts_include_members_parameters_and_cardinalities():

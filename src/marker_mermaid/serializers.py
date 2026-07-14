@@ -353,28 +353,114 @@ def serialize_timeline(ir: dict[str, Any], *, experimental: bool = False) -> str
     return "\n".join(lines) + "\n"
 
 
-def serialize_gantt(ir: dict[str, Any], *, experimental: bool = False) -> str:
+@dataclass(frozen=True, slots=True)
+class GanttTaskPlan:
+    source_record: dict[str, Any]
+    scene_id: str
+    visible_label: str
+    code_label: str
+    fields: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GanttSectionPlan:
+    source_record: dict[str, Any]
+    scene_id: str
+    visible_label: str
+    code_label: str
+    tasks: tuple[GanttTaskPlan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GanttPlan:
+    sections: tuple[GanttSectionPlan, ...]
+
+
+def plan_gantt_records(ir: dict[str, Any]) -> GanttPlan:
+    """Validate Gantt records and allocate collision-free Scene identities."""
+
     sections = ir.get("sections")
     if not isinstance(sections, list) or not sections:
         raise SerializationError("gantt IR requires sections")
+    used_scene_ids: set[str] = set()
+    planned_sections: list[GanttSectionPlan] = []
+    for section_index, section in enumerate(sections, start=1):
+        if not isinstance(section, dict):
+            raise SerializationError("gantt sections must be objects")
+        preferred_section_id = str(section.get("id") or f"section_{section_index}")
+        section_scene_id = preferred_section_id
+        if (
+            not section_scene_id
+            or len(section_scene_id) > MAX_ID_CHARS
+            or section_scene_id in used_scene_ids
+        ):
+            section_scene_id = f"gantt_section_{section_index}"
+            suffix = 2
+            while section_scene_id in used_scene_ids:
+                section_scene_id = f"gantt_section_{section_index}_{suffix}"
+                suffix += 1
+        used_scene_ids.add(section_scene_id)
+        section_label = section.get("title") or "Tasks"
+        tasks = section.get("tasks", [])
+        if not isinstance(tasks, list):
+            raise SerializationError("gantt section tasks must be a list")
+        planned_tasks: list[GanttTaskPlan] = []
+        for task_index, task in enumerate(tasks, start=1):
+            if not isinstance(task, dict):
+                raise SerializationError("gantt tasks must be objects")
+            task_label = task.get("label") or f"Task {task_index}"
+            start = task.get("start")
+            end = task.get("end") or task.get("duration")
+            if not start or not end:
+                raise SerializationError(
+                    f"gantt task {_text(task_label)!r} lacks start and end/duration evidence"
+                )
+            preferred_task_id = str(task.get("id") or f"section_{section_index}_task_{task_index}")
+            task_scene_id = preferred_task_id
+            if (
+                not task_scene_id
+                or len(task_scene_id) > MAX_ID_CHARS
+                or task_scene_id in used_scene_ids
+            ):
+                task_scene_id = f"gantt_task_{section_index}_{task_index}"
+                suffix = 2
+                while task_scene_id in used_scene_ids:
+                    task_scene_id = f"gantt_task_{section_index}_{task_index}_{suffix}"
+                    suffix += 1
+            used_scene_ids.add(task_scene_id)
+            fields = (task.get("status"), task.get("id"), start, end)
+            planned_tasks.append(
+                GanttTaskPlan(
+                    source_record=task,
+                    scene_id=task_scene_id,
+                    visible_label=str(task_label).replace("\n", " ").strip(),
+                    code_label=_text(task_label),
+                    fields=tuple(_text(value) for value in fields if value not in {None, ""}),
+                )
+            )
+        planned_sections.append(
+            GanttSectionPlan(
+                source_record=section,
+                scene_id=section_scene_id,
+                visible_label=str(section_label).replace("\n", " ").strip(),
+                code_label=_text(section_label),
+                tasks=tuple(planned_tasks),
+            )
+        )
+    return GanttPlan(sections=tuple(planned_sections))
+
+
+def serialize_gantt(ir: dict[str, Any], *, experimental: bool = False) -> str:
+    plan = plan_gantt_records(ir)
     lines = ["gantt", *_accessibility(ir, experimental, diagram_type="gantt")]
     if ir.get("title"):
         lines.append(f"    title {_text(ir['title'])}")
     if ir.get("date_format"):
         lines.append(f"    dateFormat {_text(ir['date_format'])}")
-    for section in sections:
-        lines.append(f"    section {_text(section.get('title') or 'Tasks')}")
-        for index, task in enumerate(section.get("tasks", []), start=1):
-            label = _text(task.get("label") or f"Task {index}")
-            start = task.get("start")
-            end = task.get("end") or task.get("duration")
-            if not start or not end:
-                raise SerializationError(
-                    f"gantt task {label!r} lacks start and end/duration evidence"
-                )
-            fields = [task.get("status"), task.get("id"), start, end]
-            values = [_text(value) for value in fields if value not in {None, ""}]
-            lines.append(f"    {label} :{', '.join(values)}")
+    for section in plan.sections:
+        lines.append(f"    section {section.code_label}")
+        for task in section.tasks:
+            lines.append(f"    {task.code_label} :{', '.join(task.fields)}")
     return "\n".join(lines) + "\n"
 
 

@@ -25,7 +25,11 @@ from marker_mermaid.flowchart_structure import (
     prepare_swimlane_structure,
 )
 from marker_mermaid.models import DiagramSceneIR, SceneElement, SceneGroup, SceneRelation
-from marker_mermaid.serializers import SerializationError, plan_architecture_structure
+from marker_mermaid.serializers import (
+    SerializationError,
+    plan_architecture_structure,
+    plan_gantt_records,
+)
 from marker_mermaid.serializers_experimental import (
     CYNEFIN_DOMAIN_LABELS,
     CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS,
@@ -51,6 +55,7 @@ from marker_mermaid.serializers_special import (
     plan_packet_fields,
     plan_treeview_hierarchy,
 )
+from marker_mermaid.serializers_uml import plan_state_records
 
 
 def _hierarchy_records(
@@ -255,14 +260,31 @@ def typed_ir_to_scene(
             )
         ]
     elif diagram_type == "state":
-        node_records = list(ir.get("states") or [])
-        edge_records = [
-            edge
-            for edge in ir.get("transitions") or []
-            if isinstance(edge, dict)
-            and edge.get("source") != "[*]"
-            and edge.get("target") != "[*]"
+        try:
+            state_plan = plan_state_records(ir)
+        except SerializationError:
+            return None
+        node_records = [
+            {
+                **state.source_record,
+                "id": state.emitted_id,
+                "label": state.visible_label,
+                "kind": state.kind,
+            }
+            for state in state_plan.nodes
         ]
+        edge_records = [
+            {
+                **transition.source_record,
+                "id": transition.emitted_id,
+                "source": transition.source_id,
+                "target": transition.target_id,
+                "label": transition.visible_label,
+            }
+            for transition in state_plan.transitions
+            if transition.source_id != "[*]" and transition.target_id != "[*]"
+        ]
+        scene_direction_override = state_plan.direction
     elif diagram_type == "class":
         node_records = list(ir.get("classes") or [])
         edge_records = list(ir.get("relations") or [])
@@ -273,8 +295,31 @@ def typed_ir_to_scene(
         node_records = [*(ir.get("requirements") or []), *(ir.get("elements") or [])]
         edge_records = list(ir.get("relations") or [])
     elif diagram_type == "block":
-        node_records = list(ir.get("blocks") or [])
-        edge_records = list(ir.get("edges") or [])
+        try:
+            block_records, block_id_map = plan_phase2_record_ids(
+                ir.get("blocks"), field="block IR", fallback_prefix="B"
+            )
+        except SerializationError:
+            return None
+        node_records = [
+            {
+                **record,
+                "id": output_id,
+                "label": record.get("label") or record.get("text") or "[unreadable]",
+            }
+            for record, _source_id, output_id in block_records
+        ]
+        raw_block_edges = ir.get("edges", [])
+        if not isinstance(raw_block_edges, list):
+            return None
+        for edge in raw_block_edges:
+            if not isinstance(edge, dict):
+                return None
+            source = block_id_map.get(str(edge.get("source") or ""))
+            target = block_id_map.get(str(edge.get("target") or ""))
+            if source is None or target is None:
+                return None
+            edge_records.append({**edge, "source": source, "target": target})
     elif diagram_type == "usecase":
         try:
             usecase_plan = plan_usecase_fallback(ir)
@@ -361,6 +406,7 @@ def typed_ir_to_scene(
                 "id": message.emitted_id,
                 "source": message.source_id,
                 "target": message.target_id,
+                "label": message.source.get("label") or "[unreadable]",
             }
             for message in structure.messages
         ]
@@ -435,21 +481,26 @@ def typed_ir_to_scene(
     elif diagram_type == "timeline":
         node_records = _ordered_records(ir.get("events"), prefix="event_")
     elif diagram_type == "gantt":
-        for section_index, section in enumerate(ir.get("sections") or [], start=1):
-            if not isinstance(section, dict):
-                continue
-            member_ids: list[str] = []
-            for task_index, task in enumerate(section.get("tasks") or [], start=1):
-                if not isinstance(task, dict):
-                    continue
-                task_id = str(task.get("id") or f"section_{section_index}_task_{task_index}")
-                node_records.append({**task, "id": task_id})
-                member_ids.append(task_id)
+        try:
+            gantt_plan = plan_gantt_records(ir)
+        except SerializationError:
+            return None
+        for section in gantt_plan.sections:
+            member_ids = []
+            for task in section.tasks:
+                node_records.append(
+                    {
+                        **task.source_record,
+                        "id": task.scene_id,
+                        "label": task.visible_label,
+                    }
+                )
+                member_ids.append(task.scene_id)
             group_records.append(
                 {
-                    **section,
-                    "id": section.get("id") or f"section_{section_index}",
-                    "label": section.get("title") or "Tasks",
+                    **section.source_record,
+                    "id": section.scene_id,
+                    "label": section.visible_label,
                     "member_ids": member_ids,
                 }
             )
@@ -900,11 +951,19 @@ def typed_ir_to_scene(
         if node_id in known_ids:
             continue
         bbox = _bbox(node.get("bbox"))
+        if diagram_type == "state":
+            scene_text = (
+                node.get("label") or node_id
+                if str(node.get("kind") or "state").lower() == "state"
+                else None
+            )
+        else:
+            scene_text = node.get("label") or node.get("text") or node_id
         elements.append(
             SceneElement(
                 id=node_id,
                 role=str(node.get("role") or "node"),
-                text=str(node.get("label") or node.get("text") or node_id),
+                text=None if scene_text is None else str(scene_text),
                 bbox=bbox,
                 shape=str(node.get("shape")) if node.get("shape") else None,
                 confidence=1.0,
@@ -1201,6 +1260,16 @@ def typed_ir_semantic_texts(
                         yield str(label)
         return
 
+    if diagram_type == "state":
+        plan = plan_state_records(ir)
+        for state in plan.nodes:
+            if state.kind == "state":
+                yield state.visible_label
+        for transition in plan.transitions:
+            if transition.visible_label:
+                yield transition.visible_label
+        return
+
     if diagram_type == "class":
         for class_item in ir.get("classes") or []:
             if not isinstance(class_item, dict):
@@ -1269,13 +1338,11 @@ def typed_ir_semantic_texts(
     if diagram_type == "gantt":
         if ir.get("title"):
             yield str(ir["title"])
-        for section in ir.get("sections") or []:
-            if not isinstance(section, dict):
-                continue
-            yield str(section.get("title") or "Tasks")
-            for task_index, task in enumerate(section.get("tasks") or [], start=1):
-                if isinstance(task, dict):
-                    yield str(task.get("label") or f"Task {task_index}")
+        plan = plan_gantt_records(ir)
+        for section in plan.sections:
+            yield section.visible_label
+            for task in section.tasks:
+                yield task.visible_label
         return
     if diagram_type == "journey":
         if ir.get("title"):

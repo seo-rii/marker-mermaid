@@ -69,6 +69,19 @@ State/Class/ER serializer는 provenance 없는 구조를 문법적으로 만들 
 endpoint, 추측 cardinality, ER의 identifying flag 누락도 `SerializationError`입니다. Requirement/Block과
 fallback serializer 역시 unknown relation endpoint를 임의 node로 만들지 않습니다.
 
+State는 serializer와 generated Scene이 같은 emission plan을 소비합니다. 이 plan은 source state ID를
+Mermaid-safe ID로 한 번만 정규화하고 transition endpoint, 화면 label, pseudo-state kind와 deterministic
+Scene relation ID를 함께 고정합니다. `[*]` boundary transition도 endpoint와 provenance를 검증하고 source에는
+보존하지만, 별도 Scene element가 없는 boundary marker를 가짜 node/relation으로 만들지는 않습니다. 따라서
+malformed transition이나 unknown endpoint는 nodes-only partial Scene으로 축소되지 않고 전체 후보가
+fail closed됩니다. 다만 boundary edge의 label은 SVG canvas에 실제로 표시되므로 structural Scene과 별도의
+semantic OCR projection에는 포함합니다.
+
+Gantt도 공용 plan이 section-local `Task N` fallback과 실제 task/section label을 serializer, generated Scene,
+OCR projection에 공유합니다. Mermaid Gantt source에 Scene identity 문법은 없으므로 source code는 기존 task
+ID를 그대로 보존하되, attribution용 section/task ID는 전체 diagram namespace에서 collision-free하게
+배정합니다. 중복 source ID가 있어도 렌더링된 task나 group membership, record provenance를 누락하지 않습니다.
+
 Requirement·Block은 serializer 전에 strict nested extraction 계약을 통과합니다. Requirement의
 requirement/element/relation과 Block의 block/edge는 각각 object list여야 하고, 알려진 scalar,
 `bbox`, `evidence_ids`의 형을 검사합니다. Requirement `type`·`risk`·verify method·relation
