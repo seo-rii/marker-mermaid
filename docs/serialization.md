@@ -53,6 +53,17 @@ namespaced endpoint만 방출합니다. 두 plan은 raw role/shape/style/directi
 fallback이 표현하지 않는 metadata를 node·edge로 승격하지 않으며, generated Scene과
 OCR projection이 같은 code-visible identity·Scene relation slot·화면 label·topology를 재사용합니다.
 
+Organization은 `plan_organization_hierarchy()`가 고정한 logical `treeview_node_*` identity와
+parent→child relation을 native TreeView와 runtime Flowchart fallback, Scene/OCR의 대응 slot에
+공유합니다. Native TreeView source/SVG는 이 ID를 문법으로 방출하지 않고 validated
+label/depth만 사용하며, Flowchart fallback이 reserved-safe ID를 실제 node ID로 사용합니다.
+양쪽 배치 방향은 `LR`입니다. Data Lineage는 `plan_data_lineage_records()`가
+dataset/process namespace, cylinder/rectangle shape, explicit data-flow endpoint, 실제 화면 label,
+strict direction을 한 번만 결정합니다. Mermaid edge에 source relation ID 문법이 없으므로
+`organization_relation_*`·`data_lineage_relation_*`는 Scene/provenance slot으로만 쓰입니다.
+두 serializer는 source code 50,000자·5,000줄 예산을 반환 전에 검사하고, visible
+compatibility glyph 치환을 warning·OCR·Scene에 공유합니다.
+
 State/Class/ER serializer는 provenance 없는 구조를 문법적으로 만들 수 있어도 거부합니다. unknown
 endpoint, 추측 cardinality, ER의 identifying flag 누락도 `SerializationError`입니다. Requirement/Block과
 fallback serializer 역시 unknown relation endpoint를 임의 node로 만들지 않습니다.

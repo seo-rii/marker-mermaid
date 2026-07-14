@@ -3258,6 +3258,83 @@ def test_generic_candidate_envelopes_apply_experimental_native_nested_contracts(
             {"participants": [], "messages": [{"evidence_ids": [1]}]},
             "messages[0].evidence_ids[0]",
         ),
+        ("organization", {"root": {"id": 1}}, "root.id"),
+        ("organization", {"root": {"name": []}}, "root.name"),
+        (
+            "organization",
+            {"root": {"children": "reports"}},
+            "root.children",
+        ),
+        (
+            "organization",
+            {"root": {"children": ["report"]}},
+            "root.children[0]",
+        ),
+        (
+            "organization",
+            {"root": {"children": [{"label": False}]}},
+            "root.children[0].label",
+        ),
+        (
+            "organization",
+            {"root": {"bbox": [0, 0, 10]}},
+            "root.bbox",
+        ),
+        (
+            "organization",
+            {"root": {"evidence_ids": [1]}},
+            "root.evidence_ids[0]",
+        ),
+        (
+            "data_lineage",
+            {"datasets": ["dataset"], "relations": []},
+            "datasets[0]",
+        ),
+        (
+            "data_lineage",
+            {"datasets": [{"id": 1}], "relations": []},
+            "datasets[0].id",
+        ),
+        (
+            "data_lineage",
+            {"datasets": [{"label": []}], "relations": []},
+            "datasets[0].label",
+        ),
+        (
+            "data_lineage",
+            {"datasets": [], "processes": "process", "relations": []},
+            "processes",
+        ),
+        (
+            "data_lineage",
+            {"datasets": [], "processes": [{"bbox": [0, False, 10, 10]}], "relations": []},
+            "processes[0].bbox",
+        ),
+        (
+            "data_lineage",
+            {"datasets": [], "relations": ["relation"]},
+            "relations[0]",
+        ),
+        (
+            "data_lineage",
+            {"datasets": [], "relations": [{"source": 1}]},
+            "relations[0].source",
+        ),
+        (
+            "data_lineage",
+            {"datasets": [], "relations": [{"target": []}]},
+            "relations[0].target",
+        ),
+        (
+            "data_lineage",
+            {"datasets": [], "relations": [{"label": False}]},
+            "relations[0].label",
+        ),
+        (
+            "data_lineage",
+            {"datasets": [], "relations": [{"evidence_ids": [1]}]},
+            "relations[0].evidence_ids[0]",
+        ),
     ],
 )
 def test_special_fallback_nested_contracts_reject_strict_known_types(
@@ -3271,6 +3348,27 @@ def test_special_fallback_nested_contracts_reject_strict_known_types(
     message = str(exc_info.value)
     assert "violates its nested contract" in message
     assert location in message
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "organization",
+            {"root": {"children": [{"bbox": [0, 0, math.inf, 10]}]}},
+        ),
+        (
+            "data_lineage",
+            {"datasets": [{"bbox": [0, math.nan, 10, 10]}], "relations": []},
+        ),
+    ],
+)
+def test_extended_structural_contracts_reject_nonfinite_bbox_numbers_before_nested_validation(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError, match="typed IR number must be finite"):
+        TypedIRCandidate(diagram_type=diagram_type, ir=ir)
 
 
 @pytest.mark.parametrize("frame_type", ["cmd", "evt", "read_model", "aggregate", " event "])
@@ -3365,6 +3463,62 @@ def test_eventmodeling_contract_accepts_closed_frame_types_without_rewriting(
                 "future_root_metadata": {"kept": True},
             },
         ),
+        (
+            "organization",
+            {
+                "root": {
+                    "id": "ceo",
+                    "name": "Chief Executive",
+                    "bbox": [0, 0, 10, 10],
+                    "evidence_ids": ["ceo-box"],
+                    "children": [
+                        {
+                            "id": "cto",
+                            "label": "Chief Technology",
+                            "bbox": [1, 1, 2, 2],
+                            "evidence_ids": ["cto-box"],
+                            "future_metadata": {"kept": True},
+                        }
+                    ],
+                    "future_metadata": {"kept": True},
+                },
+                "future_root_metadata": {"kept": True},
+            },
+        ),
+        (
+            "data_lineage",
+            {
+                "datasets": [
+                    {
+                        "id": "raw",
+                        "label": "Raw data",
+                        "bbox": [0, 0, 10, 10],
+                        "evidence_ids": ["raw-box"],
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "processes": [
+                    {
+                        "id": "etl",
+                        "label": "Transform",
+                        "bbox": [10, 0, 20, 10],
+                        "evidence_ids": ["etl-box"],
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "relations": [
+                    {
+                        "source": "raw",
+                        "target": "etl",
+                        "label": "feeds",
+                        "bbox": [9, 4, 11, 6],
+                        "evidence_ids": ["line-etl"],
+                        "future_metadata": {"kept": True},
+                    }
+                ],
+                "future_root_metadata": {"kept": True},
+            },
+        ),
     ],
 )
 def test_special_fallback_contracts_preserve_legacy_extra_and_original_ir(
@@ -3382,6 +3536,9 @@ def test_special_fallback_contracts_preserve_legacy_extra_and_original_ir(
     [
         ("eventmodeling", {"swimlanes": []}, "lanes"),
         ("zenuml", {"actors": [], "calls": []}, "participants"),
+        ("organization", {"nodes": []}, "root"),
+        ("data_lineage", {"nodes": [], "relations": []}, "datasets"),
+        ("data_lineage", {"datasets": [], "links": []}, "relations"),
     ],
 )
 def test_special_fallback_aliases_do_not_replace_canonical_roots(
@@ -3415,6 +3572,13 @@ def test_special_fallback_aliases_do_not_replace_canonical_roots(
                 "messages": [{"source": "User", "target": "missing"}],
             },
         ),
+        ("organization", {"root": {}}),
+        ("organization", {"root": {"children": [{}]}}),
+        ("data_lineage", {"datasets": [], "relations": []}),
+        (
+            "data_lineage",
+            {"datasets": [{}], "processes": [{}], "relations": [{}]},
+        ),
     ],
 )
 def test_special_fallback_contracts_leave_semantic_requiredness_to_serializer(
@@ -3440,6 +3604,18 @@ def test_special_fallback_contracts_leave_semantic_requiredness_to_serializer(
             {"participants": ["User"], "messages": [{"target": "User"}]},
             lambda ir: ir["messages"][0].__setitem__("target", []),
             r"messages\[0\]\.target",
+        ),
+        (
+            "organization",
+            {"root": {"children": [{"name": "Report"}]}},
+            lambda ir: ir["root"]["children"][0].__setitem__("name", 1),
+            r"root\.children\[0\]\.name",
+        ),
+        (
+            "data_lineage",
+            {"datasets": [], "relations": [{"target": "sink"}]},
+            lambda ir: ir["relations"][0].__setitem__("target", []),
+            r"relations\[0\]\.target",
         ),
     ],
 )
@@ -3468,6 +3644,16 @@ def test_canonical_key_revalidates_mutated_special_fallback_contracts(
             "zenuml",
             {"participants": [{"bbox": [0, 0, False, 10]}], "messages": []},
             r"participants\[0\]\.bbox",
+        ),
+        (
+            "organization",
+            {"root": {"children": [{"evidence_ids": [1]}]}},
+            r"root\.children\[0\]\.evidence_ids\[0\]",
+        ),
+        (
+            "data_lineage",
+            {"datasets": [], "relations": [{"bbox": [0, 0, False, 10]}]},
+            r"relations\[0\]\.bbox",
         ),
     ],
 )

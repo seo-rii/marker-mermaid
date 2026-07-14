@@ -87,10 +87,29 @@ accessible title/description에 동일하게 적용되며 실제 SVG text integr
   source에서만 비활성화합니다. Sequence accessibility에서만 double-escape되는
   `<`·`>`는 화면에 보이는 `〈`·`〉` glyph로 공개하며 participant/message의 angle bracket는
   원문으로 렌더됩니다.
-- Organization과 Data Lineage는 각각 TreeView와 Flowchart fallback으로 hierarchy/endpoint를 보존합니다.
-  Organization의 TreeView가 runtime validation에서 거절되면 같은 candidate slot에서 다시
-  `organization → treeview → flowchart` chain으로 검증합니다. Organization generated Scene도
-  TreeView 공유 plan의 같은 fallback ID·parent·bbox/evidence를 사용합니다.
+- Organization은 strict recursive `root/children` 계약과 frozen plan으로 TreeView fallback의
+  logical `treeview_node_*` identity, 화면 label, parent→child reporting relation을 고정합니다.
+  TreeView가 runtime validation에서 거절되면 같은 candidate slot에서
+  `organization → treeview → flowchart` chain으로 다시 검증합니다. native와
+  nested fallback의 depth 배치 방향에 맞춰 generated Scene은 `LR`로 표시하며,
+  terminal native TreeView의 marker 없는 connector/shape 미지정과 Flowchart의
+  rectangle/end-arrow를 구분합니다. Source bbox/group/style은 재현되지 않으므로
+  geometry 0/group 없음으로 표시합니다.
+- Data Lineage는 strict dataset/process/relation 계약과 frozen plan으로
+  `data_lineage_dataset_*`·`data_lineage_process_*` node와
+  `data_lineage_relation_*` provenance slot을 만듭니다. Flowchart fallback은 dataset을
+  cylinder, process를 rectangle, relation을 단방향 data-flow edge로 방출하고
+  `TB`/`BT`/`LR`/`RL`만 받으며 기본은 `LR`입니다.
+- 두 plan은 ID/label의 control·format·lone-surrogate와 normalization 충돌을 거절합니다.
+  기존 partial/direct IR에서 Organization ID가 누락되면 preorder `node_N`을,
+  Data Lineage label이 누락되면 검증된 source ID를 사용해 예전 의미를 보존합니다.
+  Organization relation은 검증된 `children`에서만 파생하고, Data Lineage는 explicit
+  relation의 unresolved/self/duplicate endpoint를 거절합니다. 두 경로 모두 합계 500 record와
+  50,000자·5,000줄 output 예산을 적용합니다.
+  quote/backslash/entity-like literal과 edge `|`/`;`/`()[]{}@`는 실제 SVG에 보이는
+  `″`·`∖`·`＆`/`＃`·`∣`·`⁏`·`❨❩`·`⟦⟧`·`⦃⦄`·`＠` compatibility glyph로 출력하고
+  warning, OCR, generated Scene에 같은 손실을 공개합니다. Fullwidth `＠`는
+  NFKC 후 active `@import`가 복원되지 않도록 source에서만 zero-width separator를 더합니다.
 
 Packet·TreeView·Ishikawa는 하나의 HTML entity encoder를 공유하지 않습니다. pinned native grammar별로
 실제 SVG text를 보존하는 quoting을 적용하고, TreeView의 quote/backslash나 Ishikawa의 ampersand/angle처럼
@@ -112,7 +131,12 @@ fallback과 generated Scene만 예약어 안전 namespace `packet_field_`, `ishi
 만듭니다. Packet도 generated-node provenance 80% 게이트의 대상이며 별도 source
 OCR/vector numeric gate를 계속 적용합니다.
 
-엄격한 source preflight가 구현된 Packet·Ishikawa·TreeView·Event Modeling·Wardley·Cynefin·ZenUML
+Organization의 입력 호환용 `name`도 `label`과 같이 있으면 같은 의미여야 하지만,
+canonical provider prompt에는 `label`만 노출합니다. Organization fallback은 source bbox를
+재현하지 않으므로 위 계층 Scene의 bbox 보존 규칙을 공유하지 않습니다.
+
+엄격한 source preflight가 구현된 Packet·Ishikawa·TreeView·Event Modeling·Wardley·Cynefin·ZenUML·
+Organization·Data Lineage
 serializer는 native/fallback과 무관하게 50,000자·5,000줄 hard budget을 반환 전에
 검사합니다. Entity-like literal을 Mermaid 11.16이 정확히
 보존하지 못하는 문법에서는 보이는 `＆`/`＃` compatibility glyph를 사용하고 warning을
@@ -143,7 +167,8 @@ inspection을 통과하는 integration test로 고정합니다. Packet/Ishikawa/
 runtime rejection 뒤 같은 candidate slot에서 evidence-preserving portable fallback을 한 번 재검증합니다.
 Kanban/GitGraph도 같은 방식으로 native rejection 뒤 공용 planning plan의 Flowchart를 한 번 재검증합니다.
 Organization은 실제 TreeView runtime fixture와 simulated rejection→Flowchart pipeline fixture를 함께
-고정합니다. Data Lineage의 별도 runtime fixture는 아직 이 범위에 포함되지 않습니다. experimental native도
+고정합니다. Data Lineage Flowchart fallback도 실제 strict runtime fixture에서
+parse/render, visible label, accessibility, security 계약을 검사합니다. experimental native도
 validation hard gate를 우회하지 않습니다. Wardley·Cynefin은 현재 native runtime rejection 뒤
 같은 candidate slot에서 대체 grammar를 재시도하지 않으므로, 그 경우 후보는 격리되고 review에
 남습니다. Cynefin은 runtime이 성공해도 위 고정 template 경계 때문에 자동 Markdown 게시 대신

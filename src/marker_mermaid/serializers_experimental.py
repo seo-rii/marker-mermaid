@@ -61,6 +61,10 @@ _ZENUML_COMPATIBILITY_WARNING = (
     "ZenUML sequence fallback uses visible compatibility glyphs for "
     "grammar-conflicting label characters."
 )
+_DATA_LINEAGE_COMPATIBILITY_WARNING = (
+    "Data Lineage Flowchart fallback uses visible compatibility glyphs for "
+    "grammar-conflicting label characters."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +195,79 @@ class ZenUMLPlan:
     compatibility_substituted: bool
 
 
+@dataclass(frozen=True, slots=True)
+class OrganizationNodePlan:
+    """One explicit reporting node projected to TreeView and Flowchart fallbacks."""
+
+    source_record: Mapping[str, Any]
+    source_id: str
+    emitted_id: str
+    label: str
+    semantic_label: str
+    depth: int
+    parent_source_id: str | None
+    parent_emitted_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class OrganizationRelationPlan:
+    """One parent-child relation encoded by hierarchy nesting in source evidence."""
+
+    source_record: Mapping[str, Any]
+    emitted_id: str
+    source_id: str
+    target_id: str
+    source_emitted_id: str
+    target_emitted_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class OrganizationPlan:
+    """Bounded hierarchy shared by Organization serialization and Scene projection."""
+
+    nodes: tuple[OrganizationNodePlan, ...]
+    relations: tuple[OrganizationRelationPlan, ...]
+    direction: str
+    compatibility_substituted: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DataLineageNodePlan:
+    """One dataset or process with its exact Flowchart fallback identity and label."""
+
+    source_record: Mapping[str, Any]
+    source_id: str
+    emitted_id: str
+    kind: str
+    shape: str
+    label: str
+    semantic_label: str
+
+
+@dataclass(frozen=True, slots=True)
+class DataLineageRelationPlan:
+    """One explicit lineage relation resolved to exact fallback endpoints."""
+
+    source_record: Mapping[str, Any]
+    emitted_id: str
+    source_id: str
+    target_id: str
+    source_emitted_id: str
+    target_emitted_id: str
+    label: str | None
+    semantic_label: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class DataLineagePlan:
+    """Bounded Flowchart projection shared by serialization and Scene consumers."""
+
+    nodes: tuple[DataLineageNodePlan, ...]
+    relations: tuple[DataLineageRelationPlan, ...]
+    direction: str
+    compatibility_substituted: bool
+
+
 def _text(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise SerializationError(f"{field} must be a non-empty string")
@@ -215,6 +292,41 @@ def _identifier(value: Any, field: str) -> str:
     return text
 
 
+def _exact_identifier(value: Any, field: str) -> str:
+    text = _identifier(value, field)
+    if value != text:
+        raise SerializationError(f"{field} must not require whitespace normalization")
+    return text
+
+
+def _register_emitted_identifier(
+    source_id: str,
+    prefix: str,
+    source_ids: set[str],
+    emitted_ids: set[str],
+    *,
+    field: str,
+) -> str:
+    if source_id in source_ids:
+        raise SerializationError(f"duplicate {field} id: {source_id}")
+    emitted_id = f"{prefix}{source_id.replace('-', '_')}"
+    if emitted_id in emitted_ids:
+        raise SerializationError(
+            f"{field} ids are ambiguous after Mermaid normalization: {source_id}"
+        )
+    if len(emitted_id) > MAX_ID_CHARS:
+        raise SerializationError(f"{field} id exceeds the emitted identifier limit")
+    source_ids.add(source_id)
+    emitted_ids.add(emitted_id)
+    return emitted_id
+
+
+def _validate_accessibility_inputs(ir: Mapping[str, Any]) -> None:
+    for field in ("title", "description", "acc_title", "acc_description"):
+        if ir.get(field) is not None:
+            _text(ir[field], field)
+
+
 def _entity_compatibility_text(text: str) -> tuple[str, bool]:
     """Keep entity-like evidence visible instead of allowing SVG entity decoding."""
 
@@ -230,6 +342,35 @@ def _entity_compatibility_text(text: str) -> tuple[str, bool]:
         ),
         substituted,
     )
+
+
+def _flowchart_visible_text(
+    value: Any,
+    field: str,
+    *,
+    edge_label: bool = False,
+    accessibility: bool = False,
+) -> tuple[str, str, bool]:
+    """Return source semantics and exact visible fallback glyphs for one label."""
+
+    semantic = _text(value, field)
+    compatible, entity_substituted = _entity_compatibility_text(semantic)
+    visible = compatible.replace('"', "″").replace("\\", "∖")
+    if edge_label:
+        visible = (
+            visible.replace("|", "∣")
+            .replace(";", "⁏")
+            .replace("(", "❨")
+            .replace(")", "❩")
+            .replace("[", "⟦")
+            .replace("]", "⟧")
+            .replace("{", "⦃")
+            .replace("}", "⦄")
+            .replace("@", "＠")
+        )
+    if accessibility:
+        visible = visible.replace("<", "〈").replace(">", "〉")
+    return semantic, visible, entity_substituted or visible != semantic
 
 
 def _zenuml_visible_text(
@@ -789,20 +930,178 @@ def serialize_zenuml(ir: Mapping[str, Any], *, experimental: bool = False) -> Se
     )
 
 
+def plan_organization_hierarchy(ir: Mapping[str, Any]) -> OrganizationPlan:
+    """Validate one exact, bounded reporting hierarchy without deriving nodes."""
+
+    if not isinstance(ir, Mapping):
+        raise SerializationError("organization IR must be an object")
+    _validate_accessibility_inputs(ir)
+    root = ir.get("root")
+    if not isinstance(root, Mapping):
+        raise SerializationError("organization IR requires a root object")
+
+    nodes: list[OrganizationNodePlan] = []
+    relations: list[OrganizationRelationPlan] = []
+    source_ids: set[str] = set()
+    emitted_ids: set[str] = set()
+    active_records: set[int] = set()
+    seen_records: set[int] = set()
+    compatibility_substituted = False
+
+    def visit(
+        node: Mapping[str, Any],
+        depth: int,
+        parent_source_id: str | None,
+        parent_emitted_id: str | None,
+    ) -> None:
+        nonlocal compatibility_substituted
+        if depth > MAX_DEPTH or len(nodes) >= MAX_ITEMS:
+            raise SerializationError("organization hierarchy exceeds deterministic record limits")
+        identity = id(node)
+        if identity in active_records:
+            raise SerializationError("organization hierarchy contains a cycle")
+        if identity in seen_records:
+            raise SerializationError("organization hierarchy reuses a node object")
+        active_records.add(identity)
+        seen_records.add(identity)
+        try:
+            node_index = len(nodes)
+            if node.get("id") is None:
+                source_id = f"node_{node_index + 1}"
+            else:
+                source_id_value = node["id"]
+                if (
+                    not isinstance(source_id_value, str)
+                    or source_id_value != source_id_value.strip()
+                    or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", source_id_value) is None
+                ):
+                    raise SerializationError(
+                        f"nodes[{node_index}].id must be a safe Mermaid identifier"
+                    )
+                source_id = source_id_value
+            emitted_id = _register_emitted_identifier(
+                source_id,
+                "treeview_node_",
+                source_ids,
+                emitted_ids,
+                field="organization node",
+            )
+            label_present = node.get("label") is not None
+            name_present = node.get("name") is not None
+            if label_present and name_present:
+                semantic_label = _text(node["label"], f"nodes[{node_index}].label")
+                semantic_name = _text(node["name"], f"nodes[{node_index}].name")
+                if semantic_label != semantic_name:
+                    raise SerializationError("organization node label and name aliases must agree")
+            elif label_present:
+                semantic_label = _text(node["label"], f"nodes[{node_index}].label")
+            elif name_present:
+                semantic_label = _text(node["name"], f"nodes[{node_index}].name")
+            else:
+                raise SerializationError(f"nodes[{node_index}].label must be a non-empty string")
+            _semantic_label, visible_label, label_substituted = _flowchart_visible_text(
+                semantic_label, f"nodes[{node_index}].label"
+            )
+            compatibility_substituted = compatibility_substituted or label_substituted
+            nodes.append(
+                OrganizationNodePlan(
+                    source_record=node,
+                    source_id=source_id,
+                    emitted_id=emitted_id,
+                    label=visible_label,
+                    semantic_label=semantic_label,
+                    depth=depth,
+                    parent_source_id=parent_source_id,
+                    parent_emitted_id=parent_emitted_id,
+                )
+            )
+            if parent_source_id is not None and parent_emitted_id is not None:
+                relations.append(
+                    OrganizationRelationPlan(
+                        source_record=node,
+                        emitted_id=f"organization_relation_{len(relations) + 1}",
+                        source_id=parent_source_id,
+                        target_id=source_id,
+                        source_emitted_id=parent_emitted_id,
+                        target_emitted_id=emitted_id,
+                    )
+                )
+            children = node.get("children", [])
+            if not isinstance(children, list):
+                raise SerializationError(f"organization node {source_id!r} children must be a list")
+            for child in children:
+                if not isinstance(child, Mapping):
+                    raise SerializationError("organization children must be objects")
+                visit(child, depth + 1, source_id, emitted_id)
+        finally:
+            active_records.remove(identity)
+
+    visit(root, 0, None, None)
+    if not relations:
+        raise SerializationError("organization requires an explicit hierarchy below the root")
+    plan = OrganizationPlan(
+        nodes=tuple(nodes),
+        relations=tuple(relations),
+        direction="LR",
+        compatibility_substituted=compatibility_substituted,
+    )
+    for experimental in (False, True):
+        for native_runtime_valid in (True, False):
+            _organization_tree_result(
+                ir,
+                plan,
+                experimental=experimental,
+                native_runtime_valid=native_runtime_valid,
+            )
+    return plan
+
+
+def _organization_tree_result(
+    ir: Mapping[str, Any],
+    plan: OrganizationPlan,
+    *,
+    experimental: bool,
+    native_runtime_valid: bool,
+) -> SerializationResult:
+    from marker_mermaid.serializers_special import serialize_special
+
+    normalized_by_id = {
+        node.source_id: {
+            "id": node.source_id,
+            "label": node.semantic_label,
+            "children": [],
+        }
+        for node in plan.nodes
+    }
+    for node in plan.nodes:
+        if node.parent_source_id is not None:
+            normalized_by_id[node.parent_source_id]["children"].append(
+                normalized_by_id[node.source_id]
+            )
+    enriched = enrich_accessibility_ir(dict(ir), "organization", experimental=experimental)
+    enriched["root"] = normalized_by_id[plan.nodes[0].source_id]
+    tree = serialize_special(
+        "treeview",
+        enriched,
+        experimental=experimental,
+        native_runtime_valid=native_runtime_valid,
+    )
+    _preflight_experimental_code(tree.code, diagram_type="organization")
+    return tree
+
+
 def serialize_organization(
     ir: Mapping[str, Any],
     *,
     experimental: bool = False,
     native_runtime_valid: bool = True,
 ) -> SerializationResult:
-    """Represent an organization hierarchy with the native TreeView grammar."""
+    """Represent an explicit organization hierarchy through the TreeView fallback."""
 
-    from marker_mermaid.serializers_special import serialize_special
-
-    enriched = enrich_accessibility_ir(ir, "organization", experimental=experimental)
-    tree = serialize_special(
-        "treeview",
-        enriched,
+    plan = plan_organization_hierarchy(ir)
+    tree = _organization_tree_result(
+        ir,
+        plan,
         experimental=experimental,
         native_runtime_valid=native_runtime_valid,
     )
@@ -812,19 +1111,25 @@ def serialize_organization(
         tree.code,
         via=("treeview",) if tree.emitted_type != "treeview" else (),
         warnings=(
-            "Organization chart was emitted as TreeView; reporting-line semantics are retained "
-            "but organization-specific notation is unavailable.",
+            (
+                "Organization chart was emitted as TreeView; reporting-line semantics are "
+                "retained but organization-specific notation is unavailable."
+                if tree.emitted_type == "treeview"
+                else "Organization chart was projected through TreeView semantics and emitted "
+                "as a portable Flowchart; organization-specific notation is unavailable."
+            ),
             *tree.warnings,
         ),
         stability="extended",
     )
 
 
-def serialize_data_lineage(
-    ir: Mapping[str, Any], *, experimental: bool = False
-) -> SerializationResult:
-    """Represent explicit dataset/process relations as a portable flowchart."""
+def plan_data_lineage_records(ir: Mapping[str, Any]) -> DataLineagePlan:
+    """Validate exact datasets, processes, and directed lineage relations."""
 
+    if not isinstance(ir, Mapping):
+        raise SerializationError("data lineage IR must be an object")
+    _validate_accessibility_inputs(ir)
     datasets = ir.get("datasets")
     processes = ir.get("processes", [])
     relations = ir.get("relations")
@@ -834,8 +1139,15 @@ def serialize_data_lineage(
         raise SerializationError("data lineage IR requires process and relation lists")
     if len(datasets) + len(processes) + len(relations) > MAX_ITEMS:
         raise SerializationError("data lineage item limit exceeded")
-    nodes: list[dict[str, Any]] = []
-    identifiers: set[str] = set()
+    direction = ir.get("direction", "LR")
+    if not isinstance(direction, str) or direction not in {"TB", "BT", "LR", "RL"}:
+        raise SerializationError("data lineage direction must be TB, BT, LR, or RL")
+
+    normalized_nodes: list[DataLineageNodePlan] = []
+    emitted_by_source: dict[str, str] = {}
+    source_ids: set[str] = set()
+    emitted_ids: set[str] = set()
+    compatibility_substituted = False
     for kind, items, shape in (
         ("dataset", datasets, "cylinder"),
         ("process", processes, "rectangle"),
@@ -843,53 +1155,141 @@ def serialize_data_lineage(
         for index, item in enumerate(items):
             if not isinstance(item, Mapping):
                 raise SerializationError(f"data lineage {kind}s must be objects")
-            item_id = _identifier(item.get("id"), f"{kind}s[{index}].id")
-            if item_id in identifiers:
-                raise SerializationError(f"duplicate data lineage id: {item_id}")
-            identifiers.add(item_id)
-            nodes.append(
-                {
-                    "id": item_id,
-                    "label": _text(item.get("label", item_id), f"{kind}s[{index}].label"),
-                    "shape": shape,
-                }
+            item_id = _exact_identifier(item.get("id"), f"{kind}s[{index}].id")
+            emitted_id = _register_emitted_identifier(
+                item_id,
+                f"data_lineage_{kind}_",
+                source_ids,
+                emitted_ids,
+                field="data lineage",
             )
-    edges: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str | None]] = set()
+            label_value = item["label"] if item.get("label") is not None else item_id
+            semantic_label, visible_label, label_substituted = _flowchart_visible_text(
+                label_value, f"{kind}s[{index}].label"
+            )
+            compatibility_substituted = compatibility_substituted or label_substituted
+            emitted_by_source[item_id] = emitted_id
+            normalized_nodes.append(
+                DataLineageNodePlan(
+                    source_record=item,
+                    source_id=item_id,
+                    emitted_id=emitted_id,
+                    kind=kind,
+                    shape=shape,
+                    label=visible_label,
+                    semantic_label=semantic_label,
+                )
+            )
+
+    normalized_relations: list[DataLineageRelationPlan] = []
+    seen_relations: set[tuple[str, str, str | None]] = set()
     for index, relation in enumerate(relations):
         if not isinstance(relation, Mapping):
             raise SerializationError("data lineage relations must be objects")
-        source = _identifier(relation.get("source"), f"relations[{index}].source")
-        target = _identifier(relation.get("target"), f"relations[{index}].target")
-        if source not in identifiers or target not in identifiers or source == target:
+        source = _exact_identifier(relation.get("source"), f"relations[{index}].source")
+        target = _exact_identifier(relation.get("target"), f"relations[{index}].target")
+        source_emitted_id = emitted_by_source.get(source)
+        target_emitted_id = emitted_by_source.get(target)
+        if source_emitted_id is None or target_emitted_id is None or source == target:
             raise SerializationError(f"invalid data lineage relation: {source}->{target}")
-        label = (
-            _text(relation["label"], f"relations[{index}].label")
-            if relation.get("label") is not None
-            else None
-        )
+        label = None
+        semantic_label = None
+        if relation.get("label") is not None:
+            semantic_label, label, label_substituted = _flowchart_visible_text(
+                relation["label"], f"relations[{index}].label", edge_label=True
+            )
+            compatibility_substituted = compatibility_substituted or label_substituted
         key = (source, target, label)
-        if key in seen:
+        if key in seen_relations:
             raise SerializationError(f"duplicate data lineage relation: {source}->{target}")
-        seen.add(key)
-        edges.append({"source": source, "target": target, "label": label})
+        seen_relations.add(key)
+        normalized_relations.append(
+            DataLineageRelationPlan(
+                source_record=relation,
+                emitted_id=f"data_lineage_relation_{index + 1}",
+                source_id=source,
+                target_id=target,
+                source_emitted_id=source_emitted_id,
+                target_emitted_id=target_emitted_id,
+                label=label,
+                semantic_label=semantic_label,
+            )
+        )
+    plan = DataLineagePlan(
+        nodes=tuple(normalized_nodes),
+        relations=tuple(normalized_relations),
+        direction=direction,
+        compatibility_substituted=compatibility_substituted,
+    )
+    for experimental in (False, True):
+        _data_lineage_code(ir, plan, experimental=experimental)
+    return plan
+
+
+def _data_lineage_code(
+    ir: Mapping[str, Any],
+    plan: DataLineagePlan,
+    *,
+    experimental: bool,
+) -> tuple[str, bool]:
+    accessibility = resolve_accessibility(ir, "data_lineage", experimental=experimental)
+    _semantic_title, title, title_substituted = _flowchart_visible_text(
+        accessibility.title, "accessible title", accessibility=True
+    )
+    _semantic_description, description, description_substituted = _flowchart_visible_text(
+        accessibility.description, "accessible description", accessibility=True
+    )
     code = serialize_flowchart(
         {
-            "nodes": nodes,
-            "edges": edges,
-            "direction": ir.get("direction", "LR"),
-            "title": ir.get("title"),
-            "description": ir.get("description"),
-            "acc_title": ir.get("acc_title"),
-            "acc_description": ir.get("acc_description"),
+            "nodes": [
+                {
+                    "id": node.emitted_id,
+                    "label": _neutralize_active_text(node.label),
+                    "shape": node.shape,
+                }
+                for node in plan.nodes
+            ],
+            "edges": [
+                {
+                    "source": relation.source_emitted_id,
+                    "target": relation.target_emitted_id,
+                    "label": (
+                        _neutralize_active_text(
+                            relation.label.replace("＠", "＠\N{ZERO WIDTH SPACE}")
+                        )
+                        if relation.label is not None
+                        else None
+                    ),
+                }
+                for relation in plan.relations
+            ],
+            "direction": plan.direction,
+            "acc_title": _neutralize_active_text(title),
+            "acc_description": _neutralize_active_text(description),
         },
         experimental=experimental,
     )
+    return (
+        _preflight_experimental_code(code, diagram_type="data_lineage"),
+        title_substituted or description_substituted,
+    )
+
+
+def serialize_data_lineage(
+    ir: Mapping[str, Any], *, experimental: bool = False
+) -> SerializationResult:
+    """Represent explicit dataset/process relations as a portable flowchart."""
+
+    plan = plan_data_lineage_records(ir)
+    code, accessibility_substituted = _data_lineage_code(ir, plan, experimental=experimental)
+    warnings = ["Data lineage was emitted as a portable flowchart."]
+    if plan.compatibility_substituted or accessibility_substituted:
+        warnings.append(_DATA_LINEAGE_COMPATIBILITY_WARNING)
     return SerializationResult.fallback(
         "data_lineage",
         "flowchart",
         code,
-        warnings=("Data lineage was emitted as a portable flowchart.",),
+        warnings=tuple(warnings),
         stability="extended",
     )
 

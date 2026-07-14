@@ -889,6 +889,27 @@ class _ZenUMLIR(_TypedIRRoot):
     messages: list[_ZenUMLMessage]
 
 
+class _OrganizationIR(_TypedIRRoot):
+    root: _SpecialHierarchyNode
+
+
+class _DataLineageNode(_TypedIRRecord):
+    id: str | None = None
+    label: str | None = None
+
+
+class _DataLineageRelation(_TypedIRRecord):
+    source: str | None = None
+    target: str | None = None
+    label: str | None = None
+
+
+class _DataLineageIR(_TypedIRRoot):
+    datasets: list[_DataLineageNode]
+    processes: list[_DataLineageNode] = Field(default_factory=list)
+    relations: list[_DataLineageRelation]
+
+
 @dataclass(frozen=True, slots=True)
 class TypedIRContract:
     required: tuple[tuple[str, RootKind], ...]
@@ -1333,11 +1354,25 @@ TYPED_IR_CONTRACTS: dict[str, TypedIRContract] = {
         ),
     ),
     "railroad": TypedIRContract((("rules", "list"),), guidance="grammar rule AST"),
-    "organization": TypedIRContract((("root", "object"),), guidance="organization hierarchy"),
+    "organization": TypedIRContract(
+        (("root", "object"),),
+        guidance="organization hierarchy",
+        nested_model=_OrganizationIR,
+        prompt_records=(
+            "root: {id:string,label:string,bbox:number[4],evidence_ids:string[],children:self[]}",
+        ),
+    ),
     "data_lineage": TypedIRContract(
         (("datasets", "list"), ("relations", "list")),
         ("processes",),
         "datasets, processes, lineage relations",
+        _DataLineageIR,
+        (
+            "datasets[]: {id:string,label:string,bbox:number[4],evidence_ids:string[]}",
+            "processes[]: {id:string,label:string,bbox:number[4],evidence_ids:string[]}",
+            "relations[]: {source:string,target:string,label:string,bbox:number[4],"
+            "evidence_ids:string[]}",
+        ),
     ),
 }
 
@@ -1355,7 +1390,9 @@ PHASE_THREE_EXTENDED_NESTED_TYPES = frozenset({"sankey", "radar", "treemap", "ve
 PLANNING_NESTED_TYPES = frozenset({"journey", "kanban", "gitgraph"})
 SPECIAL_NATIVE_NESTED_TYPES = frozenset({"packet", "ishikawa", "treeview"})
 EXPERIMENTAL_NATIVE_NESTED_TYPES = frozenset({"wardley", "cynefin"})
-SPECIAL_FALLBACK_NESTED_TYPES = frozenset({"eventmodeling", "zenuml"})
+SPECIAL_FALLBACK_NESTED_TYPES = frozenset(
+    {"data_lineage", "eventmodeling", "organization", "zenuml"}
+)
 NESTED_TYPED_IR_TYPES = (
     PHASE_ONE_NESTED_TYPES
     | CORE_UML_NESTED_TYPES

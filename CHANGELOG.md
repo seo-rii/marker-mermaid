@@ -40,6 +40,23 @@
   source budgets before returning code. The Scenes retain requested types while using the actual
   `LR`/end-arrow topology, zero geometry, and record-local element/relation provenance instead of copying
   raw bbox, direction, shape, style, bidirectional, or relation-ID metadata.
+- Strict nested Organization hierarchy and Data Lineage dataset/process/relation extraction contracts,
+  with canonical prompts, unadvertised legacy Organization `name` compatibility, and preserved original
+  IR/unknown metadata. Shared frozen plans assign reserved-safe `treeview_node_*`,
+  `data_lineage_dataset_*`, and `data_lineage_process_*` identities plus Scene/provenance-only ordered
+  relation slots, reject normalization collisions and invalid Lineage endpoints, and expose the exact
+  Flowchart/TreeView-visible compatibility labels to serialization, OCR, and generated Scenes. Organization
+  uses the actual `LR` parent-to-child containment topology across native and nested fallback paths; Data
+  Lineage preserves strict direction plus cylinder/rectangle node kinds and directed data-flow relations.
+  Legacy partial inputs retain deterministic preorder Organization IDs and source-ID Lineage labels, and
+  TreeView-sized Organization IDs remain accepted. Runtime diagram type now selects marker-less native
+  TreeView connectors versus rectangle/end-arrow Flowchart fallback Scenes, and an accepted runtime
+  fallback replaces stale native serialization warnings with terminal Flowchart warnings. Data Lineage edge-label
+  `()[]{}`/`@` grammar conflicts and accessibility-only angle-bracket substitutions use disclosed visible
+  compatibility glyphs; source-only separation keeps fullwidth `＠` safe after NFKC normalization.
+  Both generated Scenes use zero geometry, no inferred groups, and record-local evidence instead of raw
+  bbox/style metadata; Organization ignores raw direction while Lineage uses only its validated direction.
+  Serializer output is bounded to 500 records and 50,000 characters / 5,000 lines.
 - Strict nested Wardley component/link and Cynefin domain/item/transition extraction contracts with shared
   bounded serializer/Scene/OCR plans. Wardley maps horizontal/vertical IR coordinates to the native
   `[visibility, evolution]` order as `[y, x]`, canonicalizes the Scene to the rendered token values and
@@ -171,8 +188,8 @@
   gates. Every special result is preflighted against the validator's 50,000-character and 5,000-line source
   budgets.
   Entity-like literals use disclosed visible compatibility glyphs where Mermaid 11.16 cannot preserve the
-  original SVG text. Organization generated Scenes now consume the same TreeView identity/parent plan as
-  their nested Flowchart fallback.
+  original SVG text. Organization generated Scenes and TreeView/Flowchart output now consume the dedicated
+  bounded organization identity/parent plan.
 - Serializer-visible Scene text now includes Architecture group labels, excludes hidden
   Deployment/Component relation labels, and mirrors Use-case Flowchart relation type-over-label
   precedence; hidden role/shape/style/semantic metadata cannot enter the projected Scene, and

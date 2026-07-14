@@ -1915,6 +1915,12 @@ def test_experimental_native_nested_prompts_are_exact_and_enabled_type_only() ->
 
 def test_special_fallback_nested_prompts_are_exact_and_enabled_type_only() -> None:
     expected_records = {
+        "data_lineage": (
+            "datasets[]: {id:string,label:string,bbox:number[4],evidence_ids:string[]}",
+            "processes[]: {id:string,label:string,bbox:number[4],evidence_ids:string[]}",
+            "relations[]: {source:string,target:string,label:string,bbox:number[4],"
+            "evidence_ids:string[]}",
+        ),
         "eventmodeling": (
             "lanes[]: {id:string,label:string,bbox:number[4],evidence_ids:string[],frames:frame[]}",
             "lanes[].frames[]: {id:string,"
@@ -1922,6 +1928,9 @@ def test_special_fallback_nested_prompts_are_exact_and_enabled_type_only() -> No
             "label:string,time:string,bbox:number[4],evidence_ids:string[]}",
             "relations[]: {source:string,target:string,label:string,bbox:number[4],"
             "evidence_ids:string[]}",
+        ),
+        "organization": (
+            "root: {id:string,label:string,bbox:number[4],evidence_ids:string[],children:self[]}",
         ),
         "zenuml": (
             "participants[]: {id:string,label:string,bbox:number[4],evidence_ids:string[]}",
@@ -1950,8 +1959,15 @@ def test_special_fallback_nested_prompts_are_exact_and_enabled_type_only() -> No
     } == NESTED_TYPED_IR_TYPES
 
     combined = typed_ir_contract_prompt(set(SPECIAL_FALLBACK_NESTED_TYPES))
-    assert combined == typed_ir_contract_prompt({"zenuml", "eventmodeling"})
-    assert combined.index("- eventmodeling:") < combined.index("- zenuml:")
+    assert combined == typed_ir_contract_prompt(
+        {"zenuml", "organization", "eventmodeling", "data_lineage"}
+    )
+    assert (
+        combined.index("- data_lineage:")
+        < combined.index("- eventmodeling:")
+        < combined.index("- organization:")
+        < combined.index("- zenuml:")
+    )
     assert "eventmodeling.swimlanes[]" not in combined
     assert "eventmodeling.lanes[].nodes[]" not in combined
     assert "name:string" not in combined
@@ -1960,6 +1976,11 @@ def test_special_fallback_nested_prompts_are_exact_and_enabled_type_only() -> No
     assert "zenuml.participants[]: string|" not in combined
     assert "zenuml.messages[]: {id:string" not in combined
     assert "style:string" not in combined
+    assert "organization.nodes[]" not in combined
+    assert "data_lineage.nodes[]" not in combined
+    assert "data_lineage.links[]" not in combined
+    assert "data_lineage.relations[]: {id:string" not in combined
+    assert "shape:string" not in combined
     assert "railroad.rules[]" not in combined
 
     for diagram_type, records in expected_records.items():

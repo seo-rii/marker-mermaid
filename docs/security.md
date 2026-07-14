@@ -84,7 +84,17 @@ entity-like literal을 renderer가 손실시키는 자리에 보이는 `＆`/`�
 대체 사실은 warning에 남고 원문은 typed IR/sidecar에 보존됩니다. Strict nested 계약은
 Wardley `x`/`y`에 boolean·NaN·infinity를, `anchor`에 integer/string coercion을 허용하지
 않으며 Cynefin domain을 닫힌 official token 집합으로 검증합니다.
-Wardley·Cynefin·Event Modeling·ZenUML serializer의 생성 source는
+Organization·Data Lineage fallback은 raw ID를 Mermaid identifier로 직접 방출하지 않고
+type 전용 namespace와 normalization-collision 검사를 사용합니다. label은 control/format/
+lone-surrogate를 정규화 전에 거절하고 quote·backslash·entity-like literal, relation
+delimiter와 edge-grammar `()[]{}@`, accessibility angle bracket를 pinned runtime에 보이는
+compatibility glyph로 바꿉니다. Edge `@`는 `＠`로 표시하되 source에만 zero-width
+separator를 더해 NFKC 후 `@import`도 비활성으로 유지합니다. Active keyword·URL
+token은 source에서만 zero-width separator로 비활성화하며 원문은 typed IR/sidecar에
+남습니다. Data Lineage relation은 resolved, non-self, non-duplicate endpoint만 Flowchart에
+넘깁니다.
+
+Wardley·Cynefin·Event Modeling·ZenUML·Organization·Data Lineage serializer의 생성 source는
 security scanner에 넘기기 전에도 50,000자·5,000줄을 넘으면 전체 후보 단위로 거부됩니다.
 
 Style recovery는 Scene IR 값을 그대로 CSS로 복사하지 않습니다. Node와 edge는 exact built-in PDF vector

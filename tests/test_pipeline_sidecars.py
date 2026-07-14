@@ -1214,6 +1214,190 @@ def test_eventmodeling_and_zenuml_generated_scene_controls_provenance_and_sideca
     assert sidecar_scene["diagram_type_candidates"] == [diagram_type]
 
 
+@pytest.mark.parametrize("attributed", [True, False])
+@pytest.mark.parametrize(
+    (
+        "diagram_type",
+        "runtime_type",
+        "emitted_type",
+        "fallback_chain",
+        "expected_direction",
+        "expected_element_ids",
+        "expected_roles",
+        "expected_shapes",
+        "expected_relation_id",
+        "expected_semantic_relation",
+        "expected_arrow_at_end",
+    ),
+    [
+        (
+            "organization",
+            "treeview",
+            "treeview",
+            ["organization", "treeview"],
+            "LR",
+            ["treeview_node_ceo", "treeview_node_cto"],
+            ["node", "node"],
+            [None, None],
+            "organization_relation_1",
+            "containment",
+            False,
+        ),
+        (
+            "data_lineage",
+            "flowchart-v2",
+            "flowchart",
+            ["data_lineage", "flowchart"],
+            "BT",
+            ["data_lineage_dataset_raw", "data_lineage_process_etl"],
+            ["dataset", "process"],
+            ["cylinder", "rectangle"],
+            "data_lineage_relation_1",
+            "data_flow",
+            True,
+        ),
+    ],
+)
+def test_organization_and_data_lineage_generated_scene_control_provenance_and_sidecar(
+    tmp_path,
+    attributed,
+    diagram_type,
+    runtime_type,
+    emitted_type,
+    fallback_chain,
+    expected_direction,
+    expected_element_ids,
+    expected_roles,
+    expected_shapes,
+    expected_relation_id,
+    expected_semantic_relation,
+    expected_arrow_at_end,
+):
+    class TypedRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type=runtime_type,
+                svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+            )
+
+        def close(self):
+            pass
+
+    attribution = {"evidence_ids": ["ocr-scene"]} if attributed else {}
+    if diagram_type == "organization":
+        ir = {
+            "direction": "RL",
+            "root": {
+                "id": "ceo",
+                "label": "CEO",
+                "bbox": [0, 0, 20, 10],
+                **attribution,
+                "children": [
+                    {
+                        "id": "cto",
+                        "label": "CTO",
+                        "bbox": [30, 0, 50, 10],
+                        **attribution,
+                    }
+                ],
+            },
+        }
+        visible_text = "CEO CTO"
+    else:
+        ir = {
+            "direction": "BT",
+            "datasets": [
+                {
+                    "id": "raw",
+                    "label": "Raw",
+                    "bbox": [0, 0, 20, 10],
+                    **attribution,
+                }
+            ],
+            "processes": [
+                {
+                    "id": "etl",
+                    "label": "ETL",
+                    "bbox": [30, 0, 50, 10],
+                    **attribution,
+                }
+            ],
+            "relations": [
+                {
+                    "source": "raw",
+                    "target": "etl",
+                    "label": "writes",
+                    "evidence_ids": ["line-scene"],
+                }
+            ],
+        }
+        visible_text = "Raw ETL writes"
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=[diagram_type], scores=[1.0]),
+        typed_candidates=[TypedIRCandidate(diagram_type=diagram_type, ir=ir)],
+        evidence=[
+            VisualEvidence(
+                id="ocr-scene",
+                kind="ocr_token",
+                text=visible_text,
+                bbox=(0, 0, 80, 10),
+            ),
+            VisualEvidence(id="line-scene", kind="line_segment"),
+        ],
+    )
+    config = MermaidConfig(candidate_count=1)
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(TypedRuntime(), config.security_profile),
+    ).reconstruct(
+        f"{diagram_type}-source-{'attributed' if attributed else 'unattributed'}",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+    )
+
+    assert result.selected is not None
+    selected = result.selected
+    assert selected.diagram_type == diagram_type
+    assert selected.emitted_diagram_type == emitted_type
+    assert selected.fallback_chain == fallback_chain
+    assert selected.generated_scene_ir is not None
+    generated_scene = selected.generated_scene_ir
+    assert generated_scene.diagram_type_candidates == [diagram_type]
+    assert generated_scene.reading_direction == expected_direction
+    assert [element.id for element in generated_scene.elements] == expected_element_ids
+    assert [element.role for element in generated_scene.elements] == expected_roles
+    assert [element.shape for element in generated_scene.elements] == expected_shapes
+    assert all(element.bbox == (0, 0, 0, 0) for element in generated_scene.elements)
+    assert [relation.id for relation in generated_scene.relations] == [expected_relation_id]
+    assert [relation.semantic_relation for relation in generated_scene.relations] == [
+        expected_semantic_relation
+    ]
+    assert all(not relation.arrow_at_start for relation in generated_scene.relations)
+    assert all(
+        relation.arrow_at_end is expected_arrow_at_end for relation in generated_scene.relations
+    )
+    assert selected.scores["ocr_recall"] == 1
+    assert selected.scores["visual_entailment_precision"] == (1 if attributed else 0)
+    assert result.publish is attributed
+    assert result.review_required is not attributed
+    assert (selected.aggregate_score is not None) is attributed
+    assert any("provenance gate" in warning for warning in selected.warnings) is not attributed
+
+    relative = SidecarStore(tmp_path).write(result)
+    bundle = tmp_path / relative
+    manifest = json.loads((bundle / "manifest.json").read_text())
+    assert manifest["requested_diagram_type"] == diagram_type
+    assert manifest["emitted_diagram_type"] == emitted_type
+    assert manifest["fallback_chain"] == fallback_chain
+    sidecar_scene = json.loads((bundle / "generated-scene-ir.json").read_text())
+    assert sidecar_scene == generated_scene.model_dump(mode="json")
+    assert sidecar_scene["diagram_type_candidates"] == [diagram_type]
+
+
 def test_wardley_layout_score_uses_native_xy_instead_of_source_bbox_metadata():
     class WardleyRuntime:
         def validate_and_render(self, code, timeout_seconds):
@@ -2032,11 +2216,36 @@ def test_nested_organization_runtime_rejection_retries_flowchart_fallback():
     assert result.selected.emitted_diagram_type == "flowchart"
     assert result.selected.fallback_chain == ["organization", "treeview", "flowchart"]
     assert result.selected.render_valid
+    assert result.selected.generated_scene_ir is not None
+    generated_scene = result.selected.generated_scene_ir
+    assert generated_scene.diagram_type_candidates == ["organization"]
+    assert generated_scene.reading_direction == "LR"
+    assert [element.id for element in generated_scene.elements] == [
+        "treeview_node_ceo",
+        "treeview_node_cto",
+    ]
+    assert [element.shape for element in generated_scene.elements] == [
+        "rectangle",
+        "rectangle",
+    ]
+    assert all(element.bbox == (0, 0, 0, 0) for element in generated_scene.elements)
+    assert [relation.id for relation in generated_scene.relations] == ["organization_relation_1"]
+    assert generated_scene.relations[0].semantic_relation == "containment"
+    assert not generated_scene.relations[0].arrow_at_start
+    assert generated_scene.relations[0].arrow_at_end
     assert result.selected.scores["ocr_recall"] == 1
     assert result.selected.scores["visual_entailment_precision"] == 1
     assert len(runtime.calls) == 2
     assert runtime.calls[0].startswith("treeView-beta")
     assert runtime.calls[1].startswith("flowchart LR")
+    assert any(
+        warning.startswith("Organization chart was projected through TreeView semantics")
+        for warning in result.selected.warnings
+    )
+    assert not any(
+        "Organization chart was emitted as TreeView" in warning
+        for warning in result.selected.warnings
+    )
     assert result.selected.repair_history[-1].operation == "runtime_portable_fallback"
 
 

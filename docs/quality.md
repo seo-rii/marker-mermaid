@@ -35,6 +35,18 @@ ZenUML도 Sequence fallback의 namespaced participant/message ID, alias label, e
 방출 구조로 복사하지 않고 zero geometry를 써서 layout score를 위조하지 않습니다.
 Wardley의 label 없는 component와 ZenUML의 label 없는 participant도 임의 `text`가 아니라
 serializer가 실제 표시하는 safe source ID를 사용합니다.
+
+Organization generated Scene은 shared plan의 logical `treeview_node_*` identity, 실제 visible label,
+parent→child containment, `LR` 방향을 사용합니다. Pipeline은 검증된 terminal grammar를
+adapter에 넘겨 native TreeView의 marker 없는 connector/shape 미지정과 Flowchart fallback의
+rectangle/end-arrow를 구분합니다. Child record evidence는 child element와 해당 containment
+relation에 연결하고, native/fallback이 재현하지 않는 raw bbox/group/style은 버립니다.
+Data Lineage Scene은 `data_lineage_dataset_*`·
+`data_lineage_process_*` node, cylinder/rectangle shape, `data_lineage_relation_*`
+data-flow/end-arrow, 검증된 `TB`/`BT`/`LR`/`RL` 방향만 사용합니다.
+Lineage relation evidence는 해당 relation에만 연결합니다. 두 adapter의 geometry는 0,
+group은 빈 list이며 OCR projection은 화면에 보이는 node/relation label을 record당 한 번만
+사용합니다.
 Wardley Scene은 raw record bbox 대신 native 좌표를 화면에 맞게 바꾼 `(x, 1-y)`만
 `normalized` explicit position으로 씁니다. IR의 수평/수직 `x`/`y`는 native에 `[y, x]`로
 방출하고 token 반올림을 Scene 값에도 적용합니다. `->` link는 실제 SVG에 marker가 없으므로

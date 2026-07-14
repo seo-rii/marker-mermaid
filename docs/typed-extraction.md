@@ -10,6 +10,8 @@ bit-range record와 effect/category/cause 또는 root/children 계층을 같은 
 Wardley·Cynefin의 positioned component/link·domain/item/transition record도 strict nested
 contract 대상입니다. Event Modeling의 lane/frame/relation과 ZenUML의
 participant/message fallback record도 같은 nested 경계를 통과합니다.
+Organization의 재귀 hierarchy와 Data Lineage의 dataset/process/relation record도
+canonical prompt와 응답 후 검증을 공유합니다.
 serializer의 세부 의미 검사는 그 다음 단계에서 수행합니다.
 
 이 경계는 두 문제를 분리합니다.
@@ -60,6 +62,38 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | Cynefin | official domain, evidence-bearing item, domain transition |
 | Event Modeling fallback | lane, lane 안의 frame, relation endpoint/label |
 | ZenUML fallback | participant object·message; legacy string participant는 입력 호환만 지원 |
+| Organization fallback | 재귀 root/children reporting hierarchy |
+| Data Lineage fallback | dataset, process, relation endpoint/label |
+
+### Organization·Data Lineage fallback record 계약
+
+Organization은 `root: object`를, Data Lineage는 `datasets: list`와
+`relations: list`를 필수 root로 사용합니다. Data Lineage의 `processes`는 선택 root이며
+누락하면 빈 list로 검증합니다. Provider prompt에는 다음 canonical record만
+공개합니다.
+
+| Type | Record | Prompt에 공개하고 형을 검사하는 field |
+| --- | --- | --- |
+| Organization | `root` / `children[]` | `id`, `label`, `bbox`, `evidence_ids`, `children` |
+| Data Lineage | `datasets[]` | `id`, `label`, `bbox`, `evidence_ids` |
+| Data Lineage | `processes[]` | `id`, `label`, `bbox`, `evidence_ids` |
+| Data Lineage | `relations[]` | `source`, `target`, `label`, `bbox`, `evidence_ids` |
+
+Organization의 기존 `name`은 TreeView sidecar/fixture 호환을 위해 응답 후 검증에서는
+받지만 provider prompt에는 노출하지 않습니다. `role`, `shape`, `style`,
+`bidirectional`, raw relation ID 같은 미등록 metadata는 원본 IR에 보존될 수
+있어도 fallback 구조로 승격하지 않습니다. 공통 root의 `direction`은
+Organization에서는 무시하고 Data Lineage에서는 닫힌 방향 값으로 검증해 실제
+Flowchart와 Scene에 사용합니다. 기존 partial/direct IR 호환을 위해 Organization의
+누락 ID는 preorder `node_N`으로 보완하고 Data Lineage의 누락 label은 검증된
+source ID를 그대로 사용합니다. Organization label/name과 Data Lineage ID는 필수이며,
+ID 충돌은 두 planner가, relation endpoint·self-loop·중복은 Data Lineage planner가
+판정합니다. Organization
+relation은 explicit record가 아니라 검증된 `children`에서만 파생합니다. source 코드
+예산은 두 공유 planner/serializer 경계에서 판정합니다.
+Data Lineage edge label의 `|`, `;`, `()`, `[]`, `{}`, `@`는 Mermaid 11.16의 unquoted
+edge-label grammar과 충돌하므로 실제 SVG에 보이는 compatibility glyph로 치환하고
+warning·Scene·OCR에 같은 손실을 기록합니다.
 
 ### Event Modeling·ZenUML fallback record 계약
 
@@ -472,13 +506,31 @@ Fallback이 source 좌표를 재현하지 않으므로 generated element/group b
 layout 일치를 위조하지 않습니다. 두 Scene은 `LR`이고 relation/message는 end-arrow만 가지며,
 화면에 보이는 compatibility label을 OCR projection과 한 번만 공유합니다.
 
+Organization·Data Lineage adapter도 독립적으로 raw IR을 풀지 않고 serializer와
+공유하는 frozen plan을 사용합니다. Organization node의 logical/fallback identity는
+`treeview_node_*`,
+Data Lineage node는 `data_lineage_dataset_*` 또는 `data_lineage_process_*`로
+namespace를 나누고, plan이 확정한 relation은 각각 `organization_relation_N`·
+`data_lineage_relation_N` Scene/provenance slot을 얻습니다. Lineage dataset/process의
+실제 fallback shape는 cylinder/rectangle이고 relation은 `data_flow`입니다.
+Organization child evidence는 child element·containment relation에, lineage relation evidence는
+해당 `data_flow` relation에만 연결합니다.
+
+두 fallback이 source 좌표와 group/style을 재현하지 않으므로 generated bbox는 0이고
+group은 만들지 않습니다. raw bbox/role/shape/style/bidirectional과 relation ID는
+Scene을 변경하지 않고 Organization의 raw direction도 무시합니다. OCR projection은
+compatibility 치환 후 실제 화면에
+보이는 node/relation label을 각 record당 한 번만 사용합니다. Data Lineage
+direction은 `TB`, `BT`, `LR`, `RL`만 허용하고 기본은 `LR`입니다.
+
 현재 Marker `response_schema`의 외부 envelope는 여전히 `TypedIRCandidate.ir: dict`입니다. 따라서 이 단계는
 모든 Phase 2 type, Phase 3 chart(Pie·XY·Quadrant·Sankey·Radar·Treemap·Venn),
-Journey·Kanban·GitGraph와 Packet·Ishikawa·TreeView·Wardley·Cynefin·Event Modeling·ZenUML의
+Journey·Kanban·GitGraph와 Packet·Ishikawa·TreeView·Wardley·Cynefin·Event Modeling·ZenUML·
+Organization·Data Lineage의
 prompt와 응답 후 검증을 중첩 구조까지
 확장하지만 provider에 모든 Mermaid 유형을 하나의 discriminated JSON Schema로 직접 노출하거나 generic
 envelope reserve를 늘리지는 않습니다. 나머지 special type인
-Railroad·Organization·Data Lineage는
+Railroad는
 아직 schema-light root contract입니다. Envelope-level discriminated
 schema도 후속 작업이므로 Phase 2에 root-only type이 남지 않아도 `ARCH-001`은 여전히 부분 완화
 상태입니다.
@@ -560,7 +612,10 @@ observation이 fusion fallback이나 serialization sink를 우회해 게시되�
 Typed IR serializer가 만든 결과를 provenance 및 구조 점수에 사용할 때는 `candidate_scene.py`가 실제
 방출 구조를 `DiagramSceneIR`로 바꿉니다. Flow/UML/architecture/chart 외에도 sequence/ZenUML,
 mindmap/treemap/tree/organization, timeline/journey/Kanban, event modeling, Ishikawa, Wardley/Cynefin,
-data lineage, Venn adapter가 있습니다. Adapter가 없는 유형은 구조를 추측하지 않고 metric을
+data lineage, Venn adapter가 있습니다. Organization과 Data Lineage adapter는 serializer와
+공유하는 bounded plan에서 logical/fallback emitted identity와 실제 label·topology를
+읽으므로 raw record를 다시
+해석하지 않습니다. Adapter가 없는 유형은 구조를 추측하지 않고 metric을
 `unavailable`로 둡니다.
 
 계층 child, Kanban column-card, Venn set-intersection처럼 serializer가 암시하는 관계는 deterministic

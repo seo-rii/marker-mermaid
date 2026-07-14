@@ -2045,6 +2045,7 @@ class ReconstructionPipeline:
                         style_candidate_scene = typed_ir_to_scene(
                             draft.diagram_type,
                             draft.typed_ir,
+                            emitted_diagram_type=draft.emitted_diagram_type,
                         )
                     except Exception as exc:
                         style_preflight_warnings.append(
@@ -2272,7 +2273,15 @@ class ReconstructionPipeline:
                                 candidate.emitted_diagram_type = fallback.emitted_type
                                 candidate.fallback_chain = list(fallback.fallback_chain)
                                 candidate.serialization_stability = fallback.stability
-                                candidate.warnings.extend(fallback.warnings)
+                                serialization_warning_start = len(view_warnings) + len(
+                                    draft.observation.warnings
+                                )
+                                serialization_warning_end = serialization_warning_start + len(
+                                    draft.warnings or ()
+                                )
+                                candidate.warnings[
+                                    serialization_warning_start:serialization_warning_end
+                                ] = list(fallback.warnings)
                                 candidate.repair_history.append(
                                     RepairEvent(
                                         iteration=0,
@@ -2585,7 +2594,11 @@ class ReconstructionPipeline:
         generated_scene_failed = False
         if typed_ir is not None:
             try:
-                generated_scene = typed_ir_to_scene(semantic_diagram_type, typed_ir)
+                generated_scene = typed_ir_to_scene(
+                    semantic_diagram_type,
+                    typed_ir,
+                    emitted_diagram_type=runtime.diagram_type,
+                )
             except Exception as exc:
                 generated_scene_failed = True
                 warnings.append(f"generated semantic scene conversion was isolated: {exc}")

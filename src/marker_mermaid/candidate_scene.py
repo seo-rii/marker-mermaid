@@ -30,6 +30,8 @@ from marker_mermaid.serializers_experimental import (
     CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS,
     plan_cynefin_records,
     plan_cynefin_runtime_items,
+    plan_data_lineage_records,
+    plan_organization_hierarchy,
     plan_wardley_records,
     plan_zenuml_structure,
 )
@@ -119,8 +121,13 @@ def _planned_hierarchy_records(
     return nodes, edges
 
 
-def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR | None:
-    """Convert deterministic typed-IR node and relation fields into a scene."""
+def typed_ir_to_scene(
+    diagram_type: str,
+    ir: dict[str, Any],
+    *,
+    emitted_diagram_type: str | None = None,
+) -> DiagramSceneIR | None:
+    """Convert deterministic typed IR into the terminal grammar's visible scene."""
 
     node_records: list[dict[str, Any]] = []
     edge_records: list[dict[str, Any]] = []
@@ -375,12 +382,48 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
         ]
     elif diagram_type == "treemap" and isinstance(ir.get("root"), dict):
         node_records, edge_records = _hierarchy_records(ir["root"])
-    elif diagram_type in {"treeview", "organization"}:
+    elif diagram_type == "treeview":
         try:
             treeview_plan = plan_treeview_hierarchy(ir)
         except SerializationError:
             return None
         node_records, edge_records = _planned_hierarchy_records(treeview_plan)
+    elif diagram_type == "organization":
+        try:
+            organization_plan = plan_organization_hierarchy(ir)
+        except SerializationError:
+            return None
+        if emitted_diagram_type is None:
+            organization_uses_flowchart = any(
+                any(character in node.semantic_label for character in '"\\')
+                for node in organization_plan.nodes
+            )
+        else:
+            organization_uses_flowchart = emitted_diagram_type.casefold().startswith("flowchart")
+        node_records = [
+            {
+                "id": node.emitted_id,
+                "label": node.label,
+                "role": "node",
+                "shape": "rectangle" if organization_uses_flowchart else None,
+                "evidence_ids": list(node.source_record.get("evidence_ids") or []),
+            }
+            for node in organization_plan.nodes
+        ]
+        edge_records = [
+            {
+                "id": relation.emitted_id,
+                "source": relation.source_emitted_id,
+                "target": relation.target_emitted_id,
+                "relation_type": "generated_connector",
+                "semantic_relation": "containment",
+                "arrow_at_start": False,
+                "arrow_at_end": organization_uses_flowchart,
+                "evidence_ids": list(relation.source_record.get("evidence_ids") or []),
+            }
+            for relation in organization_plan.relations
+        ]
+        scene_direction_override = organization_plan.direction
     elif diagram_type == "ishikawa":
         try:
             ishikawa_plan = plan_ishikawa_hierarchy(ir)
@@ -636,8 +679,35 @@ def typed_ir_to_scene(diagram_type: str, ir: dict[str, Any]) -> DiagramSceneIR |
         ]
         scene_direction_override = "unknown"
     elif diagram_type == "data_lineage":
-        node_records = [*(ir.get("datasets") or []), *(ir.get("processes") or [])]
-        edge_records = list(ir.get("relations") or [])
+        try:
+            data_lineage_plan = plan_data_lineage_records(ir)
+        except SerializationError:
+            return None
+        node_records = [
+            {
+                "id": node.emitted_id,
+                "label": node.label,
+                "role": node.kind,
+                "shape": node.shape,
+                "evidence_ids": list(node.source_record.get("evidence_ids") or []),
+            }
+            for node in data_lineage_plan.nodes
+        ]
+        edge_records = [
+            {
+                "id": relation.emitted_id,
+                "source": relation.source_emitted_id,
+                "target": relation.target_emitted_id,
+                "label": relation.label,
+                "relation_type": "generated_connector",
+                "semantic_relation": "data_flow",
+                "arrow_at_start": False,
+                "arrow_at_end": True,
+                "evidence_ids": list(relation.source_record.get("evidence_ids") or []),
+            }
+            for relation in data_lineage_plan.relations
+        ]
+        scene_direction_override = data_lineage_plan.direction
     elif diagram_type == "venn":
         node_records = list(ir.get("sets") or [])
         for index, intersection in enumerate(ir.get("intersections") or [], start=1):
@@ -1172,6 +1242,19 @@ def typed_ir_semantic_texts(
             yield participant.label
         for message in plan.messages:
             yield message.label
+        return
+    if diagram_type == "organization":
+        plan = plan_organization_hierarchy(ir)
+        for node in plan.nodes:
+            yield node.label
+        return
+    if diagram_type == "data_lineage":
+        plan = plan_data_lineage_records(ir)
+        for node in plan.nodes:
+            yield node.label
+        for relation in plan.relations:
+            if relation.label is not None:
+                yield relation.label
         return
 
     for element in scene.elements:

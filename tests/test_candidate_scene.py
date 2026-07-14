@@ -2555,7 +2555,13 @@ def test_special_hierarchy_scene_reuses_serializer_ids_for_missing_id_collisions
         ),
         (
             "organization",
-            {"root": {"name": "Leadership", "children": [{"name": "Engineering"}]}},
+            {
+                "root": {
+                    "id": "leadership",
+                    "name": "Leadership",
+                    "children": [{"id": "engineering", "name": "Engineering"}],
+                }
+            },
             ["Leadership", "Engineering"],
         ),
         (
@@ -2662,8 +2668,8 @@ def test_hierarchy_lineage_wardley_and_venn_scene_adapters_are_attributable():
     lineage = typed_ir_to_scene(
         "data_lineage",
         {
-            "datasets": [{"id": "raw", "evidence_ids": ["ocr-raw"]}],
-            "processes": [{"id": "etl", "evidence_ids": ["ocr-etl"]}],
+            "datasets": [{"id": "raw", "label": "Raw", "evidence_ids": ["ocr-raw"]}],
+            "processes": [{"id": "etl", "label": "ETL", "evidence_ids": ["ocr-etl"]}],
             "relations": [{"source": "raw", "target": "etl", "evidence_ids": ["line-etl"]}],
         },
     )
@@ -2695,9 +2701,280 @@ def test_hierarchy_lineage_wardley_and_venn_scene_adapters_are_attributable():
     ]
     assert organization.relations[0].source_id == "treeview_node_ceo"
     assert organization.relations[0].target_id == "treeview_node_cto"
-    assert lineage is not None and lineage.relations[0].semantic_relation == "unknown"
+    assert lineage is not None and lineage.relations[0].semantic_relation == "data_flow"
     assert wardley is not None and wardley.relations[0].evidence_ids == ["line-api"]
     assert venn is not None and len(venn.elements) == 3 and len(venn.relations) == 2
+
+
+def test_organization_scene_uses_only_visible_fallback_hierarchy_semantics() -> None:
+    ir = {
+        "direction": "RL",
+        "title": "Hidden accessibility title",
+        "root": {
+            "id": "ceo-primary",
+            "label": 'CEO "HQ"\\Ops &copy;',
+            "text": "Hidden root text",
+            "bbox": [10, 20, 30, 40],
+            "role": "raw executive role",
+            "shape": "diamond",
+            "style": "dashed",
+            "evidence_ids": ["ocr-ceo"],
+            "children": [
+                {
+                    "id": "cto",
+                    "label": "CTO",
+                    "bbox": [50, 20, 70, 40],
+                    "role": "raw report role",
+                    "shape": "circle",
+                    "evidence_ids": ["ocr-cto"],
+                }
+            ],
+        },
+    }
+
+    scene = typed_ir_to_scene(
+        "organization",
+        ir,
+        emitted_diagram_type="flowchart-v2",
+    )
+
+    assert scene is not None
+    assert [(element.id, element.text) for element in scene.elements] == [
+        ("treeview_node_ceo_primary", "CEO ″HQ″∖Ops ＆copy;"),
+        ("treeview_node_cto", "CTO"),
+    ]
+    assert [element.role for element in scene.elements] == ["node", "node"]
+    assert [element.bbox for element in scene.elements] == [
+        (0.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0),
+    ]
+    assert [element.shape for element in scene.elements] == ["rectangle", "rectangle"]
+    assert [element.evidence_ids for element in scene.elements] == [
+        ["ocr-ceo"],
+        ["ocr-cto"],
+    ]
+    assert scene.groups == []
+    assert len(scene.relations) == 1
+    relation = scene.relations[0]
+    assert relation.id == "organization_relation_1"
+    assert relation.source_id == "treeview_node_ceo_primary"
+    assert relation.target_id == "treeview_node_cto"
+    assert relation.label is None
+    assert relation.relation_type == "generated_connector"
+    assert relation.semantic_relation == "containment"
+    assert not relation.arrow_at_start and relation.arrow_at_end
+    assert relation.polyline == []
+    assert relation.line_style is None
+    assert relation.evidence_ids == ["ocr-cto"]
+    assert scene.reading_direction == "LR"
+    assert scene.diagram_type_candidates == ["organization"]
+    assert list(typed_ir_semantic_texts("organization", ir, scene)) == [
+        "CEO ″HQ″∖Ops ＆copy;",
+        "CTO",
+    ]
+
+
+def test_organization_scene_tracks_terminal_treeview_connector_glyphs() -> None:
+    ir = {
+        "root": {
+            "id": "ceo",
+            "label": "CEO",
+            "children": [{"id": "cto", "label": "CTO"}],
+        }
+    }
+
+    native = typed_ir_to_scene(
+        "organization",
+        ir,
+        emitted_diagram_type="treeview",
+    )
+    fallback = typed_ir_to_scene(
+        "organization",
+        ir,
+        emitted_diagram_type="flowchart-v2",
+    )
+
+    assert native is not None and fallback is not None
+    assert [element.shape for element in native.elements] == [None, None]
+    assert not native.relations[0].arrow_at_start
+    assert not native.relations[0].arrow_at_end
+    assert [element.shape for element in fallback.elements] == ["rectangle", "rectangle"]
+    assert not fallback.relations[0].arrow_at_start
+    assert fallback.relations[0].arrow_at_end
+
+
+def test_data_lineage_scene_matches_exact_portable_flowchart_projection() -> None:
+    ir = {
+        "direction": "RL",
+        "description": "Hidden accessibility description",
+        "datasets": [
+            {
+                "id": "raw-data",
+                "label": 'Raw "zone"\\set &copy;',
+                "text": "Hidden dataset text",
+                "bbox": [5, 6, 20, 22],
+                "role": "raw source role",
+                "shape": "diamond",
+                "style": "dashed",
+                "evidence_ids": ["ocr-raw"],
+            }
+        ],
+        "processes": [
+            {
+                "id": "clean-etl",
+                "label": "ETL",
+                "bbox": [25, 6, 40, 22],
+                "role": "raw process role",
+                "shape": "circle",
+                "evidence_ids": ["ocr-etl"],
+            }
+        ],
+        "relations": [
+            {
+                "id": "raw-relation-id",
+                "source": "raw-data",
+                "target": "clean-etl",
+                "label": "writes | now;",
+                "text": "Hidden relation text",
+                "bbox": [20, 10, 25, 12],
+                "style": "dashed",
+                "bidirectional": True,
+                "arrow_at_start": True,
+                "arrow_at_end": False,
+                "semantic_relation": "causal",
+                "evidence_ids": ["line-write"],
+            }
+        ],
+    }
+
+    scene = typed_ir_to_scene("data_lineage", ir)
+
+    assert scene is not None
+    assert [(element.id, element.text) for element in scene.elements] == [
+        ("data_lineage_dataset_raw_data", "Raw ″zone″∖set ＆copy;"),
+        ("data_lineage_process_clean_etl", "ETL"),
+    ]
+    assert [element.role for element in scene.elements] == ["dataset", "process"]
+    assert [element.shape for element in scene.elements] == ["cylinder", "rectangle"]
+    assert [element.bbox for element in scene.elements] == [
+        (0.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0),
+    ]
+    assert [element.evidence_ids for element in scene.elements] == [
+        ["ocr-raw"],
+        ["ocr-etl"],
+    ]
+    assert scene.groups == []
+    assert len(scene.relations) == 1
+    relation = scene.relations[0]
+    assert relation.id == "data_lineage_relation_1"
+    assert relation.source_id == "data_lineage_dataset_raw_data"
+    assert relation.target_id == "data_lineage_process_clean_etl"
+    assert relation.label == "writes ∣ now⁏"
+    assert relation.relation_type == "generated_connector"
+    assert relation.semantic_relation == "data_flow"
+    assert not relation.arrow_at_start and relation.arrow_at_end
+    assert relation.polyline == []
+    assert relation.line_style is None
+    assert relation.evidence_ids == ["line-write"]
+    assert scene.reading_direction == "RL"
+    assert scene.diagram_type_candidates == ["data_lineage"]
+    texts = list(typed_ir_semantic_texts("data_lineage", ir, scene))
+    assert texts == ["Raw ″zone″∖set ＆copy;", "ETL", "writes ∣ now⁏"]
+    assert (
+        ocr_recall(
+            ["Raw zone set copy ETL writes now"],
+            "",
+            generated_texts=texts,
+        )
+        == 1
+    )
+    assert (
+        ocr_recall(
+            [
+                "Hidden accessibility description dataset relation concealed-relation-id "
+                "dashed diamond causal"
+            ],
+            "",
+            generated_texts=texts,
+        )
+        == 0
+    )
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "organization",
+            {
+                "root": {
+                    "id": "root",
+                    "label": "Root",
+                    "children": [
+                        {"id": f"child-{index}", "label": "Child"} for index in range(500)
+                    ],
+                }
+            },
+        ),
+        (
+            "data_lineage",
+            {
+                "datasets": [{"id": f"dataset-{index}"} for index in range(250)],
+                "processes": [{"id": f"process-{index}"} for index in range(250)],
+                "relations": [{"source": "dataset-0", "target": "process-0"}],
+            },
+        ),
+        (
+            "data_lineage",
+            {
+                "datasets": [{"id": "raw"}],
+                "processes": [{"id": "etl"}],
+                "relations": [{"source": "raw", "target": "missing"}],
+            },
+        ),
+        (
+            "organization",
+            {
+                "root": {
+                    "id": "root",
+                    "label": "R" * 500,
+                    "children": [
+                        {
+                            "id": f"verbose-child-{index}",
+                            "label": "C" * 500,
+                        }
+                        for index in range(199)
+                    ],
+                }
+            },
+        ),
+        (
+            "data_lineage",
+            {
+                "datasets": [
+                    {
+                        "id": f"verbose-dataset-{index}",
+                        "label": "D" * 500,
+                    }
+                    for index in range(200)
+                ],
+                "processes": [{"id": "etl", "label": "ETL"}],
+                "relations": [
+                    {
+                        "source": "verbose-dataset-0",
+                        "target": "etl",
+                    }
+                ],
+            },
+        ),
+    ],
+)
+def test_organization_and_data_lineage_scenes_fail_closed_on_invalid_or_over_budget_plans(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    assert typed_ir_to_scene(diagram_type, ir) is None
 
 
 def test_treemap_scene_uses_explicit_recursive_ids_and_child_attribution() -> None:

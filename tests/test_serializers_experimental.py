@@ -12,6 +12,8 @@ from marker_mermaid.security import MermaidSecurityScanner
 from marker_mermaid.serializers import SerializationError
 from marker_mermaid.serializers_experimental import (
     plan_cynefin_records,
+    plan_data_lineage_records,
+    plan_organization_hierarchy,
     plan_wardley_records,
     plan_zenuml_records,
     plan_zenuml_structure,
@@ -676,8 +678,8 @@ def test_organization_and_data_lineage_have_explicit_portable_fallbacks():
     assert organization.fallback_chain == ("organization", "treeview")
     assert organization.code.startswith("treeView-beta")
     assert lineage.fallback_chain == ("data_lineage", "flowchart")
-    assert 'raw[("Raw")]' in lineage.code
-    assert "etl -->|writes| clean" in lineage.code
+    assert 'data_lineage_dataset_raw[("Raw")]' in lineage.code
+    assert "data_lineage_process_etl -->|writes| data_lineage_dataset_clean" in lineage.code
 
 
 def test_organization_runtime_rejection_uses_nested_flowchart_fallback():
@@ -698,6 +700,426 @@ def test_organization_runtime_rejection_uses_nested_flowchart_fallback():
     assert 'treeview_node_ceo["CEO"]' in result.code
     assert "treeview_node_ceo --> treeview_node_cto" in result.code
     assert any("CandidateValidator rejected" in warning for warning in result.warnings)
+
+
+def test_organization_plan_is_frozen_attributable_and_exactly_parented():
+    ceo = {
+        "id": "end",
+        "name": "CEO &amp; Chair",
+        "bbox": [1, 2, 30, 40],
+        "evidence_ids": ["ocr-ceo"],
+        "children": [
+            {
+                "id": "platform-team",
+                "label": 'Platform "Lead" \\ owner',
+                "evidence_ids": ["ocr-lead"],
+            }
+        ],
+    }
+
+    plan = plan_organization_hierarchy({"root": ceo, "direction": "TB"})
+
+    assert plan.direction == "LR"
+    assert plan.nodes[0].source_record is ceo
+    assert plan.nodes[0].emitted_id == "treeview_node_end"
+    assert plan.nodes[0].semantic_label == "CEO &amp; Chair"
+    assert plan.nodes[0].label == "CEO ＆amp; Chair"
+    assert plan.nodes[1].emitted_id == "treeview_node_platform_team"
+    assert plan.nodes[1].label == "Platform ″Lead″ ∖ owner"
+    assert plan.nodes[1].parent_emitted_id == "treeview_node_end"
+    assert plan.relations[0].source_record is ceo["children"][0]
+    assert plan.relations[0].emitted_id == "organization_relation_1"
+    assert plan.relations[0].source_emitted_id == "treeview_node_end"
+    assert plan.relations[0].target_emitted_id == "treeview_node_platform_team"
+    assert plan.compatibility_substituted
+    with pytest.raises(FrozenInstanceError):
+        plan.direction = "TB"
+
+
+def test_organization_preserves_legacy_name_but_rejects_alias_conflict_and_invention():
+    result = serialize_organization(
+        {
+            "root": {
+                "id": "ceo",
+                "name": "Chief Executive",
+                "children": [{"id": "cto", "name": "Technology"}],
+            }
+        }
+    )
+    assert '"Chief Executive"' in result.code
+    assert '"Technology"' in result.code
+
+    with pytest.raises(SerializationError, match="aliases must agree"):
+        plan_organization_hierarchy(
+            {
+                "root": {
+                    "id": "ceo",
+                    "label": "CEO",
+                    "name": "Chief",
+                    "children": [{"id": "cto", "label": "CTO"}],
+                }
+            }
+        )
+    with pytest.raises(SerializationError, match=r"nodes\[1\]\.label"):
+        plan_organization_hierarchy(
+            {
+                "root": {
+                    "id": "ceo",
+                    "label": "CEO",
+                    "children": [{"id": "cto"}],
+                }
+            }
+        )
+
+
+def test_organization_preserves_deterministic_legacy_ids_without_inventing_labels():
+    plan = plan_organization_hierarchy(
+        {
+            "root": {
+                "label": "CEO",
+                "children": [{"label": "CTO"}],
+            }
+        }
+    )
+
+    assert [node.source_id for node in plan.nodes] == ["node_1", "node_2"]
+    assert [node.emitted_id for node in plan.nodes] == [
+        "treeview_node_node_1",
+        "treeview_node_node_2",
+    ]
+    assert [node.semantic_label for node in plan.nodes] == ["CEO", "CTO"]
+    assert plan.relations[0].source_id == "node_1"
+    assert plan.relations[0].target_id == "node_2"
+
+
+def test_organization_preserves_treeview_sized_source_identifiers() -> None:
+    long_id = "a" * 200
+
+    plan = plan_organization_hierarchy(
+        {
+            "root": {
+                "id": long_id,
+                "label": "Executive",
+                "children": [{"id": "report", "label": "Report"}],
+            }
+        }
+    )
+
+    assert plan.nodes[0].source_id == long_id
+    assert plan.nodes[0].emitted_id == f"treeview_node_{long_id}"
+
+
+@pytest.mark.parametrize(
+    ("root", "message"),
+    [
+        (
+            {"id": 1, "label": "CEO", "children": [{"id": "cto", "label": "CTO"}]},
+            r"nodes\[0\]\.id",
+        ),
+        (
+            {
+                "id": "ceo",
+                "label": "CEO\ud800",
+                "children": [{"id": "cto", "label": "CTO"}],
+            },
+            "unsupported control",
+        ),
+        (
+            {
+                "id": "a-b",
+                "label": "CEO",
+                "children": [{"id": "a_b", "label": "CTO"}],
+            },
+            "ambiguous after Mermaid normalization",
+        ),
+    ],
+)
+def test_organization_direct_planner_rejects_invalid_types_unicode_and_ids(root, message):
+    with pytest.raises(SerializationError, match=message):
+        plan_organization_hierarchy({"root": root})
+
+
+def test_organization_security_projection_matches_visible_compatibility_labels():
+    result = serialize_organization(
+        {
+            "root": {
+                "id": "end",
+                "label": 'CEO "Q" \\ &amp; https://x.invalid <script>',
+                "children": [{"id": "subgraph", "label": "style click callback"}],
+            }
+        }
+    )
+
+    assert result.fallback_chain == ("organization", "treeview", "flowchart")
+    assert result.warnings[0].startswith(
+        "Organization chart was projected through TreeView semantics"
+    )
+    assert "treeview_node_end" in result.code
+    assert "CEO ″Q″ ∖ ＆amp;" in result.code
+    assert "https://" not in result.code
+    assert "<script>" not in result.code
+    assert MermaidSecurityScanner(SecurityProfile.STRICT).scan(result.code).safe
+    assert (
+        MermaidSecurityScanner(SecurityProfile.STRICT)
+        .scan(unicodedata.normalize("NFKC", result.code))
+        .safe
+    )
+
+
+def test_data_lineage_plan_is_frozen_namespaced_and_attributable():
+    raw = {
+        "id": "end",
+        "label": 'Raw &amp; "Q" \\ path',
+        "bbox": [1, 2, 3, 4],
+        "evidence_ids": ["ocr-raw"],
+    }
+    etl = {"id": "style", "label": "ETL", "evidence_ids": ["ocr-etl"]}
+    relation = {
+        "source": "end",
+        "target": "style",
+        "label": "writes|daily; verified",
+        "evidence_ids": ["line-etl"],
+    }
+
+    plan = plan_data_lineage_records(
+        {
+            "datasets": [raw],
+            "processes": [etl],
+            "relations": [relation],
+            "direction": "RL",
+        }
+    )
+
+    assert plan.direction == "RL"
+    assert plan.nodes[0].source_record is raw
+    assert plan.nodes[0].emitted_id == "data_lineage_dataset_end"
+    assert plan.nodes[0].shape == "cylinder"
+    assert plan.nodes[0].label == "Raw ＆amp; ″Q″ ∖ path"
+    assert plan.nodes[1].source_record is etl
+    assert plan.nodes[1].emitted_id == "data_lineage_process_style"
+    assert plan.relations[0].source_record is relation
+    assert plan.relations[0].emitted_id == "data_lineage_relation_1"
+    assert plan.relations[0].source_emitted_id == "data_lineage_dataset_end"
+    assert plan.relations[0].target_emitted_id == "data_lineage_process_style"
+    assert plan.relations[0].semantic_label == "writes|daily; verified"
+    assert plan.relations[0].label == "writes∣daily⁏ verified"
+    assert plan.compatibility_substituted
+    with pytest.raises(FrozenInstanceError):
+        plan.direction = "LR"
+
+
+def test_data_lineage_edge_labels_use_parse_safe_visible_compatibility_glyphs() -> None:
+    ir = {
+        "datasets": [{"id": "raw", "label": "Raw"}],
+        "processes": [{"id": "etl", "label": "ETL"}],
+        "relations": [
+            {
+                "source": "raw",
+                "target": "etl",
+                "label": "callback() [raw] {ok} ops@import",
+            }
+        ],
+    }
+
+    plan = plan_data_lineage_records(ir)
+    result = serialize_data_lineage(ir)
+
+    assert plan.relations[0].label == "callback❨❩ ⟦raw⟧ ⦃ok⦄ ops＠import"
+    assert "callback❨❩ ⟦raw⟧ ⦃ok⦄ ops＠\u200bimport" in result.code
+    assert MermaidSecurityScanner(SecurityProfile.STRICT).scan(result.code).safe
+    assert (
+        MermaidSecurityScanner(SecurityProfile.STRICT)
+        .scan(unicodedata.normalize("NFKC", result.code))
+        .safe
+    )
+    assert result.warnings[-1].startswith(
+        "Data Lineage Flowchart fallback uses visible compatibility glyphs"
+    )
+
+
+@pytest.mark.parametrize(
+    ("ir", "message"),
+    [
+        (
+            {
+                "datasets": [{"id": 1, "label": "Raw"}],
+                "processes": [],
+                "relations": [{"source": "raw", "target": "etl"}],
+            },
+            r"datasets\[0\]\.id",
+        ),
+        (
+            {
+                "datasets": [{"id": "raw", "label": "Raw\u0000"}],
+                "processes": [{"id": "etl", "label": "ETL"}],
+                "relations": [{"source": "raw", "target": "etl"}],
+            },
+            "unsupported control",
+        ),
+        (
+            {
+                "datasets": [
+                    {"id": "raw-data", "label": "Raw"},
+                    {"id": "raw_data", "label": "Duplicate"},
+                ],
+                "processes": [{"id": "etl", "label": "ETL"}],
+                "relations": [{"source": "raw-data", "target": "etl"}],
+            },
+            "ambiguous after Mermaid normalization",
+        ),
+        (
+            {
+                "datasets": [{"id": "raw", "label": "Raw"}],
+                "processes": [{"id": "etl", "label": "ETL"}],
+                "relations": [{"source": " raw ", "target": "etl"}],
+            },
+            "must not require whitespace normalization",
+        ),
+        (
+            {
+                "datasets": [{"id": "raw", "label": "Raw"}],
+                "processes": [{"id": "etl", "label": "ETL"}],
+                "relations": [{"source": "raw", "target": "etl"}],
+                "direction": "diagonal",
+            },
+            "direction must be",
+        ),
+    ],
+)
+def test_data_lineage_direct_planner_rejects_invalid_types_unicode_and_ids(ir, message):
+    with pytest.raises(SerializationError, match=message):
+        plan_data_lineage_records(ir)
+
+
+def test_data_lineage_security_projection_uses_exact_visible_labels_and_warning():
+    result = serialize_data_lineage(
+        {
+            "title": "Lineage &#35;",
+            "description": "See https://docs.invalid <guide>",
+            "datasets": [{"id": "end", "label": 'Raw "Q" \\ &amp; https://raw.invalid'}],
+            "processes": [{"id": "style", "label": "style <script> callback"}],
+            "relations": [
+                {
+                    "source": "end",
+                    "target": "style",
+                    "label": "writes|daily; click https://edge.invalid",
+                }
+            ],
+        }
+    )
+
+    assert "data_lineage_dataset_end" in result.code
+    assert "Raw ″Q″ ∖ ＆amp;" in result.code
+    assert "writes∣daily⁏" in result.code
+    assert "https://" not in result.code
+    assert "<script>" not in result.code
+    assert result.warnings == (
+        "Data lineage was emitted as a portable flowchart.",
+        "Data Lineage Flowchart fallback uses visible compatibility glyphs for "
+        "grammar-conflicting label characters.",
+    )
+    assert MermaidSecurityScanner(SecurityProfile.STRICT).scan(result.code).safe
+    assert (
+        MermaidSecurityScanner(SecurityProfile.STRICT)
+        .scan(unicodedata.normalize("NFKC", result.code))
+        .safe
+    )
+
+
+def test_data_lineage_preserves_explicit_source_ids_as_legacy_missing_labels():
+    ir = {
+        "datasets": [{"id": "raw"}],
+        "processes": [{"id": "etl"}],
+        "relations": [{"source": "raw", "target": "etl"}],
+    }
+
+    plan = plan_data_lineage_records(ir)
+    result = serialize_data_lineage(ir)
+
+    assert [node.semantic_label for node in plan.nodes] == ["raw", "etl"]
+    assert [node.label for node in plan.nodes] == ["raw", "etl"]
+    assert 'data_lineage_dataset_raw[("raw")]' in result.code
+    assert 'data_lineage_process_etl["etl"]' in result.code
+
+
+def test_data_lineage_warns_when_only_accessibility_text_needs_visible_compatibility():
+    result = serialize_data_lineage(
+        {
+            "title": "Lineage <review>",
+            "description": "Safe description",
+            "datasets": [{"id": "raw", "label": "Raw"}],
+            "processes": [{"id": "etl", "label": "ETL"}],
+            "relations": [{"source": "raw", "target": "etl"}],
+        }
+    )
+
+    assert "accTitle: Lineage 〈review〉" in result.code
+    assert not plan_data_lineage_records(
+        {
+            "datasets": [{"id": "raw", "label": "Raw"}],
+            "processes": [{"id": "etl", "label": "ETL"}],
+            "relations": [{"source": "raw", "target": "etl"}],
+        }
+    ).compatibility_substituted
+    assert result.warnings == (
+        "Data lineage was emitted as a portable flowchart.",
+        "Data Lineage Flowchart fallback uses visible compatibility glyphs for "
+        "grammar-conflicting label characters.",
+    )
+
+
+def test_organization_and_lineage_apply_record_and_output_budgets(monkeypatch):
+    monkeypatch.setattr(experimental_serializers, "MAX_ITEMS", 2)
+    with pytest.raises(SerializationError, match="record limits"):
+        plan_organization_hierarchy(
+            {
+                "root": {
+                    "id": "ceo",
+                    "label": "CEO",
+                    "children": [
+                        {
+                            "id": "cto",
+                            "label": "CTO",
+                            "children": [{"id": "lead", "label": "Lead"}],
+                        }
+                    ],
+                }
+            }
+        )
+    with pytest.raises(SerializationError, match="item limit"):
+        plan_data_lineage_records(
+            {
+                "datasets": [{"id": "raw", "label": "Raw"}],
+                "processes": [{"id": "etl", "label": "ETL"}],
+                "relations": [{"source": "raw", "target": "etl"}],
+            }
+        )
+
+    monkeypatch.setattr(experimental_serializers, "MAX_ITEMS", 500)
+    monkeypatch.setattr(experimental_serializers, "MAX_EXPERIMENTAL_OUTPUT_CHARS", 20)
+    organization_ir = {
+        "root": {
+            "id": "ceo",
+            "label": "CEO",
+            "children": [{"id": "cto", "label": "CTO"}],
+        }
+    }
+    lineage_ir = {
+        "datasets": [{"id": "raw", "label": "Raw"}],
+        "processes": [{"id": "etl", "label": "ETL"}],
+        "relations": [{"source": "raw", "target": "etl"}],
+    }
+    with pytest.raises(SerializationError, match="organization output exceeds"):
+        serialize_organization(organization_ir)
+    with pytest.raises(SerializationError, match="data_lineage output exceeds"):
+        serialize_data_lineage(lineage_ir)
+
+    monkeypatch.setattr(experimental_serializers, "MAX_EXPERIMENTAL_OUTPUT_CHARS", 50_000)
+    monkeypatch.setattr(experimental_serializers, "MAX_EXPERIMENTAL_OUTPUT_LINES", 2)
+    with pytest.raises(SerializationError, match="organization output exceeds source-line"):
+        plan_organization_hierarchy(organization_ir)
+    with pytest.raises(SerializationError, match="data_lineage output exceeds source-line"):
+        plan_data_lineage_records(lineage_ir)
 
 
 def test_data_lineage_rejects_missing_and_unresolved_evidence():
@@ -774,6 +1196,16 @@ def test_experimental_serializers_pass_strict_mermaid_11_16_parse_and_render():
                 }
             ).code,
         ),
+        (
+            "flowchart-v2",
+            serialize_data_lineage(
+                {
+                    "datasets": [{"id": "raw", "label": "Raw"}],
+                    "processes": [{"id": "etl", "label": "ETL"}],
+                    "relations": [{"source": "raw", "target": "etl"}],
+                }
+            ).code,
+        ),
     ]
     runtime = NodeMermaidRuntime()
     validator = CandidateValidator(runtime, SecurityProfile.STRICT)
@@ -785,6 +1217,84 @@ def test_experimental_serializers_pass_strict_mermaid_11_16_parse_and_render():
             assert outcome.runtime.diagram_type.casefold() == expected_type
     finally:
         runtime.close()
+
+
+@pytest.mark.integration
+def test_organization_and_lineage_match_visible_mermaid_11_16_fallback_contracts() -> None:
+    organization_ir = {
+        "root": {
+            "id": "end",
+            "label": "CEO &amp; Chair https://org.invalid",
+            "children": [{"id": "style", "label": "Platform <team> callback"}],
+        }
+    }
+    native_organization = serialize_organization(organization_ir)
+    nested_organization = serialize_organization(organization_ir, native_runtime_valid=False)
+    lineage = serialize_data_lineage(
+        {
+            "title": "Lineage &#35;",
+            "description": "See https://docs.invalid <guide>",
+            "datasets": [{"id": "end", "label": 'Raw "Q" \\ &amp; source'}],
+            "processes": [{"id": "style", "label": "ETL <verified>"}],
+            "relations": [
+                {
+                    "source": "end",
+                    "target": "style",
+                    "label": "writes|daily; callback() [raw] {ok} ops@import https://edge.invalid",
+                }
+            ],
+        }
+    )
+
+    runtime = NodeMermaidRuntime()
+    validator = CandidateValidator(runtime, SecurityProfile.STRICT)
+    try:
+        native_outcome = validator.validate(native_organization.code, 20)
+        nested_outcome = validator.validate(nested_organization.code, 20)
+        lineage_outcome = validator.validate(lineage.code, 20)
+    finally:
+        runtime.close()
+
+    assert native_outcome.runtime.render_valid, native_outcome.runtime.error
+    assert native_outcome.runtime.diagram_type.casefold() == "treeview"
+    assert nested_outcome.runtime.render_valid, nested_outcome.runtime.error
+    assert nested_outcome.runtime.diagram_type.casefold() == "flowchart-v2"
+    assert lineage_outcome.runtime.render_valid, lineage_outcome.runtime.error
+    assert lineage_outcome.runtime.diagram_type.casefold() == "flowchart-v2"
+
+    native_root = ET.fromstring(native_outcome.runtime.svg or "")
+    native_nodes = [
+        element
+        for element in native_root.iter()
+        if element.tag.rsplit("}", 1)[-1] == "text"
+        and "treeView-node-label" in element.attrib.get("class", "")
+        and "".join(element.itertext()).strip() != "/"
+    ]
+    assert [
+        " ".join("".join(element.itertext()).replace("\u200b", "").split())
+        for element in native_nodes
+    ] == ["CEO ＆amp; Chair https://org.invalid", "Platform <team> callback"]
+    assert [float(element.attrib["x"]) for element in native_nodes] == [20.0, 35.0]
+
+    for outcome in (nested_outcome, lineage_outcome):
+        root = ET.fromstring(outcome.runtime.svg or "")
+        visible_text = {
+            " ".join("".join(element.itertext()).replace("\u200b", "").split())
+            for element in root.iter()
+            if element.tag.rsplit("}", 1)[-1] in {"title", "desc", "text", "span", "p"}
+            and "".join(element.itertext()).strip()
+        }
+        if outcome is nested_outcome:
+            assert "CEO ＆amp; Chairhttps://org.invalid" in visible_text
+            assert "Platform <team> callback" in visible_text
+        else:
+            assert "Lineage ＆＃35;" in visible_text
+            assert "See https://docs.invalid 〈guide〉" in visible_text
+            assert "Raw ″Q″ ∖ ＆amp; source" in visible_text
+            assert "ETL <verified>" in visible_text
+            assert (
+                "writes∣daily⁏ callback❨❩⟦raw⟧ ⦃ok⦄ ops＠importhttps://edge.invalid" in visible_text
+            )
 
 
 @pytest.mark.integration
