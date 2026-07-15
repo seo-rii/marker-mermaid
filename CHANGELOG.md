@@ -257,6 +257,16 @@
   native renderer can hide text in very small cells with `display:none`. Unicode whitespace is frozen to one
   ASCII space, accessibility metadata substitutions are disclosed too, and both terminals are preflighted at
   50,000 source characters and 5,000 lines before runtime work.
+- Treemap publication now requires every planned node to bind its exact label and every explicit value to
+  candidate-authorized OCR/vector observations in its own source region. The source hierarchy is checked as
+  nested geometry: children must be contained by but not equal to their parent, direct siblings may touch but cannot
+  overlap, and an internal node's text evidence cannot be borrowed from a child region. Evidence IDs and
+  normalized text+bbox observations are injective across owners, same-position contradictions and malformed
+  geometry fail closed, and reference/text/character/token/spatial-comparison work is bounded at
+  20,000/50,000/1,000,000/100,000/100,000. Exact record binding is still followed by document-wide numeric
+  occurrence completeness. Native Treemap, its same-slot Flowchart fallback, and semantic repair all rerun the
+  gate; direct or otherwise untyped Treemap remains review-only while generated Scenes continue to use zero
+  geometry.
 - Venn serialization, generated Scene attribution, and semantic OCR projection now share one bounded terminal
   plan. It freezes portable set identities, collision-safe explicit or `intersection_N[_suffix]` area identities,
   canonical membership relations, fixed-decimal non-exponent value tokens, and record-local provenance. Native

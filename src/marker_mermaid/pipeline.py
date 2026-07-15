@@ -117,6 +117,7 @@ from marker_mermaid.serializers_charts_flow import (
     plan_sankey_records,
     validate_sankey_explicit_metadata,
 )
+from marker_mermaid.serializers_charts_sets import plan_treemap_records
 from marker_mermaid.serializers_special import plan_packet_fields
 from marker_mermaid.style_recovery import (
     TrustedEdgeStyleEvidence,
@@ -174,6 +175,8 @@ _MAX_RADAR_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
 _MAX_RADAR_RECORD_OVERLAP_COMPARISONS = 100_000
 _MAX_SANKEY_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
 _MAX_SANKEY_FLOW_OVERLAP_COMPARISONS = 100_000
+_MAX_TREEMAP_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
+_MAX_TREEMAP_NODE_OVERLAP_COMPARISONS = 100_000
 _MAX_XY_RECORD_OVERLAP_COMPARISONS = 100_000
 _PIL_IMAGING_CORE_TYPE = type(Image.new("RGB", (1, 1)).im)
 _PIL_IMAGE_DICT_DESCRIPTOR = Image.Image.__dict__["__dict__"]
@@ -488,6 +491,14 @@ _SANKEY_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING = (
     "Sankey fallback description/accDescr lacks independent candidate-authorized spatial "
     "OCR/vector or user-edit evidence; review is required"
 )
+_TREEMAP_RECORD_ASSOCIATION_UNAVAILABLE_WARNING = (
+    "Treemap node/value association lacks candidate-authorized spatial OCR/vector evidence; "
+    "numeric consistency alone cannot authorize publication and review is required"
+)
+_TREEMAP_RECORD_ASSOCIATION_MISMATCH_WARNING = (
+    "Treemap node/value association conflicts with exact source labels or values; "
+    "review is required"
+)
 
 _EVALUATION_WARNING_TEXT = frozenset(
     {
@@ -519,6 +530,8 @@ _EVALUATION_WARNING_TEXT = frozenset(
         _SANKEY_FLOW_ASSOCIATION_MISMATCH_WARNING,
         _SANKEY_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING,
         _SANKEY_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING,
+        _TREEMAP_RECORD_ASSOCIATION_UNAVAILABLE_WARNING,
+        _TREEMAP_RECORD_ASSOCIATION_MISMATCH_WARNING,
         "numeric consistency is below the automatic publication threshold",
         "numeric diagram lacks OCR/vector numeric evidence and cannot auto-publish",
         "unlabeled scene-only candidates require OCR/VLM fusion before publishing",
@@ -2829,6 +2842,7 @@ class ReconstructionPipeline:
         sankey_binding_state: Literal["exact", "mismatch", "unavailable"] | None = None
         sankey_title_attribution_state: Literal["exact", "unavailable"] | None = None
         sankey_description_attribution_state: Literal["exact", "unavailable"] | None = None
+        treemap_binding_state: Literal["exact", "mismatch", "unavailable"] | None = None
         if gate_diagram_type == "packet":
             # Packet ranges need a field-local proof.  A document-wide number multiset can
             # stay identical when two labels exchange their ranges, so it is not publication
@@ -5009,6 +5023,278 @@ class ReconstructionPipeline:
             # Preserve the global score as a diagnostic for legacy callers. It is
             # never publication authority without the exact flow-local state above.
             numeric = global_sankey_numeric
+        elif gate_diagram_type == "treemap":
+            # Treemap values are meaningful only when they remain attached to the
+            # observed hierarchy node. A document-wide number multiset cannot detect
+            # sibling value swaps, so every typed node must own exact spatial text.
+            treemap_binding_state = "unavailable"
+            treemap_plan = None
+            if typed_ir is not None:
+                try:
+                    treemap_plan = plan_treemap_records(typed_ir)
+                except SerializationError:
+                    treemap_plan = None
+
+            image_width, image_height = image.size
+            treemap_node_boxes: dict[str, tuple[float, float, float, float]] = {}
+            treemap_spatial_safe = bool(treemap_plan is not None and treemap_plan.nodes)
+            if treemap_plan is not None:
+                for node in treemap_plan.nodes:
+                    source_record = node.source_record
+                    if not isinstance(source_record, dict):
+                        treemap_spatial_safe = False
+                        break
+                    raw_bbox = source_record.get("bbox")
+                    if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+                        treemap_spatial_safe = False
+                        break
+                    try:
+                        bbox = tuple(float(value) for value in raw_bbox)
+                    except (TypeError, ValueError, OverflowError):
+                        treemap_spatial_safe = False
+                        break
+                    x1, y1, x2, y2 = bbox
+                    if (
+                        not all(math.isfinite(value) for value in bbox)
+                        or x2 <= x1
+                        or y2 <= y1
+                        or x1 < 0
+                        or y1 < 0
+                        or x2 > image_width
+                        or y2 > image_height
+                    ):
+                        treemap_spatial_safe = False
+                        break
+                    treemap_node_boxes[node.scene_id] = bbox
+
+            treemap_comparison_budget = max(0, _MAX_TREEMAP_NODE_OVERLAP_COMPARISONS)
+            treemap_children: dict[str, list[str]] = {}
+            if treemap_plan is not None and treemap_spatial_safe:
+                for node in treemap_plan.nodes:
+                    if node.parent_scene_id is None:
+                        continue
+                    parent_bbox = treemap_node_boxes.get(node.parent_scene_id)
+                    child_bbox = treemap_node_boxes[node.scene_id]
+                    if treemap_comparison_budget <= 0 or parent_bbox is None:
+                        treemap_spatial_safe = False
+                        break
+                    treemap_comparison_budget -= 1
+                    if child_bbox == parent_bbox or not (
+                        parent_bbox[0] <= child_bbox[0]
+                        and parent_bbox[1] <= child_bbox[1]
+                        and child_bbox[2] <= parent_bbox[2]
+                        and child_bbox[3] <= parent_bbox[3]
+                    ):
+                        treemap_spatial_safe = False
+                        break
+                    treemap_children.setdefault(node.parent_scene_id, []).append(node.scene_id)
+
+            if treemap_spatial_safe:
+                for sibling_ids in treemap_children.values():
+                    for index, sibling_id in enumerate(sibling_ids):
+                        bbox = treemap_node_boxes[sibling_id]
+                        for other_id in sibling_ids[index + 1 :]:
+                            if treemap_comparison_budget <= 0:
+                                treemap_spatial_safe = False
+                                break
+                            treemap_comparison_budget -= 1
+                            other_bbox = treemap_node_boxes[other_id]
+                            if (
+                                bbox[0] < other_bbox[2]
+                                and bbox[2] > other_bbox[0]
+                                and bbox[1] < other_bbox[3]
+                                and bbox[3] > other_bbox[1]
+                            ):
+                                treemap_spatial_safe = False
+                                break
+                        if not treemap_spatial_safe:
+                            break
+                    if not treemap_spatial_safe:
+                        break
+
+            treemap_evidence_by_id: dict[str, VisualEvidence] = {}
+            treemap_texts_by_bbox: dict[tuple[float, float, float, float], set[str]] = {}
+            if treemap_spatial_safe:
+                for item in evidence:
+                    if item.id in treemap_evidence_by_id:
+                        treemap_spatial_safe = False
+                        break
+                    treemap_evidence_by_id[item.id] = item
+                    if (
+                        item.kind not in {"ocr_token", "vector_text"}
+                        or not item.text
+                        or item.bbox is None
+                        or not isinstance(item.bbox, (list, tuple))
+                        or len(item.bbox) != 4
+                    ):
+                        continue
+                    try:
+                        evidence_bbox = tuple(float(value) for value in item.bbox)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    normalized_text = _normalized_label(item.text)
+                    if normalized_text and all(math.isfinite(value) for value in evidence_bbox):
+                        treemap_texts_by_bbox.setdefault(evidence_bbox, set()).add(normalized_text)
+
+            treemap_reference_count = 0
+            treemap_evidence_id_owners: dict[str, str] = {}
+            treemap_observation_owners: dict[
+                tuple[str, tuple[float, float, float, float]], str
+            ] = {}
+            treemap_node_observations: dict[
+                str, list[tuple[str, tuple[float, float, float, float], str, str]]
+            ] = {node.scene_id: [] for node in (treemap_plan.nodes if treemap_plan else ())}
+            if treemap_plan is not None and treemap_spatial_safe:
+                for node in treemap_plan.nodes:
+                    if not node.evidence_ids or len(set(node.evidence_ids)) != len(
+                        node.evidence_ids
+                    ):
+                        treemap_spatial_safe = False
+                        break
+                    treemap_reference_count += len(node.evidence_ids)
+                    if treemap_reference_count > _MAX_TREEMAP_ASSOCIATION_REFERENCES:
+                        treemap_spatial_safe = False
+                        break
+                    node_bbox = treemap_node_boxes[node.scene_id]
+                    for evidence_id in node.evidence_ids:
+                        item = treemap_evidence_by_id.get(evidence_id)
+                        if item is None:
+                            treemap_spatial_safe = False
+                            break
+                        previous_id_owner = treemap_evidence_id_owners.get(evidence_id)
+                        if previous_id_owner is not None and previous_id_owner != node.scene_id:
+                            treemap_spatial_safe = False
+                            break
+                        treemap_evidence_id_owners[evidence_id] = node.scene_id
+                        if item.kind not in {"ocr_token", "vector_text"}:
+                            continue
+                        if (
+                            not item.text
+                            or item.bbox is None
+                            or not isinstance(item.bbox, (list, tuple))
+                            or len(item.bbox) != 4
+                        ):
+                            treemap_spatial_safe = False
+                            break
+                        try:
+                            evidence_bbox = tuple(float(value) for value in item.bbox)
+                        except (TypeError, ValueError, OverflowError):
+                            treemap_spatial_safe = False
+                            break
+                        ex1, ey1, ex2, ey2 = evidence_bbox
+                        if (
+                            not all(math.isfinite(value) for value in evidence_bbox)
+                            or ex2 <= ex1
+                            or ey2 <= ey1
+                            or ex1 < node_bbox[0]
+                            or ey1 < node_bbox[1]
+                            or ex2 > node_bbox[2]
+                            or ey2 > node_bbox[3]
+                            or len(treemap_texts_by_bbox.get(evidence_bbox, set())) != 1
+                        ):
+                            treemap_spatial_safe = False
+                            break
+                        if not node.is_leaf:
+                            for child_id in treemap_children.get(node.scene_id, ()):
+                                if treemap_comparison_budget <= 0:
+                                    treemap_spatial_safe = False
+                                    break
+                                treemap_comparison_budget -= 1
+                                child_bbox = treemap_node_boxes[child_id]
+                                if (
+                                    evidence_bbox[0] < child_bbox[2]
+                                    and evidence_bbox[2] > child_bbox[0]
+                                    and evidence_bbox[1] < child_bbox[3]
+                                    and evidence_bbox[3] > child_bbox[1]
+                                ):
+                                    treemap_spatial_safe = False
+                                    break
+                            if not treemap_spatial_safe:
+                                break
+                        normalized_text = _normalized_label(item.text)
+                        if not normalized_text:
+                            treemap_spatial_safe = False
+                            break
+                        observation_key = (normalized_text, evidence_bbox)
+                        previous_observation_owner = treemap_observation_owners.get(observation_key)
+                        if (
+                            previous_observation_owner is not None
+                            and previous_observation_owner != node.scene_id
+                        ):
+                            treemap_spatial_safe = False
+                            break
+                        if previous_observation_owner == node.scene_id:
+                            continue
+                        treemap_observation_owners[observation_key] = node.scene_id
+                        treemap_node_observations[node.scene_id].append(
+                            (normalized_text, evidence_bbox, item.text, evidence_id)
+                        )
+                    if not treemap_spatial_safe:
+                        break
+
+            if (
+                treemap_plan is not None
+                and treemap_spatial_safe
+                and all(treemap_node_observations.values())
+            ):
+                allowed_observations: dict[str, set[str]] = {}
+                for node in treemap_plan.nodes:
+                    label = node.semantic_label
+                    if node.value_text is None:
+                        raw_allowed = (label,)
+                    else:
+                        value = node.value_text
+                        raw_allowed = (
+                            f"{label} {value}",
+                            f"{label}: {value}",
+                            f"{label} (value: {value})",
+                            f"{label} value {value}",
+                        )
+                    allowed_observations[node.scene_id] = {
+                        _normalized_label(value) for value in raw_allowed
+                    }
+
+                association_texts = [
+                    item[2]
+                    for observations in treemap_node_observations.values()
+                    for item in observations
+                ]
+                expected_texts = [
+                    value for allowed in allowed_observations.values() for value in allowed
+                ]
+                bounded_tokens = bounded_ocr_token_multiset(
+                    [*association_texts, *expected_texts],
+                    max_texts=_MAX_OCR_REFERENCE_TEXTS,
+                    max_chars=_MAX_OCR_REFERENCE_CHARS,
+                    max_tokens=_MAX_OCR_REFERENCE_TOKENS,
+                )
+                if bounded_tokens is not None:
+                    association_matches = True
+                    for node in treemap_plan.nodes:
+                        ordered = sorted(
+                            treemap_node_observations[node.scene_id],
+                            key=lambda item: (
+                                item[1][1],
+                                item[1][0],
+                                item[1][3],
+                                item[1][2],
+                                item[0],
+                                item[3],
+                            ),
+                        )
+                        observed_text = _normalized_label(" ".join(item[2] for item in ordered))
+                        if observed_text not in allowed_observations[node.scene_id]:
+                            association_matches = False
+                    treemap_binding_state = "exact" if association_matches else "mismatch"
+
+            global_treemap_numeric = numeric_consistency(references.numeric_tokens, code)
+            if treemap_binding_state == "exact" and global_treemap_numeric != 1.0:
+                treemap_binding_state = (
+                    "mismatch" if global_treemap_numeric is not None else "unavailable"
+                )
+            # Keep the legacy global score visible, but never use it as publication
+            # authority without the exact node-local association above.
+            numeric = global_treemap_numeric
         elif gate_diagram_type == "xychart":
             # XY publication authority is record-local.  A document-wide numeric
             # multiset cannot detect category, series, value, or explicit-x swaps.
@@ -5491,6 +5777,12 @@ class ReconstructionPipeline:
         elif gate_diagram_type == "sankey" and sankey_binding_state == "mismatch":
             aggregate = None
             warnings.append(_SANKEY_FLOW_ASSOCIATION_MISMATCH_WARNING)
+        elif gate_diagram_type == "treemap" and treemap_binding_state == "unavailable":
+            aggregate = None
+            warnings.append(_TREEMAP_RECORD_ASSOCIATION_UNAVAILABLE_WARNING)
+        elif gate_diagram_type == "treemap" and treemap_binding_state == "mismatch":
+            aggregate = None
+            warnings.append(_TREEMAP_RECORD_ASSOCIATION_MISMATCH_WARNING)
         elif gate_diagram_type == "xychart" and xy_binding_state == "unavailable":
             aggregate = None
             warnings.append(_XY_RECORD_ASSOCIATION_UNAVAILABLE_WARNING)

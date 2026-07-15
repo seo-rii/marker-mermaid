@@ -628,6 +628,22 @@ metadata로만 남습니다. Native runtime rejection도 이 fallback을 같은 
 Flowchart terminal은 Mermaid worker의 500-relation 상한을 적용합니다. 그보다 큰 valid native
 Treemap은 native로 남을 수 있지만 runtime fallback이 필요해지면 unavailable입니다.
 
+직렬화가 성공해도 자동 게시 전에는 공용 plan의 모든 node를 source record에 다시 결합합니다. 모든 bbox는
+finite·positive·in-image여야 하고 child는 parent에 완전히 포함되되 동일할 수 없습니다. 직접 sibling
+interior는 겹치지 않아야 하며 edge-touch는 허용합니다. Internal owner의 cited text는 direct child 영역과 겹치지 않아야 하므로 넓은 parent bbox가 child OCR을
+자기 근거로 가져갈 수 없습니다. 각 node의 candidate-authorized OCR/vector reading-order text는 exact label,
+explicit value가 있으면 label 뒤의 exact fixed-decimal value까지 증명해야 합니다. Evidence ID 또는 normalized
+text+bbox의 교차 owner 재사용, 한 owner 안의 duplicate evidence reference, same-bbox contradiction, invalid
+hierarchy와 bounded work 소진은 unavailable, label/value 불일치는 association mismatch입니다. Aggregate
+reference/text/character/token/spatial-comparison budget은 20,000/50,000/1,000,000/100,000/100,000입니다.
+`numeric_consistency`는 전역 multiset 진단값을 유지할 수 있지만 local 결과와 global numeric occurrence가
+모두 exact일 때만 native와 same-slot Flowchart를 게시할 수 있으며 semantic repair도 같은 typed plan과
+scoped evidence로 재검증됩니다.
+Direct Treemap은 owner plan이 없어 review-only입니다. Source bbox는 이 gate와 review provenance에만 남고
+generated Scene에는 계속 복사하지 않습니다. Native의 `native_total_text`는 child value에서 파생한 renderer
+output이지 explicit source value가 아니므로 owner citation에 포함하지 않습니다. Source OCR/vector가 internal
+total을 별도 숫자로 관측하면 현재 global occurrence gate는 review로 닫습니다.
+
 Treemap은 semantic 원문을 typed IR에 남기고, source scanner에 걸리는 token은 emitted source에만
 zero-width separator를 넣어 비활성화합니다. Scene/OCR은 separator를 제거한 terminal-visible
 text를 씁니다. Node quote는 `″`로 표시하고, Flowchart label의 ASCII angle bracket/backslash는

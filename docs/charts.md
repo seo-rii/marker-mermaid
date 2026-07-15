@@ -315,6 +315,30 @@ ASCII space로 고정합니다. 눈에 보이는 호환 glyph을 사용한 node/
 `accTitle`/`accDescr`가 있으면 native 결과는 candidate warning을, Flowchart는 fallback
 reason/warning을 남깁니다. 두 terminal source는 runtime 전에 50,000자·5,000줄 예산을 통과해야 합니다.
 
+Treemap 자동 게시에는 공용 plan의 모든 node에 대한 record-local source 결합이 추가로 필요합니다.
+각 node bbox는 source image 안의 양의 면적이어야 하고, child bbox는 parent에 완전히 포함되되 동일할 수 없으며 같은 parent의
+직접 child끼리는 interior가 겹치지 않아야 하며 edge-touch는 허용합니다. Parent와 descendant의 중첩은 계층 자체이므로 허용하지만,
+internal node가 인용한 text evidence는 직접 child 영역과 겹칠 수 없습니다. 각 node는 자신의 bbox 안에 완전히
+들어오는 candidate-authorized `ocr_token`/`vector_text`를 직접 인용해 exact label을 증명하고, explicit value가
+있으면 label 뒤의 fixed-decimal value까지 같은 reading-order record로 증명합니다. Typed value나 source-wide
+`ocr_texts`만으로 이 소유권을 만들 수 없습니다.
+
+Native renderer가 계산해 표시하는 internal `native_total_text`는 typed IR의 explicit source value가 아니라
+결정적으로 파생한 output입니다. 현재 local owner record는 이 값을 source citation 대용으로 인정하지 않습니다.
+Source OCR/vector가 internal total을 별도 숫자로 관측하면 전역 numeric occurrence에도 extra token으로 남으므로
+보수적으로 review가 필요합니다. 이 동작은 작은-cell visibility 문제와 함께 향후 terminal-aware derived-total
+평가를 도입하기 전까지 유지합니다.
+
+Evidence ID와 normalized text+bbox observation은 node 사이에서 재사용할 수 없고 한 node 안의 duplicate
+evidence reference도 허용하지 않습니다. 같은 bbox의 상충 text, equal/crossing parent-child bbox, sibling overlap,
+missing/invalid geometry도 전체 결합을 unavailable/review로 둡니다. Aggregate reference/text/character/token/
+spatial-comparison budget은 각각 20,000/50,000/1,000,000/100,000/100,000입니다. 결합된 label/value가 다르면
+association mismatch로 aggregate가 unavailable이지만 `numeric_consistency`는 전역 multiset 진단값을 유지할 수
+있습니다. 자동 게시에는 local 결합과 전역 numeric occurrence가 모두 exact여야 합니다. 이 gate는 native, same-slot
+Flowchart, semantic repair에서 동일하게 다시 실행되고 typed plan이 없는 direct Treemap은 자동 게시하지
+않습니다. Source bbox는 이 검증과 review provenance에만 쓰며 generated Scene의 zero geometry 계약은 바뀌지
+않습니다.
+
 Venn serializer·Scene·semantic OCR은 `plan_venn_records()`의 같은 bounded plan을 사용합니다. Plan은
 set의 source/portable ID, collision-safe intersection Scene ID, canonical membership 순서, exact
 fixed-decimal value token, terminal별 label과 record-local evidence를 한 번 고정합니다. 지수 표기는
@@ -412,8 +436,8 @@ normalized text+bbox를 여러 owner가 재사용하거나, 인용하지 않은 
 겹치거나, geometry/reference/text/token/comparison budget을 확인할 수 없으면 전체 binding을
 unavailable/review로 닫습니다. 결합된 label 또는 value 순서가 다르면 `0.0`, local binding과 전역 occurrence가
 모두 exact일 때만 `1.0`입니다. 이 검사는 native, same-slot Flowchart, semantic repair에 공통이며 typed Radar
-plan이 없는 direct candidate는 자동 게시하지 않습니다. Pie·XY·Quadrant·Radar와 Packet을 제외한 numeric
-type의 multiset 계산은 그대로입니다.
+plan이 없는 direct candidate는 자동 게시하지 않습니다. Pie·XY·Quadrant·Sankey·Radar·Treemap과 Packet을
+제외한 numeric type의 multiset 계산은 그대로입니다.
 
 Radar의 visible `title`과 non-derived explicit `acc_title`/`description`/`acc_description`도 data record와
 독립된 근거가 필요합니다. Candidate-authorized OCR/vector observation은 모든 dimension/series bbox 밖의 유효한

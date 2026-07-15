@@ -519,6 +519,16 @@ Radar를 포함해 malformed evidence list는 해당 record에서만 원자적�
 않습니다. 현재 Marker response envelope는 계속 generic `TypedIRCandidate.ir: dict`이며 recursive Treemap
 model도 provider에 diagram-type discriminated recursive schema를 직접 노출한다는 뜻은 아닙니다.
 
+Treemap의 게시 gate는 이 extraction record를 단순 provenance 목록으로만 보지 않습니다. 모든 node의 bbox가
+finite·positive·source image 내부인지, child가 parent에 완전히 포함되되 동일하지 않고 direct sibling interior가 겹치지 않되 edge-touch는 허용되는지 먼저
+검사합니다. 각 node가 직접 인용한 candidate-authorized OCR/vector는 owner bbox 안에 있어야 하며 internal
+owner의 text는 direct child 영역 밖에 있어야 합니다. Reading-order observation은 exact label과, 존재하는 경우
+explicit fixed-decimal value를 함께 증명해야 합니다. Cross-owner evidence/observation reuse, same-bbox ambiguity,
+한 owner 안의 duplicate evidence reference, missing bbox와 bounded association work 초과는 전체 결합을
+unavailable로 두므로 source-wide OCR이나 typed
+value만으로 자동 게시 권한을 만들 수 없습니다. Native runtime fallback과 semantic repair도 같은 record
+결합을 다시 계산하며 generated Scene의 bbox는 계속 zero입니다.
+
 Venn native 선택은 extraction model보다 좁습니다. 모든 area가 관측된 positive normal binary64-safe
 fixed-decimal이고, 최대 set/최소 positive area 비가 `200:1` 이하이며, exact-containment가 없고, 3개 이상
 set의 union마다 모든 pairwise intersection이 explicit해야 합니다. Zero·unsafe·누락 value 또는 누락 pair는

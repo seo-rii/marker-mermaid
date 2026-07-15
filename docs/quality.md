@@ -271,7 +271,7 @@ generated Scene attribution에서 제외합니다.
   direct-code fallback으로 바꾸지 않습니다. 예외를 candidate warning으로 격리하고 aggregate를
   unavailable로 유지하여 다른 candidate 선택과 문서 변환은 계속합니다.
 - 일반 numeric consistency는 source/generated 숫자 occurrence multiset의 precision·recall F1입니다. Pie·XY·
-  Quadrant·Radar와 Packet의 record-local 결합 검증은 아래 예외를 사용합니다. Bounded
+  Quadrant·Sankey·Radar·Treemap과 Packet의 record-local 결합 검증은 아래 예외를 사용합니다. Bounded
   evidence 안의 동일 normalized text+bbox는 한 관측으로 합치고, OCR context와 evidence 채널의 numeric
   Counter는 token별 최대 occurrence로 병합합니다. 따라서 위치가 다른 반복값은 보존하면서 채널 간 중복
   보고는 다시 세지 않습니다. 생성한 숫자가 source에 없거나 occurrence 수가 다르면 precision/recall을
@@ -353,6 +353,21 @@ generated Scene attribution에서 제외합니다.
   exact-value Flowchart를 선택하고 native runtime rejection도 같은 candidate slot에서 그 fallback을
   한 번 재검증합니다. Flowchart projection이 500 relation을 넘으면 unavailable이지만 같은
   계층이 native resource 계약을 만족하면 native까지 금지하지 않습니다.
+- Treemap numeric publication은 모든 plan node의 finite in-image source bbox와 직접 인용한
+  candidate-authorized OCR/vector text를 요구합니다. Child는 parent bbox에 완전히 포함되되 동일할 수 없고
+  직접 sibling의 interior는 겹치지 않아야 하되 edge-touch는 허용합니다. Internal-node text evidence는 직접
+  child 영역 밖에 있어야 합니다. 각 owner는
+  exact label을, explicit value가 있는 owner는 label 뒤의 fixed-decimal value까지 reading order로 증명합니다.
+  Evidence ID와 normalized text+bbox는 owner 사이에서 injective하고 같은 bbox의 상충 observation,
+  equal/crossing hierarchy, invalid geometry 또는 bounded work 소진은 unavailable입니다. Aggregate
+  reference/text/character/token/spatial-comparison budget은 20,000/50,000/1,000,000/100,000/100,000입니다.
+  Local record가 다르면 association mismatch로 aggregate를 비우지만 `numeric_consistency`는 전역 multiset
+  진단값을 유지할 수 있습니다. 자동 게시에는 local association과 전역 occurrence가 모두 exact여야 합니다.
+  Same-slot fallback과 repair도 이
+  결합을 다시 계산하고 direct/untyped Treemap은 review-only로 남습니다. 이 source geometry는 attribution
+  검증용이며 generated Scene의 zero bbox나 작은 native cell의 `display:none` 위험을 해결한 것으로 보지
+  않습니다. Native가 계산한 internal total은 source-explicit record로 간주하지 않으므로 OCR/vector가 그
+  숫자를 별도로 관측한 경우 현재 전역 occurrence gate는 보수적으로 review를 요구합니다.
 - Venn 구조 metric도 공용 plan이 고정한 terminal을 따릅니다. Native는 positive normal
   binary64-safe area, `200:1` visibility gate, exact-containment 제외, higher-order union별 complete explicit
   pair를 요구하고 누락 area/pair를 합성하지 않습니다. Native Scene은 marker-less logical membership과
@@ -476,3 +491,8 @@ proposal은 점수 개선으로 채택하지 않되, 이미 검증된 이전 can
 보존합니다.
 Packet은 candidate-authorized field-local association이 unavailable이거나 `0.0`이면 전역 숫자 multiset이나
 설정된 게시 threshold로 우회하지 않고 aggregate를 `None`으로 둡니다.
+Treemap도 typed plan의 모든 node가 nested source geometry와 exact label/explicit-value observation에 결합되지
+않으면 aggregate를 `None`으로 둡니다. Parent-child containment, sibling interior non-overlap, internal-node cited-text
+exclusivity, injective evidence/observation ownership과 전역 numeric completeness 중 하나라도 확인할 수 없으면
+설정된 threshold로 우회하지 않습니다. Native runtime fallback과 semantic repair는 semantic type을 Treemap으로
+유지해 같은 gate를 다시 실행하며 direct Mermaid-only Treemap은 owner 결합을 스스로 만들 수 없습니다.

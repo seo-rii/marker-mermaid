@@ -621,12 +621,14 @@ def test_native_treemap_rejection_retries_flowchart_in_same_candidate_slot() -> 
         "root": {
             "id": "portfolio",
             "label": "Portfolio",
+            "bbox": [5, 5, 95, 95],
             "evidence_ids": ["ocr-portfolio"],
             "children": [
                 {
                     "id": "api",
                     "label": "API",
                     "value": 1000,
+                    "bbox": [10, 30, 90, 90],
                     "evidence_ids": ["ocr-api", "box-api"],
                 }
             ],
@@ -636,8 +638,18 @@ def test_native_treemap_rejection_retries_flowchart_in_same_candidate_slot() -> 
         prediction=DiagramTypePrediction(candidates=["treemap"], scores=[1.0]),
         typed_candidates=[TypedIRCandidate(diagram_type="treemap", ir=ir)],
         evidence=[
-            VisualEvidence(id="ocr-portfolio", kind="ocr_token", text="Portfolio"),
-            VisualEvidence(id="ocr-api", kind="ocr_token", text="API"),
+            VisualEvidence(
+                id="ocr-portfolio",
+                kind="ocr_token",
+                text="Portfolio",
+                bbox=(10, 10, 80, 20),
+            ),
+            VisualEvidence(
+                id="ocr-api",
+                kind="ocr_token",
+                text="API value 1000",
+                bbox=(20, 40, 80, 55),
+            ),
             VisualEvidence(id="box-api", kind="contour"),
         ],
     )
