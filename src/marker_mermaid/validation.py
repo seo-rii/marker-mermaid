@@ -59,6 +59,25 @@ def inspect_svg(svg: str, profile: SecurityProfile) -> list[str]:
     if not any(root.get(attribute) for attribute in ("viewBox", "width", "height")):
         findings.append("rendered SVG has no dimensions")
     forbidden = {"script", "iframe", "object", "embed", "link"}
+    geometry_attributes = {
+        "cx",
+        "cy",
+        "d",
+        "height",
+        "points",
+        "r",
+        "rx",
+        "ry",
+        "transform",
+        "viewbox",
+        "width",
+        "x",
+        "x1",
+        "x2",
+        "y",
+        "y1",
+        "y2",
+    }
     if profile == SecurityProfile.STRICT:
         forbidden.add("foreignObject")
 
@@ -84,6 +103,8 @@ def inspect_svg(svg: str, profile: SecurityProfile) -> list[str]:
                 findings.append("rendered SVG contains an external href")
             if has_external_css(lowered):
                 findings.append("rendered SVG contains external CSS")
+            if name in geometry_attributes and ("nan" in lowered or "infinity" in lowered):
+                findings.append(f"rendered SVG contains non-finite geometry attribute {name}")
         if tag == "style" and has_external_css("".join(element.itertext())):
             findings.append("rendered SVG contains external CSS")
     return sorted(set(findings))

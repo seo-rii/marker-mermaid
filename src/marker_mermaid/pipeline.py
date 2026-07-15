@@ -331,6 +331,7 @@ _PROVENANCE_GATED_TYPES = frozenset(
         "mindmap",
         "organization",
         "packet",
+        "radar",
         "railroad",
         "requirement",
         "sankey",
@@ -412,6 +413,21 @@ def _generated_node_provenance_score(
 
     if generated_scene is None or not generated_scene.elements:
         return None
+    generated_elements = generated_scene.elements
+    if (
+        generated_scene.diagram_type_candidates == ["radar"]
+        and generated_scene.reading_direction == "radial"
+    ):
+        # Native Radar renders data points as derived curve geometry rather than
+        # independently attributable nodes.  Axis and series evidence supports
+        # the emitted chart components while numeric consistency separately
+        # verifies point values.  The exact Flowchart fallback still evaluates
+        # every emitted cell because those data points become actual nodes.
+        generated_elements = [
+            element for element in generated_elements if element.role != "data_point"
+        ]
+    if not generated_elements:
+        return None
     known = {item.id for item in evidence}
     source_by_id = {
         element.id: element for element in (source_scene.elements if source_scene else [])
@@ -433,7 +449,7 @@ def _generated_node_provenance_score(
             source_by_label.setdefault(label, []).append(element)
 
     effective_evidence_ids: list[set[str]] = []
-    for element in generated_scene.elements:
+    for element in generated_elements:
         direct_evidence_ids = known.intersection(element.evidence_ids)
         if direct_evidence_ids:
             effective_evidence_ids.append(direct_evidence_ids)

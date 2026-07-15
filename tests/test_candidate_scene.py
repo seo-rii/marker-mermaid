@@ -511,17 +511,31 @@ def test_phase_three_core_charts_have_no_structural_scene_adapter(
     assert typed_ir_to_scene(diagram_type, ir) is None
 
 
-def test_radar_has_no_structural_scene_adapter() -> None:
-    assert (
-        typed_ir_to_scene(
-            "radar",
-            {
-                "dimensions": [{"id": "speed", "label": "Speed"}],
-                "series": [{"id": "car", "label": "Car", "values": [1]}],
-            },
-        )
-        is None
-    )
+def test_radar_scene_requires_complete_dimension_aligned_data() -> None:
+    incomplete = {
+        "dimensions": [{"id": "speed", "label": "Speed"}],
+        "series": [{"id": "car", "label": "Car", "values": [1]}],
+    }
+    complete = {
+        "dimensions": [
+            {"id": "speed", "label": "Speed"},
+            {"id": "range", "label": "Range"},
+            {"id": "safety", "label": "Safety"},
+        ],
+        "series": [{"id": "car", "label": "Car", "values": [1, 2, 3]}],
+        "max": 3,
+    }
+
+    assert typed_ir_to_scene("radar", incomplete) is None
+    scene = typed_ir_to_scene("radar", complete)
+    assert scene is not None
+    assert scene.reading_direction == "radial"
+    assert [element.role for element in scene.elements[:4]] == [
+        "axis",
+        "axis",
+        "axis",
+        "series",
+    ]
 
 
 def test_sankey_scene_preserves_node_flow_geometry_and_provenance() -> None:

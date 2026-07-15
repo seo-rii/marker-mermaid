@@ -13,7 +13,7 @@ NaN/Infinity, unknown endpoint, series 길이 불일치, 잘못된 축 범위를
 | XY | category/value 길이 일치 또는 explicit uniform numeric x grid, y bounds | 없음; 비균일 x는 왜곡 대신 실패 |
 | Quadrant | 두 축 low/high label, 모든 point의 explicit `[0,1]` 좌표 | 없음 |
 | Sankey | positive weighted DAG, 모든 node 참여, native-safe 고유 label | exact weight label을 가진 flowchart |
-| Radar | 3개 이상 dimension, 동일 series 길이, 일관 bounds, non-negative domain | edge 없는 tabular flowchart |
+| Radar | 3개 이상 dimension, 동일 series 길이, 일관 bounds, 12개 이하 series, non-negative zero-or-normal binary64 domain과 finite positive renderer span | 최대 256 point의 edge 없는 exact-value tabular flowchart |
 | Treemap | hierarchy leaf마다 explicit positive value, internal value 없음, binary64/표시 합계 재현 가능 | internal-node value·unsafe numeric·native runtime 실패 시 value-label hierarchy |
 | Venn | 모든 area가 positive·normal binary64-safe이고 최대 set/최소 area 비가 `200:1` 이하이며 higher-order union의 모든 pair가 explicit | zero·unsafe·누락·exact-containment·가시성 위험·누락 pair는 숫자를 합성하지 않는 set/intersection graph |
 
@@ -44,7 +44,7 @@ Sankey·Radar·Treemap·Venn도 provider prompt와 응답 후 검증이 공유�
 | type | nested contract | serializer가 판정하는 의미 조건과 fallback |
 | --- | --- | --- |
 | Sankey | `nodes[]`의 `id`·`label`, `flows[]`의 exact endpoint·`value`, bbox/evidence | non-empty·ID/endpoint, 모든 node 참여, label 안전성, positive DAG를 판정; native 조건을 벗어난 valid graph는 exact-weight Flowchart |
-| Radar | `dimensions[]`의 `id`·`label`, `series[]`의 ordered `values`, finite `min`/`max`, strict `ticks`/`show_legend`, `circle|polygon` graticule, bbox/evidence | 3개 이상 dimension, ID·series 길이·bounds·option 의미와 `ticks <= 100` resource cap을 판정; valid negative domain은 edge 없는 tabular Flowchart |
+| Radar | `dimensions[]`의 `id`·`label`, `series[]`의 ordered `values`, finite `min`/`max`, strict `ticks`/`show_legend`, `circle|polygon` graticule, bbox/evidence | 3개 이상 dimension, ID·series 길이·bounds·option 의미, `ticks <= 100`, native 12-series와 fallback 256-point cap을 판정; binary64/span/radius 비호환 또는 valid negative domain은 edge 없는 exact-value Flowchart |
 | Treemap | 재귀 `root` node의 `id`·`label`·`value`·`children`과 bbox/evidence | root/internal/leaf, positive value, cycle·object reuse·depth·size를 판정; internal value·binary64/표시 합계 손실·native runtime 실패는 value-label hierarchy Flowchart |
 | Venn | `sets[]`와 `intersections[]`의 ID·membership·label·optional finite value, bbox/evidence | non-negative value, set/member·canonical intersection uniqueness와 size containment를 판정; native는 positive normal binary64-safe area, `200:1` visibility gate, higher-order union의 모든 explicit pair를 요구하고 나머지는 exact-value Flowchart |
 
@@ -54,11 +54,11 @@ Radar `axes`, Treemap/Venn `name`은 direct compatibility metadata로 검증·�
 광고하지 않습니다. Alias를 canonical root로 복사하거나 누락 collection을 채우지 않으므로 serializer의
 key-presence 우선순위도 그대로입니다.
 
-Sankey·Treemap·Venn의 valid evidence는 generated Scene attribution에 연결됩니다.
+Sankey·Radar·Treemap·Venn의 valid evidence는 generated Scene attribution에 연결됩니다.
 Treemap source bbox는 typed IR/review provenance에만 남고 generated Scene에는 복사하지 않습니다.
-Radar에는 Scene adapter가 없어 같은 metadata가 typed IR/review sidecar에만 남습니다. Radar fallback은
-모든 dimension label과 series
-value를 보존하지만 bounds, ticks, legend, graticule과 Radar geometry를 Mermaid code에 표현하지 않습니다.
+Radar source bbox도 terminal layout으로 가장하지 않습니다. Native는 renderer에서 계산한 normalized
+axis/data-point 위치를 사용하고 fallback은 zero geometry를 사용합니다. Radar fallback은 모든 dimension label과
+series value를 보존하지만 bounds, ticks, legend, graticule과 Radar geometry를 Mermaid code에 표현하지 않습니다.
 Treemap은 unique·bounded source ID를 유지하고, 누락·중복·잘못된 ID는 collision-safe
 `treemap_node_N[_suffix]` attribution slot으로 격리합니다. Venn은 set의 portable emitted ID를 먼저
 예약하고, intersection의 explicit ID가 정규화 충돌하면 deterministic `intersection_N[_suffix]` slot을
@@ -80,6 +80,39 @@ direction을 그대로 사용합니다. Node/flow record의 bbox와 evidence만 
 role, shape, flow label/style/bidirectional/arrow hint 같은 미방출 metadata는 Scene으로 승격하지 않습니다.
 Native runtime이 parse/render gate에서 거부되면 새 후보를 만들지 않고 같은 candidate slot에서 이
 Flowchart를 한 번 재직렬화하고 전체 security/parse/render/SVG/type gate를 다시 통과시킵니다.
+
+Radar serializer·Scene·semantic OCR은 `plan_radar_records()`의 같은 bounded plan을 공유합니다. Plan은
+dimension/series source record, terminal 전체에서 충돌하지 않는 emitted ID, exact fixed-decimal value,
+terminal별 source/canvas label, point별 dimension+series evidence를 한 번 고정합니다. Radar grammar 예약어와
+Flowchart group/cell ID까지 하나의 namespace에서 collision-safe suffix로 분리합니다. Malformed evidence list는
+해당 record에서만 원자적으로 비우고, point provenance의 bounded 합집합을 만들 수 없으면 그 point evidence
+전체를 비웁니다. Dimension은 최대 256개, 전체 point와 Scene element는 공용 Scene budget을 지키며 native와
+fallback source 모두 50,000자·5,000줄 preflight를 통과합니다.
+
+Native `radar-beta`는 value와 explicit bound가 zero 또는 normal binary64로 원문과 round-trip되고,
+effective minimum과 maximum의 binary64 span이 positive finite이며, pinned 300px renderer radius 계산이
+finite일 때만 선택합니다.
+음수 domain, subnormal/overflow/precision loss, zero/non-finite span은 exact fallback으로 내립니다. Mermaid
+theme가 색을 안정적으로 제공하는 12 series까지만 native로 허용하며 13번째부터 fallback합니다. Native
+Scene은 perimeter의 axis와 curve data point를 `[0,1]` normalized 좌표로 놓고 각 series의 마지막 point를
+첫 point로 잇는 marker/label 없는 `series_curve` association을 사용합니다. Series element bbox는 그 curve
+point들의 normalized envelope라서 logical series를 원점에 놓아 layout score를 왜곡하지 않습니다. 방향은 `radial`이고 series label은
+`showLegend=true`일 때만 Scene/OCR text입니다. Native OCR은 visible title·axis·legend만 세며 value와
+`min`/`max`·`ticks`·`graticule`, `accTitle`/`accDescr`는 geometry/metadata이므로 제외합니다.
+
+Native를 쓸 수 없거나 CandidateValidator가 native를 거부하면 같은 candidate slot에서 최대 256 point의
+`flowchart TB`를 한 번 재검증합니다. 각 series는 subgraph, 각 point는 zero-geometry rectangle
+`dimension: exact-value` cell이며 edge는 만들지 않습니다. Fallback Scene/OCR도 이 group/cell만 투영하고
+native title과 bounds/ticks/legend/graticule을 canvas content로 가장하지 않습니다. 256-point fallback을 만들 수
+없는 valid native candidate가 runtime에서 거부되면 partial code/Scene 대신 unavailable입니다. Strict scanner용
+source separator와 angle/hash, fallback quote/backslash 등의 visible compatibility glyph을 분리하고, visible
+치환은 native/fallback warning에 공개합니다. CandidateValidator의 SVG inspection은 Mermaid가 render 성공을
+보고해도 geometry attribute에 `NaN`/`Infinity`가 있으면 render-invalid로 닫습니다.
+
+Native generated-node provenance gate는 실제로 직접 귀속할 수 있는 axis와 series를 평가하고, series에서
+파생된 data point는 분모에서 제외합니다. Point value는 별도의 numeric consistency가 검증합니다. 반대로
+Flowchart fallback의 point cell은 실제 Mermaid node이므로 injective provenance 분모에 남습니다. 여러 cell이
+같은 dimension/series evidence만 반복 주장하면 자동 게시 권한으로 세지 않고 review로 보냅니다.
 
 Treemap serializer·Scene·semantic OCR도 `plan_treemap_records()`의 같은 DFS preorder plan을
 공유합니다. Plan은 source record, logical Scene ID, Flowchart에 실제 방출할 `N1..Nn`,

@@ -395,13 +395,28 @@ Radar domain, non-positive/cyclic Sankey,
 internal value가 있는 Treemap, 일부 size가 없는 Venn은 구조 오류가 아니라 문서화된 Flowchart fallback을
 선택할 수 있으므로 extraction model에서 금지하지 않습니다.
 
-Sankey·Treemap·Venn record의 ID와 evidence는 기존 generated Scene adapter의 node/relation attribution에
-사용됩니다. Radar는 generated Scene adapter가 없어 bbox/evidence를 typed IR/review sidecar에만 보존합니다.
+Radar의 serializer-owned 의미 검사는 dimension 3~256개, aligned series, 전체 Scene/point 예산,
+native 12-series, fallback 256-point, 50,000자·5,000줄 source 경계를 함께 적용합니다. Native value와 explicit
+bound는 zero 또는 normal binary64 exact round-trip, positive finite effective span과 finite renderer radius를
+만족해야 하며 음수·subnormal·overflow·precision loss·zero/non-finite span은 exact-value Flowchart를 선택합니다.
+Radar grammar 예약어를 포함한 dimension/series ID는 native axis/curve와 fallback group/cell 전체 namespace에서
+reserved-safe collision suffix를 배정합니다. Native runtime rejection도 같은 candidate slot의 bounded fallback만
+허용합니다.
+
+Sankey·Radar·Treemap·Venn record의 ID와 evidence는 generated Scene attribution에 사용됩니다. Radar native
+Scene은 source bbox 대신 normalized radial axis/data-point와 point-derived series envelope, closed curve
+relation을, fallback은 zero-geometry
+`TB` series group/value cell과 빈 relation list를 사용합니다. Dimension/series evidence는 point에서 bounded
+deduplicated union으로 결합하고 series evidence는 native curve relation에도 연결합니다.
+Native point는 independently emitted node가 아니라 curve에서 파생되므로 generated-node provenance 분모는
+axis/series만 사용하고 value는 numeric consistency로 검증합니다. Flowchart value cell은 실제 emitted node라서
+분모에 유지되며, 여러 cell이 같은 record evidence만 재사용하면 injective attribution으로 인정하지 않습니다.
 Treemap은 누락·중복·잘못된 source ID를 reserved-safe preorder slot으로 격리합니다. Venn은 canonical unique
 set ID를 요구한 뒤 set portable ID를 먼저 예약하고, intersection explicit ID가 정규화 충돌하면
 deterministic `intersection_N[_suffix]` Scene slot을 배정합니다. Set/intersection의 source bbox는
 typed IR/review provenance에 남지만 terminal generated Scene에는 복사하지 않고 zero bbox를 사용합니다.
-Malformed evidence list는 해당 record에서만 원자적으로 비워 부분 provenance를 만들지 않습니다. 어느
+Radar를 포함해 malformed evidence list는 해당 record에서만 원자적으로 비워 부분 provenance를 만들지
+않습니다. 어느
 경우에도 typed value나 그 record의 evidence reference가 독립 source OCR/vector numeric gate를 대신하지
 않습니다. 현재 Marker response envelope는 계속 generic `TypedIRCandidate.ir: dict`이며 recursive Treemap
 model도 provider에 diagram-type discriminated recursive schema를 직접 노출한다는 뜻은 아닙니다.

@@ -24,6 +24,19 @@
 - Strict-safe C4, Deployment, Component, and Use-case portable fallbacks.
 - Requested/emitted/runtime diagram type and fallback-chain metadata.
 - Evidence-strict Pie, XY, Quadrant, Sankey, Radar, Treemap, and Venn serializers.
+- Radar serialization, generated Scene, and semantic OCR now share a bounded `RadarPlan` with
+  reserved-safe cross-terminal IDs, fixed-decimal values, record-local provenance, and explicit
+  native-versus-tabular terminal semantics. Native Radar is limited to 12 series and requires
+  non-negative, zero-or-normal binary64 round-trip-safe values/bounds, a finite positive renderer
+  span, and finite curve radii; unsupported data and native runtime rejection use the same candidate slot's
+  exact-value `flowchart TB` fallback, capped at 256 points. Native Scenes expose normalized radial
+  axes/data points, per-series curve envelopes, and closed marker-less curve relations, while fallback
+  Scenes expose zero-geometry series groups and value cells without invented edges. Both paths preflight 50,000 characters / 5,000
+  lines, disclose terminal-visible compatibility substitutions, and keep hidden options/accessibility
+  metadata out of canvas OCR. Native generated-node provenance scores directly attributable axes and
+  series rather than derived curve points; exact Flowchart cells remain injectively gated as real nodes.
+  Render validation now rejects non-finite SVG geometry attributes such as `NaN` or `Infinity` even when
+  Mermaid reports parse/render success.
 - Numeric multiset precision/recall scoring and no-evidence publication guard.
 - Interactive source/render/provenance review workspace with external CSP-safe assets.
 - Atomic Mermaid/Scene IR/render revisions, optimistic concurrency, and undo/redo.
@@ -256,7 +269,7 @@
   for finite weighted flows, ordered series, recursive hierarchy nodes, explicit set membership,
   record geometry, and evidence. Canonical prompts do not advertise legacy `links`, `axes`, or
   label aliases; serializer-owned completeness, reference, range, hierarchy-budget, and native versus
-  Flowchart fallback semantics remain unchanged. Radar ticks are capped at 100 before rendering to
+  Flowchart fallback selection remain authoritative. Radar ticks are capped at 100 before rendering to
   bound the experimental runtime loop. Venn now reserves portable set IDs before assigning collision-safe
   explicit or deterministic intersection Scene IDs, preventing collision-driven self-loops without inventing
   sizes. Treemap moves missing, duplicate, or malformed attribution IDs into reserved-safe preorder slots.

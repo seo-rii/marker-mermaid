@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import math
 import re
+import sys
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from marker_mermaid.accessibility import resolve_accessibility
@@ -22,15 +24,27 @@ from marker_mermaid.flowchart_structure import (
     FlowchartStructureError,
     plan_flowchart_structure,
 )
-from marker_mermaid.models import MAX_ID_CHARS, MAX_SCENE_RELATIONS, MAX_TEXT_CHARS
+from marker_mermaid.models import (
+    MAX_ID_CHARS,
+    MAX_SCENE_ELEMENTS,
+    MAX_SCENE_GROUPS,
+    MAX_SCENE_RELATIONS,
+    MAX_TEXT_CHARS,
+)
 from marker_mermaid.resource_limits import MAX_EVIDENCE_REFS
 from marker_mermaid.security import MermaidSecurityScanner
 from marker_mermaid.serialization import SerializationResult
 from marker_mermaid.serializers import SerializationError, serialize_flowchart
 
-RadarDimension = tuple[str, str]
-RadarSeries = tuple[str, str, tuple[str, ...], tuple[Decimal, ...]]
 MAX_RADAR_TICKS = 100
+MAX_RADAR_DIMENSIONS = 256
+MAX_RADAR_SERIES = MAX_SCENE_GROUPS
+MAX_RADAR_POINTS = MAX_SCENE_ELEMENTS
+MAX_RADAR_NATIVE_SERIES = 12
+MAX_RADAR_FLOWCHART_POINTS = 256
+MAX_RADAR_OUTPUT_CHARS = 50_000
+MAX_RADAR_OUTPUT_LINES = 5_000
+RADAR_RENDER_RADIUS = 300.0
 MAX_SANKEY_FLOWCHART_EDGES = 500
 _MAX_EXACT_NATIVE_SANKEY_TOTAL = (2**53 - 1) / 100
 
@@ -47,9 +61,53 @@ SANKEY_RUNTIME_FALLBACK_WARNING = (
     "as a portable Flowchart in the same candidate slot."
 )
 RADAR_FALLBACK_WARNING = (
-    "Radar was emitted as a tabular flowchart because its numeric domain cannot "
-    "be represented by Mermaid 11.16 radar syntax without loss."
+    "Radar was emitted as a tabular flowchart because Mermaid 11.16 cannot represent "
+    "its numeric domain or geometry without loss."
 )
+RADAR_RUNTIME_FALLBACK_WARNING = (
+    "CandidateValidator rejected native Radar; exact dimension/value cells were "
+    "re-emitted as a portable Flowchart in the same candidate slot."
+)
+RADAR_NATIVE_TEXT_COMPATIBILITY_WARNING = (
+    "Radar canvas text used visible compatibility substitutions; semantic text remains "
+    "in typed IR and review metadata."
+)
+RADAR_FALLBACK_TEXT_COMPATIBILITY_WARNING = (
+    "Radar Flowchart text used visible compatibility substitutions; semantic text remains "
+    "in typed IR and review metadata."
+)
+
+_RADAR_RESERVED_IDENTIFIERS = frozenset(
+    {
+        "axis",
+        "circle",
+        "class",
+        "classdef",
+        "click",
+        "curve",
+        "direction",
+        "end",
+        "false",
+        "flowchart",
+        "graph",
+        "graticule",
+        "linkstyle",
+        "lr",
+        "max",
+        "min",
+        "polygon",
+        "rl",
+        "showlegend",
+        "style",
+        "subgraph",
+        "tb",
+        "ticks",
+        "title",
+        "true",
+        "bt",
+    }
+)
+_ZERO_WIDTH_SPACE = "\u200b"
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +148,79 @@ class SankeyPlan:
     fallback_direction: str
 
 
+@dataclass(frozen=True, slots=True)
+class RadarDimensionPlan:
+    """One emitted radar axis and its terminal-visible label evidence."""
+
+    source_record: Mapping[str, Any]
+    source_id: str
+    emitted_id: str
+    label: str
+    native_source_label: str
+    native_canvas_label: str
+    fallback_source_label: str
+    fallback_canvas_label: str
+    normalized_point: tuple[float, float]
+    evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RadarPointPlan:
+    """One exact series value bound to an emitted dimension."""
+
+    scene_id: str
+    dimension_source_id: str
+    dimension_emitted_id: str
+    dimension_label: str
+    fallback_source_label: str
+    fallback_canvas_label: str
+    value_text: str
+    value: Decimal
+    native_value: float | None
+    normalized_point: tuple[float, float] | None
+    evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RadarSeriesPlan:
+    """One curve/portable subgraph and its ordered values."""
+
+    source_record: Mapping[str, Any]
+    source_id: str
+    emitted_id: str
+    label: str
+    native_source_label: str
+    native_canvas_label: str
+    fallback_source_label: str
+    fallback_canvas_label: str
+    points: tuple[RadarPointPlan, ...]
+    evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RadarPlan:
+    """Bounded terminal plan shared by Radar serialization, Scene, and OCR."""
+
+    dimensions: tuple[RadarDimensionPlan, ...]
+    series: tuple[RadarSeriesPlan, ...]
+    native_supported: bool
+    flowchart_supported: bool
+    native_limitations: tuple[str, ...]
+    minimum_text: str | None
+    maximum_text: str | None
+    ticks: int
+    ticks_explicit: bool
+    show_legend: bool
+    show_legend_explicit: bool
+    graticule: str
+    graticule_explicit: bool
+    semantic_title: str | None
+    native_source_title: str | None
+    native_canvas_title: str | None
+    native_compatibility_substitutions: bool
+    fallback_compatibility_substitutions: bool
+
+
 def _required_records(value: Any, *, field: str) -> list[Mapping[str, Any]]:
     if not isinstance(value, list) or not value:
         raise SerializationError(f"{field} requires a non-empty list")
@@ -120,44 +251,31 @@ def _finite_number(value: Any, *, field: str) -> tuple[str, Decimal]:
         raise SerializationError(f"{field} requires an explicit finite number")
     if isinstance(value, float) and not math.isfinite(value):
         raise SerializationError(f"{field} requires an explicit finite number")
-    decimal = Decimal(str(value))
+    try:
+        decimal = Decimal(value) if isinstance(value, int | Decimal) else Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise SerializationError(f"{field} requires an explicit finite number") from exc
     if not decimal.is_finite():
         raise SerializationError(f"{field} requires an explicit finite number")
     if decimal == 0:
         return "0", Decimal(0)
+    if abs(decimal.adjusted()) >= MAX_TEXT_CHARS:
+        raise SerializationError(f"{field} numeric token exceeds the source text limit")
     rendered = format(decimal, "f")
     if "." in rendered:
         rendered = rendered.rstrip("0").rstrip(".")
+    if len(rendered) > MAX_TEXT_CHARS:
+        raise SerializationError(f"{field} numeric token exceeds the source text limit")
     return rendered, decimal
-
-
-def _safe_identifier(value: str, fallback: str) -> str:
-    normalized = re.sub(r"[^A-Za-z0-9_-]", "_", value).strip("_-")
-    if not normalized:
-        normalized = fallback
-    if not re.match(r"[A-Za-z_]", normalized):
-        normalized = f"n_{normalized}"
-    return normalized
-
-
-def _unique_output_ids(source_ids: Sequence[str], *, prefix: str) -> dict[str, str]:
-    used: set[str] = set()
-    output: dict[str, str] = {}
-    for index, source_id in enumerate(source_ids, start=1):
-        base = _safe_identifier(source_id, f"{prefix}{index}")
-        candidate = base
-        suffix = 2
-        while candidate in used:
-            candidate = f"{base}_{suffix}"
-            suffix += 1
-        used.add(candidate)
-        output[source_id] = candidate
-    return output
 
 
 def _flow_text(value: str) -> str:
     return (
-        value.replace("\\", "\\\\")
+        value.replace("%%", f"%{_ZERO_WIDTH_SPACE}%")
+        .replace("//", f"/{_ZERO_WIDTH_SPACE}/")
+        .replace("<", f"<{_ZERO_WIDTH_SPACE}")
+        .replace("&", f"&{_ZERO_WIDTH_SPACE}")
+        .replace("\\", "\\\\")
         .replace('"', "&quot;")
         .replace("\r", " ")
         .replace("\n", " ")
@@ -166,11 +284,29 @@ def _flow_text(value: str) -> str:
 
 
 def _radar_string(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\r", "\\r").replace("\n", "\\n")
+    return (
+        value.replace("%%", f"%{_ZERO_WIDTH_SPACE}%")
+        .replace("//", f"/{_ZERO_WIDTH_SPACE}/")
+        .replace("<", f"<{_ZERO_WIDTH_SPACE}")
+        .replace("&", f"&{_ZERO_WIDTH_SPACE}")
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+    )
 
 
 def _plain_text(value: Any) -> str:
-    return str(value).replace("\r", " ").replace("\n", " ").strip()
+    return (
+        str(value)
+        .replace("%%", f"%{_ZERO_WIDTH_SPACE}%")
+        .replace("//", f"/{_ZERO_WIDTH_SPACE}/")
+        .replace("<", f"<{_ZERO_WIDTH_SPACE}")
+        .replace("&", f"&{_ZERO_WIDTH_SPACE}")
+        .replace("\r", " ")
+        .replace("\n", " ")
+        .strip()
+    )
 
 
 def _strict_source(code: str) -> str:
@@ -179,6 +315,29 @@ def _strict_source(code: str) -> str:
         rules = ", ".join(sorted({finding.rule for finding in report.findings}))
         raise SerializationError(f"chart text violates the strict security profile: {rules}")
     return code
+
+
+def _safe_evidence_ids(record: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return one complete bounded evidence tuple or quarantine the record locally."""
+
+    raw_evidence_ids = record.get("evidence_ids")
+    if raw_evidence_ids is None:
+        return ()
+    if (
+        not isinstance(raw_evidence_ids, list)
+        or len(raw_evidence_ids) > MAX_EVIDENCE_REFS
+        or not all(
+            type(evidence_id) is str and bool(evidence_id) and len(evidence_id) <= MAX_ID_CHARS
+            for evidence_id in raw_evidence_ids
+        )
+    ):
+        return ()
+    try:
+        for evidence_id in raw_evidence_ids:
+            evidence_id.encode("utf-8")
+    except UnicodeEncodeError:
+        return ()
+    return tuple(raw_evidence_ids)
 
 
 def _is_dag(node_ids: Sequence[str], flows: Sequence[tuple[str, str]]) -> bool:
@@ -229,23 +388,7 @@ def plan_sankey_records(ir: Mapping[str, Any]) -> SankeyPlan:
         label = _label(record, source_id, field="Sankey node")
         if len(label) > MAX_TEXT_CHARS:
             raise SerializationError("Sankey node label exceeds the Scene text limit")
-        raw_evidence_ids = record.get("evidence_ids")
-        evidence_ids: tuple[str, ...] = ()
-        if (
-            isinstance(raw_evidence_ids, list)
-            and len(raw_evidence_ids) <= MAX_EVIDENCE_REFS
-            and all(
-                type(evidence_id) is str and bool(evidence_id) and len(evidence_id) <= MAX_ID_CHARS
-                for evidence_id in raw_evidence_ids
-            )
-        ):
-            try:
-                for evidence_id in raw_evidence_ids:
-                    evidence_id.encode("utf-8")
-            except UnicodeEncodeError:
-                pass
-            else:
-                evidence_ids = tuple(raw_evidence_ids)
+        evidence_ids = _safe_evidence_ids(record)
         node_rows.append((record, source_id, label, evidence_ids))
 
     try:
@@ -277,23 +420,7 @@ def plan_sankey_records(ir: Mapping[str, Any]) -> SankeyPlan:
         if "value" not in record:
             raise SerializationError(f"Sankey flow {index} lacks explicit numeric value evidence")
         rendered, decimal = _finite_number(record["value"], field=f"Sankey flow {index} value")
-        raw_evidence_ids = record.get("evidence_ids")
-        evidence_ids = ()
-        if (
-            isinstance(raw_evidence_ids, list)
-            and len(raw_evidence_ids) <= MAX_EVIDENCE_REFS
-            and all(
-                type(evidence_id) is str and bool(evidence_id) and len(evidence_id) <= MAX_ID_CHARS
-                for evidence_id in raw_evidence_ids
-            )
-        ):
-            try:
-                for evidence_id in raw_evidence_ids:
-                    evidence_id.encode("utf-8")
-            except UnicodeEncodeError:
-                pass
-            else:
-                evidence_ids = tuple(raw_evidence_ids)
+        evidence_ids = _safe_evidence_ids(record)
         flow_rows.append((record, source, target, rendered, decimal, evidence_ids))
 
     incoming: dict[str, list[float]] = {source_id: [] for source_id in seen_ids}
@@ -480,30 +607,184 @@ def serialize_sankey(
     )
 
 
-def _radar_data(
-    ir: Mapping[str, Any],
-) -> tuple[list[RadarDimension], list[RadarSeries], dict[str, tuple[str, Decimal] | Any]]:
+def _preflight_radar_code(code: str) -> str:
+    if code.count("\n") + 1 > MAX_RADAR_OUTPUT_LINES:
+        raise SerializationError(
+            f"Radar output exceeds source-line limit of {MAX_RADAR_OUTPUT_LINES}"
+        )
+    if len(code) > MAX_RADAR_OUTPUT_CHARS:
+        raise SerializationError(
+            f"Radar output exceeds source-character limit of {MAX_RADAR_OUTPUT_CHARS}"
+        )
+    return code
+
+
+def plan_radar_records(ir: Mapping[str, Any]) -> RadarPlan:
+    """Validate Radar evidence and freeze native/fallback terminal semantics."""
+
     raw_dimensions = ir.get("dimensions", ir.get("axes"))
     dimension_records = _required_records(raw_dimensions, field="Radar dimensions")
     if len(dimension_records) < 3:
         raise SerializationError("Radar requires at least three dimensions")
-    dimensions: list[RadarDimension] = []
-    seen_dimensions: set[str] = set()
-    for record in dimension_records:
-        source_id = _explicit_id(record, field="Radar dimension")
-        if source_id in seen_dimensions:
-            raise SerializationError(f"Radar dimension id {source_id!r} is duplicated")
-        seen_dimensions.add(source_id)
-        dimensions.append((source_id, _label(record, source_id, field="Radar dimension")))
-
+    if len(dimension_records) > MAX_RADAR_DIMENSIONS:
+        raise SerializationError(f"Radar dimension count must not exceed {MAX_RADAR_DIMENSIONS}")
     series_records = _required_records(ir.get("series"), field="Radar series")
-    series: list[RadarSeries] = []
-    seen_series: set[str] = set()
-    for record in series_records:
-        source_id = _explicit_id(record, field="Radar series")
-        if source_id in seen_series:
+    if len(series_records) > MAX_RADAR_SERIES:
+        raise SerializationError(f"Radar series count must not exceed {MAX_RADAR_SERIES}")
+    point_count = len(dimension_records) * len(series_records)
+    if point_count > MAX_RADAR_POINTS:
+        raise SerializationError(f"Radar point count must not exceed {MAX_RADAR_POINTS}")
+    if point_count + len(dimension_records) + len(series_records) > MAX_SCENE_ELEMENTS:
+        raise SerializationError("Radar terminal elements exceed the Scene element limit")
+
+    seen_records: set[int] = set()
+    seen_dimension_ids: set[str] = set()
+    used_terminal_ids: set[str] = set()
+    native_compatibility_substitutions = False
+    fallback_compatibility_substitutions = False
+    dimensions: list[RadarDimensionPlan] = []
+    native_label_translation = str.maketrans({"<": "＜", ">": "＞", "#": "＃"})
+    fallback_label_translation = str.maketrans({"<": "＜", ">": "＞", "#": "＃"})
+
+    for index, record in enumerate(dimension_records, start=1):
+        identity = id(record)
+        if identity in seen_records:
+            raise SerializationError("Radar records cannot reuse one object")
+        seen_records.add(identity)
+        raw_source_id = record.get("id")
+        if type(raw_source_id) is not str or not raw_source_id:
+            raise SerializationError("Radar dimension requires an explicit non-empty id")
+        source_id = raw_source_id
+        if source_id != source_id.strip() or len(source_id) > MAX_ID_CHARS:
+            raise SerializationError("Radar dimension requires a bounded canonical id")
+        if any(
+            unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"} for character in source_id
+        ):
+            raise SerializationError("Radar dimension id contains unsupported text")
+        try:
+            source_id.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise SerializationError("Radar dimension id is not valid UTF-8") from exc
+        if source_id in seen_dimension_ids:
+            raise SerializationError(f"Radar dimension id {source_id!r} is duplicated")
+        seen_dimension_ids.add(source_id)
+        emitted_base = re.sub(r"[^A-Za-z0-9_-]", "_", source_id).strip("_-")
+        if not emitted_base:
+            emitted_base = f"radar_axis_{index}"
+        if not re.match(r"[A-Za-z_]", emitted_base):
+            emitted_base = f"n_{emitted_base}"
+        if emitted_base.casefold() in _RADAR_RESERVED_IDENTIFIERS:
+            emitted_base = f"radar_{emitted_base}"
+        emitted_base = emitted_base[:MAX_ID_CHARS]
+        emitted_id = emitted_base
+        suffix = 2
+        while emitted_id in used_terminal_ids:
+            suffix_text = f"_{suffix}"
+            emitted_id = f"{emitted_base[: MAX_ID_CHARS - len(suffix_text)]}{suffix_text}"
+            suffix += 1
+        used_terminal_ids.add(emitted_id)
+
+        raw_label = _label(record, source_id, field="Radar dimension")
+        label = " ".join(raw_label.split())
+        if not label or len(label) > MAX_TEXT_CHARS:
+            raise SerializationError("Radar dimension label must be non-empty and bounded")
+        if any(unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"} for character in label):
+            raise SerializationError("Radar dimension label contains unsupported text")
+        try:
+            label.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise SerializationError("Radar dimension label is not valid UTF-8") from exc
+        native_canvas_label = label.translate(native_label_translation)
+        fallback_canvas_label = (
+            label.translate(fallback_label_translation).replace('"', "″").replace("\\", "∖")
+        )
+        native_compatibility_substitutions |= native_canvas_label != raw_label
+        fallback_compatibility_substitutions |= fallback_canvas_label != raw_label
+        angle = 2 * (index - 1) * math.pi / len(dimension_records) - math.pi / 2
+        dimensions.append(
+            RadarDimensionPlan(
+                source_record=record,
+                source_id=source_id,
+                emitted_id=emitted_id,
+                label=label,
+                native_source_label=_radar_string(native_canvas_label),
+                native_canvas_label=native_canvas_label,
+                fallback_source_label=_flow_text(fallback_canvas_label),
+                fallback_canvas_label=fallback_canvas_label,
+                normalized_point=(
+                    0.5 + 0.5 * math.cos(angle),
+                    0.5 + 0.5 * math.sin(angle),
+                ),
+                evidence_ids=_safe_evidence_ids(record),
+            )
+        )
+
+    series_rows: list[dict[str, Any]] = []
+    all_values: list[Decimal] = []
+    all_native_values: list[float | None] = []
+    series_emitted_ids: list[str] = []
+    series_source_ids: list[str] = []
+    reserved_series_source_ids: set[str] = set()
+    for series_index, record in enumerate(series_records, start=1):
+        identity = id(record)
+        if identity in seen_records:
+            raise SerializationError("Radar records cannot reuse one object")
+        seen_records.add(identity)
+        raw_source_id = record.get("id")
+        if type(raw_source_id) is not str or not raw_source_id:
+            raise SerializationError("Radar series requires an explicit non-empty id")
+        source_id = raw_source_id
+        if source_id != source_id.strip() or len(source_id) > MAX_ID_CHARS:
+            raise SerializationError("Radar series requires a bounded canonical id")
+        if any(
+            unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"}
+            for character in source_id
+        ):
+            raise SerializationError("Radar series id contains unsupported text")
+        try:
+            source_id.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise SerializationError("Radar series id is not valid UTF-8") from exc
+        if source_id in reserved_series_source_ids:
             raise SerializationError(f"Radar series id {source_id!r} is duplicated")
-        seen_series.add(source_id)
+        reserved_series_source_ids.add(source_id)
+        series_source_ids.append(source_id)
+        emitted_base = re.sub(r"[^A-Za-z0-9_-]", "_", source_id).strip("_-")
+        if not emitted_base:
+            emitted_base = f"radar_series_{series_index}"
+        if not re.match(r"[A-Za-z_]", emitted_base):
+            emitted_base = f"n_{emitted_base}"
+        if emitted_base.casefold() in _RADAR_RESERVED_IDENTIFIERS:
+            emitted_base = f"radar_{emitted_base}"
+        emitted_base = emitted_base[:MAX_ID_CHARS]
+        emitted_id = emitted_base
+        suffix = 2
+        while emitted_id in used_terminal_ids:
+            suffix_text = f"_{suffix}"
+            emitted_id = f"{emitted_base[: MAX_ID_CHARS - len(suffix_text)]}{suffix_text}"
+            suffix += 1
+        used_terminal_ids.add(emitted_id)
+        series_emitted_ids.append(emitted_id)
+    for series_index, record in enumerate(series_records, start=1):
+        source_id = series_source_ids[series_index - 1]
+        emitted_id = series_emitted_ids[series_index - 1]
+
+        raw_label = _label(record, source_id, field="Radar series")
+        label = " ".join(raw_label.split())
+        if not label or len(label) > MAX_TEXT_CHARS:
+            raise SerializationError("Radar series label must be non-empty and bounded")
+        if any(unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"} for character in label):
+            raise SerializationError("Radar series label contains unsupported text")
+        try:
+            label.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise SerializationError("Radar series label is not valid UTF-8") from exc
+        native_canvas_label = label.translate(native_label_translation)
+        fallback_canvas_label = (
+            label.translate(fallback_label_translation).replace('"', "″").replace("\\", "∖")
+        )
+        native_compatibility_substitutions |= native_canvas_label != raw_label
+        fallback_compatibility_substitutions |= fallback_canvas_label != raw_label
         values = record.get("values")
         if not isinstance(values, list):
             raise SerializationError(f"Radar series {source_id!r} requires a values list")
@@ -512,135 +793,346 @@ def _radar_data(
                 f"Radar series {source_id!r} has {len(values)} values for "
                 f"{len(dimensions)} dimensions"
             )
-        rendered_values: list[str] = []
-        decimals: list[Decimal] = []
-        for index, value in enumerate(values, start=1):
-            rendered, decimal = _finite_number(
-                value, field=f"Radar series {source_id!r} value {index}"
+        evidence_ids = _safe_evidence_ids(record)
+        point_rows: list[dict[str, Any]] = []
+        for point_index, (dimension, raw_value) in enumerate(
+            zip(dimensions, values, strict=True), start=1
+        ):
+            value_text, value = _finite_number(
+                raw_value,
+                field=f"Radar series {source_id!r} value {point_index}",
             )
-            rendered_values.append(rendered)
-            decimals.append(decimal)
+            try:
+                native_value = float(value_text)
+            except (OverflowError, ValueError):
+                native_value = None
+            if native_value is not None and (
+                not math.isfinite(native_value)
+                or (value != 0 and native_value == 0)
+                or (native_value != 0 and abs(native_value) < sys.float_info.min)
+                or Decimal(str(native_value)) != value
+            ):
+                native_value = None
+            cell_base = f"{emitted_id}_{point_index}"
+            cell_base = cell_base[:MAX_ID_CHARS]
+            scene_id = cell_base
+            suffix = 2
+            while scene_id in used_terminal_ids:
+                suffix_text = f"_{suffix}"
+                scene_id = f"{cell_base[: MAX_ID_CHARS - len(suffix_text)]}{suffix_text}"
+                suffix += 1
+            used_terminal_ids.add(scene_id)
+            combined_evidence = tuple(dict.fromkeys((*dimension.evidence_ids, *evidence_ids)))
+            if len(combined_evidence) > MAX_EVIDENCE_REFS:
+                combined_evidence = ()
+            fallback_canvas_value = f"{dimension.fallback_canvas_label}: {value_text}"
+            point_rows.append(
+                {
+                    "scene_id": scene_id,
+                    "dimension": dimension,
+                    "fallback_source_label": (
+                        f"{dimension.fallback_source_label}: {_flow_text(value_text)}"
+                    ),
+                    "fallback_canvas_label": fallback_canvas_value,
+                    "value_text": value_text,
+                    "value": value,
+                    "native_value": native_value,
+                    "evidence_ids": combined_evidence,
+                }
+            )
+            all_values.append(value)
+            all_native_values.append(native_value)
+        series_rows.append(
+            {
+                "source_record": record,
+                "source_id": source_id,
+                "emitted_id": emitted_id,
+                "label": label,
+                "native_source_label": _radar_string(native_canvas_label),
+                "native_canvas_label": native_canvas_label,
+                "fallback_source_label": _flow_text(fallback_canvas_label),
+                "fallback_canvas_label": fallback_canvas_label,
+                "point_rows": point_rows,
+                "evidence_ids": evidence_ids,
+            }
+        )
+
+    minimum_text: str | None = None
+    minimum: Decimal | None = None
+    minimum_native: float | None = None
+    maximum_text: str | None = None
+    maximum: Decimal | None = None
+    maximum_native: float | None = None
+    for field in ("min", "max"):
+        if field not in ir or ir[field] is None:
+            continue
+        value_text, value = _finite_number(ir[field], field=f"Radar {field}")
+        try:
+            native_value = float(value_text)
+        except (OverflowError, ValueError):
+            native_value = None
+        if native_value is not None and (
+            not math.isfinite(native_value)
+            or (value != 0 and native_value == 0)
+            or (native_value != 0 and abs(native_value) < sys.float_info.min)
+            or Decimal(str(native_value)) != value
+        ):
+            native_value = None
+        if field == "min":
+            minimum_text, minimum, minimum_native = value_text, value, native_value
+        else:
+            maximum_text, maximum, maximum_native = value_text, value, native_value
+    if minimum is not None and maximum is not None and minimum >= maximum:
+        raise SerializationError("Radar min must be smaller than max")
+    if minimum is not None and any(value < minimum for value in all_values):
+        raise SerializationError("Radar values must not be smaller than explicit min")
+    if maximum is not None and any(value > maximum for value in all_values):
+        raise SerializationError("Radar values must not exceed explicit max")
+
+    ticks_explicit = ir.get("ticks") is not None
+    ticks = ir.get("ticks") if ticks_explicit else 5
+    if isinstance(ticks, bool) or not isinstance(ticks, int) or ticks < 1:
+        raise SerializationError("Radar ticks must be a positive integer")
+    if ticks > MAX_RADAR_TICKS:
+        raise SerializationError(f"Radar ticks must not exceed {MAX_RADAR_TICKS}")
+    show_legend_explicit = ir.get("show_legend") is not None
+    show_legend = ir.get("show_legend") if show_legend_explicit else True
+    if not isinstance(show_legend, bool):
+        raise SerializationError("Radar show_legend must be boolean")
+    graticule_explicit = ir.get("graticule") is not None
+    graticule = ir.get("graticule") if graticule_explicit else "circle"
+    if graticule not in {"circle", "polygon"}:
+        raise SerializationError("Radar graticule must be circle or polygon")
+
+    native_limitations: list[str] = []
+    if len(series_rows) > MAX_RADAR_NATIVE_SERIES:
+        native_limitations.append(
+            f"more than {MAX_RADAR_NATIVE_SERIES} series exceed the pinned Radar theme capacity"
+        )
+    if any(value < 0 for value in all_values) or (minimum is not None and minimum < 0):
+        native_limitations.append("negative values or bounds are not native-safe")
+    if (
+        any(value is None for value in all_native_values)
+        or (minimum is not None and minimum_native is None)
+        or (maximum is not None and maximum_native is None)
+    ):
+        native_limitations.append("one or more values are not normal binary64 round-trip safe")
+
+    effective_minimum = minimum if minimum is not None else Decimal(0)
+    effective_maximum = maximum if maximum is not None else max(all_values)
+    if effective_maximum <= effective_minimum:
+        native_limitations.append("the effective native scale has zero or negative span")
+    effective_minimum_native = minimum_native if minimum is not None else 0.0
+    effective_maximum_native = (
+        maximum_native
+        if maximum is not None
+        else (
+            max(value for value in all_native_values if value is not None)
+            if all(value is not None for value in all_native_values)
+            else None
+        )
+    )
+    native_span: float | None = None
+    if effective_minimum_native is not None and effective_maximum_native is not None:
+        native_span = effective_maximum_native - effective_minimum_native
+        if not math.isfinite(native_span) or native_span <= 0:
+            limitation = "the effective binary64 scale has zero, negative, or non-finite span"
+            if limitation not in native_limitations:
+                native_limitations.append(limitation)
+        elif any(
+            native_value is None
+            or not math.isfinite(RADAR_RENDER_RADIUS * (native_value - effective_minimum_native))
+            for native_value in all_native_values
+        ):
+            native_limitations.append("the pinned renderer would overflow Radar curve coordinates")
+
+    native_supported = not native_limitations
+    series: list[RadarSeriesPlan] = []
+    for series_row in series_rows:
+        points: list[RadarPointPlan] = []
+        for point_index, point_row in enumerate(series_row["point_rows"], start=1):
+            dimension = point_row["dimension"]
+            normalized_point: tuple[float, float] | None = None
+            native_value = point_row["native_value"]
+            if native_supported and native_span is not None and native_value is not None:
+                angle = 2 * (point_index - 1) * math.pi / len(dimensions) - math.pi / 2
+                radius = (
+                    RADAR_RENDER_RADIUS
+                    * (native_value - effective_minimum_native)
+                    / native_span
+                    / (2 * RADAR_RENDER_RADIUS)
+                )
+                normalized_point = (
+                    0.5 + radius * math.cos(angle),
+                    0.5 + radius * math.sin(angle),
+                )
+            points.append(
+                RadarPointPlan(
+                    scene_id=point_row["scene_id"],
+                    dimension_source_id=dimension.source_id,
+                    dimension_emitted_id=dimension.emitted_id,
+                    dimension_label=dimension.label,
+                    fallback_source_label=point_row["fallback_source_label"],
+                    fallback_canvas_label=point_row["fallback_canvas_label"],
+                    value_text=point_row["value_text"],
+                    value=point_row["value"],
+                    native_value=native_value,
+                    normalized_point=normalized_point,
+                    evidence_ids=point_row["evidence_ids"],
+                )
+            )
         series.append(
-            (
-                source_id,
-                _label(record, source_id, field="Radar series"),
-                tuple(rendered_values),
-                tuple(decimals),
+            RadarSeriesPlan(
+                source_record=series_row["source_record"],
+                source_id=series_row["source_id"],
+                emitted_id=series_row["emitted_id"],
+                label=series_row["label"],
+                native_source_label=series_row["native_source_label"],
+                native_canvas_label=series_row["native_canvas_label"],
+                fallback_source_label=series_row["fallback_source_label"],
+                fallback_canvas_label=series_row["fallback_canvas_label"],
+                points=tuple(points),
+                evidence_ids=series_row["evidence_ids"],
             )
         )
 
-    options: dict[str, tuple[str, Decimal] | Any] = {}
-    for field in ("min", "max"):
-        if field in ir and ir[field] is not None:
-            options[field] = _finite_number(ir[field], field=f"Radar {field}")
-    if (
-        "min" in options and "max" in options and options["min"][1] >= options["max"][1]  # type: ignore[index]
-    ):
-        raise SerializationError("Radar min must be smaller than max")
-    all_values = [value for _, _, _, values in series for value in values]
-    if "min" in options and any(value < options["min"][1] for value in all_values):  # type: ignore[index]
-        raise SerializationError("Radar values must not be smaller than explicit min")
-    if "max" in options and any(value > options["max"][1] for value in all_values):  # type: ignore[index]
-        raise SerializationError("Radar values must not exceed explicit max")
+    semantic_title: str | None = None
+    native_source_title: str | None = None
+    native_canvas_title: str | None = None
+    raw_title = ir.get("title")
+    if raw_title is not None and raw_title != "":
+        if type(raw_title) is not str:
+            raise SerializationError("Radar title must be text")
+        semantic_title = " ".join(raw_title.split())
+        if not semantic_title or len(semantic_title) > MAX_TEXT_CHARS:
+            raise SerializationError("Radar title must be non-empty and bounded")
+        if any(
+            unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"}
+            for character in semantic_title
+        ):
+            raise SerializationError("Radar title contains unsupported text")
+        try:
+            semantic_title.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise SerializationError("Radar title is not valid UTF-8") from exc
+        native_canvas_title = semantic_title.translate(
+            str.maketrans({"<": "＜", ">": "＞", "#": "＃", ";": "；"})
+        )
+        native_source_title = _plain_text(native_canvas_title)
+        native_compatibility_substitutions |= native_canvas_title != raw_title
 
-    if "ticks" in ir and ir["ticks"] is not None:
-        ticks = ir["ticks"]
-        if isinstance(ticks, bool) or not isinstance(ticks, int) or ticks < 1:
-            raise SerializationError("Radar ticks must be a positive integer")
-        if ticks > MAX_RADAR_TICKS:
-            raise SerializationError(f"Radar ticks must not exceed {MAX_RADAR_TICKS}")
-        options["ticks"] = ticks
-    if "show_legend" in ir and not isinstance(ir["show_legend"], bool):
-        raise SerializationError("Radar show_legend must be boolean")
-    if "show_legend" in ir:
-        options["show_legend"] = ir["show_legend"]
-    graticule = ir.get("graticule")
-    if graticule is not None:
-        if graticule not in {"circle", "polygon"}:
-            raise SerializationError("Radar graticule must be circle or polygon")
-        options["graticule"] = graticule
-    return dimensions, series, options
-
-
-def _radar_native_supported(
-    series: Sequence[RadarSeries], options: Mapping[str, tuple[str, Decimal] | Any]
-) -> bool:
-    values = [value for _, _, _, numbers in series for value in numbers]
-    bounds = [options[field][1] for field in ("min", "max") if field in options]
-    return all(value >= 0 for value in (*values, *bounds))
+    flowchart_line_count = 3 + 2 * len(series) + point_count
+    return RadarPlan(
+        dimensions=tuple(dimensions),
+        series=tuple(series),
+        native_supported=native_supported,
+        flowchart_supported=(
+            point_count <= MAX_RADAR_FLOWCHART_POINTS
+            and flowchart_line_count + 1 <= MAX_RADAR_OUTPUT_LINES
+        ),
+        native_limitations=tuple(native_limitations),
+        minimum_text=minimum_text,
+        maximum_text=maximum_text,
+        ticks=ticks,
+        ticks_explicit=ticks_explicit,
+        show_legend=show_legend,
+        show_legend_explicit=show_legend_explicit,
+        graticule=graticule,
+        graticule_explicit=graticule_explicit,
+        semantic_title=semantic_title,
+        native_source_title=native_source_title,
+        native_canvas_title=native_canvas_title,
+        native_compatibility_substitutions=native_compatibility_substitutions,
+        fallback_compatibility_substitutions=fallback_compatibility_substitutions,
+    )
 
 
 def _radar_flowchart(
     ir: Mapping[str, Any],
-    dimensions: Sequence[RadarDimension],
-    series: Sequence[RadarSeries],
+    plan: RadarPlan,
     *,
     experimental: bool,
 ) -> str:
-    dimension_labels = [label for _, label in dimensions]
-    series_ids = _unique_output_ids([source_id for source_id, _, _, _ in series], prefix="S")
+    if not plan.flowchart_supported:
+        raise SerializationError(
+            f"Radar Flowchart fallback exceeds the {MAX_RADAR_FLOWCHART_POINTS}-point runtime limit"
+        )
     lines = ["flowchart TB"]
     accessibility = resolve_accessibility(ir, "radar", experimental=experimental)
-    lines.append(f"    accTitle: {_flow_text(accessibility.title)}")
+    lines.append(f"    accTitle: {_plain_text(accessibility.title)}")
     suffix = "This radar reconstruction uses a tabular flowchart fallback."
     description = f"{accessibility.description} {suffix}"
-    lines.append(f"    accDescr: {_flow_text(description)}")
-    for source_id, label, rendered_values, _ in series:
-        output_id = series_ids[source_id]
-        lines.append(f'    subgraph {output_id}["{_flow_text(label)}"]')
-        for index, (dimension, value) in enumerate(
-            zip(dimension_labels, rendered_values, strict=True), start=1
-        ):
-            lines.append(
-                f'        {output_id}_{index}["{_flow_text(dimension)}: {_flow_text(value)}"]'
-            )
+    lines.append(f"    accDescr: {_plain_text(description)}")
+    for series in plan.series:
+        lines.append(f'    subgraph {series.emitted_id}["{series.fallback_source_label}"]')
+        for point in series.points:
+            lines.append(f'        {point.scene_id}["{point.fallback_source_label}"]')
         lines.append("    end")
-    return "\n".join(lines) + "\n"
+    return _preflight_radar_code("\n".join(lines) + "\n")
 
 
-def serialize_radar(ir: Mapping[str, Any], *, experimental: bool = False) -> SerializationResult:
+def serialize_radar(
+    ir: Mapping[str, Any],
+    *,
+    experimental: bool = False,
+    native_runtime_valid: bool = True,
+) -> SerializationResult:
     """Serialize dimension-aligned series without inventing absent values."""
 
-    dimensions, series, options = _radar_data(ir)
-    if not _radar_native_supported(series, options):
+    if not isinstance(native_runtime_valid, bool):
+        raise SerializationError("native_runtime_valid must be a boolean")
+    plan = plan_radar_records(ir)
+    if not native_runtime_valid or not plan.native_supported:
+        warnings = [
+            RADAR_RUNTIME_FALLBACK_WARNING
+            if not native_runtime_valid
+            else f"{RADAR_FALLBACK_WARNING} {'; '.join(plan.native_limitations)}"
+        ]
+        if plan.fallback_compatibility_substitutions:
+            warnings.append(RADAR_FALLBACK_TEXT_COMPATIBILITY_WARNING)
         return SerializationResult.fallback(
             "radar",
             "flowchart",
-            _strict_source(_radar_flowchart(ir, dimensions, series, experimental=experimental)),
-            warnings=(RADAR_FALLBACK_WARNING,),
+            _strict_source(_radar_flowchart(ir, plan, experimental=experimental)),
+            warnings=tuple(warnings),
             stability="experimental",
         )
 
-    dimension_ids = _unique_output_ids([source_id for source_id, _ in dimensions], prefix="D")
-    series_ids = _unique_output_ids([source_id for source_id, _, _, _ in series], prefix="S")
     lines = ["radar-beta"]
-    if ir.get("title"):
-        lines.append(f"title {_plain_text(ir['title'])}")
+    if plan.native_source_title is not None:
+        lines.append(f"title {plan.native_source_title}")
     accessibility = resolve_accessibility(ir, "radar", experimental=experimental)
     lines.append(f"accTitle: {_plain_text(accessibility.title)}")
     lines.append(f"accDescr: {_plain_text(accessibility.description)}")
     lines.append(
         "axis "
         + ", ".join(
-            f'{dimension_ids[source_id]}["{_radar_string(label)}"]'
-            for source_id, label in dimensions
+            f'{dimension.emitted_id}["{dimension.native_source_label}"]'
+            for dimension in plan.dimensions
         )
     )
-    for source_id, label, values, _ in series:
+    for series in plan.series:
         lines.append(
-            f'curve {series_ids[source_id]}["{_radar_string(label)}"]{{{", ".join(values)}}}'
+            f'curve {series.emitted_id}["{series.native_source_label}"]'
+            f"{{{', '.join(point.value_text for point in series.points)}}}"
         )
-    if "show_legend" in options:
-        lines.append(f"showLegend {str(options['show_legend']).lower()}")
-    if "ticks" in options:
-        lines.append(f"ticks {options['ticks']}")
-    for field in ("max", "min"):
-        if field in options:
-            lines.append(f"{field} {options[field][0]}")  # type: ignore[index]
-    if "graticule" in options:
-        lines.append(f"graticule {options['graticule']}")
-    code = _strict_source("\n".join(lines) + "\n")
-    return SerializationResult.native("radar", code, stability="experimental")
+    if plan.show_legend_explicit:
+        lines.append(f"showLegend {str(plan.show_legend).lower()}")
+    if plan.ticks_explicit:
+        lines.append(f"ticks {plan.ticks}")
+    if plan.maximum_text is not None:
+        lines.append(f"max {plan.maximum_text}")
+    if plan.minimum_text is not None:
+        lines.append(f"min {plan.minimum_text}")
+    if plan.graticule_explicit:
+        lines.append(f"graticule {plan.graticule}")
+    code = _strict_source(_preflight_radar_code("\n".join(lines) + "\n"))
+    warnings = (
+        (RADAR_NATIVE_TEXT_COMPATIBILITY_WARNING,)
+        if plan.native_compatibility_substitutions
+        else ()
+    )
+    return SerializationResult.native("radar", code, warnings=warnings, stability="experimental")
 
 
 CHART_FLOW_SERIALIZERS: dict[str, Callable[[Mapping[str, Any]], SerializationResult]] = {

@@ -30,7 +30,7 @@ from marker_mermaid.serializers import (
     plan_architecture_structure,
     plan_gantt_records,
 )
-from marker_mermaid.serializers_charts_flow import plan_sankey_records
+from marker_mermaid.serializers_charts_flow import plan_radar_records, plan_sankey_records
 from marker_mermaid.serializers_charts_sets import plan_treemap_records, plan_venn_records
 from marker_mermaid.serializers_experimental import (
     CYNEFIN_DOMAIN_LABELS,
@@ -321,6 +321,136 @@ def typed_ir_to_scene(
             for field in packet_plan.fields
         ]
         scene_direction_override = "LR"
+    elif diagram_type == "radar":
+        try:
+            radar_plan = plan_radar_records(ir)
+        except SerializationError:
+            return None
+        radar_uses_flowchart = (
+            not radar_plan.native_supported
+            if emitted_diagram_type is None
+            else emitted_diagram_type.casefold().startswith("flowchart")
+        )
+        if radar_uses_flowchart:
+            if not radar_plan.flowchart_supported:
+                return None
+            elements = [
+                SceneElement(
+                    id=point.scene_id,
+                    role="data_point",
+                    text=point.fallback_canvas_label,
+                    bbox=(0.0, 0.0, 0.0, 0.0),
+                    shape="rectangle",
+                    confidence=1.0,
+                    evidence_ids=list(point.evidence_ids),
+                )
+                for series in radar_plan.series
+                for point in series.points
+            ]
+            groups = [
+                SceneGroup(
+                    id=series.emitted_id,
+                    role="series",
+                    label=series.fallback_canvas_label,
+                    bbox=(0.0, 0.0, 0.0, 0.0),
+                    member_ids=[point.scene_id for point in series.points],
+                )
+                for series in radar_plan.series
+            ]
+            return DiagramSceneIR(
+                elements=elements,
+                relations=[],
+                groups=groups,
+                reading_direction="TB",
+                diagram_type_candidates=["radar"],
+                coordinate_space="pixels",
+            )
+        if not radar_plan.native_supported:
+            return None
+        elements = [
+            SceneElement(
+                id=dimension.emitted_id,
+                role="axis",
+                text=dimension.native_canvas_label,
+                bbox=(*dimension.normalized_point, *dimension.normalized_point),
+                shape=None,
+                confidence=1.0,
+                evidence_ids=list(dimension.evidence_ids),
+            )
+            for dimension in radar_plan.dimensions
+        ]
+        series_bboxes: list[tuple[float, float, float, float]] = []
+        for series in radar_plan.series:
+            positions: list[tuple[float, float]] = []
+            for point in series.points:
+                if point.normalized_point is None:
+                    return None
+                positions.append(point.normalized_point)
+            x_positions = [position[0] for position in positions]
+            y_positions = [position[1] for position in positions]
+            series_bboxes.append(
+                (
+                    min(x_positions),
+                    min(y_positions),
+                    max(x_positions),
+                    max(y_positions),
+                )
+            )
+        elements.extend(
+            SceneElement(
+                id=series.emitted_id,
+                role="series",
+                text=series.native_canvas_label if radar_plan.show_legend else None,
+                bbox=bbox,
+                shape=None,
+                confidence=1.0,
+                evidence_ids=list(series.evidence_ids),
+            )
+            for series, bbox in zip(radar_plan.series, series_bboxes, strict=True)
+        )
+        for series in radar_plan.series:
+            for point in series.points:
+                if point.normalized_point is None:
+                    return None
+                elements.append(
+                    SceneElement(
+                        id=point.scene_id,
+                        role="data_point",
+                        text=None,
+                        bbox=(*point.normalized_point, *point.normalized_point),
+                        shape=None,
+                        confidence=1.0,
+                        evidence_ids=list(point.evidence_ids),
+                    )
+                )
+        relations = []
+        for series_index, series in enumerate(radar_plan.series, start=1):
+            for point_index, point in enumerate(series.points, start=1):
+                next_point = series.points[point_index % len(series.points)]
+                relations.append(
+                    SceneRelation(
+                        id=f"radar_curve_{series_index}_{point_index}",
+                        source_id=point.scene_id,
+                        target_id=next_point.scene_id,
+                        relation_type="series_curve",
+                        semantic_relation="association",
+                        label=None,
+                        polyline=[],
+                        arrow_at_start=False,
+                        arrow_at_end=False,
+                        line_style=None,
+                        confidence=1.0,
+                        evidence_ids=list(series.evidence_ids),
+                    )
+                )
+        return DiagramSceneIR(
+            elements=elements,
+            relations=relations,
+            groups=[],
+            reading_direction="radial",
+            diagram_type_candidates=["radar"],
+            coordinate_space="normalized",
+        )
     elif diagram_type == "sankey":
         try:
             sankey_plan = plan_sankey_records(ir)
@@ -1534,6 +1664,33 @@ def typed_ir_semantic_texts(
                 yield native_title
         for field in plan.fields:
             yield field.label
+        return
+    if diagram_type == "radar":
+        plan = plan_radar_records(ir)
+        radar_uses_flowchart = (
+            not plan.native_supported
+            if emitted_diagram_type is None
+            else emitted_diagram_type.casefold().startswith("flowchart")
+        )
+        if radar_uses_flowchart:
+            if not plan.flowchart_supported:
+                raise SerializationError(
+                    "Radar Flowchart projection exceeds the runtime point limit"
+                )
+            for series in plan.series:
+                yield series.fallback_canvas_label
+                for point in series.points:
+                    yield point.fallback_canvas_label
+        else:
+            if not plan.native_supported:
+                raise SerializationError("native Radar projection is not lossless")
+            if plan.native_canvas_title is not None:
+                yield plan.native_canvas_title
+            for dimension in plan.dimensions:
+                yield dimension.native_canvas_label
+            if plan.show_legend:
+                for series in plan.series:
+                    yield series.native_canvas_label
         return
     if diagram_type == "venn":
         plan = plan_venn_records(ir)

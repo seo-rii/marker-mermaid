@@ -475,6 +475,21 @@ def test_svg_inspection_rejects_external_links_and_scripts():
 
 
 @pytest.mark.parametrize(
+    ("attribute", "value"),
+    [("d", "MNaN,NaN Z"), ("points", "0,0 Infinity,1"), ("transform", "translate(NaN 0)")],
+)
+def test_svg_inspection_rejects_non_finite_geometry(attribute: str, value: str) -> None:
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1">'
+        f'<path {attribute}="{value}"/></svg>'
+    )
+
+    assert f"rendered SVG contains non-finite geometry attribute {attribute}" in inspect_svg(
+        svg, SecurityProfile.STRICT
+    )
+
+
+@pytest.mark.parametrize(
     "svg",
     [None, "", "  \n", b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>'],
 )

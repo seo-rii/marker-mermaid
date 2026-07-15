@@ -26,8 +26,9 @@ connector에서 파생합니다.
 typed IR은 serializer가 실제 방출하는 node/edge 구조로 다시 변환합니다. bbox가 IR에 명시되지 않으면
 layout을 추측하지 않습니다. Scene IR portable fallback은 deterministic serializer 보존 여부를 평가할 수
 있습니다. raw/direct Mermaid는 아직 일반 AST→Scene 변환이 없으므로 구조 점수가 unavailable일 수 있습니다.
-평가 Scene adapter는 sequence/ZenUML, hierarchy/organization, planning/event, Packet/Treemap/Ishikawa/TreeView,
-Wardley/Cynefin, data-lineage, Railroad, Venn까지 포함하며 typed record의 evidence ID를 보존합니다.
+평가 Scene adapter는 sequence/ZenUML, hierarchy/organization, planning/event,
+Packet/Radar/Treemap/Ishikawa/TreeView, Wardley/Cynefin, data-lineage, Railroad, Venn까지 포함하며 typed
+record의 evidence ID를 보존합니다.
 Event Modeling의 generated Scene은 fallback serializer와 같은 namespaced frame/relation ID,
 화면에 보이는 typed/time label, lane subgraph membership, `LR` 방향, end-arrow만 사용합니다.
 ZenUML도 Sequence fallback의 namespaced participant/message ID, alias label, endpoint와 end-arrow를
@@ -99,6 +100,21 @@ projection/source gate에서 비교합니다. Pipeline은 검증된 terminal gra
 전달합니다. Native Packet일 때만 실제 canvas의 normalized title을 OCR text에 포함하고, disconnected
 Flowchart fallback에서는 native-only title을 제외합니다. Entity-like title은 serializer와 같은 visible
 fullwidth glyph를 사용하지만 source security용 invisible separator는 OCR token을 쪼개지 않도록 제거합니다.
+Radar Scene은 serializer·semantic OCR과 같은 `RadarPlan`을 사용합니다. Native terminal은 axis와 data point를
+Mermaid의 radial scale에 맞춘 `[0,1]` normalized 위치에 놓고, series element와 마지막 point→첫 point까지 닫힌
+marker/label 없는 `series_curve` association을 만듭니다. Series bbox는 point들의 normalized curve envelope이고
+source bbox나 임의 원점이 아닙니다. Direction은 `radial`, group은 비어 있으며 source
+bbox를 generated position으로 복사하지 않습니다. Series text는 `showLegend=true`일 때만 visible합니다.
+Fallback terminal은 실제 `flowchart TB`처럼 series별 zero-geometry group과 rectangle
+`dimension: exact-value` cell만 만들고 relation은 추가하지 않습니다. Dimension/series evidence는 각 axis와
+series에, bounded union은 point/cell에, series evidence는 native curve relation에 연결합니다. Malformed
+evidence list는 그 record에서만 전부 비우며 terminal-visible compatibility glyph과 warning을 Scene/OCR에서도
+공유합니다.
+Native data point는 독립 Mermaid node가 아니라 series curve에서 파생된 geometry이므로 generated-node
+provenance 분모에서는 제외하고, 직접 귀속 가능한 axis와 series만 injective하게 평가합니다. Point value는
+numeric consistency가 별도로 검증합니다. Flowchart fallback의 cell은 실제 node이므로 분모에서 제외하지
+않으며, dimension/series evidence를 여러 cell이 반복 주장하면 기존 collision 규칙대로 지원되지 않은 node로
+처리합니다.
 Treemap Scene은 serializer·semantic OCR과 같은 DFS preorder `TreemapPlan`을 소비합니다.
 Native terminal은 source에서 고유하고 bounded한 ID 또는 collision-safe
 `treemap_node_N[_suffix]`를 section/leaf identity로 쓰고 parent/child를 arrow가 없는 logical
@@ -140,7 +156,8 @@ generated Scene attribution에서 제외합니다.
 
 ## 기존 metric과 결합
 
-- syntax/render는 게시 hard gate이면서 score input입니다.
+- syntax/render는 게시 hard gate이면서 score input입니다. CandidateValidator의 SVG inspection은 Mermaid가
+  render 성공을 보고해도 geometry attribute에 `NaN` 또는 `Infinity`가 있으면 render-invalid로 바꿉니다.
 - pipeline은 최종 source, 사후 보안 검사를 통과한 비어 있지 않은 SVG, 선택적 runtime PNG의 SHA-256,
   security profile, emitted/runtime type을 validation receipt로 함께 봉인합니다. Receipt 설치에는
   `CandidateValidator`가 exact source/SVG/PNG 검사를 끝낸 뒤 발급한 process-local certificate가 필요하며,
@@ -207,7 +224,10 @@ generated Scene attribution에서 제외합니다.
   title을 field label 앞에 세고 Flowchart fallback에서는 제외합니다. Sankey native terminal은 node label과
   renderer가 표시하는 `max(incoming, outgoing)` 합계를 세되 개별 flow weight는 세지 않고, Flowchart terminal은
   node label과 exact edge-weight label을 셉니다. 두 Sankey 경로 모두 title/description을 canvas text로 세지
-  않습니다. Treemap native terminal은 visible `title`, 각 section/leaf label, d3-hierarchy의
+  않습니다. Radar native terminal은 visible title·axis와 `showLegend=true`인 series legend만 세고, value,
+  bounds, ticks, graticule과 `accTitle`/`accDescr`는 geometry/metadata이므로 제외합니다. Radar Flowchart는 series
+  subgraph label과 각 `dimension: exact-value` cell만 세며 native-only canvas title과 hidden option은 제외합니다.
+  Treemap native terminal은 visible `title`, 각 section/leaf label, d3-hierarchy의
   reverse-order binary64 합산을 d3 `format(",")`으로 표시한 값을 세고, Flowchart terminal은
   preorder node의 exact value-suffix label만 셉니다. `accTitle`/`accDescr`는 SVG metadata일 뿐 content
   label이 아닙니다. Native renderer는 작은 cell text를 `display:none`으로 숨길 수 있으므로
@@ -238,6 +258,14 @@ generated Scene attribution에서 제외합니다.
   Malformed/oversized evidence list는 문자 단위 ID로 coercion하지 않고 해당 record에서만 빈 provenance로
   격리하며, relation count와 relation ID도 Scene resource 경계 안에서 serializer와 함께 검증합니다.
   Flowchart projection이 pinned runtime의 500-edge cap을 넘으면 partial Scene을 만들지 않고 unavailable입니다.
+- Radar 구조 metric은 `RadarPlan`이 확정한 terminal을 따릅니다. Native는 최대 12 series와 zero-or-normal binary64
+  round-trip value/bound, positive finite effective span과 finite renderer radius를 요구하고 normalized radial
+  point 및 closed marker-less curve relation을 평가합니다. Flowchart는 최대 256 point의 zero-geometry `TB`
+  group/cell과 빈 relation list를 사용하므로 radial layout이나 edge를 가장하지 않습니다. Native runtime
+  rejection은 같은 candidate slot의 fallback을 한 번 재검증하며 fallback budget을 넘으면 partial Scene 대신
+  unavailable입니다. Native provenance gate는 derived point 대신 axis/series를 평가하고 Flowchart는 실제 cell을
+  계속 injective하게 평가합니다. 두 terminal은 reserved-safe ID namespace와 50,000자·5,000줄 source preflight를
+  공유합니다.
 - Treemap 구조 metric은 공용 preorder plan이 고정한 terminal을 따릅니다. Native는 section/leaf
   identity와 arrow 없는 logical containment, `unknown` direction을 쓰고, Flowchart는 `N1..Nn`,
   `TB`, rectangle, end-arrow를 씁니다. Internal explicit value·binary64/renderer 표시 비호환은

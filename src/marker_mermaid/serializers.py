@@ -897,6 +897,15 @@ def serialize_runtime_fallback_result(
             native_runtime_valid=False,
         )
         return result if result.used_fallback else None
+    if diagram_type == "radar":
+        from marker_mermaid.serializers_charts_flow import serialize_radar
+
+        result = serialize_radar(
+            ir,
+            experimental=experimental,
+            native_runtime_valid=False,
+        )
+        return result if result.used_fallback else None
     if diagram_type in {"treemap", "venn"}:
         from marker_mermaid.serializers_charts_sets import serialize_chart_set
 

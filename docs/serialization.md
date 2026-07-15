@@ -29,7 +29,7 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 | Use-case | `flowchart` | stadium actor/round use-case proxy와 typed relation label; actor glyph, system boundary, group/style/bidirectional metadata는 typed IR에 유지 |
 | Pie, XY, Quadrant | 동일 | explicit finite values/axis/coordinates 필수 |
 | Sankey | `sankey` 또는 `flowchart` | native-safe positive DAG, 그 외 및 native runtime 거부 시 same-slot exact-weight fallback |
-| Radar | `radar` 또는 `flowchart` | non-negative native domain, 음수 domain은 tabular fallback |
+| Radar | `radar` 또는 `flowchart` | 12-series 이하의 zero-or-normal binary64·finite positive span/radius native domain, 그 외 및 native runtime 거부는 same-slot exact-value tabular fallback(최대 256 point) |
 | Treemap | `treemap` 또는 `flowchart` | leaf value 필수; internal value·unsafe binary64/표시 합계·native runtime 거부는 same-slot exact-value fallback |
 | Venn | `venn` 또는 `flowchart` | positive normal binary64·`200:1` visibility·explicit pair gate를 통과하면 native, 그 외 same-slot exact set graph |
 | Journey | `timeline` | strict SVG에서 금지된 `foreignObject`를 피하고 score/actor를 event text로 보존 |
@@ -443,9 +443,34 @@ candidate/type/repair budget을 소비하지 않으며, strict source scan과 pa
 fallback chain은 `sankey → flowchart`로 기록됩니다. Sankey title/description은 native canvas에 없고 fallback
 SVG에서는 accessibility metadata일 뿐이므로 어느 terminal에서도 content OCR label로 세지 않습니다.
 
-Radar는 음수 value 또는 bound도 valid data로 받아 edge 없는 tabular Flowchart에 dimension label과 모든
-series value를 보존합니다. 이 fallback은 bounds, ticks, legend, graticule과 Radar geometry를 code에 표현하지
-않으므로 해당 option은 typed IR/review metadata에 남습니다.
+Radar는 `plan_radar_records()`에서 dimension/series와 exact fixed-decimal value, reserved-safe emitted
+axis/series/cell ID, terminal별 visible text, record-local evidence를 한 번 고정합니다. Native는 12 series
+이하이고 value 및 explicit bound가 zero 또는 normal binary64로 exact round-trip되며, effective scale의
+Decimal/binary64 span과 pinned renderer radius 계산이 positive finite일 때만 사용합니다. 음수,
+subnormal/overflow/precision loss, zero/non-finite span은 parse/render 성공 여부와 관계없이 exact tabular
+fallback을 선택합니다.
+
+Native generated Scene은 `normalized` 좌표의 axis와 data point, series element, 마지막 point에서 첫 point로
+닫히는 marker/label 없는 `series_curve` association, `radial` direction을 사용합니다. Source bbox는 이 생성
+배치에 복사하지 않으며 series bbox는 해당 point들의 normalized curve envelope입니다. OCR은 visible native
+title·axis와 `showLegend=true`인 legend만 세고 curve value,
+`min`/`max`, `ticks`, `graticule`, `accTitle`/`accDescr`는 hidden geometry/metadata로 제외합니다. Axis/series
+evidence는 해당 element에, dimension+series evidence는 point에, series evidence는 curve relation에 연결하며
+malformed evidence list는 그 record에서만 빈 tuple로 격리합니다.
+Native point는 independently emitted node가 아니라 curve에서 파생된 geometry이므로 generated-node
+provenance gate는 axis/series만 injective하게 평가하고 point value는 numeric consistency에 맡깁니다.
+
+Fallback은 최대 256 point의 edge 없는 `flowchart TB`입니다. Series마다 zero-geometry group을 만들고 각
+dimension/value를 zero-geometry rectangle `dimension: exact-value` cell로 보존하며 relation은 없습니다.
+Bounds, ticks, legend, graticule, native radial geometry와 native-only canvas title은 typed IR/review metadata에만
+남고 fallback OCR에는 group/cell visible text만 들어갑니다. Native runtime rejection은 새 candidate budget을
+쓰지 않고 같은 slot에서 이 fallback을 한 번 strict scan·parse·render·SVG·terminal-type 재검증합니다.
+Fallback budget을 넘으면 partial projection을 만들지 않습니다. 두 terminal은 50,000자·5,000줄 source
+preflight와 terminal 전체의 collision-safe reserved-word ID namespace를 공유합니다. Visible compatibility
+glyph은 Scene/OCR에도 동일하게 사용하고 warning에 공개합니다. CandidateValidator는 SVG geometry attribute의
+`NaN`/`Infinity`를 render failure로 취급합니다.
+Fallback cell은 실제 emitted node이므로 provenance 분모에 남고, 반복된 dimension/series evidence claim은
+일반 injective collision 규칙대로 자동 게시 권한을 얻지 못합니다.
 
 Treemap serializer, generated Scene, semantic OCR은 `plan_treemap_records()`의 같은 bounded DFS
 preorder plan을 소비합니다. Plan은 source record·parent/child, unique bounded source ID 또는
@@ -526,7 +551,9 @@ warning 또는 fallback reason에 공개하고 Scene/OCR에도 같은 canvas tex
 
 Direct serializer의 Sankey `links`, Radar `axes`, Treemap/Venn `name` 호환 입력은 canonical key가 없을 때의
 기존 해석을 유지하지만 structured prompt에는 광고하지 않습니다. Sankey native grammar의 접근성 제한은
-typed IR warning으로 남고, Radar는 generated Scene adapter가 없어 record provenance가 sidecar에만 남습니다.
-Treemap은 누락·중복·잘못된 attribution ID를 reserved-safe slot으로 격리하고, Venn은 set/intersection
-전체 namespace에서 collision-safe emitted/Scene ID를 계획합니다. Sankey·Treemap·Venn Scene attribution과 관계없이 네 유형 모두
-독립 source OCR/vector numeric evidence gate를 통과해야 자동 게시할 수 있습니다.
+typed IR warning으로 남습니다. Radar는 shared plan의 native radial/fallback tabular Scene과 record-local
+provenance를 sidecar에 기록합니다. Treemap은 누락·중복·잘못된 attribution ID를 reserved-safe slot으로
+격리하고, Venn은 set/intersection
+전체 namespace에서 collision-safe emitted/Scene ID를 계획합니다. Sankey·Radar·Treemap·Venn의 Scene
+attribution과 별개로 네 유형 모두 독립 source OCR/vector numeric evidence gate를 통과해야 자동 게시할 수
+있습니다.

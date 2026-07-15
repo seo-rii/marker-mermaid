@@ -36,6 +36,15 @@ Venn이 same-slot Flowchart fallback으로 내려가면 resolved text를 SVG 접
 label로 세지 않으며 native-only title도 복사하지 않습니다. Grammar-unsafe visible text를 compatibility glyph로
 바꾼 경우 native candidate warning 또는 fallback reason에 공개합니다.
 
+Native Radar는 pinned Mermaid 11.16에서 `accTitle`/`accDescr`를 지원하므로 두 directive를 SVG
+`<title>`/`<desc>` metadata로 방출합니다. 별도의 explicit `title`만 radar canvas에 보이며 semantic OCR에는
+이 visible title, axis label, `showLegend=true`일 때의 series legend만 들어갑니다. Value, `min`/`max`,
+`ticks`, `graticule`과 접근성 metadata는 geometry 또는 hidden option이므로 content OCR text가 아닙니다.
+Same-slot Flowchart fallback도 resolved accessibility text를 metadata로 보존하지만 native-only canvas title은
+복사하지 않으며, OCR은 series subgraph label과 `dimension: exact-value` cell만 셉니다. Native/fallback
+visible text가 Mermaid 문법을 피하기 위해 호환 glyph로 바뀌면 각각 candidate warning에 공개하고 원문은 typed
+IR과 review metadata에 유지합니다.
+
 ## Direct Mermaid
 
 Raw/direct 후보에는 예측 type만 보고 source를 수정하지 않습니다. 원본 후보를 먼저 security scan,
