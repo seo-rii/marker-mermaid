@@ -31,7 +31,7 @@ from marker_mermaid.serializers import (
     plan_gantt_records,
 )
 from marker_mermaid.serializers_charts_flow import plan_sankey_records
-from marker_mermaid.serializers_charts_sets import plan_treemap_records
+from marker_mermaid.serializers_charts_sets import plan_treemap_records, plan_venn_records
 from marker_mermaid.serializers_experimental import (
     CYNEFIN_DOMAIN_LABELS,
     CYNEFIN_RUNTIME_TEMPLATE_ELEMENTS,
@@ -959,31 +959,72 @@ def typed_ir_to_scene(
         ]
         scene_direction_override = data_lineage_plan.direction
     elif diagram_type == "venn":
-        node_records = list(ir.get("sets") or [])
-        for index, intersection in enumerate(ir.get("intersections") or [], start=1):
-            if not isinstance(intersection, dict):
-                continue
-            intersection_id = str(intersection.get("id") or f"intersection_{index}")
-            node_records.append(
-                {
-                    **intersection,
-                    "id": intersection_id,
-                    "label": intersection.get("label") or intersection_id,
-                }
-            )
-            for member in intersection.get("sets") or []:
-                edge_records.append(
-                    {
-                        "source": str(member),
-                        "target": intersection_id,
-                        "semantic_relation": "containment",
-                        "evidence_ids": list(intersection.get("evidence_ids") or []),
-                    }
-                )
+        try:
+            venn_plan = plan_venn_records(ir)
+        except SerializationError:
+            return None
+        venn_uses_flowchart = (
+            not venn_plan.native_supported
+            if emitted_diagram_type is None
+            else emitted_diagram_type.casefold().startswith("flowchart")
+        )
+        if venn_uses_flowchart and not venn_plan.flowchart_supported:
+            return None
+        node_records = [
+            {
+                "id": item.emitted_id,
+                "label": (
+                    item.fallback_canvas_label
+                    + (f" (value: {item.value_text})" if item.value_text is not None else "")
+                    if venn_uses_flowchart
+                    else item.native_canvas_label
+                ),
+                "role": "set",
+                "shape": "circle",
+                "bbox": [0, 0, 0, 0],
+                "evidence_ids": list(item.evidence_ids),
+                "_text_is_explicit": True,
+            }
+            for item in venn_plan.sets
+        ]
+        node_records.extend(
+            {
+                "id": item.scene_id,
+                "label": (
+                    item.fallback_canvas_label
+                    + (f" (value: {item.value_text})" if item.value_text is not None else "")
+                    if venn_uses_flowchart
+                    else item.native_canvas_label
+                ),
+                "role": "intersection",
+                "shape": "round" if venn_uses_flowchart else None,
+                "bbox": [0, 0, 0, 0],
+                "evidence_ids": list(item.evidence_ids),
+                "_text_is_explicit": True,
+            }
+            for item in venn_plan.intersections
+        )
+        edge_records = [
+            {
+                "id": membership.scene_id,
+                "source": membership.source_emitted_id,
+                "target": membership.target_scene_id,
+                "label": "intersects" if venn_uses_flowchart else None,
+                "relation_type": (
+                    "generated_connector" if venn_uses_flowchart else "logical_membership"
+                ),
+                "semantic_relation": "containment",
+                "arrow_at_start": False,
+                "arrow_at_end": venn_uses_flowchart,
+                "evidence_ids": list(membership.evidence_ids),
+            }
+            for membership in venn_plan.memberships
+        ]
+        scene_direction_override = "LR" if venn_uses_flowchart else "unknown"
     else:
         return None
 
-    if diagram_type in {"journey", "venn"}:
+    if diagram_type == "journey":
         attribution_ids = [
             str(node.get("id") or f"N{index}")
             for index, node in enumerate(node_records, start=1)
@@ -1023,6 +1064,8 @@ def typed_ir_to_scene(
                 if str(node.get("kind") or "state").lower() == "state"
                 else None
             )
+        elif diagram_type == "venn" and node.get("_text_is_explicit"):
+            scene_text = node.get("label")
         else:
             scene_text = node.get("label") or node.get("text") or node_id
         elements.append(
@@ -1491,6 +1534,37 @@ def typed_ir_semantic_texts(
                 yield native_title
         for field in plan.fields:
             yield field.label
+        return
+    if diagram_type == "venn":
+        plan = plan_venn_records(ir)
+        venn_uses_flowchart = (
+            not plan.native_supported
+            if emitted_diagram_type is None
+            else emitted_diagram_type.casefold().startswith("flowchart")
+        )
+        if venn_uses_flowchart:
+            if not plan.flowchart_supported:
+                raise SerializationError("Venn Flowchart projection exceeds the runtime edge limit")
+            for item in plan.sets:
+                label = item.fallback_canvas_label
+                if item.value_text is not None:
+                    label += f" (value: {item.value_text})"
+                yield label
+            for item in plan.intersections:
+                label = item.fallback_canvas_label
+                if item.value_text is not None:
+                    label += f" (value: {item.value_text})"
+                yield label
+            for _membership in plan.memberships:
+                yield "intersects"
+        else:
+            if plan.native_canvas_title is not None:
+                yield plan.native_canvas_title
+            for item in plan.sets:
+                yield item.native_canvas_label
+            for item in plan.intersections:
+                if item.native_canvas_label is not None:
+                    yield item.native_canvas_label
         return
     if diagram_type == "treemap":
         plan = plan_treemap_records(ir)

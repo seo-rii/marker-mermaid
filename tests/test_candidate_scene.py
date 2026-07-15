@@ -3941,7 +3941,7 @@ def test_treemap_scene_uses_explicit_recursive_ids_and_child_attribution() -> No
     ] == [("portfolio", "product", "containment", ["ocr-product", "contour-product"])]
 
 
-def test_venn_scene_uses_explicit_intersection_id_geometry_and_attribution() -> None:
+def test_venn_scene_uses_terminal_ids_zero_geometry_and_attribution() -> None:
     scene = typed_ir_to_scene(
         "venn",
         {
@@ -3974,9 +3974,9 @@ def test_venn_scene_uses_explicit_intersection_id_geometry_and_attribution() -> 
 
     assert scene is not None
     assert [(item.id, item.bbox, item.evidence_ids) for item in scene.elements] == [
-        ("A", (0, 0, 20, 20), ["contour-a"]),
-        ("B", (10, 0, 30, 20), ["contour-b"]),
-        ("both", (10, 2, 20, 18), ["ocr-both", "contour-both"]),
+        ("A", (0, 0, 0, 0), ["contour-a"]),
+        ("B", (0, 0, 0, 0), ["contour-b"]),
+        ("both", (0, 0, 0, 0), ["ocr-both", "contour-both"]),
     ]
     assert [
         (relation.source_id, relation.target_id, relation.evidence_ids)
@@ -4003,13 +4003,23 @@ def test_treemap_scene_reserves_ids_when_source_attribution_ids_are_duplicated()
     assert [element.id for element in scene.elements] == ["treemap_node_1", "treemap_node_2"]
 
 
-def test_venn_scene_fails_closed_on_duplicate_attribution_ids() -> None:
+def test_venn_scene_ignores_non_emitted_intersection_id_but_rejects_duplicate_sets() -> None:
+    scene = typed_ir_to_scene(
+        "venn",
+        {
+            "sets": [{"id": "A", "label": "A"}, {"id": "B", "label": "B"}],
+            "intersections": [{"id": "A", "sets": ["A", "B"], "label": "Both"}],
+        },
+    )
+
+    assert scene is not None
+    assert [item.id for item in scene.elements] == ["A", "B", "intersection_1"]
     assert (
         typed_ir_to_scene(
             "venn",
             {
-                "sets": [{"id": "A", "label": "A"}, {"id": "B", "label": "B"}],
-                "intersections": [{"id": "A", "sets": ["A", "B"], "label": "Both"}],
+                "sets": [{"id": "A", "label": "A"}, {"id": "A", "label": "Again"}],
+                "intersections": [{"sets": ["A", "A"], "label": "Both"}],
             },
         )
         is None

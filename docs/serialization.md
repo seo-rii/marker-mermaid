@@ -31,7 +31,7 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 | Sankey | `sankey` 또는 `flowchart` | native-safe positive DAG, 그 외 및 native runtime 거부 시 same-slot exact-weight fallback |
 | Radar | `radar` 또는 `flowchart` | non-negative native domain, 음수 domain은 tabular fallback |
 | Treemap | `treemap` 또는 `flowchart` | leaf value 필수; internal value·unsafe binary64/표시 합계·native runtime 거부는 same-slot exact-value fallback |
-| Venn | `venn` 또는 `flowchart` | 모든 크기가 관측되면 native, 누락 시 숫자 합성 없는 set graph |
+| Venn | `venn` 또는 `flowchart` | positive normal binary64·`200:1` visibility·explicit pair gate를 통과하면 native, 그 외 same-slot exact set graph |
 | Journey | `timeline` | strict SVG에서 금지된 `foreignObject`를 피하고 score/actor를 event text로 보존 |
 | Kanban, GitGraph | 동일 또는 `flowchart` | native runtime 거부 시 공용 planning plan으로 같은 candidate slot에서 portable fallback |
 | Packet | `packet` 또는 `flowchart` | 명시적 contiguous bit range만 native; fallback은 가상 gap·edge가 없는 독립 field |
@@ -493,13 +493,40 @@ Visible compatibility glyph을 사용한 native는 candidate warning을, Flowcha
 run은 한 ASCII space로 고정하고, resolved `accTitle`/`accDescr`의 visible 치환도 같은 warning 계약에
 포함합니다. Native와 fallback source는 각각 50,000자·5,000줄 preflight를 통과해야 runtime으로 갑니다.
 
-Venn은 모든 set/intersection size가 관측될 때만 native area notation을 사용합니다. 하나라도 빠졌거나
-runtime이 native grammar를 거부하면 숫자를 합성하지 않는 set/intersection Flowchart를 만들고 set
-node와 intersection node가 충돌하지 않도록 portable ID를 분리합니다.
+Venn serializer, generated Scene, semantic OCR은 `plan_venn_records()`의 같은 bounded plan을 소비합니다.
+Plan은 set의 source/portable emitted ID, set과 충돌하지 않는 explicit 또는 deterministic
+`intersection_N[_suffix]` Scene ID, canonical membership 순서, exact fixed-decimal value token,
+terminal별 source/canvas label과 record-local evidence를 고정합니다. 지수 표기는 방출하지 않습니다.
+Set/intersection object 재사용, unknown/repeated member, duplicate canonical intersection, 관측 set/하위
+intersection보다 큰 intersection, area·membership resource 초과는 serializer 전에 거부합니다. Malformed
+evidence list는 해당 record의 전체 evidence tuple만 비우고 code·topology·다른 provenance는 유지합니다.
+
+Native `venn-beta`는 모든 set/intersection size가 관측되고 positive normal binary64로 exact round-trip되며,
+Python `int` 입력의 safe-integer range와 `largest set / smallest positive area <= 200` visibility gate를 만족할 때만 선택합니다.
+Intersection이 member set 또는 더 작은 explicit intersection과 같은 exact-containment, zero·subnormal·
+overflow·precision-loss value는 renderer timeout이나 invisible area를 피하도록 exact Flowchart로 낮춥니다.
+3개 이상 set의 union은 그 union에 포함된 모든 pairwise intersection이 explicit해야 하며 누락 pair나
+higher-order area를 암묵적으로 합성하지 않습니다.
+
+Native terminal의 Scene은 set circle과 shape 없는 intersection area, label/marker 없는 logical membership,
+`unknown` direction을 사용합니다. Canvas OCR은 visible native title과 실제 set/intersection label만 세며
+value는 area geometry input이라 text credit을 받지 않습니다. Flowchart terminal은 set circle,
+intersection round, exact ` (value: x)` node suffix, `intersects` relation label, end-arrow, `LR` direction을
+사용합니다. Native-only title은 fallback canvas에 복사하지 않고 resolved accessibility text는 SVG metadata로만
+남습니다. 두 terminal 모두 generated bbox를 zero로 두며 set/intersection evidence를 element에,
+intersection evidence를 각 membership relation에도 연결합니다.
+
+Native runtime rejection은 새 후보 budget 없이 같은 candidate slot에서 이 Flowchart를 한 번 재직렬화하고
+strict source scan, parse/render/SVG/terminal-type gate를 다시 적용합니다. Flowchart는 500 membership edge를
+넘으면 code와 Scene을 모두 unavailable로 닫지만, 이 한도는 valid native Venn을 제한하지 않습니다. 500-edge
+경계는 성능 보장이 아니므로 runtime timeout은 그대로 적용합니다. 두 terminal은 각각 50,000자·5,000줄
+source preflight를 통과합니다. Semantic 원문은 typed IR에 보존하고 source-only security separator와
+terminal-visible compatibility glyph을 분리하며, visible quote/angle/backslash/hash/semicolon 치환은 candidate
+warning 또는 fallback reason에 공개하고 Scene/OCR에도 같은 canvas text를 사용합니다.
 
 Direct serializer의 Sankey `links`, Radar `axes`, Treemap/Venn `name` 호환 입력은 canonical key가 없을 때의
 기존 해석을 유지하지만 structured prompt에는 광고하지 않습니다. Sankey native grammar의 접근성 제한은
 typed IR warning으로 남고, Radar는 generated Scene adapter가 없어 record provenance가 sidecar에만 남습니다.
-Treemap은 누락·중복·잘못된 attribution ID를 reserved-safe slot으로 격리하고, Venn ID 충돌은
-Scene adapter가 fail closed합니다. Sankey·Treemap·Venn Scene attribution과 관계없이 네 유형 모두
+Treemap은 누락·중복·잘못된 attribution ID를 reserved-safe slot으로 격리하고, Venn은 set/intersection
+전체 namespace에서 collision-safe emitted/Scene ID를 계획합니다. Sankey·Treemap·Venn Scene attribution과 관계없이 네 유형 모두
 독립 source OCR/vector numeric evidence gate를 통과해야 자동 게시할 수 있습니다.

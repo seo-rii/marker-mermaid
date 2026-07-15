@@ -113,6 +113,15 @@ Quote와 Flowchart angle/backslash/hash, native title angle의 visible compatibi
 같이 투영하고 candidate warning으로 공개합니다. Scanner용 zero-width separator는 content token에
 남기지 않습니다. Unicode whitespace run은 terminal과 semantic projection에서 한 ASCII space로
 정규화하고, resolved accessibility metadata의 visible 치환도 candidate warning에서 누락하지 않습니다.
+Venn Scene도 serializer·semantic OCR과 같은 `VennPlan`을 소비합니다. Set의 portable emitted ID와
+collision-safe intersection ID를 공유하고 source bbox는 typed IR/review provenance에만 보존하며 두
+terminal의 generated bbox는 모두 zero입니다. Native는 set circle, shape 없는 intersection,
+label/marker 없는 logical membership, `unknown` direction을 사용합니다. Native OCR은 visible title과
+실제 area label만 세고 geometry input value는 canvas text로 세지 않습니다. Flowchart는 set circle,
+intersection round, exact value-suffix label, `intersects` relation label, end-arrow, `LR`을 사용합니다.
+Set/intersection evidence는 element에, intersection evidence는 그 membership relation에도 연결하고 malformed
+evidence tuple은 record-local로 비웁니다. Terminal-visible compatibility text와 warning도 같은 plan에서
+공유합니다.
 Ishikawa/TreeView는 serializer와 공유하는 DFS plan의 정확한 parent/emitted ID로 containment를
 만듭니다. Duplicate/normalized collision, missing-ID ambiguity, alias conflict, cycle, object reuse 또는
 resource 한도로 planner가 거부하면 Scene adapter는 충돌 node를 조용히 제거해 attribution
@@ -202,7 +211,10 @@ generated Scene attribution에서 제외합니다.
   reverse-order binary64 합산을 d3 `format(",")`으로 표시한 값을 세고, Flowchart terminal은
   preorder node의 exact value-suffix label만 셉니다. `accTitle`/`accDescr`는 SVG metadata일 뿐 content
   label이 아닙니다. Native renderer는 작은 cell text를 `display:none`으로 숨길 수 있으므로
-  실제 render review에서는 이 제한을 같이 봅니다. 내부 endpoint ID, 좌표, anchor 같은 문법 구조와
+  실제 render review에서는 이 제한을 같이 봅니다. Venn native terminal은 visible title과 set/intersection
+  label만 세고 area value와 marker-less membership은 OCR text로 만들지 않습니다. Venn Flowchart는 exact
+  value-suffix node label과 membership마다 보이는 `intersects`를 세며 accessibility metadata와 native-only
+  title은 제외합니다. 내부 endpoint ID, 좌표, anchor 같은 문법 구조와
   접근성 text는 OCR 의미 증거로 세지 않습니다.
   각 유형의 record planning은 serializer와 projection이 같은 deterministic helper를 공유합니다.
 - Typed semantic projection이 malformed data나 adapter defect로 예외를 내면 해당 candidate의 OCR을
@@ -232,6 +244,12 @@ generated Scene attribution에서 제외합니다.
   exact-value Flowchart를 선택하고 native runtime rejection도 같은 candidate slot에서 그 fallback을
   한 번 재검증합니다. Flowchart projection이 500 relation을 넘으면 unavailable이지만 같은
   계층이 native resource 계약을 만족하면 native까지 금지하지 않습니다.
+- Venn 구조 metric도 공용 plan이 고정한 terminal을 따릅니다. Native는 positive normal
+  binary64-safe area, `200:1` visibility gate, exact-containment 제외, higher-order union별 complete explicit
+  pair를 요구하고 누락 area/pair를 합성하지 않습니다. Native Scene은 marker-less logical membership과
+  `unknown` direction, fallback은 labeled end-arrow membership과 `LR`을 사용합니다. Runtime native rejection은
+  같은 candidate slot의 exact-value Flowchart를 한 번 재검증합니다. Flowchart projection만 500-edge hard
+  cap을 적용하며 near-limit render 성능은 별도 runtime timeout에 계속 의존합니다.
 - Packet은 위 전역 숫자 occurrence multiset을 사용하지 않고 field-local association으로 대체합니다.
   Native Packet과 같은 candidate slot의 Flowchart fallback, semantic repair proposal은 모두 동일한
   field plan과 평가 경로를 사용합니다. 각 field가 candidate publication authority 안의 `ocr_token` 또는

@@ -613,7 +613,9 @@ def _ensure_extended_serializers() -> None:
     from marker_mermaid.serializers_charts_flow import serialize_chart_flow
     from marker_mermaid.serializers_charts_sets import (
         TREEMAP_NATIVE_TEXT_COMPATIBILITY_WARNING,
+        VENN_NATIVE_TEXT_COMPATIBILITY_WARNING,
         plan_treemap_records,
+        plan_venn_records,
         serialize_chart_set,
     )
     from marker_mermaid.serializers_experimental import serialize_experimental
@@ -712,6 +714,11 @@ def _ensure_extended_serializers() -> None:
                     and plan_treemap_records(ir).native_compatibility_substitutions
                 ):
                     native_warnings = (TREEMAP_NATIVE_TEXT_COMPATIBILITY_WARNING,)
+                elif (
+                    _requested_type == "venn"
+                    and plan_venn_records(ir).native_compatibility_substitutions
+                ):
+                    native_warnings = (VENN_NATIVE_TEXT_COMPATIBILITY_WARNING,)
                 return SerializationResult.native(
                     _requested_type,
                     code,

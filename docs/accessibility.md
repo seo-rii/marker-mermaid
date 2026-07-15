@@ -22,13 +22,19 @@ Pinned Mermaid 11.16에서 다음 native grammar에는 directive를 넣지 않�
 | Mindmap | directive를 추가 root로 해석해 parse 실패 |
 | Block | `accTitle`/`accDescr` parse 거부 |
 | Sankey | directive를 CSV flow row로 해석 |
-| Venn | `title`만 지원하고 accessibility directive parse 거부 |
+| Venn | canvas `title`만 지원하고 `accTitle`/`accDescr` parse 거부 |
 | Ishikawa | directive를 cause text로 렌더하고 SVG `<title>/<desc>`를 만들지 않음 |
 | Timeline/Journey | directive를 받아들이지만 SVG 접근성 element를 만들지 않음 |
 | Kanban | directive를 받아들이지만 SVG 접근성 element를 만들지 않음 |
 
 이 유형은 limitation warning과 enriched typed IR을 남깁니다. Portable flowchart fallback이 선택되면
 fallback grammar가 directive를 지원하므로 동일한 resolved text를 정상 출력합니다.
+
+Native Venn의 explicit `title`은 canvas content이므로 Scene/OCR에도 포함합니다. 반면 resolved
+`accTitle`/`accDescr`는 native source에 넣지 않고 enriched typed IR과 limitation warning에만 남깁니다.
+Venn이 same-slot Flowchart fallback으로 내려가면 resolved text를 SVG 접근성 metadata로 방출하지만 canvas OCR
+label로 세지 않으며 native-only title도 복사하지 않습니다. Grammar-unsafe visible text를 compatibility glyph로
+바꾼 경우 native candidate warning 또는 fallback reason에 공개합니다.
 
 ## Direct Mermaid
 

@@ -145,6 +145,22 @@
   native renderer can hide text in very small cells with `display:none`. Unicode whitespace is frozen to one
   ASCII space, accessibility metadata substitutions are disclosed too, and both terminals are preflighted at
   50,000 source characters and 5,000 lines before runtime work.
+- Venn serialization, generated Scene attribution, and semantic OCR projection now share one bounded terminal
+  plan. It freezes portable set identities, collision-safe explicit or `intersection_N[_suffix]` area identities,
+  canonical membership relations, fixed-decimal non-exponent value tokens, and record-local provenance. Native
+  Mermaid 11.16 output is limited to positive normal binary64-safe areas, Python integer inputs within the
+  JavaScript safe-integer range, a `200:1`
+  maximum set-to-smallest-area visibility ratio, no exact-containment cases, and complete explicit pairwise
+  intersections for every higher-order union; zero, unsafe, missing, or runtime-rejected native data uses the
+  exact-value Flowchart without synthesizing areas or implicit pairs. Native Scene/OCR models marker-less logical
+  membership, unknown direction, visible title and area labels but no canvas value text, while the portable
+  terminal models circle/round nodes, exact value suffixes, labeled end arrows, and `LR`. Both terminal Scenes use
+  zero geometry and preserve element/relation provenance with record-local malformed-evidence quarantine.
+  Runtime fallback is retried once in the same candidate slot, applies the 500-edge worker cap only to Flowchart,
+  and re-runs the full validation gate. Native and fallback source share 50,000-character/5,000-line preflight,
+  terminal-visible compatibility warnings, and the independent numeric publication gate. Native Venn's
+  `accTitle`/`accDescr` limitation remains explicit; the Flowchart stores resolved accessibility text as SVG
+  metadata rather than OCR content.
 - Bounded pre-validation source repair with audit events, diagnostics, idempotence, and AST adapter seam.
 - Page-level missed-diagram proposals with occupied-region exclusion and virtual source crops.
 - Profile-gated flowchart fill, border, and link style recovery with strict CSS allowlists.
@@ -241,10 +257,10 @@
   record geometry, and evidence. Canonical prompts do not advertise legacy `links`, `axes`, or
   label aliases; serializer-owned completeness, reference, range, hierarchy-budget, and native versus
   Flowchart fallback semantics remain unchanged. Radar ticks are capped at 100 before rendering to
-  bound the experimental runtime loop. Venn fallback intersection nodes now receive IDs
-  distinct from normalized set IDs, preventing collision-driven self-loops without inventing sizes;
-  Venn Scene attribution fails closed on duplicate node IDs instead of under-counting them, while
-  Treemap now moves missing, duplicate, or malformed attribution IDs into reserved-safe preorder slots.
+  bound the experimental runtime loop. Venn now reserves portable set IDs before assigning collision-safe
+  explicit or deterministic intersection Scene IDs, preventing collision-driven self-loops without inventing
+  sizes. Treemap moves missing, duplicate, or malformed attribution IDs into reserved-safe preorder slots.
+  Both plans keep source bbox in typed/review provenance while their terminal generated Scenes use zero geometry.
 - Journey, Kanban, and GitGraph typed IR now have strict nested prompt/post-validation contracts for
   scored tasks, assigned cards, and ordered branch operations while preserving compatibility aliases
   and extra evidence metadata without rewriting the original IR. Shared bounded planning records align

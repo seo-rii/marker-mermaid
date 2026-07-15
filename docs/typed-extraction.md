@@ -397,11 +397,21 @@ internal value가 있는 Treemap, 일부 size가 없는 Venn은 구조 오류가
 
 Sankey·Treemap·Venn record의 ID와 evidence는 기존 generated Scene adapter의 node/relation attribution에
 사용됩니다. Radar는 generated Scene adapter가 없어 bbox/evidence를 typed IR/review sidecar에만 보존합니다.
-Treemap/Venn의 explicit/fallback attribution ID가 충돌하면 Scene adapter는 중복 node를 제거해 점수를
-부풀리지 않고 `unavailable`을 반환해 review로 보냅니다. 어느 경우에도 typed value나 그 record의 evidence
-reference가 독립 source OCR/vector numeric gate를 대신하지 않습니다. 현재 Marker response envelope는 계속
-generic `TypedIRCandidate.ir: dict`이며 recursive Treemap model도 provider에 diagram-type discriminated
-recursive schema를 직접 노출한다는 뜻은 아닙니다.
+Treemap은 누락·중복·잘못된 source ID를 reserved-safe preorder slot으로 격리합니다. Venn은 canonical unique
+set ID를 요구한 뒤 set portable ID를 먼저 예약하고, intersection explicit ID가 정규화 충돌하면
+deterministic `intersection_N[_suffix]` Scene slot을 배정합니다. Set/intersection의 source bbox는
+typed IR/review provenance에 남지만 terminal generated Scene에는 복사하지 않고 zero bbox를 사용합니다.
+Malformed evidence list는 해당 record에서만 원자적으로 비워 부분 provenance를 만들지 않습니다. 어느
+경우에도 typed value나 그 record의 evidence reference가 독립 source OCR/vector numeric gate를 대신하지
+않습니다. 현재 Marker response envelope는 계속 generic `TypedIRCandidate.ir: dict`이며 recursive Treemap
+model도 provider에 diagram-type discriminated recursive schema를 직접 노출한다는 뜻은 아닙니다.
+
+Venn native 선택은 extraction model보다 좁습니다. 모든 area가 관측된 positive normal binary64-safe
+fixed-decimal이고, 최대 set/최소 positive area 비가 `200:1` 이하이며, exact-containment가 없고, 3개 이상
+set의 union마다 모든 pairwise intersection이 explicit해야 합니다. Zero·unsafe·누락 value 또는 누락 pair는
+exact-value Flowchart로 낮추되 값을 합성하지 않습니다. 관측 containment를 초과한 값은 invalid IR로
+거부합니다. Portable membership은 500 edge까지만 허용하고 native area notation에는 그 Flowchart 전용
+상한을 적용하지 않으며, 두 terminal source는 50,000자·5,000줄 예산을 공유합니다.
 
 ### Journey·Kanban·GitGraph 계획 다이어그램 계약
 

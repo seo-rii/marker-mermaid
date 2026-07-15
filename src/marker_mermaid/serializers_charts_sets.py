@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import re
+import sys
 import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -22,7 +23,11 @@ from numbers import Real
 from typing import Any, TypeAlias
 
 from marker_mermaid.accessibility import resolve_accessibility
-from marker_mermaid.flowchart_structure import FlowchartStructureError, plan_flowchart_structure
+from marker_mermaid.flowchart_structure import (
+    FlowchartStructureError,
+    plan_flowchart_structure,
+    portable_identifier,
+)
 from marker_mermaid.models import (
     MAX_ID_CHARS,
     MAX_IR_DEPTH,
@@ -35,16 +40,21 @@ from marker_mermaid.serializers import SerializationError, serialize_flowchart
 
 ChartSetSerialization: TypeAlias = tuple[str, str, str | None]
 TreemapNumber: TypeAlias = float | int | Decimal
+VennNumber: TypeAlias = float | int
 
 MAX_TREEMAP_NODES = min(2_000, MAX_SCENE_ELEMENTS)
 MAX_TREEMAP_FLOWCHART_EDGES = 500
 MAX_TREEMAP_OUTPUT_CHARS = 50_000
 MAX_TREEMAP_OUTPUT_LINES = 5_000
+MAX_VENN_AREAS = min(2_000, MAX_SCENE_ELEMENTS)
+MAX_VENN_MEMBERSHIPS = MAX_SCENE_RELATIONS
+MAX_VENN_FLOWCHART_EDGES = 500
+MAX_VENN_NATIVE_VALUE_RATIO = 200
+MAX_VENN_OUTPUT_CHARS = 50_000
+MAX_VENN_OUTPUT_LINES = 5_000
 _MAX_SAFE_JS_INTEGER = 2**53 - 1
 _ZERO_WIDTH_SPACE = "\u200b"
 
-_DANGEROUS_SCHEME = re.compile(r"\b(?:https?|ftp|file|data|javascript):", re.IGNORECASE)
-_REMOTE_ICON = re.compile(r"\b(?:iconify|fa|logos):", re.IGNORECASE)
 _CSS_IMPORT = re.compile(r"@import\b", re.IGNORECASE)
 _ACTIVE_CALLBACK = re.compile(r"\b(?:call|callback)\s*\(", re.IGNORECASE)
 _TREEMAP_DANGEROUS_SCHEME = re.compile(r"(?:https?|ftp|file|data|javascript):", re.IGNORECASE)
@@ -59,6 +69,14 @@ TREEMAP_NATIVE_TEXT_COMPATIBILITY_WARNING = (
 )
 TREEMAP_FALLBACK_TEXT_COMPATIBILITY_WARNING = (
     "Treemap Flowchart fallback used visible compatibility glyphs for grammar-unsafe "
+    "quote, backslash, angle, or hash text."
+)
+VENN_NATIVE_TEXT_COMPATIBILITY_WARNING = (
+    "Native Venn used visible compatibility glyphs for grammar-unsafe text; "
+    "review the rendered title and labels."
+)
+VENN_FALLBACK_TEXT_COMPATIBILITY_WARNING = (
+    "Venn Flowchart fallback used visible compatibility glyphs for grammar-unsafe "
     "quote, backslash, angle, or hash text."
 )
 
@@ -112,33 +130,70 @@ class TreemapPlan:
     fallback_compatibility_substitutions: bool
 
 
-def _text(value: Any, *, context: str) -> str:
-    """Return non-empty, single-line text that passes the strict scanner.
+@dataclass(frozen=True, slots=True)
+class VennSetPlan:
+    """One observed set and its native/fallback terminal projections."""
 
-    The replacements preserve visible evidence while preventing a label from
-    being interpreted as an active Mermaid feature.  This is intentionally
-    stricter than Mermaid's quoted-string escaping because candidate security
-    scanning happens before parsing.
-    """
-
-    if value is None:
-        raise SerializationError(f"{context} requires a label")
-    text = str(value).replace("\r", " ").replace("\n", " ").strip()
-    if not text:
-        raise SerializationError(f"{context} requires a label")
-    text = text.replace("\\", "\\\\").replace('"', "&quot;")
-    text = text.replace("<", "&lt;").replace(">", "&gt;")
-    text = text.replace("%%{", "%%&#123;").replace("//", "/ /")
-    text = _CSS_IMPORT.sub("@ import", text)
-    text = _DANGEROUS_SCHEME.sub(lambda match: match.group(0)[:-1] + "&#58;", text)
-    text = _REMOTE_ICON.sub(lambda match: match.group(0)[:-1] + "&#58;", text)
-    # Venn titles stop at '#' and ';'. Encoding both keeps all title text in a
-    # single statement and is harmless in treemap and flowchart labels.
-    return text.replace("#", "&#35;").replace(";", "&#59;")
+    source_record: Mapping[str, Any]
+    source_id: str
+    emitted_id: str
+    semantic_label: str
+    native_source_label: str
+    native_canvas_label: str
+    fallback_source_label: str
+    fallback_canvas_label: str
+    value: VennNumber | None
+    value_text: str | None
+    evidence_ids: tuple[str, ...]
 
 
-def _strict_treemap_text(value: Any, *, context: str) -> str:
-    """Validate one source-visible Treemap string before grammar adaptation."""
+@dataclass(frozen=True, slots=True)
+class VennIntersectionPlan:
+    """One explicit intersection and its terminal-visible identity."""
+
+    source_record: Mapping[str, Any]
+    scene_id: str
+    member_source_ids: tuple[str, ...]
+    member_emitted_ids: tuple[str, ...]
+    semantic_label: str | None
+    native_source_label: str | None
+    native_canvas_label: str | None
+    fallback_source_label: str
+    fallback_canvas_label: str
+    value: VennNumber | None
+    value_text: str | None
+    evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class VennMembershipPlan:
+    """One set-to-intersection membership relation."""
+
+    scene_id: str
+    source_emitted_id: str
+    target_scene_id: str
+    evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class VennPlan:
+    """Validated Venn emission plan shared by serializer, Scene, and OCR."""
+
+    sets: tuple[VennSetPlan, ...]
+    intersections: tuple[VennIntersectionPlan, ...]
+    memberships: tuple[VennMembershipPlan, ...]
+    native_supported: bool
+    flowchart_supported: bool
+    native_limitations: tuple[str, ...]
+    semantic_title: str | None
+    native_source_title: str | None
+    native_canvas_title: str | None
+    native_compatibility_substitutions: bool
+    fallback_compatibility_substitutions: bool
+
+
+def _strict_chart_set_text(value: Any, *, context: str) -> str:
+    """Validate one source-visible chart/set string before grammar adaptation."""
 
     if value is None:
         raise SerializationError(f"{context} requires a label")
@@ -157,7 +212,7 @@ def _strict_treemap_text(value: Any, *, context: str) -> str:
     return text
 
 
-def _neutralize_treemap_active_text(text: str) -> str:
+def _neutralize_chart_set_active_text(text: str) -> str:
     """Insert renderer-invisible separators only into scanner-active tokens."""
 
     text = text.replace("%%", f"%{_ZERO_WIDTH_SPACE}%").replace("//", f"/{_ZERO_WIDTH_SPACE}/")
@@ -189,18 +244,18 @@ def _neutralize_treemap_active_text(text: str) -> str:
     )
 
 
-def _treemap_node_text(value: Any, *, context: str) -> tuple[str, str, str, str, str, bool, bool]:
-    """Freeze semantic, native-source, and terminal-visible node text."""
+def _chart_set_node_text(value: Any, *, context: str) -> tuple[str, str, str, str, str, bool, bool]:
+    """Freeze semantic, native-source, and terminal-visible record text."""
 
-    semantic = _strict_treemap_text(value, context=context)
+    semantic = _strict_chart_set_text(value, context=context)
     native_source = (
-        _neutralize_treemap_active_text(semantic)
+        _neutralize_chart_set_active_text(semantic)
         .replace("&", f"&{_ZERO_WIDTH_SPACE}")
         .replace("#", f"#{_ZERO_WIDTH_SPACE}")
         .replace('"', "″")
     )
     native_canvas = native_source.replace(_ZERO_WIDTH_SPACE, "")
-    fallback_source = _neutralize_treemap_active_text(
+    fallback_source = _neutralize_chart_set_active_text(
         semantic.replace("<", "＜").replace(">", "＞")
     )
     fallback_source = (
@@ -224,9 +279,9 @@ def _treemap_node_text(value: Any, *, context: str) -> tuple[str, str, str, str,
 def _treemap_directive_text(value: Any, *, context: str) -> tuple[str, str, str]:
     """Freeze source and canvas text for Treemap title-like directives."""
 
-    semantic = _strict_treemap_text(value, context=context)
+    semantic = _strict_chart_set_text(value, context=context)
     source = (
-        _neutralize_treemap_active_text(semantic.replace("<", "＜").replace(">", "＞"))
+        _neutralize_chart_set_active_text(semantic.replace("<", "＜").replace(">", "＞"))
         .replace("&", f"&{_ZERO_WIDTH_SPACE}")
         .replace("#", f"#{_ZERO_WIDTH_SPACE}")
     )
@@ -267,8 +322,8 @@ def _treemap_number(value: Any, *, context: str, allow_zero: bool) -> TreemapNum
     if isinstance(value, bool) or not isinstance(value, Real | Decimal):
         raise SerializationError(f"{context} requires an explicit numeric value")
     try:
-        decimal = Decimal(str(value))
-    except InvalidOperation as exc:
+        decimal = Decimal(value) if isinstance(value, int) else Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
         raise SerializationError(f"{context} requires a finite numeric value") from exc
     if not decimal.is_finite():
         raise SerializationError(f"{context} requires a finite numeric value")
@@ -278,11 +333,11 @@ def _treemap_number(value: Any, *, context: str, allow_zero: bool) -> TreemapNum
     return value
 
 
-def _treemap_number_text(value: TreemapNumber) -> str:
+def _chart_set_number_text(value: TreemapNumber) -> str:
     """Return a fixed-point token that preserves the observed numeric value."""
 
     try:
-        decimal = Decimal(str(value))
+        decimal = Decimal(value) if isinstance(value, int) else Decimal(str(value))
     except InvalidOperation as exc:
         raise SerializationError("chart value cannot be represented exactly") from exc
     if not decimal.is_finite():
@@ -299,37 +354,36 @@ def _treemap_number_text(value: TreemapNumber) -> str:
     return rendered
 
 
-def _number(value: Any, *, context: str, allow_zero: bool) -> float | int:
-    """Validate a legacy Venn numeric value without expanding its contract."""
-
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise SerializationError(f"{context} requires an explicit numeric value")
-    number = float(value)
-    if not math.isfinite(number):
-        raise SerializationError(f"{context} requires a finite numeric value")
-    if number < 0 or (number == 0 and not allow_zero):
-        qualifier = "non-negative" if allow_zero else "positive"
-        raise SerializationError(f"{context} requires a {qualifier} numeric value")
-    return value
+def _preflight_venn_code(code: str) -> str:
+    if code.count("\n") + 1 > MAX_VENN_OUTPUT_LINES:
+        raise SerializationError(
+            f"Venn output exceeds source-line limit of {MAX_VENN_OUTPUT_LINES}"
+        )
+    if len(code) > MAX_VENN_OUTPUT_CHARS:
+        raise SerializationError(
+            f"Venn output exceeds source-character limit of {MAX_VENN_OUTPUT_CHARS}"
+        )
+    return code
 
 
-def _format_number(value: float | int) -> str:
-    if isinstance(value, int):
-        return str(value)
-    return format(float(value), ".15g")
-
-
-def _native_treemap_number(value_text: str) -> float | None:
+def _native_binary64_number(
+    value_text: str,
+    *,
+    max_value: Decimal | None,
+    reject_subnormal: bool,
+) -> float | None:
     """Return the exact JavaScript binary64 input, or ``None`` on value loss."""
 
     decimal = Decimal(value_text)
-    if decimal <= 0 or decimal > _MAX_SAFE_JS_INTEGER:
+    if decimal <= 0 or (max_value is not None and decimal > max_value):
         return None
     try:
         number = float(value_text)
     except (OverflowError, ValueError):
         return None
     if not math.isfinite(number) or number <= 0:
+        return None
+    if reject_subnormal and number < sys.float_info.min:
         return None
     if Decimal(str(number)) != decimal:
         return None
@@ -423,7 +477,7 @@ def plan_treemap_records(ir: Mapping[str, Any]) -> TreemapPlan:
                 fallback_canvas_label,
                 native_substituted,
                 fallback_substituted,
-            ) = _treemap_node_text(node.get("label", node.get("name")), context="treemap node")
+            ) = _chart_set_node_text(node.get("label", node.get("name")), context="treemap node")
             native_compatibility_substitutions = (
                 native_compatibility_substitutions or native_substituted
             )
@@ -455,7 +509,7 @@ def plan_treemap_records(ir: Mapping[str, Any]) -> TreemapPlan:
                     internal_values = True
                 else:
                     value = None
-            value_text = _treemap_number_text(value) if value is not None else None
+            value_text = _chart_set_number_text(value) if value is not None else None
             row_index = len(rows)
             rows.append(
                 {
@@ -525,7 +579,11 @@ def plan_treemap_records(ir: Mapping[str, Any]) -> TreemapPlan:
         row = rows[index]
         child_indices: list[int] = row["child_indices"]
         if row["is_leaf"]:
-            native_value = _native_treemap_number(row["value_text"])
+            native_value = _native_binary64_number(
+                row["value_text"],
+                max_value=Decimal(_MAX_SAFE_JS_INTEGER),
+                reject_subnormal=False,
+            )
         else:
             native_value = 0.0
             for child_index in reversed(child_indices):
@@ -716,63 +774,175 @@ def serialize_treemap(
     return _preflight_treemap_code("\n".join(lines) + "\n"), "treemap", None
 
 
-def _venn_structure(
-    ir: dict[str, Any],
-) -> tuple[
-    list[tuple[dict[str, Any], str, str, float | int | None]],
-    list[tuple[dict[str, Any], tuple[str, ...], str | None, float | int | None]],
-    bool,
-]:
-    sets = ir.get("sets")
-    intersections = ir.get("intersections")
-    if not isinstance(sets, list) or len(sets) < 2:
-        raise SerializationError("venn IR requires at least two explicit sets")
-    if not isinstance(intersections, list) or not intersections:
-        raise SerializationError("venn IR requires explicit intersections")
+def plan_venn_records(ir: Mapping[str, Any]) -> VennPlan:
+    """Validate Venn evidence and freeze native/fallback terminal semantics."""
 
-    normalized_sets: list[tuple[dict[str, Any], str, str, float | int | None]] = []
+    raw_sets = ir.get("sets")
+    raw_intersections = ir.get("intersections")
+    if not isinstance(raw_sets, list) or len(raw_sets) < 2:
+        raise SerializationError("venn IR requires at least two explicit sets")
+    if not isinstance(raw_intersections, list) or not raw_intersections:
+        raise SerializationError("venn IR requires explicit intersections")
+    if len(raw_sets) + len(raw_intersections) > MAX_VENN_AREAS:
+        raise SerializationError("venn area count exceeds the Scene element limit")
+
+    seen_records: set[int] = set()
     id_map: dict[str, str] = {}
-    rendered_ids: set[str] = set()
-    source_values: dict[str, float | int] = {}
-    has_all_values = True
-    for index, item in enumerate(sets, start=1):
+    emitted_ids: set[str] = set()
+    set_values: dict[str, Decimal] = {}
+    set_plans: list[VennSetPlan] = []
+    native_limitations: list[str] = []
+    native_compatibility_substitutions = False
+    fallback_compatibility_substitutions = False
+
+    for index, item in enumerate(raw_sets, start=1):
         if not isinstance(item, dict):
             raise SerializationError("venn sets must be objects")
-        source_id = str(item.get("id") or "").strip()
-        if not source_id:
+        identity = id(item)
+        if identity in seen_records:
+            raise SerializationError("venn records cannot reuse one object")
+        seen_records.add(identity)
+        source_id_value = item.get("id")
+        if type(source_id_value) is not str or not source_id_value:
             raise SerializationError(f"venn set {index} requires an id")
+        source_id = source_id_value
+        if source_id != source_id.strip() or len(source_id) > MAX_ID_CHARS:
+            raise SerializationError(f"venn set {index} requires a bounded canonical id")
+        if any(
+            unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"} for character in source_id
+        ):
+            raise SerializationError(f"venn set {index} contains unsupported id text")
+        try:
+            source_id.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise SerializationError(f"venn set {index} id is not valid UTF-8") from exc
         if source_id in id_map:
             raise SerializationError(f"duplicate venn set id: {source_id}")
-        output_id = re.sub(r"[^A-Za-z0-9_-]", "_", source_id).strip("_-")
-        if not output_id or not re.match(r"^[A-Za-z_]", output_id):
-            output_id = f"S_{output_id or index}"
-        if output_id in rendered_ids:
-            raise SerializationError("venn set ids collide after Mermaid normalization")
-        rendered_ids.add(output_id)
-        id_map[source_id] = output_id
-        label = _text(item.get("label", item.get("name")), context=f"venn set {source_id!r}")
+        emitted_base = portable_identifier(source_id, f"S_{index}")
+        emitted_id = emitted_base
+        suffix = 2
+        while emitted_id in emitted_ids:
+            suffix_text = f"_{suffix}"
+            emitted_id = f"{emitted_base[: MAX_ID_CHARS - len(suffix_text)]}{suffix_text}"
+            suffix += 1
+        if len(emitted_id) > MAX_ID_CHARS:
+            raise SerializationError("venn emitted set id exceeds the identifier limit")
+        emitted_ids.add(emitted_id)
+        id_map[source_id] = emitted_id
+        (
+            semantic_label,
+            native_source_label,
+            native_canvas_label,
+            fallback_source_label,
+            fallback_canvas_label,
+            native_substituted,
+            fallback_substituted,
+        ) = _chart_set_node_text(
+            item.get("label", item.get("name")), context=f"venn set {source_id!r}"
+        )
+        native_compatibility_substitutions |= native_substituted
+        fallback_compatibility_substitutions |= fallback_substituted
         if "value" in item:
-            value: float | int | None = _number(
-                item["value"], context=f"venn set {source_id!r}", allow_zero=True
+            raw_value = item["value"]
+            if type(raw_value) not in {int, float}:
+                raise SerializationError(
+                    f"venn set {source_id!r} requires an explicit numeric value"
+                )
+            if isinstance(raw_value, float) and not math.isfinite(raw_value):
+                raise SerializationError(f"venn set {source_id!r} requires a finite numeric value")
+            if raw_value < 0:
+                raise SerializationError(
+                    f"venn set {source_id!r} requires a non-negative numeric value"
+                )
+            value: VennNumber | None = raw_value
+            value_text = _chart_set_number_text(value)
+            set_values[source_id] = Decimal(value_text)
+            native_value = (
+                None
+                if isinstance(value, int) and value > _MAX_SAFE_JS_INTEGER
+                else _native_binary64_number(
+                    value_text,
+                    max_value=None,
+                    reject_subnormal=True,
+                )
             )
-            source_values[source_id] = value
+            if native_value is None:
+                limitation = "a zero-sized or non-binary64-safe set"
+                if limitation not in native_limitations:
+                    native_limitations.append(limitation)
         else:
             value = None
-            has_all_values = False
-        normalized_sets.append((item, output_id, label, value))
+            value_text = None
+            limitation = "one or more set/intersection sizes were not observed"
+            if limitation not in native_limitations:
+                native_limitations.append(limitation)
+        set_plans.append(
+            VennSetPlan(
+                source_record=item,
+                source_id=source_id,
+                emitted_id=emitted_id,
+                semantic_label=semantic_label,
+                native_source_label=native_source_label,
+                native_canvas_label=native_canvas_label,
+                fallback_source_label=fallback_source_label,
+                fallback_canvas_label=fallback_canvas_label,
+                value=value,
+                value_text=value_text,
+                evidence_ids=_safe_evidence_ids(item),
+            )
+        )
 
     order = {source_id: index for index, source_id in enumerate(id_map)}
-    normalized_intersections: list[
-        tuple[dict[str, Any], tuple[str, ...], str | None, float | int | None]
-    ] = []
-    seen: set[tuple[str, ...]] = set()
-    for index, item in enumerate(intersections, start=1):
+    seen_intersections: set[tuple[str, ...]] = set()
+    intersection_id_candidates: list[str | None] = []
+    intersection_id_counts: dict[str, int] = {}
+    for item in raw_intersections:
+        candidate: str | None = None
+        if isinstance(item, dict):
+            raw_id = item.get("id")
+            if (
+                type(raw_id) is str
+                and bool(raw_id)
+                and raw_id == raw_id.strip()
+                and len(raw_id) <= MAX_ID_CHARS
+                and not any(
+                    unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"}
+                    for character in raw_id
+                )
+            ):
+                try:
+                    raw_id.encode("utf-8")
+                except UnicodeEncodeError:
+                    candidate = None
+                else:
+                    candidate = portable_identifier(raw_id, "intersection")
+                    if len(candidate) > MAX_ID_CHARS:
+                        candidate = None
+        intersection_id_candidates.append(candidate)
+        if candidate is not None:
+            intersection_id_counts[candidate] = intersection_id_counts.get(candidate, 0) + 1
+    reserved_explicit_ids = {
+        candidate
+        for candidate, count in intersection_id_counts.items()
+        if count == 1 and candidate not in emitted_ids
+    }
+    reserved_scene_ids = set(emitted_ids)
+    used_scene_ids: set[str] = set()
+    intersection_plans: list[VennIntersectionPlan] = []
+    membership_count = 0
+    for index, item in enumerate(raw_intersections, start=1):
         if not isinstance(item, dict):
             raise SerializationError("venn intersections must be objects")
+        identity = id(item)
+        if identity in seen_records:
+            raise SerializationError("venn records cannot reuse one object")
+        seen_records.add(identity)
         members = item.get("sets")
         if not isinstance(members, list) or len(members) < 2:
             raise SerializationError(f"venn intersection {index} requires at least two sets")
-        source_members = [str(member) for member in members]
+        if not all(type(member) is str for member in members):
+            raise SerializationError(f"venn intersection {index} members must be set ids")
+        source_members = list(members)
         if len(source_members) != len(set(source_members)):
             raise SerializationError(f"venn intersection {index} repeats a set")
         unknown = [member for member in source_members if member not in id_map]
@@ -781,69 +951,291 @@ def _venn_structure(
                 f"venn intersection {index} references unknown set {unknown[0]!r}"
             )
         canonical = tuple(sorted(source_members, key=order.__getitem__))
-        if canonical in seen:
+        if canonical in seen_intersections:
             raise SerializationError("duplicate venn intersection structure")
-        seen.add(canonical)
-        output_members = tuple(id_map[member] for member in canonical)
+        seen_intersections.add(canonical)
+        membership_count += len(canonical)
+        if membership_count > MAX_VENN_MEMBERSHIPS:
+            raise SerializationError("venn membership count exceeds the Scene relation limit")
+        emitted_members = tuple(id_map[member] for member in canonical)
         label_value = item.get("label", item.get("name"))
-        label = (
-            _text(label_value, context=f"venn intersection {index}")
-            if label_value not in {None, ""}
-            else None
-        )
+        if label_value is None or label_value == "":
+            semantic_label = None
+            native_source_label = None
+            native_canvas_label = None
+            fallback_source_label = " ∩ ".join(emitted_members)
+            fallback_canvas_label = fallback_source_label
+        else:
+            (
+                semantic_label,
+                native_source_label,
+                native_canvas_label,
+                fallback_source_label,
+                fallback_canvas_label,
+                native_substituted,
+                fallback_substituted,
+            ) = _chart_set_node_text(label_value, context=f"venn intersection {index}")
+            native_compatibility_substitutions |= native_substituted
+            fallback_compatibility_substitutions |= fallback_substituted
         if "value" in item:
-            value = _number(item["value"], context=f"venn intersection {index}", allow_zero=True)
+            raw_value = item["value"]
+            if type(raw_value) not in {int, float}:
+                raise SerializationError(
+                    f"venn intersection {index} requires an explicit numeric value"
+                )
+            if isinstance(raw_value, float) and not math.isfinite(raw_value):
+                raise SerializationError(
+                    f"venn intersection {index} requires a finite numeric value"
+                )
+            if raw_value < 0:
+                raise SerializationError(
+                    f"venn intersection {index} requires a non-negative numeric value"
+                )
+            value = raw_value
+            value_text = _chart_set_number_text(value)
+            observed_value = Decimal(value_text)
             for member in canonical:
-                if member in source_values and float(value) > float(source_values[member]):
+                if member in set_values and observed_value > set_values[member]:
                     raise SerializationError(
                         f"venn intersection {index} exceeds observed size of set {member!r}"
                     )
+                if member in set_values and observed_value == set_values[member]:
+                    limitation = "an exact-containment intersection can exceed runtime budget"
+                    if limitation not in native_limitations:
+                        native_limitations.append(limitation)
+            native_value = (
+                None
+                if isinstance(value, int) and value > _MAX_SAFE_JS_INTEGER
+                else _native_binary64_number(
+                    value_text,
+                    max_value=None,
+                    reject_subnormal=True,
+                )
+            )
+            if native_value is None:
+                limitation = "a zero-sized or non-binary64-safe intersection"
+                if limitation not in native_limitations:
+                    native_limitations.append(limitation)
         else:
             value = None
-            has_all_values = False
-        normalized_intersections.append((item, output_members, label, value))
-    return normalized_sets, normalized_intersections, has_all_values
+            value_text = None
+            limitation = "one or more set/intersection sizes were not observed"
+            if limitation not in native_limitations:
+                native_limitations.append(limitation)
+        explicit_scene_id = intersection_id_candidates[index - 1]
+        if explicit_scene_id in reserved_explicit_ids:
+            scene_id = explicit_scene_id
+        else:
+            base_id = f"intersection_{index}"
+            scene_id = base_id
+            suffix = 2
+            while (
+                scene_id in reserved_scene_ids
+                or scene_id in reserved_explicit_ids
+                or scene_id in used_scene_ids
+            ):
+                suffix_text = f"_{suffix}"
+                scene_id = f"{base_id[: MAX_ID_CHARS - len(suffix_text)]}{suffix_text}"
+                suffix += 1
+        reserved_scene_ids.add(scene_id)
+        used_scene_ids.add(scene_id)
+        intersection_plans.append(
+            VennIntersectionPlan(
+                source_record=item,
+                scene_id=scene_id,
+                member_source_ids=canonical,
+                member_emitted_ids=emitted_members,
+                semantic_label=semantic_label,
+                native_source_label=native_source_label,
+                native_canvas_label=native_canvas_label,
+                fallback_source_label=fallback_source_label,
+                fallback_canvas_label=fallback_canvas_label,
+                value=value,
+                value_text=value_text,
+                evidence_ids=_safe_evidence_ids(item),
+            )
+        )
+
+    observed_intersections = [
+        (frozenset(item.member_source_ids), Decimal(item.value_text), index)
+        for index, item in enumerate(intersection_plans, start=1)
+        if item.value_text is not None
+    ]
+    for superset_members, superset_value, superset_index in observed_intersections:
+        for subset_members, subset_value, subset_index in observed_intersections:
+            if subset_members < superset_members and superset_value > subset_value:
+                raise SerializationError(
+                    f"venn intersection {superset_index} exceeds observed size of "
+                    f"intersection {subset_index}"
+                )
+            if subset_members < superset_members and superset_value == subset_value:
+                limitation = "an exact-containment intersection can exceed runtime budget"
+                if limitation not in native_limitations:
+                    native_limitations.append(limitation)
+
+    positive_area_values = [value for value in set_values.values() if value > 0]
+    positive_area_values.extend(
+        value for _members, value, _index in observed_intersections if value > 0
+    )
+    if set_values and positive_area_values:
+        largest_set = max(set_values.values())
+        smallest_area = min(positive_area_values)
+        if largest_set > smallest_area * MAX_VENN_NATIVE_VALUE_RATIO:
+            limitation = (
+                f"native area dynamic range exceeds {MAX_VENN_NATIVE_VALUE_RATIO}:1 "
+                "visibility limit"
+            )
+            if limitation not in native_limitations:
+                native_limitations.append(limitation)
+
+    pairwise_members = {
+        frozenset(item.member_source_ids)
+        for item in intersection_plans
+        if len(item.member_source_ids) == 2
+    }
+    pairwise_complete = True
+    for item in intersection_plans:
+        members = item.member_source_ids
+        if len(members) < 3:
+            continue
+        required_count = len(members) * (len(members) - 1) // 2
+        if required_count > len(pairwise_members):
+            pairwise_complete = False
+            break
+        for left_index in range(len(members) - 1):
+            for right_index in range(left_index + 1, len(members)):
+                if frozenset((members[left_index], members[right_index])) not in pairwise_members:
+                    pairwise_complete = False
+                    break
+            if not pairwise_complete:
+                break
+        if not pairwise_complete:
+            break
+    if not pairwise_complete:
+        limitation = "complete explicit pairwise intersections are required"
+        if limitation not in native_limitations:
+            native_limitations.append(limitation)
+
+    memberships: list[VennMembershipPlan] = []
+    relation_index = 1
+    for intersection in intersection_plans:
+        for member in intersection.member_emitted_ids:
+            memberships.append(
+                VennMembershipPlan(
+                    scene_id=f"venn_relation_{relation_index}",
+                    source_emitted_id=member,
+                    target_scene_id=intersection.scene_id,
+                    evidence_ids=intersection.evidence_ids,
+                )
+            )
+            relation_index += 1
+
+    semantic_title: str | None = None
+    native_source_title: str | None = None
+    native_canvas_title: str | None = None
+    title_value = ir.get("title")
+    if title_value is not None and title_value != "":
+        semantic_title = _strict_chart_set_text(title_value, context="venn title")
+        native_source_title = semantic_title.translate(
+            str.maketrans({"<": "＜", ">": "＞", "#": "＃", ";": "；"})
+        )
+        native_source_title = _neutralize_chart_set_active_text(native_source_title).replace(
+            "&", f"&{_ZERO_WIDTH_SPACE}"
+        )
+        native_canvas_title = native_source_title.replace(_ZERO_WIDTH_SPACE, "")
+        native_compatibility_substitutions |= native_canvas_title != semantic_title
+
+    return VennPlan(
+        sets=tuple(set_plans),
+        intersections=tuple(intersection_plans),
+        memberships=tuple(memberships),
+        native_supported=not native_limitations,
+        flowchart_supported=len(memberships) <= MAX_VENN_FLOWCHART_EDGES,
+        native_limitations=tuple(native_limitations),
+        semantic_title=semantic_title,
+        native_source_title=native_source_title,
+        native_canvas_title=native_canvas_title,
+        native_compatibility_substitutions=native_compatibility_substitutions,
+        fallback_compatibility_substitutions=fallback_compatibility_substitutions,
+    )
 
 
 def _venn_flowchart_fallback(
-    ir: dict[str, Any],
-    sets: list[tuple[dict[str, Any], str, str, float | int | None]],
-    intersections: list[tuple[dict[str, Any], tuple[str, ...], str | None, float | int | None]],
+    ir: Mapping[str, Any],
+    plan: VennPlan,
     *,
     experimental: bool,
     reason: str,
 ) -> ChartSetSerialization:
+    if not plan.flowchart_supported:
+        raise SerializationError(
+            f"Venn Flowchart fallback exceeds Mermaid edge limit of {MAX_VENN_FLOWCHART_EDGES}"
+        )
     nodes = [
         {
-            "id": output_id,
-            "label": label + (f" (value: {_format_number(value)})" if value is not None else ""),
+            "id": item.emitted_id,
+            "label": item.fallback_source_label
+            + (f" (value: {item.value_text})" if item.value_text is not None else ""),
             "shape": "circle",
         }
-        for _, output_id, label, value in sets
+        for item in plan.sets
     ]
-    edges: list[dict[str, Any]] = []
-    reserved_ids = {output_id for _, output_id, _, _ in sets}
-    for index, (_, members, label, value) in enumerate(intersections, start=1):
-        base_id = f"intersection_{index}"
-        intersection_id = base_id
-        suffix = 2
-        while intersection_id in reserved_ids:
-            intersection_id = f"{base_id}_{suffix}"
-            suffix += 1
-        reserved_ids.add(intersection_id)
-        rendered_label = label or " ∩ ".join(members)
-        if value is not None:
-            rendered_label += f" (value: {_format_number(value)})"
-        nodes.append({"id": intersection_id, "label": rendered_label, "shape": "round"})
-        edges.extend(
-            {"source": member, "target": intersection_id, "label": "intersects"}
-            for member in members
-        )
+    nodes.extend(
+        {
+            "id": item.scene_id,
+            "label": item.fallback_source_label
+            + (f" (value: {item.value_text})" if item.value_text is not None else ""),
+            "shape": "round",
+        }
+        for item in plan.intersections
+    )
+    edges = [
+        {
+            "source": membership.source_emitted_id,
+            "target": membership.target_scene_id,
+            "label": "intersects",
+        }
+        for membership in plan.memberships
+    ]
+    accessibility = resolve_accessibility(dict(ir), "venn", experimental=experimental)
+    (
+        _semantic_accessible_title,
+        _native_accessible_title,
+        _native_accessible_title_canvas,
+        fallback_accessible_title,
+        _fallback_accessible_title_canvas,
+        _native_title_substituted,
+        fallback_title_substituted,
+    ) = _chart_set_node_text(accessibility.title, context="venn fallback accessible title")
+    (
+        _semantic_accessible_description,
+        _native_accessible_description,
+        _native_accessible_description_canvas,
+        fallback_accessible_description,
+        _fallback_accessible_description_canvas,
+        _native_description_substituted,
+        fallback_description_substituted,
+    ) = _chart_set_node_text(
+        accessibility.description,
+        context="venn fallback accessible description",
+    )
     code = serialize_flowchart(
-        {**ir, "nodes": nodes, "edges": edges, "direction": "LR"},
+        {
+            "acc_title": fallback_accessible_title,
+            "acc_description": fallback_accessible_description,
+            "nodes": nodes,
+            "edges": edges,
+            "direction": "LR",
+        },
         experimental=experimental,
     )
-    return code, "flowchart", reason
+    if (
+        plan.fallback_compatibility_substitutions
+        or fallback_title_substituted
+        or fallback_description_substituted
+    ):
+        reason = f"{reason}; {VENN_FALLBACK_TEXT_COMPATIBILITY_WARNING}"
+    return _preflight_venn_code(code), "flowchart", reason
 
 
 def serialize_venn(
@@ -856,41 +1248,44 @@ def serialize_venn(
 
     if not isinstance(native_runtime_valid, bool):
         raise SerializationError("native_runtime_valid must be a boolean")
-    sets, intersections, has_all_values = _venn_structure(ir)
+    plan = plan_venn_records(ir)
     if not native_runtime_valid:
         return _venn_flowchart_fallback(
             ir,
-            sets,
-            intersections,
+            plan,
             experimental=experimental,
             reason=(
-                "strict CandidateValidator rejected native venn; emitted an "
-                "evidence-preserving flowchart set graph"
+                "strict CandidateValidator rejected native venn; the explicit set graph "
+                "was re-emitted as a portable Flowchart in the same candidate slot"
             ),
         )
-    if not has_all_values:
+    if not plan.native_supported:
         return _venn_flowchart_fallback(
             ir,
-            sets,
-            intersections,
+            plan,
             experimental=experimental,
             reason=(
-                "flowchart fallback from venn; one or more set/intersection sizes were "
-                "not observed, so no numeric areas were synthesized"
+                "flowchart fallback from venn; "
+                + "; ".join(plan.native_limitations)
+                + "; no numeric areas were synthesized"
             ),
         )
 
     lines = ["venn-beta"]
-    if ir.get("title"):
-        lines.append(f"    title {_text(ir['title'], context='venn title')}")
-    for _, output_id, label, value in sets:
-        assert value is not None
-        lines.append(f'    set {output_id}["{label}"]: {_format_number(value)}')
-    for _, members, label, value in intersections:
-        assert value is not None
-        label_suffix = f'["{label}"]' if label else ""
-        lines.append(f"    union {','.join(members)}{label_suffix}: {_format_number(value)}")
-    return "\n".join(lines) + "\n", "venn", None
+    if plan.native_source_title is not None:
+        lines.append(f"    title {plan.native_source_title}")
+    for item in plan.sets:
+        assert item.value_text is not None
+        lines.append(f'    set {item.emitted_id}["{item.native_source_label}"]: {item.value_text}')
+    for item in plan.intersections:
+        assert item.value_text is not None
+        label_suffix = (
+            f'["{item.native_source_label}"]' if item.native_source_label is not None else ""
+        )
+        lines.append(
+            f"    union {','.join(item.member_emitted_ids)}{label_suffix}: {item.value_text}"
+        )
+    return _preflight_venn_code("\n".join(lines) + "\n"), "venn", None
 
 
 CHART_SET_SERIALIZERS: dict[str, Callable[..., ChartSetSerialization]] = {

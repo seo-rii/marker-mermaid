@@ -211,7 +211,7 @@ def test_venn_rejects_unknown_or_duplicate_intersections() -> None:
         serialize_chart_set("venn", duplicate)
 
 
-def test_venn_contract_defers_normalized_id_collisions_to_serializer() -> None:
+def test_venn_serializer_reserves_normalized_id_collisions() -> None:
     ir = {
         "sets": [
             {"id": "a b", "label": "A", "value": 2},
@@ -221,8 +221,10 @@ def test_venn_contract_defers_normalized_id_collisions_to_serializer() -> None:
     }
 
     validate_typed_ir_contract("venn", ir)
-    with pytest.raises(SerializationError, match="collide after Mermaid normalization"):
-        serialize_chart_set("venn", ir)
+    code = serialize_chart_set("venn", ir)[0]
+    assert 'set a_b["A"]: 2' in code
+    assert 'set a_b_2["B"]: 2' in code
+    assert "union a_b,a_b_2: 1" in code
 
 
 def test_venn_prefers_labels_but_keeps_name_compatibility() -> None:

@@ -15,7 +15,7 @@ NaN/Infinity, unknown endpoint, series 길이 불일치, 잘못된 축 범위를
 | Sankey | positive weighted DAG, 모든 node 참여, native-safe 고유 label | exact weight label을 가진 flowchart |
 | Radar | 3개 이상 dimension, 동일 series 길이, 일관 bounds, non-negative domain | edge 없는 tabular flowchart |
 | Treemap | hierarchy leaf마다 explicit positive value, internal value 없음, binary64/표시 합계 재현 가능 | internal-node value·unsafe numeric·native runtime 실패 시 value-label hierarchy |
-| Venn | explicit set/intersection과 모든 관측 size | size 누락 시 숫자를 합성하지 않는 set/intersection graph |
+| Venn | 모든 area가 positive·normal binary64-safe이고 최대 set/최소 area 비가 `200:1` 이하이며 higher-order union의 모든 pair가 explicit | zero·unsafe·누락·exact-containment·가시성 위험·누락 pair는 숫자를 합성하지 않는 set/intersection graph |
 
 ## Core chart structured extraction
 
@@ -46,7 +46,7 @@ Sankey·Radar·Treemap·Venn도 provider prompt와 응답 후 검증이 공유�
 | Sankey | `nodes[]`의 `id`·`label`, `flows[]`의 exact endpoint·`value`, bbox/evidence | non-empty·ID/endpoint, 모든 node 참여, label 안전성, positive DAG를 판정; native 조건을 벗어난 valid graph는 exact-weight Flowchart |
 | Radar | `dimensions[]`의 `id`·`label`, `series[]`의 ordered `values`, finite `min`/`max`, strict `ticks`/`show_legend`, `circle|polygon` graticule, bbox/evidence | 3개 이상 dimension, ID·series 길이·bounds·option 의미와 `ticks <= 100` resource cap을 판정; valid negative domain은 edge 없는 tabular Flowchart |
 | Treemap | 재귀 `root` node의 `id`·`label`·`value`·`children`과 bbox/evidence | root/internal/leaf, positive value, cycle·object reuse·depth·size를 판정; internal value·binary64/표시 합계 손실·native runtime 실패는 value-label hierarchy Flowchart |
-| Venn | `sets[]`와 `intersections[]`의 ID·membership·label·optional finite value, bbox/evidence | non-negative value, set/member·canonical intersection uniqueness와 size containment를 판정; size가 하나라도 없거나 native runtime 실패면 숫자를 만들지 않는 Flowchart |
+| Venn | `sets[]`와 `intersections[]`의 ID·membership·label·optional finite value, bbox/evidence | non-negative value, set/member·canonical intersection uniqueness와 size containment를 판정; native는 positive normal binary64-safe area, `200:1` visibility gate, higher-order union의 모든 explicit pair를 요구하고 나머지는 exact-value Flowchart |
 
 Nested model은 JSON 구조와 known scalar/container의 형만 검사합니다. 개별 semantic field는 partial/legacy
 후보 격리를 위해 선택이며 completeness와 native/fallback 결정은 serializer가 맡습니다. Sankey `links`,
@@ -54,14 +54,16 @@ Radar `axes`, Treemap/Venn `name`은 direct compatibility metadata로 검증·�
 광고하지 않습니다. Alias를 canonical root로 복사하거나 누락 collection을 채우지 않으므로 serializer의
 key-presence 우선순위도 그대로입니다.
 
-Sankey·Venn의 bbox/evidence와 Treemap의 valid evidence는 generated Scene attribution에 연결됩니다.
+Sankey·Treemap·Venn의 valid evidence는 generated Scene attribution에 연결됩니다.
 Treemap source bbox는 typed IR/review provenance에만 남고 generated Scene에는 복사하지 않습니다.
 Radar에는 Scene adapter가 없어 같은 metadata가 typed IR/review sidecar에만 남습니다. Radar fallback은
 모든 dimension label과 series
 value를 보존하지만 bounds, ticks, legend, graticule과 Radar geometry를 Mermaid code에 표현하지 않습니다.
 Treemap은 unique·bounded source ID를 유지하고, 누락·중복·잘못된 ID는 collision-safe
-`treemap_node_N[_suffix]` attribution slot으로 격리합니다. Venn의 attribution ID 충돌은 Scene
-adapter가 fail closed합니다. 모든 numeric type의 독립 source evidence gate도 그대로 적용됩니다.
+`treemap_node_N[_suffix]` attribution slot으로 격리합니다. Venn은 set의 portable emitted ID를 먼저
+예약하고, intersection의 explicit ID가 정규화 충돌하면 deterministic `intersection_N[_suffix]` slot을
+배정합니다. 따라서 set/intersection ID 충돌 때문에 Scene node를 버리지 않습니다. 모든 numeric type의
+독립 source evidence gate도 그대로 적용됩니다.
 
 Sankey serializer와 Scene/OCR adapter는 한 번 검증한 terminal plan을 공유합니다. Native `sankey-beta`는
 source node ID와 label을 유지하지만 Mermaid 11.16 canvas에는 각 node마다 label과
@@ -124,6 +126,37 @@ ASCII space로 고정합니다. 눈에 보이는 호환 glyph을 사용한 node/
 `accTitle`/`accDescr`가 있으면 native 결과는 candidate warning을, Flowchart는 fallback
 reason/warning을 남깁니다. 두 terminal source는 runtime 전에 50,000자·5,000줄 예산을 통과해야 합니다.
 
+Venn serializer·Scene·semantic OCR은 `plan_venn_records()`의 같은 bounded plan을 사용합니다. Plan은
+set의 source/portable ID, collision-safe intersection Scene ID, canonical membership 순서, exact
+fixed-decimal value token, terminal별 label과 record-local evidence를 한 번 고정합니다. 지수 표기는
+방출하지 않습니다. Set/intersection object 재사용, unknown/repeated member, duplicate intersection,
+containment 위반, area·membership resource 초과는 serialization 전에 거부합니다. Malformed evidence list는
+해당 record의 전체 evidence tuple만 비우며 code·topology·다른 record provenance는 유지합니다.
+
+Native `venn-beta`는 모든 set/intersection value가 positive normal binary64로 원문과 round-trip되고,
+Python `int` 입력이 JavaScript safe 범위를 넘지 않으며, 최대 set과 최소 positive area의 비가 `200:1` 이하일 때만
+선택합니다. Intersection이 member set 또는 더 작은 explicit intersection과 정확히 같은 크기인
+exact-containment도 renderer budget 위험 때문에 fallback합니다. 3개 이상 set의 union은 그 union 안의
+모든 pairwise intersection이 입력에 명시돼야 하며 누락 pair의 크기를 암묵적으로 합성하지 않습니다.
+Zero·subnormal·overflow·precision-loss·누락 value도 모두 exact Flowchart를 선택합니다. 관측 containment를
+초과하는 intersection은 fallback으로 감추지 않고 잘못된 IR로 거부합니다.
+
+Native Scene은 set을 circle, intersection을 shape 없는 logical area로 두고, membership을 label/marker가 없는
+`logical_membership` containment로 투영하며 `reading_direction=unknown`을 사용합니다. Native canvas OCR은
+visible `title`과 실제 set/intersection label만 세고 area value는 화면 text가 아니라 geometry input이므로
+세지 않습니다. Flowchart terminal은 set circle과 intersection round node에 관측 value를 exact
+` (value: x)` suffix로 표시하고, 각 set→intersection relation을 `intersects` label·end-arrow로 방출하며
+`LR`을 사용합니다. Native-only title은 fallback canvas에 복사하지 않고 resolved accessibility text는 SVG
+metadata로만 남습니다. 두 terminal의 generated element bbox는 모두 zero이고, set/intersection evidence는
+각 element에, intersection evidence는 모든 membership relation에도 연결됩니다.
+
+Native runtime rejection은 새 후보를 만들지 않고 같은 candidate slot에서 Flowchart를 한 번 재검증합니다.
+Flowchart terminal은 pinned worker의 500-edge limit을 넘으면 code와 Scene을 모두 unavailable로 닫지만,
+501개 이상의 membership을 가진 valid native Venn까지 금지하지는 않습니다. 500은 성능 보장이 아니라
+상한이므로 near-limit fallback도 runtime timeout과 일반 render budget을 계속 적용합니다. Native와 fallback
+source는 각각 50,000자·5,000줄 preflight를 통과해야 합니다. Scanner-safe source separator와 visible
+quote/angle/backslash/hash/semicolon compatibility glyph은 terminal Scene/OCR과 공유하고 warning에 공개합니다.
+
 공용 Sankey plan은 Scene relation 상한을 serializer 이전에 적용하고 relation ID를 bounded unique slot으로
 할당합니다. 비문자·초과 길이 ID는 deterministic `sankey_flow_N` slot을 사용하고 중복 ID는 suffix로
 분리합니다. Record의 `evidence_ids`가 string list가 아니거나 개수·ID·Unicode 경계를 위반하면 Mermaid와
@@ -134,7 +167,9 @@ unavailable로 닫습니다.
 모든 native/fallback 대표 fixture는 Mermaid 11.16 strict `CandidateValidator`의 parse/render/SVG 검사를
 통과합니다. Sankey grammar는 title/accTitle/accDescr를 표현하지 못하므로 해당 text를 typed IR과 warning에
 남깁니다. Flowchart fallback은 접근성 metadata를 SVG에 보존하지만 canvas OCR label로 세지 않습니다.
-Treemap/Venn의 experimental native grammar도 runtime type을 sidecar에 기록합니다.
+Native Venn은 visible `title`만 지원하고 `accTitle`/`accDescr`를 parse하지 못하므로 resolved accessibility
+text를 typed IR과 limitation warning에 남깁니다. Treemap/Venn의 experimental native grammar도 runtime
+type을 sidecar에 기록합니다.
 
 pipeline의 numeric consistency는 source와 generated 숫자 occurrence multiset F1입니다. Bounded evidence
 안에서는 동일 normalized text+bbox를 한 관측으로 합치고, OCR context와 evidence 채널의 token Counter는
