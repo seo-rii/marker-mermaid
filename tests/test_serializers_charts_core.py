@@ -75,7 +75,7 @@ def test_outputs_are_deterministic_and_quote_safe() -> None:
         second = serialize_chart_core(diagram_type, ir)[0]
         assert first == second
         assert '"A"' not in first
-    assert '"Web &quot;direct&quot;" : 62.5' in serialize_chart_core("pie", CASES["pie"])[0]
+    assert '"Web \\"direct\\"" : 62.5' in serialize_chart_core("pie", CASES["pie"])[0]
     assert (
         '"Project &quot;A&quot;": [0.3, 0.6]'
         in serialize_chart_core("quadrant", CASES["quadrant"])[0]

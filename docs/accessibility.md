@@ -36,6 +36,28 @@ Venn이 same-slot Flowchart fallback으로 내려가면 resolved text를 SVG 접
 label로 세지 않으며 native-only title도 복사하지 않습니다. Grammar-unsafe visible text를 compatibility glyph로
 바꾼 경우 native candidate warning 또는 fallback reason에 공개합니다.
 
+Native Pie는 pinned Mermaid 11.16에서 `accTitle`/`accDescr`를 지원하므로 resolved text를 SVG
+`<title>`/`<desc>` metadata로 방출합니다. 별도의 explicit `title`은 Pie canvas content이므로 native semantic
+OCR에 포함하지만 접근성 directive는 content label로 세지 않습니다. Native 조건을 벗어나거나 runtime
+validation이 실패해 같은-slot exact-value Flowchart가 선택되면 resolved title/description은 Flowchart 접근성
+metadata로 유지되고 description에는 proportional sector가 아니라 exact-value fallback이라는 설명을
+덧붙입니다. Native-only canvas title은 fallback cell이나 OCR에 복사하지 않습니다.
+
+Pie slice label의 source-only separator는 SVG DOM에 zero-width로 남아도 canvas glyph를 바꾸지 않으며,
+semantic OCR은 separator를 제외한 visible label을 사용합니다. Native title의
+quote/backslash/angle/hash/semicolon과 Flowchart cell의
+quote/backslash/angle/hash가 visible compatibility glyph로 바뀌면 warning으로 공개하고, resolved 접근성 text와
+semantic 원문은 enriched typed IR/review metadata에 보존합니다.
+
+Pie의 explicit `title`/`acc_title`과 `description`/`acc_description` 네 필드는 모두 candidate-authorized 독립
+OCR/vector 관측과 정확히 일치해야 자동 게시할 수 있습니다. 출력 resolution은 `acc_title > title`,
+`acc_description > description` 순서지만, 가려진 explicit text도 보수적으로 검증합니다. 해당 관측은 slice가
+소유한 ID·normalized text+bbox를 재사용하거나 slice bbox와 겹칠 수 없습니다. Review 결과처럼
+reconstruction 초기 입력으로 전달된 `user_edit`의 exact text도 허용하지만 engine이 새로 방출한 `user_edit`는
+승인 근거가 아닙니다. 구조에서 결정적으로 파생한 기본 접근성 문구와 `experimental` notice는 별도 source
+관측을 요구하지 않습니다. Quote와 numeric entity-like text는 source-only separator를 거쳐
+`<title>`/`<desc>`에서 원문 그대로 유지됩니다.
+
 Native Radar는 pinned Mermaid 11.16에서 `accTitle`/`accDescr`를 지원하므로 두 directive를 SVG
 `<title>`/`<desc>` metadata로 방출합니다. 별도의 explicit `title`만 radar canvas에 보이며 semantic OCR에는
 이 visible title, axis label, `showLegend=true`일 때의 series legend만 들어갑니다. Value, `min`/`max`,

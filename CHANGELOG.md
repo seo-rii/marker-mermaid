@@ -24,6 +24,22 @@
 - Strict-safe C4, Deployment, Component, and Use-case portable fallbacks.
 - Requested/emitted/runtime diagram type and fallback-chain metadata.
 - Evidence-strict Pie, XY, Quadrant, Sankey, Radar, Treemap, and Venn serializers.
+- Pie serialization, generated Scene, and semantic OCR now share a bounded `PiePlan` that freezes
+  `pie_slice_N` identities, exact fixed-decimal values, terminal-visible labels, and record-local
+  provenance. Native Mermaid 11.16 output is limited to 12 slices and requires zero-or-normal
+  binary64 round trips, a finite positive left-to-right renderer total, at least 1% visibility for
+  every positive slice, finite percentage-label centroids, and exact JavaScript `showData` text;
+  zero slices remain legend-only. Native-incompatible valid inputs and native runtime rejection use the same
+  candidate slot's disconnected `flowchart TB` fallback with up to 256 exact `label: value` cells,
+  no invented edges, and a fresh full validation pass. Native Scenes expose normalized radial
+  sector-centroid elements/legend text while fallback Scenes expose zero-geometry cells; terminal OCR distinguishes
+  visible native title/legend/percentage text from fallback cells and excludes accessibility metadata.
+  Pie now participates in the 80% generated-node provenance gate and combines exact document-wide
+  numeric completeness with candidate-authorized slice-local OCR/vector binding. Punctuation-preserving
+  full label/value records, independent title/accessibility evidence, and global source coverage prevent
+  label/value swaps, suffix omissions, uncited slices, shared observations, or fabricated metadata from
+  auto-publishing. Both terminals preflight 50,000 UTF-16 source units / 5,000 lines and disclose
+  terminal-visible compatibility substitutions while preserving semantic source text in typed/review IR.
 - Radar serialization, generated Scene, and semantic OCR now share a bounded `RadarPlan` with
   reserved-safe cross-terminal IDs, fixed-decimal values, record-local provenance, and explicit
   native-versus-tabular terminal semantics. Native Radar is limited to 12 series and requires
@@ -255,10 +271,11 @@
   type-over-label relation text, optional evidence, and original extra metadata preservation, while
   non-empty, collision, endpoint, and resource-cap semantics remain owned by the shared fallback plan.
 - Pie, XY, and Quadrant typed IR now have strict nested prompt/post-validation contracts for finite
-  JSON chart numbers, axes, series, slices, points, and canonical quadrant labels. Their native-only
-  completeness and representability checks remain serializer-owned; record evidence stays in typed
-  sidecars because these chart types have no generated Scene adapter, and publication still requires
-  independent source OCR/vector numeric evidence. XY values must remain inside the declared y-axis,
+  JSON chart numbers, axes, series, slices, points, and canonical quadrant labels. Completeness and
+  representability checks remain serializer-owned; XY and Quadrant remain native-only without generated
+  Scene adapters, while Pie now uses its shared native/Flowchart terminal plan and slice Scene/provenance.
+  Publication still requires independent source OCR/vector numeric evidence. XY values must remain inside the
+  declared y-axis,
   ambiguous Quadrant label aliases fail closed, and grammar-aware numeric projection excludes comments,
   supported native/colon titles, supported colon/block accessibility metadata, and Quadrant slot indices
   while retaining visible labels/data and Sankey metadata-like CSV labels. Spatially distinct source
@@ -306,7 +323,8 @@
   numbers score `0.0` and require review, while overlapping fields, broad/shared/same-position ambiguous
   observations, invalid geometry or authority, and exhausted budgets make the metric unavailable. Exact
   normalized text+bbox OCR/vector duplicates count once, spatially distinct repeats remain, and single-bit
-  fields require one endpoint occurrence. Other numeric types retain global occurrence-multiset scoring.
+  fields require one endpoint occurrence. Pie uses its own slice-local binding; all remaining numeric types
+  retain global occurrence-multiset scoring.
 - Serializer-visible Scene text now includes Architecture group labels, excludes hidden
   Deployment/Component relation labels, and mirrors Use-case Flowchart relation type-over-label
   precedence; hidden role/shape/style/semantic metadata cannot enter the projected Scene, and

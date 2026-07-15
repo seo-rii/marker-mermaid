@@ -4231,7 +4231,7 @@ def test_numeric_diagram_without_source_numeric_evidence_requires_review():
     assert result.selected.aggregate_score is None
     assert not result.publish
     assert result.status == "review_required"
-    assert any("lacks OCR/vector numeric evidence" in item for item in result.selected.warnings)
+    assert any("Pie slice/value association lacks" in item for item in result.selected.warnings)
 
     class VectorNumberEngine:
         name = "vector-number"
@@ -4257,8 +4257,9 @@ def test_numeric_diagram_without_source_numeric_evidence_requires_review():
     ).reconstruct("source", "source.png", Image.new("RGB", (100, 50), "white"))
 
     assert supported.selected is not None
-    assert supported.selected.scores["numeric_consistency"] == 1
-    assert supported.selected.aggregate_score is not None
+    assert "numeric_consistency" not in supported.selected.scores
+    assert supported.selected.aggregate_score is None
+    assert any("Pie slice/value association lacks" in item for item in supported.selected.warnings)
 
 
 def test_numeric_diagram_with_conflicting_source_values_requires_review():
@@ -4301,10 +4302,13 @@ def test_numeric_diagram_with_conflicting_source_values_requires_review():
     )
 
     assert result.selected is not None
-    assert result.selected.scores["numeric_consistency"] == 0
+    assert "numeric_consistency" not in result.selected.scores
     assert result.selected.aggregate_score is None
     assert not result.publish
-    assert any("numeric consistency" in warning for warning in result.selected.warnings)
+    assert any(
+        "Pie slice/value association lacks" in warning
+        for warning in result.selected.warnings
+    )
 
 
 @pytest.mark.parametrize(
@@ -4355,22 +4359,22 @@ def test_numeric_reference_preserves_occurrences_without_recounting_spatial_dupl
 
         def observe(self, context):
             return EngineObservation(
-                prediction=DiagramTypePrediction(candidates=["pie"], scores=[0.9]),
+                prediction=DiagramTypePrediction(candidates=["sankey"], scores=[0.9]),
                 direct_candidates=[
                     DirectMermaidCandidate(
-                        diagram_type="pie",
-                        code='pie\n    "First" : 20\n    "Second" : 20\n',
+                        diagram_type="sankey",
+                        code="sankey-beta\nFirst,Sink,20\nSecond,Sink,20\n",
                     )
                 ],
                 evidence=evidence,
             )
 
-    class PieRuntime:
+    class SankeyRuntime:
         def validate_and_render(self, code, timeout_seconds):
             return RuntimeResult(
                 True,
                 True,
-                diagram_type="pie",
+                diagram_type="sankey",
                 svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
             )
 
@@ -4381,7 +4385,7 @@ def test_numeric_reference_preserves_occurrences_without_recounting_spatial_dupl
     result = ReconstructionPipeline(
         config,
         [RepeatedNumberEngine()],
-        CandidateValidator(PieRuntime(), config.security_profile),
+        CandidateValidator(SankeyRuntime(), config.security_profile),
     ).reconstruct(
         "source",
         "source.png",
@@ -4399,21 +4403,21 @@ def test_repeated_source_number_missing_from_generated_code_is_penalized() -> No
 
         def observe(self, context):
             return EngineObservation(
-                prediction=DiagramTypePrediction(candidates=["pie"], scores=[0.9]),
+                prediction=DiagramTypePrediction(candidates=["sankey"], scores=[0.9]),
                 direct_candidates=[
                     DirectMermaidCandidate(
-                        diagram_type="pie",
-                        code='pie\n    "Approved" : 20\n',
+                        diagram_type="sankey",
+                        code="sankey-beta\nApproved,Sink,20\n",
                     )
                 ],
             )
 
-    class PieRuntime:
+    class SankeyRuntime:
         def validate_and_render(self, code, timeout_seconds):
             return RuntimeResult(
                 True,
                 True,
-                diagram_type="pie",
+                diagram_type="sankey",
                 svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
             )
 
@@ -4428,7 +4432,7 @@ def test_repeated_source_number_missing_from_generated_code_is_penalized() -> No
     result = ReconstructionPipeline(
         config,
         [SingleNumberEngine()],
-        CandidateValidator(PieRuntime(), config.security_profile),
+        CandidateValidator(SankeyRuntime(), config.security_profile),
     ).reconstruct(
         "source",
         "source.png",
@@ -4485,8 +4489,9 @@ def test_direct_runtime_numeric_type_drift_uses_validated_type_for_scoring() -> 
     assert result.selected.diagram_type == "flowchart"
     assert result.selected.emitted_diagram_type == "pie"
     assert result.selected.scores["type_fitness"] == 0
-    assert result.selected.scores["numeric_consistency"] == 1
-    assert not any("attribution is unavailable" in item for item in result.selected.warnings)
+    assert "numeric_consistency" not in result.selected.scores
+    assert any("attribution is unavailable" in item for item in result.selected.warnings)
+    assert any("Pie slice/value association lacks" in item for item in result.selected.warnings)
 
 
 def test_direct_runtime_structural_type_drift_drops_requested_numeric_gate() -> None:
@@ -4540,16 +4545,6 @@ def test_direct_runtime_structural_type_drift_drops_requested_numeric_gate() -> 
 @pytest.mark.parametrize(
     ("diagram_type", "ir", "source_numbers"),
     [
-        (
-            "pie",
-            {
-                "slices": [
-                    {"label": "Approved", "value": 20},
-                    {"label": "Rejected", "value": 80},
-                ]
-            },
-            "20 80",
-        ),
         (
             "xychart",
             {

@@ -609,7 +609,12 @@ def _ensure_extended_serializers() -> None:
     global _EXTENDED_SERIALIZERS_REGISTERED
     if _EXTENDED_SERIALIZERS_REGISTERED:
         return
-    from marker_mermaid.serializers_charts_core import serialize_chart_core
+    from marker_mermaid.serializers_charts_core import (
+        PIE_FALLBACK_TEXT_COMPATIBILITY_WARNING,
+        PIE_NATIVE_TEXT_COMPATIBILITY_WARNING,
+        plan_pie_records,
+        serialize_chart_core,
+    )
     from marker_mermaid.serializers_charts_flow import serialize_chart_flow
     from marker_mermaid.serializers_charts_sets import (
         TREEMAP_NATIVE_TEXT_COMPATIBILITY_WARNING,
@@ -710,6 +715,11 @@ def _ensure_extended_serializers() -> None:
             if emitted_type == _requested_type:
                 native_warnings: tuple[str, ...] = ()
                 if (
+                    _requested_type == "pie"
+                    and plan_pie_records(ir).native_compatibility_substitutions
+                ):
+                    native_warnings = (PIE_NATIVE_TEXT_COMPATIBILITY_WARNING,)
+                elif (
                     _requested_type == "treemap"
                     and plan_treemap_records(ir).native_compatibility_substitutions
                 ):
@@ -725,11 +735,19 @@ def _ensure_extended_serializers() -> None:
                     warnings=native_warnings,
                     stability=stability,
                 )
+            fallback_warnings = [
+                fallback_reason or f"Portable fallback from {_requested_type}."
+            ]
+            if (
+                _requested_type == "pie"
+                and plan_pie_records(ir).fallback_compatibility_substitutions
+            ):
+                fallback_warnings.append(PIE_FALLBACK_TEXT_COMPATIBILITY_WARNING)
             return SerializationResult.fallback(
                 _requested_type,
                 emitted_type,
                 code,
-                warnings=(fallback_reason or f"Portable fallback from {_requested_type}.",),
+                warnings=tuple(fallback_warnings),
                 stability=stability,
             )
 
@@ -811,6 +829,14 @@ def _ensure_extended_serializers() -> None:
     _EXTENDED_SERIALIZERS_REGISTERED = True
 
 
+def _validate_pie_explicit_accessibility_fields(ir: dict[str, Any]) -> None:
+    """Keep public Pie serialization from stringifying malformed explicit metadata."""
+
+    from marker_mermaid.serializers_charts_core import validate_pie_explicit_metadata
+
+    validate_pie_explicit_metadata(ir)
+
+
 def serialize_typed_ir_result(
     diagram_type: str,
     ir: dict[str, Any],
@@ -819,6 +845,8 @@ def serialize_typed_ir_result(
 ) -> SerializationResult:
     """Serialize typed IR while retaining native/fallback grammar metadata."""
 
+    if diagram_type == "pie":
+        _validate_pie_explicit_accessibility_fields(ir)
     _ensure_extended_serializers()
     enriched_ir = enrich_accessibility_ir(
         ir,
@@ -850,6 +878,8 @@ def serialize_runtime_fallback_result(
     participate.  Returning ``None`` keeps unsupported native candidates invalid.
     """
 
+    if diagram_type == "pie":
+        _validate_pie_explicit_accessibility_fields(ir)
     if diagram_type in {"architecture", "c4", "deployment", "component"}:
         initial = serialize_typed_ir_result(
             diagram_type,
@@ -887,6 +917,30 @@ def serialize_runtime_fallback_result(
             via=initial.fallback_chain[1:],
             warnings=tuple(dict.fromkeys((*initial.warnings, runtime_warning))),
             stability=initial.stability,
+        )
+    if diagram_type == "pie":
+        from marker_mermaid.serializers_charts_core import (
+            PIE_FALLBACK_TEXT_COMPATIBILITY_WARNING,
+            plan_pie_records,
+            serialize_pie,
+        )
+
+        code, emitted_type, reason = serialize_pie(
+            ir,
+            experimental=experimental,
+            native_runtime_valid=False,
+        )
+        if emitted_type == "pie":
+            return None
+        warnings = [reason or "CandidateValidator rejected native Pie."]
+        if plan_pie_records(ir).fallback_compatibility_substitutions:
+            warnings.append(PIE_FALLBACK_TEXT_COMPATIBILITY_WARNING)
+        return SerializationResult.fallback(
+            "pie",
+            emitted_type,
+            code,
+            warnings=tuple(warnings),
+            stability="extended",
         )
     if diagram_type == "sankey":
         from marker_mermaid.serializers_charts_flow import serialize_sankey

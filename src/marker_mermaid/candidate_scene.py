@@ -30,6 +30,7 @@ from marker_mermaid.serializers import (
     plan_architecture_structure,
     plan_gantt_records,
 )
+from marker_mermaid.serializers_charts_core import plan_pie_records
 from marker_mermaid.serializers_charts_flow import plan_radar_records, plan_sankey_records
 from marker_mermaid.serializers_charts_sets import plan_treemap_records, plan_venn_records
 from marker_mermaid.serializers_experimental import (
@@ -321,6 +322,63 @@ def typed_ir_to_scene(
             for field in packet_plan.fields
         ]
         scene_direction_override = "LR"
+    elif diagram_type == "pie":
+        try:
+            pie_plan = plan_pie_records(ir)
+        except SerializationError:
+            return None
+        pie_uses_flowchart = (
+            not pie_plan.native_supported
+            if emitted_diagram_type is None
+            else emitted_diagram_type.casefold().startswith("flowchart")
+        )
+        if pie_uses_flowchart:
+            if not pie_plan.flowchart_supported:
+                return None
+            return DiagramSceneIR(
+                elements=[
+                    SceneElement(
+                        id=slice_plan.scene_id,
+                        role="slice",
+                        text=slice_plan.fallback_canvas_label,
+                        bbox=(0.0, 0.0, 0.0, 0.0),
+                        shape="rectangle",
+                        confidence=1.0,
+                        evidence_ids=list(slice_plan.evidence_ids),
+                    )
+                    for slice_plan in pie_plan.slices
+                ],
+                relations=[],
+                groups=[],
+                reading_direction="TB",
+                diagram_type_candidates=["pie"],
+                coordinate_space="pixels",
+            )
+        if not pie_plan.native_supported:
+            return None
+        return DiagramSceneIR(
+            elements=[
+                SceneElement(
+                    id=slice_plan.scene_id,
+                    role="slice",
+                    text=slice_plan.native_legend_canvas_text,
+                    bbox=(
+                        (*slice_plan.normalized_point, *slice_plan.normalized_point)
+                        if slice_plan.normalized_point is not None
+                        else (0.0, 0.0, 0.0, 0.0)
+                    ),
+                    shape="sector",
+                    confidence=1.0,
+                    evidence_ids=list(slice_plan.evidence_ids),
+                )
+                for slice_plan in pie_plan.slices
+            ],
+            relations=[],
+            groups=[],
+            reading_direction="radial",
+            diagram_type_candidates=["pie"],
+            coordinate_space="normalized",
+        )
     elif diagram_type == "radar":
         try:
             radar_plan = plan_radar_records(ir)
@@ -1664,6 +1722,28 @@ def typed_ir_semantic_texts(
                 yield native_title
         for field in plan.fields:
             yield field.label
+        return
+    if diagram_type == "pie":
+        plan = plan_pie_records(ir)
+        pie_uses_flowchart = (
+            not plan.native_supported
+            if emitted_diagram_type is None
+            else emitted_diagram_type.casefold().startswith("flowchart")
+        )
+        if pie_uses_flowchart:
+            if not plan.flowchart_supported:
+                raise SerializationError("Pie Flowchart projection exceeds the runtime slice limit")
+            for slice_plan in plan.slices:
+                yield slice_plan.fallback_canvas_label
+        else:
+            if not plan.native_supported:
+                raise SerializationError("native Pie projection is not lossless")
+            if plan.native_canvas_title is not None:
+                yield plan.native_canvas_title
+            for slice_plan in plan.slices:
+                yield slice_plan.native_legend_canvas_text
+                if slice_plan.percentage_text is not None:
+                    yield slice_plan.percentage_text
         return
     if diagram_type == "radar":
         plan = plan_radar_records(ir)

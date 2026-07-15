@@ -27,7 +27,7 @@ typed IR은 serializer가 실제 방출하는 node/edge 구조로 다시 변환�
 layout을 추측하지 않습니다. Scene IR portable fallback은 deterministic serializer 보존 여부를 평가할 수
 있습니다. raw/direct Mermaid는 아직 일반 AST→Scene 변환이 없으므로 구조 점수가 unavailable일 수 있습니다.
 평가 Scene adapter는 sequence/ZenUML, hierarchy/organization, planning/event,
-Packet/Radar/Treemap/Ishikawa/TreeView, Wardley/Cynefin, data-lineage, Railroad, Venn까지 포함하며 typed
+Packet/Pie/Radar/Treemap/Ishikawa/TreeView, Wardley/Cynefin, data-lineage, Railroad, Venn까지 포함하며 typed
 record의 evidence ID를 보존합니다.
 Event Modeling의 generated Scene은 fallback serializer와 같은 namespaced frame/relation ID,
 화면에 보이는 typed/time label, lane subgraph membership, `LR` 방향, end-arrow만 사용합니다.
@@ -100,6 +100,26 @@ projection/source gate에서 비교합니다. Pipeline은 검증된 terminal gra
 전달합니다. Native Packet일 때만 실제 canvas의 normalized title을 OCR text에 포함하고, disconnected
 Flowchart fallback에서는 native-only title을 제외합니다. Entity-like title은 serializer와 같은 visible
 fullwidth glyph를 사용하지만 source security용 invisible separator는 OCR token을 쪼개지 않도록 제거합니다.
+Pie Scene은 serializer·semantic OCR과 같은 bounded `PiePlan`을 사용합니다. Native terminal은 각
+`pie_slice_N`을 `sector` element로 만들고 positive slice를 Mermaid percentage-label radius의 normalized
+centroid에 놓습니다. Zero slice는 legend-only이므로 zero bbox이며, relation/group 없이 `radial` 방향을
+사용합니다. Element text는 `showData` 표시를 포함한 실제 legend text입니다. Native OCR은 visible title,
+모든 legend와 positive slice percentage만 세고 접근성 metadata는 제외합니다. Flowchart terminal은
+`TB` 방향의 zero-geometry `label: exact-value` rectangle만 만들며 relation/group과 native-only title을
+추가하지 않습니다. Slice evidence는 두 terminal의 element에 record-local로 유지되고, malformed evidence
+list는 구조를 바꾸지 않은 채 해당 slice provenance를 비웁니다. Terminal-visible compatibility glyph과
+source-only separator 제거도 serializer/OCR/Scene이 같은 plan에서 공유합니다.
+
+Pie는 Extended generated-node provenance gate에 포함됩니다. Slice는 실제 Mermaid element이므로 native와
+fallback 모두 injective attribution 분모에 남고, 여러 slice가 같은 eligible evidence를 주장하면 기존
+collision 취소 규칙을 적용합니다. Percentage와 title은 별도의 generated node가 아니며 provenance credit을
+만들지 않습니다. 따라서 slice-local numeric binding이 정확해도 generated slice attribution이 80% 미만이거나
+계산 불가능하면 자동 게시하지 않습니다.
+Explicit Pie title/accessibility text는 별도 content node가 아니므로 전용 gate가 candidate-authorized 독립
+OCR/vector exact observation 또는 reconstruction 초기 입력의 exact `user_edit` evidence를 요구합니다.
+Engine-emitted `user_edit`는 이 신뢰 경계를 만들 수 없습니다. Slice-owned observation과 겹치거나 ID만 바꾼
+동일 text+bbox는 독립 근거가 아닙니다. 결정적으로 파생한 기본 접근성 문구와 experimental notice만 별도
+source attribution 없이 허용합니다.
 Radar Scene은 serializer·semantic OCR과 같은 `RadarPlan`을 사용합니다. Native terminal은 axis와 data point를
 Mermaid의 radial scale에 맞춘 `[0,1]` normalized 위치에 놓고, series element와 마지막 point→첫 point까지 닫힌
 marker/label 없는 `series_curve` association을 만듭니다. Series bbox는 point들의 normalized curve envelope이고
@@ -221,8 +241,10 @@ generated Scene attribution에서 제외합니다.
   Cynefin native는 고정 template·실제 visible item(`confusion`은 세 개+`+N more`)·transition label을,
   Flowchart fallback은 supplied domain label을 한 번씩, 모든 explicit item과 transition label을 셉니다. ZenUML은
   Sequence fallback의 participant alias·message label만 셉니다. Packet은 terminal이 native일 때만 canvas
-  title을 field label 앞에 세고 Flowchart fallback에서는 제외합니다. Sankey native terminal은 node label과
-  renderer가 표시하는 `max(incoming, outgoing)` 합계를 세되 개별 flow weight는 세지 않고, Flowchart terminal은
+  title을 field label 앞에 세고 Flowchart fallback에서는 제외합니다. Pie native terminal은 visible title,
+  모든 legend와 positive slice의 percentage를 세며 `showData` value는 legend text에 포함합니다. Pie
+  Flowchart는 exact `label: value` cell만 세고 native-only title과 접근성 metadata는 제외합니다. Sankey native
+  terminal은 node label과 renderer가 표시하는 `max(incoming, outgoing)` 합계를 세되 개별 flow weight는 세지 않고, Flowchart terminal은
   node label과 exact edge-weight label을 셉니다. 두 Sankey 경로 모두 title/description을 canvas text로 세지
   않습니다. Radar native terminal은 visible title·axis와 `showLegend=true`인 series legend만 세고, value,
   bounds, ticks, graticule과 `accTitle`/`accDescr`는 geometry/metadata이므로 제외합니다. Radar Flowchart는 series
@@ -240,7 +262,8 @@ generated Scene attribution에서 제외합니다.
 - Typed semantic projection이 malformed data나 adapter defect로 예외를 내면 해당 candidate의 OCR을
   direct-code fallback으로 바꾸지 않습니다. 예외를 candidate warning으로 격리하고 aggregate를
   unavailable로 유지하여 다른 candidate 선택과 문서 변환은 계속합니다.
-- numeric consistency는 source/generated 숫자 occurrence multiset의 precision·recall F1입니다. Bounded
+- 일반 numeric consistency는 source/generated 숫자 occurrence multiset의 precision·recall F1입니다. Pie와
+  Packet의 record-local 결합 검증은 아래 예외를 사용합니다. Bounded
   evidence 안의 동일 normalized text+bbox는 한 관측으로 합치고, OCR context와 evidence 채널의 numeric
   Counter는 token별 최대 occurrence로 병합합니다. 따라서 위치가 다른 반복값은 보존하면서 채널 간 중복
   보고는 다시 세지 않습니다. 생성한 숫자가 source에 없거나 occurrence 수가 다르면 precision/recall을
@@ -258,6 +281,12 @@ generated Scene attribution에서 제외합니다.
   Malformed/oversized evidence list는 문자 단위 ID로 coercion하지 않고 해당 record에서만 빈 provenance로
   격리하며, relation count와 relation ID도 Scene resource 경계 안에서 serializer와 함께 검증합니다.
   Flowchart projection이 pinned runtime의 500-edge cap을 넘으면 partial Scene을 만들지 않고 unavailable입니다.
+- Pie 구조 metric은 `PiePlan`이 확정한 terminal을 따릅니다. Native는 최대 12 slice, zero-or-normal binary64
+  round-trip value와 left-to-right finite positive total, positive slice별 1% visibility, finite normalized
+  centroid, `showData`의 exact JavaScript string을 요구합니다. Positive slice는 normalized `sector`, zero slice는
+  legend-only zero bbox이고 relation/group은 없습니다. 조건 밖의 valid input과 native runtime rejection은 같은
+  candidate slot에서 최대 256개의 zero-geometry `TB` exact-value cell로 재검증합니다. Fallback도 relation을
+  만들지 않으며 두 terminal 모두 50,000 UTF-16 code-unit·5,000줄 source preflight를 공유합니다.
 - Radar 구조 metric은 `RadarPlan`이 확정한 terminal을 따릅니다. Native는 최대 12 series와 zero-or-normal binary64
   round-trip value/bound, positive finite effective span과 finite renderer radius를 요구하고 normalized radial
   point 및 closed marker-less curve relation을 평가합니다. Flowchart는 최대 256 point의 zero-geometry `TB`
@@ -278,6 +307,22 @@ generated Scene attribution에서 제외합니다.
   `unknown` direction, fallback은 labeled end-arrow membership과 `LR`을 사용합니다. Runtime native rejection은
   같은 candidate slot의 exact-value Flowchart를 한 번 재검증합니다. Flowchart projection만 500-edge hard
   cap을 적용하며 near-limit render 성능은 별도 runtime timeout에 계속 의존합니다.
+- Pie는 slice-local association과 전역 occurrence completeness를 함께 사용합니다. Native Pie, 같은-slot exact-value
+  Flowchart, semantic repair 모두 각 typed slice가 candidate publication authority의 `ocr_token` 또는
+  `vector_text`를 직접 참조해야 합니다. Slice/evidence bbox는 양의 면적이고 source image 안에 있어야 하며,
+  evidence bbox 전체가 해당 non-overlapping slice bbox 안에 들어가야 합니다. Source-wide `ocr_texts`는 label이나
+  value를 어떤 slice에도 귀속할 수 없습니다.
+- 모든 slice에서 bbox reading order의 cited observation이 punctuation-preserving 전체 label과 허용 separator,
+  하나의 value record에 정확히 결합되고 `(label 안의 숫자 + exact value)` numeric multiset도 같아야 합니다.
+  이 local 결과와 전체 source/generated numeric occurrence multiset이 모두 exact일 때만 Pie numeric
+  consistency는 `1.0`입니다. 정상적으로 결합된 record의 value가 swap되거나 source-wide 숫자가 더 있으면
+  `0.0`입니다. Label suffix omission이나 malformed/cited-extra record로 full-record 결합 자체가 성립하지 않으면
+  metric은 unavailable입니다. 두 경우 모두 threshold와 관계없이 review입니다. 동일 slice의 같은 normalized
+  text+bbox 중복은 한 관측으로 세고 공간적으로 다른 반복은 보존합니다.
+- Slice bbox가 겹치거나, broad/shared evidence, 같은 evidence ID 또는 같은 normalized text+bbox의 cross-slice
+  claim, 같은 bbox의 상충 text, invalid authority/geometry/image bounds, association work budget 소진이 있으면
+  일부 slice 점수를 내지 않고 Pie metric 전체를 unavailable/review로 둡니다. Typed slice slot이 없는 direct
+  Pie도 이 결합을 증명할 수 없습니다.
 - Packet은 위 전역 숫자 occurrence multiset을 사용하지 않고 field-local association으로 대체합니다.
   Native Packet과 같은 candidate slot의 Flowchart fallback, semantic repair proposal은 모두 동일한
   field plan과 평가 경로를 사용합니다. 각 field가 candidate publication authority 안의 `ocr_token` 또는
@@ -293,8 +338,8 @@ generated Scene attribution에서 제외합니다.
   위치의 모호한 관측을 여러 field가 주장하거나, candidate authority·bbox·image bounds·association work
   budget을 확인할 수 없으면 일부 field만 평가하지 않고 Packet metric 전체를 unavailable로 두어 review를
   요구합니다. Candidate authority 안의 같은 bbox에 서로 다른 normalized OCR/vector text가 있으면 field가
-  유리한 관측 하나만 인용했더라도 상충 관측을 숨길 수 없도록 unavailable로 처리합니다. 이 Packet 전용
-  binding만 전역 multiset을 대체하며 다른 numeric type의 계산은 바뀌지 않습니다.
+  유리한 관측 하나만 인용했더라도 상충 관측을 숨길 수 없도록 unavailable로 처리합니다. Packet binding은
+  전역 multiset을 대체하고, Pie binding은 전역 exactness에 추가됩니다. 다른 numeric type 계산은 바뀌지 않습니다.
 - visual entailment precision은 생성된 node를 source node ID, collision-free portable ID alias 또는
   유일한 정규화 label로 정렬한 collision-free evidence coverage proxy입니다. Node 근거로
   인정하는 kind는 `ocr_token`, `vector_text`, `contour`, `vlm_observation`, `user_edit`로
@@ -315,8 +360,8 @@ metric 전체를 unavailable로 둡니다.
 score에는 참여하지만 0인 의미 점수를 게시 가능 등급으로 희석할 수 없습니다. `extended`/`maximal`의
 구조 후보는 위 eligible-kind·conservative-revocation 규칙을 적용한 collision-free 생성 node
 provenance가 80% 미만이거나 계산 불가능하면 review 대상으로 둡니다.
-Packet도 이 구조 provenance gate에 포함되며, bit 숫자가 일치하는 것만으로
-unattributed field를 자동 게시하지 않습니다.
+Packet과 Pie도 이 구조 provenance gate에 포함되며, bit range 또는 slice value가 일치하는 것만으로
+unattributed field/slice를 자동 게시하지 않습니다.
 
 `best_effort_validated`와 `strict_validated`에서 여러 parse/render 후보가 있으면 각 후보에 같은
 aggregate·semantic threshold와 provenance/numeric hold를 적용한 뒤, publish 가능한 class를 먼저
@@ -343,5 +388,8 @@ Label repair도 trusted Marker OCR/built-in Vector origin, source block, bbox co
 Typed/Scene semantic type 또는 direct 후보의 validated emitted/runtime type이
 Gantt/Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn이면 OCR/vector numeric evidence가 하나도 없거나
 numeric consistency가 게시 threshold보다 낮을 때 aggregate를 `None`으로 두어 자동 게시하지 않습니다.
+Pie는 candidate-authorized slice-local association, 전역 numeric completeness, explicit accessibility
+attribution 중 하나라도 unavailable/mismatch이면 설정된 게시 threshold로 우회하지 않고 aggregate를
+`None`으로 둡니다.
 Packet은 candidate-authorized field-local association이 unavailable이거나 `0.0`이면 전역 숫자 multiset이나
 설정된 게시 threshold로 우회하지 않고 aggregate를 `None`으로 둡니다.

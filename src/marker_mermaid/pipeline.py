@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
@@ -13,9 +14,11 @@ from typing import Literal
 from PIL import Image, ImageChops, ImageFilter, ImageOps
 
 from marker_mermaid.accessibility import (
+    EXPERIMENTAL_NOTICE,
     accessibility_limitation_warning,
     augment_accessibility_directives,
     enrich_accessibility_ir,
+    resolve_accessibility,
     supports_accessibility_directives,
 )
 from marker_mermaid.ast_repair import DeterministicMermaidRepair
@@ -102,6 +105,7 @@ from marker_mermaid.serializers import (
     serialize_runtime_fallback_result,
     serialize_typed_ir_result,
 )
+from marker_mermaid.serializers_charts_core import plan_pie_records
 from marker_mermaid.serializers_special import plan_packet_fields
 from marker_mermaid.style_recovery import (
     TrustedEdgeStyleEvidence,
@@ -149,6 +153,8 @@ _MAX_OCR_REFERENCE_CHARS = 1_000_000
 _MAX_OCR_REFERENCE_TOKENS = 100_000
 _MAX_PACKET_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
 _MAX_PACKET_FIELD_OVERLAP_COMPARISONS = 100_000
+_MAX_PIE_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
+_MAX_PIE_SLICE_OVERLAP_COMPARISONS = 100_000
 _PIL_IMAGING_CORE_TYPE = type(Image.new("RGB", (1, 1)).im)
 _PIL_IMAGE_DICT_DESCRIPTOR = Image.Image.__dict__["__dict__"]
 
@@ -331,6 +337,7 @@ _PROVENANCE_GATED_TYPES = frozenset(
         "mindmap",
         "organization",
         "packet",
+        "pie",
         "radar",
         "railroad",
         "requirement",
@@ -374,6 +381,22 @@ _PACKET_NUMERIC_ASSOCIATION_UNAVAILABLE_WARNING = (
 _PACKET_NUMERIC_ASSOCIATION_MISMATCH_WARNING = (
     "Packet field/range association conflicts with source numeric evidence; review is required"
 )
+_PIE_NUMERIC_ASSOCIATION_UNAVAILABLE_WARNING = (
+    "Pie slice/value association lacks candidate-authorized spatial OCR/vector evidence; "
+    "review is required"
+)
+_PIE_NUMERIC_ASSOCIATION_MISMATCH_WARNING = (
+    "Pie slice/value association conflicts with source numeric evidence; review is required"
+)
+_PIE_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING = (
+    "Pie title/accTitle lacks independent candidate-authorized spatial OCR/vector or user-edit "
+    "evidence; review is required"
+)
+_PIE_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING = (
+    "Pie explicit accessibility description lacks independent candidate-authorized spatial "
+    "OCR/vector or user-edit evidence; "
+    "review is required"
+)
 
 _EVALUATION_WARNING_TEXT = frozenset(
     {
@@ -383,6 +406,10 @@ _EVALUATION_WARNING_TEXT = frozenset(
         _CYNEFIN_TEMPLATE_REVIEW_WARNING,
         _PACKET_NUMERIC_ASSOCIATION_UNAVAILABLE_WARNING,
         _PACKET_NUMERIC_ASSOCIATION_MISMATCH_WARNING,
+        _PIE_NUMERIC_ASSOCIATION_UNAVAILABLE_WARNING,
+        _PIE_NUMERIC_ASSOCIATION_MISMATCH_WARNING,
+        _PIE_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING,
+        _PIE_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING,
         "numeric consistency is below the automatic publication threshold",
         "numeric diagram lacks OCR/vector numeric evidence and cannot auto-publish",
         "unlabeled scene-only candidates require OCR/VLM fusion before publishing",
@@ -942,6 +969,11 @@ class ReconstructionPipeline:
         known_evidence_ids = {item.id for item in all_evidence}
         collided_evidence_ids = set(duplicate_initial_evidence_ids)
         publication_evidence_ids = known_evidence_ids - collided_evidence_ids
+        approved_user_edit_evidence_ids = frozenset(
+            item.id
+            for item in all_evidence
+            if item.id not in duplicate_initial_evidence_ids and item.kind == "user_edit"
+        )
         publication_evidence_registry = {
             item.id: VisualEvidence.model_validate(
                 {
@@ -2372,6 +2404,7 @@ class ReconstructionPipeline:
                     if candidate.publication_evidence_authority_ids is not None
                     else all_evidence
                 ),
+                approved_user_edit_evidence_ids=approved_user_edit_evidence_ids,
                 references=references,
                 type_fitness=type_fitness,
                 image=context.image,
@@ -2389,7 +2422,11 @@ class ReconstructionPipeline:
             context.views = {
                 name: _canonical_rgb_image_snapshot(view) for name, view in repair_views.items()
             }
-            selected = self._repair(context, selected)
+            selected = self._repair(
+                context,
+                selected,
+                approved_user_edit_evidence_ids,
+            )
             if selected not in candidates:
                 candidates.append(selected)
         if selected is not None:
@@ -2504,6 +2541,7 @@ class ReconstructionPipeline:
         typed_ir: dict | None,
         source_scene: DiagramSceneIR | None,
         evidence: list[VisualEvidence],
+        approved_user_edit_evidence_ids: frozenset[str],
         references: _ReferenceTexts,
         type_fitness: float | None,
         image: Image.Image,
@@ -2577,6 +2615,9 @@ class ReconstructionPipeline:
         if recall is not None:
             scores["ocr_recall"] = recall
         packet_binding_state: Literal["exact", "mismatch", "unavailable"] | None = None
+        pie_binding_state: Literal["exact", "mismatch", "unavailable"] | None = None
+        pie_title_attribution_state: Literal["exact", "unavailable"] | None = None
+        pie_description_attribution_state: Literal["exact", "unavailable"] | None = None
         if gate_diagram_type == "packet":
             # Packet ranges need a field-local proof.  A document-wide number multiset can
             # stay identical when two labels exchange their ranges, so it is not publication
@@ -2813,6 +2854,447 @@ class ReconstructionPipeline:
                 if packet_binding_state == "mismatch"
                 else None
             )
+        elif gate_diagram_type == "pie":
+            # A document-wide number multiset cannot prove which value belongs to which
+            # slice. Require each typed slice to own non-overlapping source geometry and
+            # candidate-authorized OCR/vector observations that jointly bind its label and
+            # exact value. Direct Pie remains review-only because it has no typed slots.
+            pie_binding_state = "unavailable"
+            pie_plan = None
+            pie_slices = ()
+            if typed_ir is not None:
+                try:
+                    pie_plan = plan_pie_records(typed_ir)
+                    pie_slices = pie_plan.slices
+                except SerializationError:
+                    pie_slices = ()
+            if pie_slices:
+                image_width, image_height = image.size
+                slice_boxes: dict[str, tuple[float, float, float, float]] = {}
+                spatial_evidence_safe = True
+                for slice_plan in pie_slices:
+                    raw_bbox = slice_plan.source_record.get("bbox")
+                    if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+                        spatial_evidence_safe = False
+                        break
+                    try:
+                        bbox = tuple(float(value) for value in raw_bbox)
+                    except (TypeError, ValueError, OverflowError):
+                        spatial_evidence_safe = False
+                        break
+                    x1, y1, x2, y2 = bbox
+                    if (
+                        not all(math.isfinite(value) for value in bbox)
+                        or x2 <= x1
+                        or y2 <= y1
+                        or x1 < 0
+                        or y1 < 0
+                        or x2 > image_width
+                        or y2 > image_height
+                    ):
+                        spatial_evidence_safe = False
+                        break
+                    slice_boxes[slice_plan.scene_id] = bbox
+
+                if spatial_evidence_safe:
+                    overlap_comparisons = 0
+                    ordered_slices = sorted(
+                        slice_boxes.items(), key=lambda item: (item[1][0], item[1][2], item[0])
+                    )
+                    for index, (_slice_id, bbox) in enumerate(ordered_slices):
+                        for other_index in range(index + 1, len(ordered_slices)):
+                            _other_id, other_bbox = ordered_slices[other_index]
+                            if other_bbox[0] >= bbox[2]:
+                                break
+                            overlap_comparisons += 1
+                            if overlap_comparisons > _MAX_PIE_SLICE_OVERLAP_COMPARISONS or (
+                                other_bbox[1] < bbox[3] and other_bbox[3] > bbox[1]
+                            ):
+                                spatial_evidence_safe = False
+                                break
+                        if not spatial_evidence_safe:
+                            break
+
+                evidence_by_id: dict[str, VisualEvidence] = {}
+                authorized_texts_by_bbox: dict[tuple[float, float, float, float], set[str]] = {}
+                if spatial_evidence_safe:
+                    for item in evidence:
+                        if item.id in evidence_by_id:
+                            spatial_evidence_safe = False
+                            break
+                        evidence_by_id[item.id] = item
+                    authorized_text_count = sum(
+                        1
+                        for item in evidence
+                        if item.kind in {"ocr_token", "vector_text"}
+                        and item.text
+                        and item.bbox is not None
+                    )
+                    authorized_text_chars = sum(
+                        len(item.text)
+                        for item in evidence
+                        if item.kind in {"ocr_token", "vector_text"}
+                        and item.text
+                        and item.bbox is not None
+                    ) + sum(len(slice_plan.label) for slice_plan in pie_slices)
+                    if (
+                        authorized_text_count + len(pie_slices) > _MAX_OCR_REFERENCE_TEXTS
+                        or authorized_text_chars > _MAX_OCR_REFERENCE_CHARS
+                    ):
+                        spatial_evidence_safe = False
+                    else:
+                        for item in evidence:
+                            if (
+                                item.kind not in {"ocr_token", "vector_text"}
+                                or not item.text
+                                or item.bbox is None
+                            ):
+                                continue
+                            try:
+                                evidence_bbox = tuple(float(value) for value in item.bbox)
+                            except (TypeError, ValueError, OverflowError):
+                                spatial_evidence_safe = False
+                                break
+                            normalized_text = (
+                                unicodedata.normalize("NFKC", item.text).casefold().strip()
+                            )
+                            if not normalized_text:
+                                continue
+                            authorized_texts_by_bbox.setdefault(evidence_bbox, set()).add(
+                                normalized_text
+                            )
+
+                slice_reference_ids: dict[str, tuple[str, ...]] = {}
+                if spatial_evidence_safe:
+                    reference_count = 0
+                    for slice_plan in pie_slices:
+                        raw_evidence_ids = slice_plan.source_record.get("evidence_ids") or []
+                        if not isinstance(raw_evidence_ids, list) or any(
+                            not isinstance(evidence_id, str) for evidence_id in raw_evidence_ids
+                        ):
+                            spatial_evidence_safe = False
+                            break
+                        reference_count += len(raw_evidence_ids)
+                        if reference_count > _MAX_PIE_ASSOCIATION_REFERENCES:
+                            spatial_evidence_safe = False
+                            break
+                        slice_reference_ids[slice_plan.scene_id] = tuple(
+                            dict.fromkeys(raw_evidence_ids)
+                        )
+
+                observation_texts: dict[
+                    tuple[str, tuple[float, float, float, float]], str
+                ] = {}
+                slice_observations: dict[
+                    str, set[tuple[str, tuple[float, float, float, float]]]
+                ] = {slice_plan.scene_id: set() for slice_plan in pie_slices}
+                observation_owners: dict[
+                    tuple[str, tuple[float, float, float, float]], str
+                ] = {}
+                evidence_id_owners: dict[str, str] = {}
+                if spatial_evidence_safe:
+                    for slice_plan in pie_slices:
+                        slice_bbox = slice_boxes[slice_plan.scene_id]
+                        for evidence_id in slice_reference_ids[slice_plan.scene_id]:
+                            item = evidence_by_id.get(evidence_id)
+                            if item is None:
+                                spatial_evidence_safe = False
+                                break
+                            if item.kind not in {"ocr_token", "vector_text"}:
+                                continue
+                            if not item.text or item.bbox is None:
+                                spatial_evidence_safe = False
+                                break
+                            evidence_bbox = tuple(float(value) for value in item.bbox)
+                            ex1, ey1, ex2, ey2 = evidence_bbox
+                            if (
+                                not all(math.isfinite(value) for value in evidence_bbox)
+                                or ex2 <= ex1
+                                or ey2 <= ey1
+                                or ex1 < 0
+                                or ey1 < 0
+                                or ex2 > image_width
+                                or ey2 > image_height
+                                or ex1 < slice_bbox[0]
+                                or ey1 < slice_bbox[1]
+                                or ex2 > slice_bbox[2]
+                                or ey2 > slice_bbox[3]
+                            ):
+                                spatial_evidence_safe = False
+                                break
+                            normalized_text = (
+                                unicodedata.normalize("NFKC", item.text).casefold().strip()
+                            )
+                            if (
+                                not normalized_text
+                                or len(authorized_texts_by_bbox.get(evidence_bbox, set())) != 1
+                            ):
+                                spatial_evidence_safe = False
+                                break
+                            previous_id_owner = evidence_id_owners.get(evidence_id)
+                            if (
+                                previous_id_owner is not None
+                                and previous_id_owner != slice_plan.scene_id
+                            ):
+                                spatial_evidence_safe = False
+                                break
+                            observation_key = (normalized_text, evidence_bbox)
+                            previous_owner = observation_owners.get(observation_key)
+                            if previous_owner is not None and previous_owner != slice_plan.scene_id:
+                                spatial_evidence_safe = False
+                                break
+                            evidence_id_owners[evidence_id] = slice_plan.scene_id
+                            observation_owners[observation_key] = slice_plan.scene_id
+                            observation_texts.setdefault(observation_key, item.text)
+                            slice_observations[slice_plan.scene_id].add(observation_key)
+                        if not spatial_evidence_safe:
+                            break
+
+                if spatial_evidence_safe and all(slice_observations.values()):
+                    association_text_count = len(pie_slices) + len(observation_texts)
+                    association_char_count = sum(
+                        len(slice_plan.label) for slice_plan in pie_slices
+                    ) + sum(len(text) for text in observation_texts.values())
+                    if (
+                        association_text_count <= _MAX_OCR_REFERENCE_TEXTS
+                        and association_char_count <= _MAX_OCR_REFERENCE_CHARS
+                    ):
+                        token_count = 0
+                        label_tokens: dict[str, Counter[str]] = {}
+                        observation_tokens: dict[
+                            tuple[str, tuple[float, float, float, float]], Counter[str]
+                        ] = {}
+                        for slice_plan in pie_slices:
+                            tokens = ocr_token_multiset((slice_plan.label,))
+                            token_count += tokens.total()
+                            label_tokens[slice_plan.scene_id] = tokens
+                        for observation_key, text_value in observation_texts.items():
+                            tokens = ocr_token_multiset((text_value,))
+                            token_count += tokens.total()
+                            observation_tokens[observation_key] = tokens
+                        if token_count <= _MAX_OCR_REFERENCE_TOKENS and all(
+                            label_tokens.values()
+                        ):
+                            association_available = True
+                            association_matches = True
+                            for slice_plan in pie_slices:
+                                ordered_observation_keys = sorted(
+                                    slice_observations[slice_plan.scene_id],
+                                    key=lambda item: (
+                                        item[1][1],
+                                        item[1][0],
+                                        item[1][3],
+                                        item[1][2],
+                                        item[0],
+                                    ),
+                                )
+                                canonical_observation = _normalized_label(
+                                    " ".join(
+                                        observation_texts[observation_key]
+                                        for observation_key in ordered_observation_keys
+                                    )
+                                )
+                                canonical_label = _normalized_label(slice_plan.label)
+                                observed_tokens: Counter[str] = Counter()
+                                observed_numbers: Counter[str] = Counter()
+                                for observation_key in ordered_observation_keys:
+                                    observed_tokens.update(observation_tokens[observation_key])
+                                    observed_numbers.update(
+                                        numeric_token_multiset(
+                                            (observation_texts[observation_key],)
+                                        )
+                                    )
+                                allowed_observations: set[str] = set()
+                                for observed_number in observed_numbers:
+                                    canonical_number = _normalized_label(observed_number)
+                                    allowed_observations.update(
+                                        {
+                                            f"{canonical_label} {canonical_number}",
+                                            f"{canonical_label}: {canonical_number}",
+                                            f"{canonical_label}:{canonical_number}",
+                                            f"{canonical_label} = {canonical_number}",
+                                            f"{canonical_label}={canonical_number}",
+                                            f"{canonical_label} [{canonical_number}]",
+                                            f"{canonical_label}[{canonical_number}]",
+                                            f"{canonical_label} ({canonical_number})",
+                                            f"{canonical_label}({canonical_number})",
+                                            f"{canonical_number} {canonical_label}",
+                                        }
+                                    )
+                                label_is_bound = canonical_observation in allowed_observations
+                                if (
+                                    label_tokens[slice_plan.scene_id] - observed_tokens
+                                    or not label_is_bound
+                                    or not observed_numbers
+                                ):
+                                    association_available = False
+                                    break
+                                expected_numbers = numeric_token_multiset(
+                                    (slice_plan.label, slice_plan.value_text)
+                                )
+                                if observed_numbers != expected_numbers:
+                                    association_matches = False
+                            if association_available:
+                                pie_binding_state = (
+                                    "exact" if association_matches else "mismatch"
+                                )
+            global_pie_numeric = numeric_consistency(references.numeric_tokens, code)
+            if pie_binding_state == "exact" and global_pie_numeric != 1.0:
+                pie_binding_state = (
+                    "mismatch" if global_pie_numeric is not None else "unavailable"
+                )
+            if pie_plan is not None and typed_ir is not None:
+                accessibility_base_ir = {
+                    key: value
+                    for key, value in typed_ir.items()
+                    if key not in {"acc_title", "acc_description"}
+                }
+                derived_accessibility = resolve_accessibility(
+                    accessibility_base_ir,
+                    "pie",
+                    experimental=self.config.mode != Mode.STRICT,
+                )
+                required_title_texts: set[str] = set()
+                if pie_plan.semantic_title is not None:
+                    required_title_texts.add(_normalized_label(pie_plan.semantic_title))
+                accessibility_title = typed_ir.get("acc_title")
+                if (
+                    isinstance(accessibility_title, str)
+                    and _normalized_label(accessibility_title)
+                    != _normalized_label(derived_accessibility.title)
+                ):
+                    required_title_texts.add(_normalized_label(accessibility_title))
+                required_description_texts: set[str] = set()
+                explicit_description = typed_ir.get("description")
+                if isinstance(explicit_description, str) and explicit_description:
+                    required_description_texts.add(_normalized_label(explicit_description))
+                accessibility_description = typed_ir.get("acc_description")
+                accessibility_description_text = (
+                    accessibility_description.removesuffix(
+                        f" {EXPERIMENTAL_NOTICE}"
+                    ).removesuffix(EXPERIMENTAL_NOTICE)
+                    if isinstance(accessibility_description, str)
+                    else None
+                )
+                derived_description_text = derived_accessibility.description.removesuffix(
+                    f" {EXPERIMENTAL_NOTICE}"
+                ).removesuffix(EXPERIMENTAL_NOTICE)
+                if (
+                    accessibility_description_text
+                    and _normalized_label(accessibility_description_text)
+                    != _normalized_label(derived_description_text)
+                ):
+                    required_description_texts.add(
+                        _normalized_label(accessibility_description_text)
+                    )
+                if required_title_texts:
+                    pie_title_attribution_state = "unavailable"
+                if required_description_texts:
+                    pie_description_attribution_state = "unavailable"
+                slice_evidence_ids = {
+                    evidence_id
+                    for slice_plan in pie_plan.slices
+                    for evidence_id in slice_plan.evidence_ids
+                }
+                slice_owned_observations: set[
+                    tuple[str, tuple[float, float, float, float]]
+                ] = set()
+                for item in evidence:
+                    if (
+                        item.id not in slice_evidence_ids
+                        or item.kind not in {"ocr_token", "vector_text"}
+                        or not item.text
+                        or item.bbox is None
+                    ):
+                        continue
+                    normalized_text = _normalized_label(item.text)
+                    if normalized_text:
+                        slice_owned_observations.add(
+                            (normalized_text, tuple(float(value) for value in item.bbox))
+                        )
+                title_exclusion_boxes: list[tuple[float, float, float, float]] = []
+                for slice_plan in pie_plan.slices:
+                    raw_bbox = slice_plan.source_record.get("bbox")
+                    if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+                        continue
+                    slice_bbox = tuple(float(value) for value in raw_bbox)
+                    if all(math.isfinite(value) for value in slice_bbox):
+                        title_exclusion_boxes.append(slice_bbox)
+                accessibility_texts_by_bbox: dict[
+                    tuple[float, float, float, float], set[str]
+                ] = {}
+                for item in evidence:
+                    if (
+                        item.kind not in {"ocr_token", "vector_text"}
+                        or not item.text
+                        or item.bbox is None
+                    ):
+                        continue
+                    evidence_bbox = tuple(float(value) for value in item.bbox)
+                    normalized_text = _normalized_label(item.text)
+                    if normalized_text:
+                        accessibility_texts_by_bbox.setdefault(evidence_bbox, set()).add(
+                            normalized_text
+                        )
+                proven_title_texts: set[str] = set()
+                proven_description_texts: set[str] = set()
+                image_width, image_height = image.size
+                for item in evidence:
+                    if (
+                        item.id in slice_evidence_ids
+                        or not item.text
+                    ):
+                        continue
+                    normalized_text = _normalized_label(item.text)
+                    if item.kind == "user_edit":
+                        if item.id not in approved_user_edit_evidence_ids:
+                            continue
+                        if normalized_text in required_title_texts:
+                            proven_title_texts.add(normalized_text)
+                        if normalized_text in required_description_texts:
+                            proven_description_texts.add(normalized_text)
+                        continue
+                    if item.kind not in {"ocr_token", "vector_text"} or item.bbox is None:
+                        continue
+                    evidence_bbox = tuple(float(value) for value in item.bbox)
+                    x1, y1, x2, y2 = evidence_bbox
+                    if (
+                        not all(math.isfinite(value) for value in evidence_bbox)
+                        or x2 <= x1
+                        or y2 <= y1
+                        or x1 < 0
+                        or y1 < 0
+                        or x2 > image_width
+                        or y2 > image_height
+                        or len(accessibility_texts_by_bbox.get(evidence_bbox, set())) != 1
+                        or (normalized_text, evidence_bbox) in slice_owned_observations
+                        or any(
+                            evidence_bbox[0] < slice_bbox[2]
+                            and evidence_bbox[2] > slice_bbox[0]
+                            and evidence_bbox[1] < slice_bbox[3]
+                            and evidence_bbox[3] > slice_bbox[1]
+                            for slice_bbox in title_exclusion_boxes
+                        )
+                    ):
+                        continue
+                    if normalized_text in required_title_texts:
+                        proven_title_texts.add(normalized_text)
+                    if normalized_text in required_description_texts:
+                        proven_description_texts.add(normalized_text)
+                if required_title_texts and proven_title_texts == required_title_texts:
+                    pie_title_attribution_state = "exact"
+                if (
+                    required_description_texts
+                    and proven_description_texts == required_description_texts
+                ):
+                    pie_description_attribution_state = "exact"
+            numeric = (
+                1.0
+                if pie_binding_state == "exact"
+                else 0.0
+                if pie_binding_state == "mismatch"
+                else None
+            )
         else:
             numeric = numeric_consistency(references.numeric_tokens, code)
         if numeric is not None and gate_diagram_type in _NUMERIC_TYPES:
@@ -2880,6 +3362,12 @@ class ReconstructionPipeline:
         elif gate_diagram_type == "packet" and packet_binding_state == "mismatch":
             aggregate = None
             warnings.append(_PACKET_NUMERIC_ASSOCIATION_MISMATCH_WARNING)
+        elif gate_diagram_type == "pie" and pie_binding_state == "unavailable":
+            aggregate = None
+            warnings.append(_PIE_NUMERIC_ASSOCIATION_UNAVAILABLE_WARNING)
+        elif gate_diagram_type == "pie" and pie_binding_state == "mismatch":
+            aggregate = None
+            warnings.append(_PIE_NUMERIC_ASSOCIATION_MISMATCH_WARNING)
         elif gate_diagram_type in _NUMERIC_TYPES and numeric is None:
             aggregate = None
             warnings.append(
@@ -2892,6 +3380,12 @@ class ReconstructionPipeline:
         ):
             aggregate = None
             warnings.append("numeric consistency is below the automatic publication threshold")
+        if gate_diagram_type == "pie" and pie_title_attribution_state == "unavailable":
+            aggregate = None
+            warnings.append(_PIE_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING)
+        if gate_diagram_type == "pie" and pie_description_attribution_state == "unavailable":
+            aggregate = None
+            warnings.append(_PIE_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING)
         if (
             source_scene is not None
             and not any(element.text for element in source_scene.elements)
@@ -2903,7 +3397,12 @@ class ReconstructionPipeline:
             )
         return _CandidateEvaluation(scores, aggregate, warnings, generated_scene)
 
-    def _repair(self, context: SourceContext, selected: MermaidCandidate) -> MermaidCandidate:
+    def _repair(
+        self,
+        context: SourceContext,
+        selected: MermaidCandidate,
+        approved_user_edit_evidence_ids: frozenset[str],
+    ) -> MermaidCandidate:
         current = selected
         references = _reference_text_sets(context.ocr_texts, context.evidence)
         for iteration in range(1, int(self.config.max_repair_iterations or 0) + 1):
@@ -3164,6 +3663,7 @@ class ReconstructionPipeline:
                     if current.publication_evidence_authority_ids is not None
                     else context.evidence
                 ),
+                approved_user_edit_evidence_ids=approved_user_edit_evidence_ids,
                 references=references,
                 type_fitness=current.scores.get("type_fitness"),
                 image=context.image,

@@ -486,7 +486,6 @@ def test_unsupported_or_empty_typed_ir_is_unavailable():
 @pytest.mark.parametrize(
     ("diagram_type", "ir"),
     [
-        ("pie", {"slices": [{"label": "A", "value": 1}]}),
         (
             "xychart",
             {
@@ -505,7 +504,7 @@ def test_unsupported_or_empty_typed_ir_is_unavailable():
         ),
     ],
 )
-def test_phase_three_core_charts_have_no_structural_scene_adapter(
+def test_xy_and_quadrant_have_no_structural_scene_adapter(
     diagram_type: str, ir: dict[str, object]
 ) -> None:
     assert typed_ir_to_scene(diagram_type, ir) is None

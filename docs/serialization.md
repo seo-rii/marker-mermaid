@@ -27,7 +27,8 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 | C4 | `c4 → architecture → flowchart` | native C4 SVG가 strict gate의 data/xlink 정책과 불일치하며 Architecture runtime 거부 시 nested fallback |
 | Deployment, Component | `deployment/component → architecture → flowchart` | primary/secondary record를 service로 평탄화; Architecture runtime 거부 시 nested fallback, 특수 notation/relation label은 typed IR에 유지 |
 | Use-case | `flowchart` | stadium actor/round use-case proxy와 typed relation label; actor glyph, system boundary, group/style/bidirectional metadata는 typed IR에 유지 |
-| Pie, XY, Quadrant | 동일 | explicit finite values/axis/coordinates 필수 |
+| Pie | `pie` 또는 `flowchart` | 12-slice·binary64·1% visibility·`showData` exactness native gate, 그 외 및 native runtime 거부는 same-slot exact-value fallback |
+| XY, Quadrant | 동일 | explicit finite values/axis/coordinates 필수; native-only |
 | Sankey | `sankey` 또는 `flowchart` | native-safe positive DAG, 그 외 및 native runtime 거부 시 same-slot exact-weight fallback |
 | Radar | `radar` 또는 `flowchart` | 12-series 이하의 zero-or-normal binary64·finite positive span/radius native domain, 그 외 및 native runtime 거부는 same-slot exact-value tabular fallback(최대 256 point) |
 | Treemap | `treemap` 또는 `flowchart` | leaf value 필수; internal value·unsafe binary64/표시 합계·native runtime 거부는 same-slot exact-value fallback |
@@ -385,13 +386,12 @@ Generated Scene은 rule/expression source record의 `evidence_ids`가 null/생�
 검사하고 다른 형이면 후보 전체를 fail closed합니다. 따라서 serializer, Scene, OCR, provenance가 동일한
 bounded plan과 compatibility label을 소비합니다.
 
-### Pie·XY·Quadrant의 native-only 경계
+### Pie terminal과 XY·Quadrant native-only 경계
 
-Pie·XY·Quadrant는 strict nested extraction contract를 통과한 뒤 각각 `pie`, `xychart-beta`,
-`quadrantChart` native grammar만 방출합니다. 실패 시 emitted type을 table, prose 또는 Flowchart로 바꾸는
-fallback은 없습니다. Contract는 record/container, strict finite JSON `int`/`float`, boolean, bbox/evidence와
-XY `line|bar` token의 형을 검사합니다. Direct serializer가 받을 수 있는 `Decimal`은 provider structured
-input 계약이 아닙니다.
+Pie·XY·Quadrant는 strict nested extraction contract를 통과합니다. Contract는 record/container, strict finite
+JSON `int`/`float`, boolean, bbox/evidence와 XY `line|bar` token의 형을 검사합니다. Direct serializer가 받을
+수 있는 `Decimal`은 provider structured input 계약이 아닙니다. XY와 Quadrant는 각각 `xychart-beta`와
+`quadrantChart` native grammar만 방출하며 table, prose 또는 Flowchart fallback이 없습니다.
 
 Pie의 non-empty·고유 label·non-negative value·positive total, XY의 categorical/numeric x-axis 배타성,
 axis bounds와 모든 y의 범위 포함 여부, exactly-one values/points, category 길이 또는 uniform numeric grid,
@@ -400,12 +400,41 @@ Quadrant의 non-empty·고유 point label과 `[0,1]` 좌표는 serializer 소유
 정확히 네 항목인 list 또는 canonical key를 가진 object로 prompt에 노출합니다. Object는 부분 label을
 허용하지만 `1`과 `quadrant-1`처럼 같은 slot을 가리키는 alias가 함께 오면 모호한 덮어쓰기 대신 거부합니다.
 
-Chart bbox/evidence는 typed IR/review sidecar에 보존되지만 Pie·XY·Quadrant용 generated Scene adapter는 아직
-없습니다. 따라서 자동 Scene attribution을 주장하지 않습니다. 공통 accessibility/extra metadata와 원본
-dict 보존은 유지되지만 그 숫자나 typed evidence reference가 별도 source OCR/vector numeric gate를 대신하지
-않습니다. Source numeric evidence가 없거나 일치도가 낮으면 native parse/render 성공과 무관하게 review에
-남습니다. Numeric projection은 Quadrant directive의 구조 번호 `quadrant-1`~`quadrant-4`를 제외하되 label과
-point 좌표의 실제 숫자는 유지합니다.
+Pie는 serializer·Scene·semantic OCR이 공유하는 bounded `PiePlan`을 사용합니다. Native `pie`는 최대 12개의
+slice, zero-or-normal binary64 round-trip-safe value, JavaScript 왼쪽부터 합산한 finite positive total,
+finite centroid, positive slice별 1% 이상 visibility를 요구합니다. Zero slice는 legend-only로 허용합니다.
+`show_data=true`일 때는 Mermaid가 legend에 쓰는 JavaScript `String(value)`가 exact fixed-decimal source token과
+같아야 합니다. 하나라도 맞지 않으면 최대 256개의 `label: exact-value` rectangle만 가진 disconnected
+`flowchart TB`를 선택합니다. Native parse/render/SVG/type validation이 거부한 경우에도 같은 candidate slot에서
+이 Flowchart를 한 번 재직렬화해 전체 gate를 다시 통과시킵니다. 두 terminal 모두 Mermaid JavaScript
+`text.length`와 동일한 50,000 UTF-16 code-unit·5,000줄 source preflight를 적용합니다.
+
+Native Scene은 `pie_slice_N` sector element를 renderer의 normalized percentage-label centroid에 배치하고 zero
+slice에는 zero bbox를 사용합니다. Relation/group은 없고 direction은 `radial`입니다. OCR은 visible title,
+legend와 positive slice percentage만 세며, `showData` value는 legend text에 포함됩니다. Flowchart Scene은
+`TB` zero-geometry rectangle cell과 빈 relation/group을 사용하고 OCR은 exact cell label만 셉니다. Native-only
+title과 접근성 metadata는 fallback canvas OCR에 들어가지 않습니다. Record-local evidence는 두 terminal의
+slice element에 보존되어 Extended generated-node provenance gate에 참여합니다.
+
+Slice label의 quote/backslash는 native canvas에서 보존하고 directive/URL/callback/CSS/icon/entity/statement
+scanner-active token은 source에만 invisible separator를 둡니다. Native title의 quote/backslash/angle/hash/semicolon과 Flowchart cell의
+quote/backslash/angle/hash는 terminal-visible compatibility glyph로 바꾸며 warning에 공개합니다. Semantic
+원문과 source bbox는 typed IR/review metadata에 남습니다. Pie 자동 numeric gate는 각 non-overlapping slice
+bbox 안의 candidate-authorized, slice-cited OCR/vector text가 punctuation-preserving 전체 label과 허용 separator,
+exact value record를 증명하고, 전체 source/generated numeric occurrence도 exact하도록 요구합니다. 값 swap,
+label suffix omission, uncited slice/extra number는 mismatch 또는 unavailable이고 누락 authority·모호한 공유
+관측·invalid geometry·budget 소진도 review입니다. Explicit `title`/`acc_title`과
+`description`/`acc_description`은 slice-owned observation과 겹치지 않는 독립 spatial OCR/vector exact text 또는
+reconstruction 초기 입력의 exact `user_edit` evidence가 필요합니다. Engine-emitted `user_edit`는 스스로 이
+신뢰를 만들 수 없습니다. 구조에서 파생한 기본 접근성 문구와 experimental notice만 추가 gate 없이
+허용합니다.
+
+XY·Quadrant record의 bbox/evidence는 typed IR/review sidecar에 보존되지만 아직 generated Scene adapter가
+없으므로 자동 Scene attribution을 주장하지 않습니다. 공통 accessibility/extra metadata와 원본 dict 보존은
+유지되지만 그 숫자나 typed evidence reference가 별도 source OCR/vector numeric gate를 대신하지 않습니다.
+Source numeric evidence가 없거나 일치도가 낮으면 native parse/render 성공과 무관하게 review에 남습니다.
+Numeric projection은 Quadrant directive의 구조 번호 `quadrant-1`~`quadrant-4`를 제외하되 label과 point 좌표의
+실제 숫자는 유지합니다.
 
 ### Sankey·Radar·Treemap·Venn의 fallback 경계
 

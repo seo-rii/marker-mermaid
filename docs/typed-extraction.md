@@ -336,7 +336,7 @@ source ID 분리, normalization 및 `usecase_` prefix 뒤의 2차 collision, rel
 `plan_usecase_fallback`과 serializer가 최종 판정합니다. 기본 방향은 `LR`이고 허용되지 않은 값은 portable
 Flowchart와 generated Scene에서 `TB`로 정규화됩니다.
 
-### Pie·XY·Quadrant native chart 계약
+### Pie terminal과 XY·Quadrant native chart 계약
 
 세 core chart는 다음 root와 record를 provider prompt에 정확히 공개하고 응답 후 같은 strict nested
 model로 검사합니다.
@@ -356,15 +356,40 @@ model에서 선택입니다.
 Nested contract는 형만 확정합니다. Pie의 non-empty·고유 label·non-negative value·positive total, XY의
 축 mode와 bounds·모든 y의 범위 포함·series 선택 및 길이·uniform numeric grid, Quadrant의 non-empty 고유
 label과 `[0,1]` 좌표 및 같은 quadrant slot의 alias 충돌 같은 표현 가능성은 serializer가 계속 fail closed로
-판정합니다. 세 serializer는 각각 native `pie`, `xychart-beta`, `quadrantChart`만 방출하며 의미 오류나
-runtime 실패를 table/prose/Flowchart로 낮추지 않습니다.
+판정합니다. XY와 Quadrant는 native `xychart-beta`·`quadrantChart`만 방출하며 의미 오류나 runtime 실패를
+table/prose/Flowchart로 낮추지 않습니다.
 
-Chart record의 bbox와 `evidence_ids`는 strict 형으로 검증되어 원본 typed IR/review sidecar에 보존되지만,
-현재 Pie·XY·Quadrant용 generated Scene adapter는 없습니다. 따라서 이 metadata를 Scene node/relation
-attribution이나 구조 점수로 승격했다고 해석하면 안 됩니다. 공통 accessibility root와 미등록 metadata는
-`extra="allow"` 규칙으로 계속 받을 수 있고 검증 model도 원본 dict를 대체하지 않습니다. 그러나
-accessibility/extra metadata 안의 숫자나 typed value의 evidence ID만으로 source numeric gate가 충족되지는
-않습니다. 자동 게시는 별도의 source OCR/vector 숫자 관측과 generated 숫자 일치를 요구합니다.
+Pie는 contract를 통과한 raw record를 `PiePlan`에서 다시 bounded snapshot으로 만들고 serializer, generated
+Scene, semantic OCR이 함께 소비합니다. 최대 12개 slice, zero-or-normal binary64 round-trip, JavaScript
+left-to-right finite positive total, positive slice별 1% visibility와 finite centroid, `show_data=true`일 때 exact
+JavaScript `String(value)` 표시를 모두 만족해야 native `pie`입니다. Zero slice는 legend-only로 유지됩니다.
+Native 조건 밖의 valid IR 또는 native runtime rejection은 최대 256개의 edge 없는 exact-value
+`flowchart TB`로 같은 candidate slot에서 재검증됩니다. 따라서 extraction completeness 오류는 계속 실패하지만
+renderer 표현 손실 때문에 exact source 값을 버리지는 않습니다. MMX-001의 missing/unreadable value용
+structured table + description fallback은 아직 후속 작업입니다.
+
+Pie slice의 bbox와 `evidence_ids`는 generated `pie_slice_N` element의 record-local provenance로 연결됩니다.
+Native terminal은 positive slice의 normalized centroid/sector와 zero slice의 zero bbox를 사용하고, Flowchart는
+zero-geometry exact-value rectangle을 사용합니다. 두 terminal 모두 relation/group을 만들지 않습니다. Slice
+label/value 자동 검증은 각 non-overlapping slice bbox 내부의 candidate-authorized, slice-cited OCR/vector
+observation이 punctuation-preserving 전체 label·허용 separator·exact value record를 이루고 전체
+source/generated numeric occurrence도 exact하도록 요구합니다. Label suffix/value/slice가 누락되거나 evidence가
+shared/ambiguous/invalid/over-budget이면 candidate를 review에 둡니다. Typed value 또는 evidence ID의 존재만으로
+source gate를 충족하지 않습니다. Explicit title/accessibility text도 독립 spatial exact evidence 또는
+reconstruction 초기 입력의 exact `user_edit` provenance가 필요하며, engine-emitted `user_edit`는 스스로 승인
+근거가 될 수 없습니다. 결정적으로 파생한 기본 accessibility text만 예외입니다.
+
+Pie source는 native slice quote/backslash를 canvas에서 보존하면서 scanner/entity-active token에 source-only
+separator를 사용합니다. Native title과 Flowchart cell에 필요한 visible compatibility glyph는 warning으로
+공개하고 semantic 원문은 typed IR/review metadata에 보존합니다. 두 terminal은 Mermaid JavaScript
+`text.length`와 같은 50,000 UTF-16 code-unit 및 5,000 line preflight를 공유합니다.
+
+XY·Quadrant record의 bbox와 `evidence_ids`는 strict 형으로 검증되어 원본 typed IR/review sidecar에 보존되지만,
+현재 generated Scene adapter는 없습니다. 따라서 이 metadata를 Scene node/relation attribution이나 구조 점수로
+승격했다고 해석하면 안 됩니다. 공통 accessibility root와 미등록 metadata는 `extra="allow"` 규칙으로 계속
+받을 수 있고 검증 model도 원본 dict를 대체하지 않습니다. 그러나 accessibility/extra metadata 안의 숫자나
+typed value의 evidence ID만으로 source numeric gate가 충족되지는 않습니다. 자동 게시는 별도의 source
+OCR/vector 숫자 관측과 generated 숫자 일치를 요구합니다.
 
 ### Sankey·Radar·Treemap·Venn chart 계약
 
