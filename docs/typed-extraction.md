@@ -336,7 +336,7 @@ source ID 분리, normalization 및 `usecase_` prefix 뒤의 2차 collision, rel
 `plan_usecase_fallback`과 serializer가 최종 판정합니다. 기본 방향은 `LR`이고 허용되지 않은 값은 portable
 Flowchart와 generated Scene에서 `TB`로 정규화됩니다.
 
-### Pie·XY terminal과 Quadrant native chart 계약
+### Pie·XY·Quadrant terminal 계약
 
 세 core chart는 다음 root와 record를 provider prompt에 정확히 공개하고 응답 후 같은 strict nested
 model로 검사합니다.
@@ -356,8 +356,8 @@ model에서 선택입니다.
 Nested contract는 형만 확정합니다. Pie의 non-empty·고유 label·non-negative value·positive total, XY의
 축 mode와 bounds·모든 y의 범위 포함·series 선택 및 길이, Quadrant의 non-empty 고유 label과
 `[0,1]` 좌표 및 같은 quadrant slot의 alias 충돌 같은 completeness/표현 가능성은 serializer가 계속
-fail closed로 판정합니다. Quadrant는 native `quadrantChart`만 방출합니다. XY의 valid하지만
-native-lossy한 grid·binary64·visibility 조건은 completeness 실패와 구분하여 exact-value Flowchart로 낮춥니다.
+fail closed로 판정합니다. XY와 Quadrant의 valid하지만 native-lossy한 binary64·renderer geometry·visibility
+조건은 completeness 실패와 구분하여 exact-value Flowchart로 낮춥니다.
 
 Pie는 contract를 통과한 raw record를 `PiePlan`에서 다시 bounded snapshot으로 만들고 serializer, generated
 Scene, semantic OCR이 함께 소비합니다. 최대 12개 slice, zero-or-normal binary64 round-trip, JavaScript
@@ -403,11 +403,29 @@ OCR/vector observation이 전체 label/category/value/x-y 결합을 증명하고
 Explicit title/accessibility text는 data-owned bbox와 겹치지 않는 independent exact OCR/vector 근거 또는
 reconstruction 초기 exact `user_edit`를 요구하며 engine-emitted edit는 스스로 승인 근거가 되지 않습니다.
 
-Quadrant record의 bbox와 `evidence_ids`는 strict 형으로 검증되어 원본 typed IR/review sidecar에
-보존되지만 현재 generated Scene adapter는 없습니다. 공통 accessibility root와 미등록 metadata는
-`extra="allow"` 규칙으로 계속 받을 수 있고 검증 model도 원본 dict를 대체하지 않습니다. 그러나
-accessibility/extra metadata 안의 숫자나 typed value의 evidence ID만으로 source numeric gate가 충족되지
-않으며 자동 게시는 별도 source OCR/vector 숫자 관측과 generated 숫자 일치를 요구합니다.
+Quadrant contract를 통과한 raw record는 `QuadrantPlan`에서 두 axis, supplied slot과 point source identity,
+exact fixed-decimal coordinate, terminal별 text와 normalized geometry로 snapshot됩니다. Point는 최대 256개이며
+axis/point object reuse를 거부합니다. Native는 zero-or-normal binary64 round-trip뿐 아니라 pinned Mermaid
+11.16의 500×500 canvas에서 point·label·slot·axis·title이 finite하고 분리되어 보이는지를 100,000회 이하의
+비교로 확인합니다. Duplicate/near point, float collapse, subnormal과 clipping/occlusion 위험은 exact
+`flowchart TB`로 낮춥니다. Fallback은 optional title, 두 axis, supplied slot과 모든 `label · x X, y Y`
+cell만 만들고 edge나 위치를 추정하지 않습니다. Native runtime rejection도 같은 candidate slot에서 이
+Flowchart를 전체 재검증하며 두 terminal은 50,000 UTF-16 code-unit·5,000 line limit을 공유합니다.
+
+Native generated Scene은 visible axis endpoint 네 개, `(x, 1-y)` normalized point circle과 네 quadrant
+region group을 표현하되 axis line·group membership·connector는 만들지 않습니다. Fallback Scene은 emitted
+cell을 zero geometry로 그대로 반영합니다. Axis와 point의 bbox/`evidence_ids`는 record-local provenance와
+label/coordinate 결합 gate에 사용하지만, schema에 독립 evidence가 없는 slot label은 point/axis evidence를
+상속하지 않습니다. X axis는 horizontal·아래쪽, y axis는 vertical·왼쪽인 source bbox의 상대 geometry도
+검증해 전체 record 교환을 막습니다. 자동 게시하려면 supplied slot마다 해당 source quadrant의 독립 exact OCR/vector 또는
+유효한 source-quadrant bbox를 가진 초기 exact `user_edit` 근거가 있어야 하고, explicit
+title/accessibility text도 data bbox와 분리된 근거가 필요합니다. Direct Quadrant, record/observation reuse,
+swap, invalid geometry와 공유 100,000회 association budget 초과는
+review-only입니다. 공통 accessibility root와 미등록 metadata는 `extra="allow"`로 원본 dict에 보존되지만 그
+숫자나 evidence ID만으로 source numeric gate를 충족하지 않습니다. Slot 위치는 detected plot이 아니라 전체
+crop midpoint로 보수적으로 판정하므로 off-center plot은 review가 필요할 수 있습니다. Explicit metadata
+관측은 target-role field가 없는 현재 evidence schema에서 content existence만 증명하므로 best-effort에는
+limitation warning을 남기고 strict validated에는 자동 게시 권한을 주지 않습니다.
 
 ### Sankey·Radar·Treemap·Venn chart 계약
 

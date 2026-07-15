@@ -2,7 +2,8 @@
 
 `marker-mermaid`는 Marker가 찾은 Figure, Picture, ComplexRegion을 근거 추적 가능한
 Mermaid 후보로 복원하는 `marker-pdf 1.10.2` 확장입니다. 원본 이미지를 항상 보존하고,
-보안 검사와 실제 Mermaid parse/render를 통과한 코드만 Markdown에 넣습니다.
+보안 검사와 실제 Mermaid parse/render를 통과한 코드만 Markdown에 넣습니다. 봉인된 serializer stability가
+`experimental`이면 품질 등급이 A여도 자동 Markdown에 experimental reconstruction 경고를 함께 표시합니다.
 
 이 저장소는 MMX-001 v0.3 Phase 1~5 유형의 serializer와 안전한 실행 경로를 제공하는
 experimental engineering baseline입니다. Core/계획 serializer에 더해 State, Class, ER, Requirement, Block을 native 문법으로

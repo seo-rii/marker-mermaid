@@ -1564,6 +1564,7 @@ class PublicationAuthorizationReceipt(BaseModel):
     review_required: bool
     status: Literal["success", "failed", "skipped", "review_required"]
     grade: QualityGrade
+    serialization_stability: Literal["stable", "extended", "experimental"] = "stable"
 
     model_config = ConfigDict(frozen=True)
 
@@ -1593,6 +1594,7 @@ class AuthorizedPublicationSnapshot(BaseModel):
     selected_candidate_id: str
     mermaid_code: str
     grade: QualityGrade
+    serialization_stability: Literal["stable", "extended", "experimental"]
     aggregate_score: float | None = None
     png: bytes | None = None
     preview_omitted: bool = False
@@ -1613,6 +1615,8 @@ class AuthorizedPublicationSnapshot(BaseModel):
                 and type(self.selected_candidate_id) is str
                 and type(self.mermaid_code) is str
                 and type(self.grade) is str
+                and type(self.serialization_stability) is str
+                and self.serialization_stability in {"stable", "extended", "experimental"}
                 and (self.aggregate_score is None or type(self.aggregate_score) is float)
                 and (self.png is None or type(self.png) is bytes)
                 and type(self.preview_omitted) is bool
@@ -1629,6 +1633,8 @@ class AuthorizedPublicationSnapshot(BaseModel):
                 or publication_receipt.source_id != self.source_id
                 or publication_receipt.selected_candidate_id != self.selected_candidate_id
                 or publication_receipt.grade != self.grade
+                or publication_receipt.serialization_stability
+                != self.serialization_stability
                 or publication_receipt.candidate_validation_sha256
                 != _canonical_model_sha256(validation_receipt)
                 or publication_receipt.security_profile != validation_receipt.security_profile
@@ -1954,6 +1960,7 @@ def _publication_snapshot_seal(snapshot: AuthorizedPublicationSnapshot) -> str:
         "selected_candidate_id": snapshot.selected_candidate_id,
         "mermaid_code_sha256": _artifact_sha256(snapshot.mermaid_code),
         "grade": snapshot.grade,
+        "serialization_stability": snapshot.serialization_stability,
         "aggregate_score": snapshot.aggregate_score,
         "png_sha256": (_binary_artifact_sha256(snapshot.png) if snapshot.png is not None else None),
         "preview_omitted": snapshot.preview_omitted,
@@ -2315,6 +2322,7 @@ class ReconstructionResult(BaseModel):
                 review_required=self.review_required,
                 status=self.status,
                 grade=self.grade,
+                serialization_stability=selected.serialization_stability,
             )
         except (TypeError, UnicodeEncodeError, ValueError):
             return None
@@ -2383,6 +2391,7 @@ class ReconstructionResult(BaseModel):
             emitted_diagram_type = selected.emitted_diagram_type
             runtime_diagram_type = selected.runtime_diagram_type
             aggregate_score = selected.aggregate_score
+            serialization_stability = selected.serialization_stability
             scores = selected.scores
             warnings = selected.warnings
             validation_receipt = selected.validation_receipt
@@ -2396,6 +2405,8 @@ class ReconstructionResult(BaseModel):
                 and bool(candidate_id)
                 and len(candidate_id) <= MAX_ID_CHARS
                 and type(grade) is str
+                and type(serialization_stability) is str
+                and serialization_stability in {"stable", "extended", "experimental"}
                 and type(publish) is bool
                 and type(review_required) is bool
                 and type(status) is str
@@ -2440,6 +2451,7 @@ class ReconstructionResult(BaseModel):
                 or publication_receipt.review_required != review_required
                 or publication_receipt.status != status
                 or publication_receipt.grade != grade
+                or publication_receipt.serialization_stability != serialization_stability
                 or not hmac.compare_digest(
                     publication_seal,
                     _publication_authorization_seal(publication_receipt),
@@ -2480,6 +2492,7 @@ class ReconstructionResult(BaseModel):
                 selected_candidate_id=str(candidate_id),
                 mermaid_code=str(mermaid_code),
                 grade=grade,
+                serialization_stability=serialization_stability,
                 aggregate_score=safe_score,
                 png=validated_png,
                 preview_omitted=preview_omitted,

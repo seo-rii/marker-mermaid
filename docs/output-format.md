@@ -75,7 +75,8 @@ OCR/CV/VLM 추출 근거이며 후자는 품질 평가 대상입니다. Direct M
     "publish": true,
     "review_required": false,
     "status": "success",
-    "grade": "B"
+    "grade": "B",
+    "serialization_stability": "experimental"
   },
   "generation_artifact_presence": {
     "final.mmd": true,

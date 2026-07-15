@@ -56,6 +56,26 @@ def test_accessibility_chart_summary_uses_observed_labels_without_inventing_tren
     assert "increase" not in resolved.description
 
 
+def test_accessibility_quadrant_summary_includes_observed_point_labels():
+    resolved = resolve_accessibility(
+        {
+            "x_axis": {"low": "Low reach", "high": "High reach"},
+            "y_axis": {"low": "Low confidence", "high": "High confidence"},
+            "points": [
+                {"label": "Project A", "x": 0.25, "y": 0.75},
+                {"label": "Project B", "x": 0.8, "y": 0.1},
+            ],
+        },
+        "quadrant",
+        experimental=False,
+    )
+
+    assert resolved.description == (
+        "Quadrant chart reconstruction containing Project A, Project B."
+    )
+    assert "increase" not in resolved.description
+
+
 def test_accessibility_enrichment_preserves_input_and_semantic_requested_type():
     original = {"services": [{"id": "api", "label": "API"}]}
 

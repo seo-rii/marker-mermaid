@@ -495,7 +495,118 @@ def test_marker_result_summary_revalidates_prompt_budget_notices():
     result.prompt_budget_notices[0].prompt_chars = 100_000
 
     with pytest.raises(ValueError):
-        _result_summary(result)
+        _result_summary(result, publication_snapshot=None)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "serialization_stability",
+    ["stable", "extended", "experimental"],
+)
+def test_marker_result_summary_uses_authorized_serialization_stability(
+    serialization_stability: str,
+):
+    from marker_mermaid.marker_integration import _result_summary
+
+    candidate = _seal_test_candidate(
+        MermaidCandidate(
+            candidate_id="candidate-1",
+            generation_method="typed_ir",
+            diagram_type="flowchart",
+            mermaid_code="flowchart LR\nA --> B\n",
+            syntax_valid=True,
+            render_valid=True,
+            aggregate_score=0.9,
+            serialization_stability=serialization_stability,
+        )
+    )
+    result = _seal_test_result(
+        ReconstructionResult(
+            source_id="source",
+            source_image_name="source.png",
+            selected=candidate,
+            grade="A",
+            publish=True,
+            review_required=False,
+            status="success",
+        )
+    )
+
+    assert _result_summary(
+        result,
+        publication_snapshot=result.authorized_publication_snapshot(),
+    )["stability"] == serialization_stability
+
+
+@pytest.mark.integration
+def test_marker_result_summary_does_not_trust_unsealed_published_stability() -> None:
+    from marker_mermaid.marker_integration import _result_summary
+
+    candidate = _seal_test_candidate(
+        MermaidCandidate(
+            candidate_id="candidate-1",
+            generation_method="typed_ir",
+            diagram_type="flowchart",
+            mermaid_code="flowchart LR\nA --> B\n",
+            syntax_valid=True,
+            render_valid=True,
+            aggregate_score=0.9,
+            serialization_stability="stable",
+        )
+    )
+    result = _seal_test_result(
+        ReconstructionResult(
+            source_id="source",
+            source_image_name="source.png",
+            selected=candidate,
+            grade="A",
+            publish=True,
+            review_required=False,
+            status="success",
+        )
+    )
+    assert result.selected is not None
+    result.selected.warnings.append("post-certification mutation")
+
+    assert result.authorized_publication_snapshot() is None
+    assert _result_summary(result, publication_snapshot=None)["stability"] == "experimental"
+
+
+@pytest.mark.integration
+def test_marker_result_summary_preserves_review_and_failure_stability() -> None:
+    from marker_mermaid.marker_integration import _result_summary
+
+    review_candidate = MermaidCandidate(
+        candidate_id="candidate-1",
+        generation_method="typed_ir",
+        diagram_type="flowchart",
+        serialization_stability="extended",
+    )
+    review = ReconstructionResult(
+        source_id="review",
+        source_image_name="review.png",
+        selected=review_candidate,
+        grade="B",
+        publish=False,
+        review_required=True,
+        status="review_required",
+    )
+    low_quality = review.model_copy(deep=True)
+    assert low_quality.selected is not None
+    low_quality.selected.serialization_stability = "stable"
+    low_quality.grade = "C"
+    failed = ReconstructionResult(
+        source_id="failed",
+        source_image_name="failed.png",
+        grade="U",
+        publish=False,
+        review_required=True,
+        status="failed",
+    )
+
+    assert _result_summary(review, publication_snapshot=None)["stability"] == "extended"
+    assert _result_summary(low_quality, publication_snapshot=None)["stability"] == "experimental"
+    assert _result_summary(failed, publication_snapshot=None)["stability"] == "experimental"
 
 
 @pytest.mark.integration

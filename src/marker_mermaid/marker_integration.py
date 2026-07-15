@@ -28,6 +28,7 @@ from marker_mermaid.marker_discovery import (
 )
 from marker_mermaid.models import (
     MAX_ID_CHARS,
+    AuthorizedPublicationSnapshot,
     EvidenceBudgetUsage,
     ReconstructionResult,
     VisualEvidence,
@@ -87,8 +88,28 @@ def _discovered_source_from_json(value: Any) -> DiscoveredSource:
     return value if isinstance(value, DiscoveredSource) else DiscoveredSource.model_validate(value)
 
 
-def _result_summary(result: ReconstructionResult) -> dict[str, Any]:
+def _result_summary(
+    result: ReconstructionResult,
+    *,
+    publication_snapshot: AuthorizedPublicationSnapshot | None,
+) -> dict[str, Any]:
     selected = result.selected
+    if publication_snapshot is not None and publication_snapshot.has_trusted_values():
+        stability = publication_snapshot.serialization_stability
+    elif result.publish:
+        # A purportedly published result whose stability is not covered by the
+        # exact sink snapshot must not be summarized as stable.
+        stability = "experimental"
+    elif (
+        selected is not None
+        and type(selected.serialization_stability) is str
+        and selected.serialization_stability in {"stable", "extended", "experimental"}
+    ):
+        stability = selected.serialization_stability
+    else:
+        stability = "experimental" if selected is not None else "stable"
+    if result.grade in {"C", "D", "U"}:
+        stability = "experimental"
     return {
         "source_id": result.source_id,
         "source_kind": result.source_kind,
@@ -96,7 +117,7 @@ def _result_summary(result: ReconstructionResult) -> dict[str, Any]:
         "page_ids": result.page_ids,
         "anchor_block_id": result.anchor_block_id,
         "status": result.status,
-        "stability": "experimental" if result.grade in {"C", "D", "U"} else "stable",
+        "stability": stability,
         "diagram_type": selected.diagram_type if selected else None,
         "emitted_diagram_type": selected.emitted_diagram_type if selected else None,
         "fallback_chain": selected.fallback_chain if selected else [],
@@ -416,7 +437,13 @@ class MermaidDiagramProcessor(BaseProcessor):
                             }
                         )
 
-                rows = [_result_summary(result) for result in results]
+                rows = [
+                    _result_summary(
+                        result,
+                        publication_snapshot=result.authorized_publication_snapshot(),
+                    )
+                    for result in results
+                ]
                 status = "success" if results and not errors else "partial"
                 if not results:
                     status = "failed"
@@ -622,10 +649,16 @@ class MermaidMarkdownRenderer(MarkdownRenderer):
             fragments: list[str] = []
             pending: list[ReconstructionResult] = []
             for result in results:
+                publication_snapshot = result.authorized_publication_snapshot()
                 if result.source_id not in collected:
                     collected.add(result.source_id)
                     reconstructions.append(result)
-                    metadata_rows.append(_result_summary(result))
+                    metadata_rows.append(
+                        _result_summary(
+                            result,
+                            publication_snapshot=publication_snapshot,
+                        )
+                    )
                 if result.source_id in inserted:
                     continue
                 pending.append(result)
@@ -635,7 +668,6 @@ class MermaidMarkdownRenderer(MarkdownRenderer):
                         f"(images/{result.source_image_name})"
                     )
                 if self.include_mermaid_code:
-                    publication_snapshot = result.authorized_publication_snapshot()
                     reconstructed = reconstruction_markdown_from_snapshot(
                         publication_snapshot,
                         show_score=self.show_quality_score,
@@ -711,7 +743,12 @@ class MermaidMarkdownRenderer(MarkdownRenderer):
                     continue
                 collected.add(result.source_id)
                 reconstructions.append(result)
-                metadata_rows.append(_result_summary(result))
+                metadata_rows.append(
+                    _result_summary(
+                        result,
+                        publication_snapshot=result.authorized_publication_snapshot(),
+                    )
+                )
         markdown = re.sub(r"(!\[[^\]]*\]\()(_page_[^)]+)(\))", r"\1images/\2\3", markdown)
         metadata = dict(rendered.metadata)
         metadata["mermaid"] = metadata_rows

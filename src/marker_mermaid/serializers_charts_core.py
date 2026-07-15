@@ -54,6 +54,10 @@ MAX_XY_NATIVE_SERIES = 10
 MAX_XY_FLOWCHART_POINTS = 256
 MAX_XY_OUTPUT_CHARS = 50_000
 MAX_XY_OUTPUT_LINES = 5_000
+MAX_QUADRANT_POINTS = 256
+MAX_QUADRANT_OUTPUT_CHARS = 50_000
+MAX_QUADRANT_OUTPUT_LINES = 5_000
+MAX_QUADRANT_COLLISION_COMPARISONS = 100_000
 
 PIE_FALLBACK_WARNING = (
     "Pie was emitted as an exact-value Flowchart because Mermaid 11.16 would hide, clip, "
@@ -85,6 +89,26 @@ XY_NATIVE_TEXT_COMPATIBILITY_WARNING = (
 )
 XY_FALLBACK_TEXT_COMPATIBILITY_WARNING = (
     "XY Chart Flowchart text used visible compatibility substitutions; semantic text remains "
+    "in typed IR and review metadata."
+)
+QUADRANT_FALLBACK_WARNING = (
+    "Quadrant was emitted as an exact-value Flowchart because Mermaid 11.16 would "
+    "overlap, clip, reposition, or rewrite one or more chart elements."
+)
+QUADRANT_RUNTIME_FALLBACK_WARNING = (
+    "CandidateValidator rejected native Quadrant; exact axis, quadrant, and point cells "
+    "were re-emitted as a portable Flowchart in the same candidate slot."
+)
+QUADRANT_NATIVE_TEXT_COMPATIBILITY_WARNING = (
+    "Quadrant canvas text used visible compatibility substitutions; semantic text remains "
+    "in typed IR and review metadata."
+)
+QUADRANT_NATIVE_PAINT_COMPATIBILITY_WARNING = (
+    "Mermaid 11.16 emits native Quadrant point paint with an invalid NaN% HSL component; "
+    "SVG consumers may substitute their default fill and stroke colors."
+)
+QUADRANT_FALLBACK_TEXT_COMPATIBILITY_WARNING = (
+    "Quadrant Flowchart text used visible compatibility substitutions; semantic text remains "
     "in typed IR and review metadata."
 )
 
@@ -217,6 +241,83 @@ class XYPlan:
     fallback_compatibility_substitutions: bool
 
 
+@dataclass(frozen=True, slots=True)
+class QuadrantAxisPlan:
+    """One source axis and its terminal-specific text and geometry."""
+
+    source_record: Mapping[str, Any]
+    scene_id: str
+    low: str
+    high: str
+    native_source_low: str
+    native_canvas_low: str
+    native_source_high: str
+    native_canvas_high: str
+    fallback_source_label: str
+    fallback_canvas_label: str
+    normalized_low_point: tuple[float, float]
+    normalized_high_point: tuple[float, float]
+    evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class QuadrantSlotPlan:
+    """One named Mermaid quadrant region without invented record provenance."""
+
+    slot: int
+    scene_id: str
+    label: str
+    native_source_label: str
+    native_canvas_label: str
+    fallback_source_label: str
+    fallback_canvas_label: str
+    normalized_bbox: tuple[float, float, float, float]
+    normalized_point: tuple[float, float]
+    evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class QuadrantPointPlan:
+    """One exact source point and its native/fallback projections."""
+
+    source_record: Mapping[str, Any]
+    scene_id: str
+    label: str
+    native_source_label: str
+    native_canvas_label: str
+    fallback_source_label: str
+    fallback_canvas_label: str
+    x: Decimal
+    x_text: str
+    y: Decimal
+    y_text: str
+    native_x: float | None
+    native_y: float | None
+    normalized_point: tuple[float, float] | None
+    evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class QuadrantPlan:
+    """Bounded terminal plan shared by Quadrant serialization, Scene, and OCR."""
+
+    x_axis: QuadrantAxisPlan
+    y_axis: QuadrantAxisPlan
+    quadrants: tuple[QuadrantSlotPlan, ...]
+    points: tuple[QuadrantPointPlan, ...]
+    total_points: int
+    native_supported: bool
+    flowchart_supported: bool
+    native_limitations: tuple[str, ...]
+    semantic_title: str | None
+    native_source_title: str | None
+    native_canvas_title: str | None
+    fallback_source_title: str | None
+    fallback_canvas_title: str | None
+    native_compatibility_substitutions: bool
+    fallback_compatibility_substitutions: bool
+
+
 def _text(value: Any) -> str:
     """Return deterministic single-line Mermaid text with quote-safe entities."""
 
@@ -268,6 +369,15 @@ def _number(value: Any, *, field: str) -> tuple[Decimal, str]:
     if len(rendered) > MAX_TEXT_CHARS:
         raise SerializationError(f"{field} numeric token exceeds the source text limit")
     return decimal, rendered
+
+
+def _utf16_code_units(text: str, *, field: str) -> int:
+    """Count JavaScript-compatible source units without accepting lone surrogates."""
+
+    try:
+        return len(text.encode("utf-16-le")) // 2
+    except UnicodeEncodeError as exc:
+        raise SerializationError(f"{field} is not valid UTF-16") from exc
 
 
 def _axis_bounds(axis: Any, *, field: str) -> tuple[Decimal, Decimal, str, str]:
@@ -331,10 +441,7 @@ def plan_pie_records(ir: Mapping[str, Any]) -> PiePlan:
         label = " ".join(raw_label.split())
         if not label or len(label) > MAX_TEXT_CHARS:
             raise SerializationError(f"pie slice {index}.label requires bounded non-empty text")
-        if any(
-            unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"}
-            for character in label
-        ):
+        if any(unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"} for character in label):
             raise SerializationError(f"pie slice {index}.label contains unsupported text")
         try:
             label.encode("utf-8")
@@ -347,9 +454,11 @@ def plan_pie_records(ir: Mapping[str, Any]) -> PiePlan:
         if value < 0:
             raise SerializationError(f"pie slice {index}.value cannot be negative")
         native_canvas_label = label
-        native_source_label = native_canvas_label.replace(
-            "%%", f"%{_ZERO_WIDTH_SPACE}%"
-        ).replace("//", f"/{_ZERO_WIDTH_SPACE}/").replace(";", f";{_ZERO_WIDTH_SPACE}")
+        native_source_label = (
+            native_canvas_label.replace("%%", f"%{_ZERO_WIDTH_SPACE}%")
+            .replace("//", f"/{_ZERO_WIDTH_SPACE}/")
+            .replace(";", f";{_ZERO_WIDTH_SPACE}")
+        )
         native_source_label = native_source_label.replace("<", f"<{_ZERO_WIDTH_SPACE}")
         native_source_label = _PIE_CSS_IMPORT.sub(
             lambda match: f"{match.group(0)[:2]}{_ZERO_WIDTH_SPACE}{match.group(0)[2:]}",
@@ -374,9 +483,11 @@ def plan_pie_records(ir: Mapping[str, Any]) -> PiePlan:
             .replace('"', '\\"')
         )
         fallback_canvas_label = label.translate(fallback_visible_translation)
-        fallback_source_label = fallback_canvas_label.replace(
-            "%%", f"%{_ZERO_WIDTH_SPACE}%"
-        ).replace("//", f"/{_ZERO_WIDTH_SPACE}/").replace(";", f";{_ZERO_WIDTH_SPACE}")
+        fallback_source_label = (
+            fallback_canvas_label.replace("%%", f"%{_ZERO_WIDTH_SPACE}%")
+            .replace("//", f"/{_ZERO_WIDTH_SPACE}/")
+            .replace(";", f";{_ZERO_WIDTH_SPACE}")
+        )
         fallback_source_label = fallback_source_label.replace("<", f"<{_ZERO_WIDTH_SPACE}")
         fallback_source_label = _PIE_CSS_IMPORT.sub(
             lambda match: f"{match.group(0)[:2]}{_ZERO_WIDTH_SPACE}{match.group(0)[2:]}",
@@ -394,9 +505,8 @@ def plan_pie_records(ir: Mapping[str, Any]) -> PiePlan:
             lambda match: f"{match.group(0)[0]}{_ZERO_WIDTH_SPACE}{match.group(0)[1:]}",
             fallback_source_label,
         )
-        fallback_source_label = (
-            fallback_source_label.replace("&", f"&{_ZERO_WIDTH_SPACE}")
-            .replace("#", f"#{_ZERO_WIDTH_SPACE}")
+        fallback_source_label = fallback_source_label.replace("&", f"&{_ZERO_WIDTH_SPACE}").replace(
+            "#", f"#{_ZERO_WIDTH_SPACE}"
         )
         native_compatibility_substitutions |= native_canvas_label != raw_label
         fallback_compatibility_substitutions |= fallback_canvas_label != raw_label
@@ -407,9 +517,7 @@ def plan_pie_records(ir: Mapping[str, Any]) -> PiePlan:
             isinstance(raw_evidence_ids, list)
             and len(raw_evidence_ids) <= MAX_EVIDENCE_REFS
             and all(
-                type(evidence_id) is str
-                and bool(evidence_id)
-                and len(evidence_id) <= MAX_ID_CHARS
+                type(evidence_id) is str and bool(evidence_id) and len(evidence_id) <= MAX_ID_CHARS
                 for evidence_id in raw_evidence_ids
             )
         ):
@@ -560,13 +668,11 @@ def plan_pie_records(ir: Mapping[str, Any]) -> PiePlan:
         except UnicodeEncodeError as exc:
             raise SerializationError("pie title is not valid UTF-8") from exc
         native_canvas_title = semantic_title.translate(
-            str.maketrans(
-                {'"': "″", "\\": "∖", "<": "＜", ">": "＞", "#": "＃", ";": "；"}
-            )
+            str.maketrans({'"': "″", "\\": "∖", "<": "＜", ">": "＞", "#": "＃", ";": "；"})
         )
-        native_source_title = native_canvas_title.replace(
-            "%%", f"%{_ZERO_WIDTH_SPACE}%"
-        ).replace("//", f"/{_ZERO_WIDTH_SPACE}/")
+        native_source_title = native_canvas_title.replace("%%", f"%{_ZERO_WIDTH_SPACE}%").replace(
+            "//", f"/{_ZERO_WIDTH_SPACE}/"
+        )
         native_source_title = native_source_title.replace("<", f"<{_ZERO_WIDTH_SPACE}")
         native_source_title = _PIE_CSS_IMPORT.sub(
             lambda match: f"{match.group(0)[:2]}{_ZERO_WIDTH_SPACE}{match.group(0)[2:]}",
@@ -584,9 +690,8 @@ def plan_pie_records(ir: Mapping[str, Any]) -> PiePlan:
             lambda match: f"{match.group(0)[0]}{_ZERO_WIDTH_SPACE}{match.group(0)[1:]}",
             native_source_title,
         )
-        native_source_title = (
-            native_source_title.replace("&", f"&{_ZERO_WIDTH_SPACE}")
-            .replace("#", f"#{_ZERO_WIDTH_SPACE}")
+        native_source_title = native_source_title.replace("&", f"&{_ZERO_WIDTH_SPACE}").replace(
+            "#", f"#{_ZERO_WIDTH_SPACE}"
         )
         native_compatibility_substitutions |= native_canvas_title != raw_title
 
@@ -644,10 +749,7 @@ def serialize_pie(
     for value in (accessibility.title, accessibility.description):
         if not value or len(value) > MAX_TEXT_CHARS:
             raise SerializationError("Pie accessibility text must be bounded and non-empty")
-        if any(
-            unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"}
-            for character in value
-        ):
+        if any(unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"} for character in value):
             raise SerializationError("Pie accessibility text contains unsupported text")
         try:
             value.encode("utf-8")
@@ -716,9 +818,7 @@ def serialize_pie(
 
     code = "\n".join(lines) + "\n"
     if code.count("\n") + 1 > MAX_PIE_OUTPUT_LINES:
-        raise SerializationError(
-            f"Pie output exceeds source-line limit of {MAX_PIE_OUTPUT_LINES}"
-        )
+        raise SerializationError(f"Pie output exceeds source-line limit of {MAX_PIE_OUTPUT_LINES}")
     try:
         utf16_code_units = len(code.encode("utf-16-le")) // 2
     except UnicodeEncodeError as exc:
@@ -759,9 +859,7 @@ def _xy_neutralize_source_text(text: str) -> str:
         lambda match: f"{match.group(0)[0]}{_ZERO_WIDTH_SPACE}{match.group(0)[1:]}",
         source,
     )
-    return source.replace("&", f"&{_ZERO_WIDTH_SPACE}").replace(
-        "#", f"#{_ZERO_WIDTH_SPACE}"
-    )
+    return source.replace("&", f"&{_ZERO_WIDTH_SPACE}").replace("#", f"#{_ZERO_WIDTH_SPACE}")
 
 
 def validate_xychart_explicit_metadata(ir: Mapping[str, Any]) -> None:
@@ -788,9 +886,7 @@ def plan_xychart_records(ir: Mapping[str, Any]) -> XYPlan:
         raise SerializationError("xychart axes cannot reuse one object")
 
     seen_records = {id(x_axis), id(y_axis)}
-    translation = str.maketrans(
-        {'"': "″", "\\": "∖", "<": "＜", ">": "＞", "#": "＃"}
-    )
+    translation = str.maketrans({'"': "″", "\\": "∖", "<": "＜", ">": "＞", "#": "＃"})
     native_limitations: list[str] = []
     native_compatibility_substitutions = False
     fallback_compatibility_substitutions = False
@@ -804,9 +900,7 @@ def plan_xychart_records(ir: Mapping[str, Any]) -> XYPlan:
             isinstance(raw_evidence_ids, list)
             and len(raw_evidence_ids) <= MAX_EVIDENCE_REFS
             and all(
-                type(evidence_id) is str
-                and bool(evidence_id)
-                and len(evidence_id) <= MAX_ID_CHARS
+                type(evidence_id) is str and bool(evidence_id) and len(evidence_id) <= MAX_ID_CHARS
                 for evidence_id in raw_evidence_ids
             )
         ):
@@ -834,17 +928,12 @@ def plan_xychart_records(ir: Mapping[str, Any]) -> XYPlan:
             raise SerializationError(
                 f"xychart {axis_name}_axis.label requires bounded non-empty text"
             )
-        if any(
-            unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"}
-            for character in label
-        ):
+        if any(unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"} for character in label):
             raise SerializationError(f"xychart {axis_name}_axis.label contains unsupported text")
         try:
             label.encode("utf-8")
         except UnicodeEncodeError as exc:
-            raise SerializationError(
-                f"xychart {axis_name}_axis.label is not valid UTF-8"
-            ) from exc
+            raise SerializationError(f"xychart {axis_name}_axis.label is not valid UTF-8") from exc
         canvas_label = label.translate(translation)
         source_label = _xy_neutralize_source_text(canvas_label)
         native_compatibility_substitutions |= canvas_label != raw_label
@@ -929,14 +1018,18 @@ def plan_xychart_records(ir: Mapping[str, Any]) -> XYPlan:
         except (OverflowError, ValueError):
             native_x_minimum = None
             native_x_maximum = None
-        if native_x_minimum is None or native_x_maximum is None or any(
-            not math.isfinite(value)
-            or (decimal != 0 and value == 0)
-            or (value != 0 and abs(value) < sys.float_info.min)
-            or Decimal(str(value)) != decimal
-            for value, decimal in (
-                (native_x_minimum, x_minimum),
-                (native_x_maximum, x_maximum),
+        if (
+            native_x_minimum is None
+            or native_x_maximum is None
+            or any(
+                not math.isfinite(value)
+                or (decimal != 0 and value == 0)
+                or (value != 0 and abs(value) < sys.float_info.min)
+                or Decimal(str(value)) != decimal
+                for value, decimal in (
+                    (native_x_minimum, x_minimum),
+                    (native_x_maximum, x_maximum),
+                )
             )
         ):
             native_limitations.append(
@@ -965,14 +1058,18 @@ def plan_xychart_records(ir: Mapping[str, Any]) -> XYPlan:
     except (OverflowError, ValueError):
         native_y_minimum = None
         native_y_maximum = None
-    if native_y_minimum is None or native_y_maximum is None or any(
-        not math.isfinite(value)
-        or (decimal != 0 and value == 0)
-        or (value != 0 and abs(value) < sys.float_info.min)
-        or Decimal(str(value)) != decimal
-        for value, decimal in (
-            (native_y_minimum, y_minimum),
-            (native_y_maximum, y_maximum),
+    if (
+        native_y_minimum is None
+        or native_y_maximum is None
+        or any(
+            not math.isfinite(value)
+            or (decimal != 0 and value == 0)
+            or (value != 0 and abs(value) < sys.float_info.min)
+            or Decimal(str(value)) != decimal
+            for value, decimal in (
+                (native_y_minimum, y_minimum),
+                (native_y_maximum, y_maximum),
+            )
         )
     ):
         native_limitations.append("y-axis bounds are not zero-or-normal binary64 round-trip safe")
@@ -1018,12 +1115,16 @@ def plan_xychart_records(ir: Mapping[str, Any]) -> XYPlan:
             f" — {x_canvas_label}" if x_canvas_label is not None else ""
         )
     else:
-        x_fallback_canvas = "X axis" + (
-            f" — {x_canvas_label}" if x_canvas_label is not None else ""
-        ) + f": {x_minimum_text} to {x_maximum_text}"
-    y_fallback_canvas = "Y axis" + (
-        f" — {y_canvas_label}" if y_canvas_label is not None else ""
-    ) + f": {y_minimum_text} to {y_maximum_text}"
+        x_fallback_canvas = (
+            "X axis"
+            + (f" — {x_canvas_label}" if x_canvas_label is not None else "")
+            + f": {x_minimum_text} to {x_maximum_text}"
+        )
+    y_fallback_canvas = (
+        "Y axis"
+        + (f" — {y_canvas_label}" if y_canvas_label is not None else "")
+        + f": {y_minimum_text} to {y_maximum_text}"
+    )
     x_axis_plan = XYAxisPlan(
         source_record=x_axis,
         scene_id="xy_x_axis",
@@ -1092,9 +1193,7 @@ def plan_xychart_records(ir: Mapping[str, Any]) -> XYPlan:
             isinstance(raw_series_evidence, list)
             and len(raw_series_evidence) <= MAX_EVIDENCE_REFS
             and all(
-                type(evidence_id) is str
-                and bool(evidence_id)
-                and len(evidence_id) <= MAX_ID_CHARS
+                type(evidence_id) is str and bool(evidence_id) and len(evidence_id) <= MAX_ID_CHARS
                 for evidence_id in raw_series_evidence
             )
         ):
@@ -1153,10 +1252,7 @@ def plan_xychart_records(ir: Mapping[str, Any]) -> XYPlan:
             generated_positions: list[float] = []
             current_x = native_x_minimum
             next_x = current_x
-            grid_safe = (
-                math.isfinite(native_step)
-                and native_step >= sys.float_info.min
-            )
+            grid_safe = math.isfinite(native_step) and native_step >= sys.float_info.min
             if grid_safe:
                 for _ in range(len(source_values) + 1):
                     if current_x > native_x_maximum:
@@ -1247,9 +1343,7 @@ def plan_xychart_records(ir: Mapping[str, Any]) -> XYPlan:
                 )
             if not y_minimum <= y <= y_maximum:
                 field = (
-                    f"points[{point_index - 1}].y"
-                    if has_points
-                    else f"values[{point_index - 1}]"
+                    f"points[{point_index - 1}].y" if has_points else f"values[{point_index - 1}]"
                 )
                 raise SerializationError(
                     f"xychart series {series_index}.{field} must be within y_axis bounds"
@@ -1369,9 +1463,7 @@ def plan_xychart_records(ir: Mapping[str, Any]) -> XYPlan:
         line_sequences.add(sequence)
 
     native_supported = not native_limitations and all(
-        point.normalized_point is not None
-        for series in planned_series
-        for point in series.points
+        point.normalized_point is not None for series in planned_series for point in series.points
     )
     fallback_line_count = 5 + len(categories) + total_points + int(semantic_title is not None)
     return XYPlan(
@@ -1411,10 +1503,7 @@ def serialize_xychart(
     for value in (accessibility.title, accessibility.description):
         if not value or len(value) > MAX_TEXT_CHARS:
             raise SerializationError("XY Chart accessibility text must be bounded and non-empty")
-        if any(
-            unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"}
-            for character in value
-        ):
+        if any(unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"} for character in value):
             raise SerializationError("XY Chart accessibility text contains unsupported text")
         try:
             value.encode("utf-8")
@@ -1473,9 +1562,13 @@ def serialize_xychart(
             else ""
         )
         if plan.x_axis.categories:
-            x_spec = "[" + ", ".join(
-                f'"{category.native_source_label}"' for category in plan.x_axis.categories
-            ) + "]"
+            x_spec = (
+                "["
+                + ", ".join(
+                    f'"{category.native_source_label}"' for category in plan.x_axis.categories
+                )
+                + "]"
+            )
         else:
             x_spec = f"{plan.x_axis.minimum_text} --> {plan.x_axis.maximum_text}"
         y_label_prefix = (
@@ -1516,72 +1609,769 @@ def serialize_xychart(
     return code, emitted_type, fallback_reason
 
 
-def _quadrant_labels(value: Any) -> dict[int, str]:
-    if value is None:
-        return {}
-    if isinstance(value, list):
-        if len(value) != 4:
-            raise SerializationError("quadrant labels list must contain exactly four entries")
-        return {
-            index: _required_text(label, field=f"quadrant label {index}")
-            for index, label in enumerate(value, start=1)
-        }
-    if not isinstance(value, dict):
-        raise SerializationError("quadrant labels must be a four-entry list or object")
-    labels: dict[int, str] = {}
-    for raw_key, raw_label in value.items():
-        key = str(raw_key).lower().removeprefix("quadrant-")
-        if key not in {"1", "2", "3", "4"}:
-            raise SerializationError(f"unsupported quadrant label key {raw_key!r}")
-        number = int(key)
-        if number in labels:
-            raise SerializationError(f"duplicate quadrant label alias for quadrant-{number}")
-        labels[number] = _required_text(raw_label, field=f"quadrant label {number}")
-    return labels
+def validate_quadrant_explicit_metadata(ir: Mapping[str, Any]) -> None:
+    """Reject malformed metadata before accessibility enrichment can stringify it."""
+
+    for field in ("title", "description", "acc_title", "acc_description"):
+        value = ir.get(field)
+        if value is None:
+            continue
+        if type(value) is not str:
+            raise SerializationError(f"quadrant {field} must be text when provided")
+        normalized = " ".join(value.split())
+        if not normalized or len(normalized) > MAX_TEXT_CHARS:
+            raise SerializationError(f"quadrant {field} must be bounded non-empty text")
+        if any(
+            unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"} for character in normalized
+        ):
+            raise SerializationError(f"quadrant {field} contains unsupported text")
+        try:
+            normalized.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise SerializationError(f"quadrant {field} is not valid UTF-8") from exc
 
 
-def serialize_quadrant(ir: dict[str, Any], *, experimental: bool = False) -> ChartCoreSerialization:
-    """Serialize normalized positioned points to native ``quadrantChart``."""
+def plan_quadrant_records(ir: Mapping[str, Any]) -> QuadrantPlan:
+    """Validate Quadrant records and freeze native/fallback terminal semantics."""
 
-    axis_lines: list[str] = []
-    for name in ("x_axis", "y_axis"):
-        axis = ir.get(name)
-        if not isinstance(axis, dict):
-            raise SerializationError(f"quadrant {name} must be an object")
-        low = _required_text(axis.get("low"), field=f"quadrant {name}.low")
-        high = _required_text(axis.get("high"), field=f"quadrant {name}.high")
-        axis_lines.append(f'    {name[0]}-axis "{low}" --> "{high}"')
+    validate_quadrant_explicit_metadata(ir)
+    x_axis = ir.get("x_axis")
+    y_axis = ir.get("y_axis")
+    if not isinstance(x_axis, dict):
+        raise SerializationError("quadrant x_axis must be an object")
+    if not isinstance(y_axis, dict):
+        raise SerializationError("quadrant y_axis must be an object")
+    if x_axis is y_axis:
+        raise SerializationError("quadrant axes cannot reuse one object")
 
-    points = ir.get("points")
-    if not isinstance(points, list) or not points:
+    translation = str.maketrans({'"': "″", "\\": "∖", "<": "＜", ">": "＞", "#": "＃", ";": "；"})
+    native_limitations: list[str] = []
+    native_compatibility_substitutions = False
+    fallback_compatibility_substitutions = False
+    seen_records = {id(x_axis), id(y_axis)}
+
+    axis_plans: dict[str, QuadrantAxisPlan] = {}
+    for axis_name, axis in (("x", x_axis), ("y", y_axis)):
+        projected: dict[str, tuple[str, str, str]] = {}
+        for endpoint in ("low", "high"):
+            raw_label = axis.get(endpoint)
+            if type(raw_label) is not str:
+                raise SerializationError(
+                    f"quadrant {axis_name}_axis.{endpoint} requires non-empty text evidence"
+                )
+            label = " ".join(raw_label.split())
+            if not label or len(label) > MAX_TEXT_CHARS:
+                raise SerializationError(
+                    f"quadrant {axis_name}_axis.{endpoint} requires bounded non-empty text"
+                )
+            if any(
+                unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"} for character in label
+            ):
+                raise SerializationError(
+                    f"quadrant {axis_name}_axis.{endpoint} contains unsupported text"
+                )
+            try:
+                label.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise SerializationError(
+                    f"quadrant {axis_name}_axis.{endpoint} is not valid UTF-8"
+                ) from exc
+            canvas = label.translate(translation)
+            source = _xy_neutralize_source_text(canvas)
+            native_compatibility_substitutions |= canvas != raw_label
+            fallback_compatibility_substitutions |= canvas != raw_label
+            projected[endpoint] = (label, source, canvas)
+
+        raw_evidence_ids = axis.get("evidence_ids")
+        if raw_evidence_ids is None:
+            evidence_ids: tuple[str, ...] = ()
+        elif (
+            isinstance(raw_evidence_ids, list)
+            and len(raw_evidence_ids) <= MAX_EVIDENCE_REFS
+            and all(
+                type(evidence_id) is str and bool(evidence_id) and len(evidence_id) <= MAX_ID_CHARS
+                for evidence_id in raw_evidence_ids
+            )
+        ):
+            try:
+                for evidence_id in raw_evidence_ids:
+                    evidence_id.encode("utf-8")
+            except UnicodeEncodeError:
+                evidence_ids = ()
+            else:
+                evidence_ids = tuple(dict.fromkeys(raw_evidence_ids))
+        else:
+            evidence_ids = ()
+        low, source_low, canvas_low = projected["low"]
+        high, source_high, canvas_high = projected["high"]
+        fallback_canvas = f"{axis_name.upper()} axis · {canvas_low} → {canvas_high}"
+        axis_plans[axis_name] = QuadrantAxisPlan(
+            source_record=axis,
+            scene_id=f"quadrant_{axis_name}_axis",
+            low=low,
+            high=high,
+            native_source_low=source_low,
+            native_canvas_low=canvas_low,
+            native_source_high=source_high,
+            native_canvas_high=canvas_high,
+            fallback_source_label=_xy_neutralize_source_text(fallback_canvas),
+            fallback_canvas_label=fallback_canvas,
+            normalized_low_point=(0.25, 1.0) if axis_name == "x" else (0.0, 0.75),
+            normalized_high_point=(0.75, 1.0) if axis_name == "x" else (0.0, 0.25),
+            evidence_ids=evidence_ids,
+        )
+
+    points_value = ir.get("points")
+    if not isinstance(points_value, list) or not points_value:
         raise SerializationError("quadrant IR requires a non-empty points list")
-    point_lines: list[str] = []
-    labels: set[str] = set()
-    for index, point in enumerate(points, start=1):
+    if len(points_value) > MAX_QUADRANT_POINTS:
+        raise SerializationError(f"Quadrant exceeds the {MAX_QUADRANT_POINTS}-point runtime limit")
+
+    raw_quadrants = ir.get("quadrants")
+    supplied_labels: dict[int, Any] = {}
+    if raw_quadrants is None:
+        pass
+    elif isinstance(raw_quadrants, list):
+        if len(raw_quadrants) != 4:
+            raise SerializationError("quadrant labels list must contain exactly four entries")
+        supplied_labels = dict(enumerate(raw_quadrants, start=1))
+    elif isinstance(raw_quadrants, dict):
+        for raw_key, raw_label in raw_quadrants.items():
+            key = str(raw_key).lower().removeprefix("quadrant-")
+            if key not in {"1", "2", "3", "4"}:
+                raise SerializationError(f"unsupported quadrant label key {raw_key!r}")
+            slot = int(key)
+            if slot in supplied_labels:
+                raise SerializationError(f"duplicate quadrant label alias for quadrant-{slot}")
+            supplied_labels[slot] = raw_label
+    else:
+        raise SerializationError("quadrant labels must be a four-entry list or object")
+
+    slot_geometry = {
+        1: ((0.5, 0.0, 1.0, 0.5), (0.75, 0.25), "upper right"),
+        2: ((0.0, 0.0, 0.5, 0.5), (0.25, 0.25), "upper left"),
+        3: ((0.0, 0.5, 0.5, 1.0), (0.25, 0.75), "lower left"),
+        4: ((0.5, 0.5, 1.0, 1.0), (0.75, 0.75), "lower right"),
+    }
+    quadrant_plans: list[QuadrantSlotPlan] = []
+    native_slot_canvas_labels: set[str] = set()
+    for slot in range(1, 5):
+        raw_label = supplied_labels.get(slot)
+        label = ""
+        source_label = ""
+        canvas_label = ""
+        fallback_canvas = ""
+        fallback_source = ""
+        if slot in supplied_labels:
+            if type(raw_label) is not str:
+                raise SerializationError(f"quadrant label {slot} requires non-empty text evidence")
+            label = " ".join(raw_label.split())
+            if not label or len(label) > MAX_TEXT_CHARS:
+                raise SerializationError(f"quadrant label {slot} requires bounded non-empty text")
+            if any(
+                unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"} for character in label
+            ):
+                raise SerializationError(f"quadrant label {slot} contains unsupported text")
+            try:
+                label.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise SerializationError(f"quadrant label {slot} is not valid UTF-8") from exc
+            canvas_label = label.translate(translation)
+            source_label = _xy_neutralize_source_text(canvas_label)
+            if canvas_label in native_slot_canvas_labels:
+                native_limitations.append(
+                    "quadrant labels collide after native canvas compatibility substitution"
+                )
+            native_slot_canvas_labels.add(canvas_label)
+            position_name = slot_geometry[slot][2]
+            fallback_canvas = f"{position_name} quadrant · {canvas_label}"
+            fallback_source = _xy_neutralize_source_text(fallback_canvas)
+            native_compatibility_substitutions |= canvas_label != raw_label
+            fallback_compatibility_substitutions |= canvas_label != raw_label
+        quadrant_plans.append(
+            QuadrantSlotPlan(
+                slot=slot,
+                scene_id=f"quadrant_slot_{slot}",
+                label=label,
+                native_source_label=source_label,
+                native_canvas_label=canvas_label,
+                fallback_source_label=fallback_source,
+                fallback_canvas_label=fallback_canvas,
+                normalized_bbox=slot_geometry[slot][0],
+                normalized_point=slot_geometry[slot][1],
+                evidence_ids=(),
+            )
+        )
+
+    semantic_title: str | None = None
+    native_source_title: str | None = None
+    native_canvas_title: str | None = None
+    fallback_source_title: str | None = None
+    fallback_canvas_title: str | None = None
+    raw_title = ir.get("title")
+    if raw_title is not None:
+        semantic_title = " ".join(raw_title.split())
+        native_canvas_title = semantic_title.translate(translation)
+        native_source_title = _xy_neutralize_source_text(native_canvas_title)
+        fallback_canvas_title = semantic_title.translate(translation)
+        fallback_source_title = _xy_neutralize_source_text(fallback_canvas_title)
+        native_compatibility_substitutions |= native_canvas_title != raw_title
+        fallback_compatibility_substitutions |= fallback_canvas_title != raw_title
+
+    native_budget_lines = [
+        "quadrantChart",
+        "    accTitle: ",
+        "    accDescr: ",
+    ]
+    fallback_budget_lines = [
+        "flowchart TB",
+        "    accTitle: ",
+        "    accDescr:  This Quadrant reconstruction uses an exact-value Flowchart fallback.",
+    ]
+    if native_source_title is not None:
+        native_budget_lines.append(f"    title {native_source_title}")
+    if fallback_source_title is not None:
+        fallback_budget_lines.append(f'    quadrant_title["{fallback_source_title}"]')
+    native_budget_lines.extend(
+        (
+            f'    x-axis "{axis_plans["x"].native_source_low}" --> '
+            f'"{axis_plans["x"].native_source_high}"',
+            f'    y-axis "{axis_plans["y"].native_source_low}" --> '
+            f'"{axis_plans["y"].native_source_high}"',
+        )
+    )
+    fallback_budget_lines.extend(
+        (
+            f'    {axis_plans["x"].scene_id}["{axis_plans["x"].fallback_source_label}"]',
+            f'    {axis_plans["y"].scene_id}["{axis_plans["y"].fallback_source_label}"]',
+        )
+    )
+    native_budget_lines.extend(
+        f'    quadrant-{quadrant.slot} "{quadrant.native_source_label}"'
+        for quadrant in quadrant_plans
+        if quadrant.label
+    )
+    fallback_budget_lines.extend(
+        f'    {quadrant.scene_id}["{quadrant.fallback_source_label}"]'
+        for quadrant in quadrant_plans
+        if quadrant.label
+    )
+    native_projected_units = sum(
+        _utf16_code_units(f"{line}\n", field="Quadrant native source")
+        for line in native_budget_lines
+    )
+    fallback_projected_units = sum(
+        _utf16_code_units(f"{line}\n", field="Quadrant fallback source")
+        for line in fallback_budget_lines
+    )
+    native_source_budget_exhausted = native_projected_units > MAX_QUADRANT_OUTPUT_CHARS
+    fallback_source_budget_exhausted = fallback_projected_units > MAX_QUADRANT_OUTPUT_CHARS
+    if native_source_budget_exhausted and fallback_source_budget_exhausted:
+        raise SerializationError(
+            "Quadrant output exceeds UTF-16 source-character limit of "
+            f"{MAX_QUADRANT_OUTPUT_CHARS}"
+        )
+    projected_line_count = max(len(native_budget_lines), len(fallback_budget_lines))
+    if projected_line_count + len(points_value) + 1 > MAX_QUADRANT_OUTPUT_LINES:
+        raise SerializationError(
+            f"Quadrant output exceeds source-line limit of {MAX_QUADRANT_OUTPUT_LINES}"
+        )
+
+    prepared_points: list[
+        tuple[dict[str, Any], str, str, Decimal, str, Decimal, str]
+    ] = []
+    semantic_labels: set[str] = set()
+    for index, point in enumerate(points_value, start=1):
         if not isinstance(point, dict):
             raise SerializationError("quadrant points must be objects")
-        label = _required_text(point.get("label"), field=f"quadrant point {index}.label")
-        if label in labels:
+        if id(point) in seen_records:
+            raise SerializationError("quadrant axes and points cannot reuse one object")
+        seen_records.add(id(point))
+        raw_label = point.get("label")
+        if type(raw_label) is not str:
+            raise SerializationError(
+                f"quadrant point {index}.label requires non-empty text evidence"
+            )
+        label = " ".join(raw_label.split())
+        if not label or len(label) > MAX_TEXT_CHARS:
+            raise SerializationError(
+                f"quadrant point {index}.label requires bounded non-empty text"
+            )
+        if any(unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"} for character in label):
+            raise SerializationError(f"quadrant point {index}.label contains unsupported text")
+        try:
+            label.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise SerializationError(f"quadrant point {index}.label is not valid UTF-8") from exc
+        if label in semantic_labels:
             raise SerializationError(f"quadrant point labels must be unique: {label!r}")
-        labels.add(label)
+        semantic_labels.add(label)
+
         x, x_text = _number(point.get("x"), field=f"quadrant point {index}.x")
         y, y_text = _number(point.get("y"), field=f"quadrant point {index}.y")
         if not Decimal(0) <= x <= Decimal(1) or not Decimal(0) <= y <= Decimal(1):
             raise SerializationError(
                 f"quadrant point {index} coordinates must be normalized to [0, 1]"
             )
-        point_lines.append(f'    "{label}": [{x_text}, {y_text}]')
 
-    lines = [
-        "quadrantChart",
-        *_accessibility(ir, "quadrant", experimental=experimental),
-        *_title_line(ir),
-        *axis_lines,
-    ]
-    for number, label in sorted(_quadrant_labels(ir.get("quadrants")).items()):
-        lines.append(f'    quadrant-{number} "{label}"')
-    lines.extend(point_lines)
-    return "\n".join(lines) + "\n", "quadrant", None
+        # Quadrant's visible compatibility translation is one UTF-16 unit for
+        # every replaced source unit.  Count the source-only separators that
+        # ``_xy_neutralize_source_text`` will add without allocating any of the
+        # per-terminal point projections yet.
+        source_label_units = _utf16_code_units(
+            label,
+            field=f"quadrant point {index}.label",
+        )
+        source_label_units += label.count("%%") + label.count("//") + label.count("&")
+        source_label_units += sum(1 for _match in _PIE_CSS_IMPORT.finditer(label))
+        source_label_units += sum(1 for _match in _PIE_DANGEROUS_SCHEME.finditer(label))
+        source_label_units += sum(1 for _match in _PIE_REMOTE_ICON.finditer(label))
+        source_label_units += sum(1 for _match in _PIE_ACTIVE_CALLBACK.finditer(label))
+        x_units = _utf16_code_units(x_text, field=f"quadrant point {index}.x")
+        y_units = _utf16_code_units(y_text, field=f"quadrant point {index}.y")
+        native_projected_units += (
+            _utf16_code_units('    "": [, ]\n', field="Quadrant native point source")
+            + source_label_units
+            + x_units
+            + y_units
+        )
+        fallback_projected_units += (
+            _utf16_code_units(
+                f'    quadrant_point_{index}[" · x , y "]\n',
+                field="Quadrant fallback point source",
+            )
+            + source_label_units
+            + x_units
+            + y_units
+        )
+        native_source_budget_exhausted |= (
+            native_projected_units > MAX_QUADRANT_OUTPUT_CHARS
+        )
+        fallback_source_budget_exhausted |= (
+            fallback_projected_units > MAX_QUADRANT_OUTPUT_CHARS
+        )
+        if native_source_budget_exhausted and fallback_source_budget_exhausted:
+            raise SerializationError(
+                "Quadrant output exceeds UTF-16 source-character limit of "
+                f"{MAX_QUADRANT_OUTPUT_CHARS}"
+            )
+        prepared_points.append((point, raw_label, label, x, x_text, y, y_text))
+
+    if native_source_budget_exhausted:
+        native_limitations.append(
+            "native source exceeds the bounded UTF-16 character budget"
+        )
+
+    planned_points: list[QuadrantPointPlan] = []
+    native_canvas_labels: set[str] = set()
+    for index, (point, raw_label, label, x, x_text, y, y_text) in enumerate(
+        prepared_points,
+        start=1,
+    ):
+        canvas_label = label.translate(translation)
+        source_label = _xy_neutralize_source_text(canvas_label)
+        if canvas_label in native_canvas_labels:
+            native_limitations.append(
+                "point labels collide after native canvas compatibility substitution"
+            )
+        native_canvas_labels.add(canvas_label)
+        native_compatibility_substitutions |= canvas_label != raw_label
+        fallback_compatibility_substitutions |= canvas_label != raw_label
+
+        native_values: list[float | None] = []
+        for decimal, text_value, coordinate in ((x, x_text, "x"), (y, y_text, "y")):
+            try:
+                native_value = float(text_value)
+            except (OverflowError, ValueError):
+                native_value = None
+            if native_value is not None and (
+                not math.isfinite(native_value)
+                or (decimal != 0 and native_value == 0)
+                or (native_value != 0 and abs(native_value) < sys.float_info.min)
+                or Decimal(str(native_value)) != decimal
+            ):
+                native_value = None
+            if native_value is None:
+                native_limitations.append(
+                    f"point {index} {coordinate} coordinate is not zero-or-normal "
+                    "binary64 round-trip safe"
+                )
+            native_values.append(native_value)
+        native_x, native_y = native_values
+        normalized_point: tuple[float, float] | None = None
+        if native_x is not None and native_y is not None:
+            normalized_y = 1.0 - native_y
+            pixel_x = 31.0 + 464.0 * native_x
+            title_space = 40.0 if semantic_title is not None else 0.0
+            plot_top = 5.0 + title_space
+            plot_height = 464.0 - title_space
+            pixel_y = plot_top + plot_height * normalized_y
+            progresses = (
+                math.isfinite(pixel_x)
+                and math.isfinite(pixel_y)
+                and (native_x == 0 or pixel_x > 31.0)
+                and (native_x == 1 or pixel_x < 495.0)
+                and (native_y == 1 or pixel_y > plot_top)
+                and (native_y == 0 or pixel_y < plot_top + plot_height)
+            )
+            if progresses:
+                normalized_point = (native_x, normalized_y)
+            else:
+                native_limitations.append(
+                    f"point {index} does not make finite interior progress on the pinned canvas"
+                )
+        raw_evidence_ids = point.get("evidence_ids")
+        if raw_evidence_ids is None:
+            evidence_ids = ()
+        elif (
+            isinstance(raw_evidence_ids, list)
+            and len(raw_evidence_ids) <= MAX_EVIDENCE_REFS
+            and all(
+                type(evidence_id) is str and bool(evidence_id) and len(evidence_id) <= MAX_ID_CHARS
+                for evidence_id in raw_evidence_ids
+            )
+        ):
+            try:
+                for evidence_id in raw_evidence_ids:
+                    evidence_id.encode("utf-8")
+            except UnicodeEncodeError:
+                evidence_ids = ()
+            else:
+                evidence_ids = tuple(dict.fromkeys(raw_evidence_ids))
+        else:
+            evidence_ids = ()
+        fallback_canvas = f"{canvas_label} · x {x_text}, y {y_text}"
+        planned_points.append(
+            QuadrantPointPlan(
+                source_record=point,
+                scene_id=f"quadrant_point_{index}",
+                label=label,
+                native_source_label=source_label,
+                native_canvas_label=canvas_label,
+                fallback_source_label=_xy_neutralize_source_text(fallback_canvas),
+                fallback_canvas_label=fallback_canvas,
+                x=x,
+                x_text=x_text,
+                y=y,
+                y_text=y_text,
+                native_x=native_x,
+                native_y=native_y,
+                normalized_point=normalized_point,
+                evidence_ids=evidence_ids,
+            )
+        )
+
+    # Mermaid 11.16 uses a fixed 500x500 canvas.  Model its pinned text anchors
+    # conservatively so parse/render success cannot silently publish clipped labels.
+    title_space = 40.0 if semantic_title is not None else 0.0
+    plot_top = 5.0 + title_space
+    plot_height = 464.0 - title_space
+    plot_left = 31.0
+    plot_width = 464.0
+    text_specs: list[tuple[str, str, float, float, float, str]] = []
+    if native_canvas_title is not None:
+        text_specs.append(("quadrant_title", native_canvas_title, 20.0, 250.0, 10.0, "title"))
+    text_specs.extend(
+        (
+            ("quadrant_x_axis_low", axis_plans["x"].native_canvas_low, 16.0, 147.0, 479.0, "x-low"),
+            (
+                "quadrant_x_axis_high",
+                axis_plans["x"].native_canvas_high,
+                16.0,
+                379.0,
+                479.0,
+                "x-high",
+            ),
+            (
+                "quadrant_y_axis_low",
+                axis_plans["y"].native_canvas_low,
+                16.0,
+                5.0,
+                plot_top + 0.75 * plot_height,
+                "y-low",
+            ),
+            (
+                "quadrant_y_axis_high",
+                axis_plans["y"].native_canvas_high,
+                16.0,
+                5.0,
+                plot_top + 0.25 * plot_height,
+                "y-high",
+            ),
+        )
+    )
+    for quadrant in quadrant_plans:
+        if not quadrant.label:
+            continue
+        x_center = plot_left + plot_width * quadrant.normalized_point[0]
+        y_anchor = plot_top + plot_height * quadrant.normalized_bbox[1] + 5.0
+        text_specs.append(
+            (quadrant.scene_id, quadrant.native_canvas_label, 16.0, x_center, y_anchor, "slot")
+        )
+    for point in planned_points:
+        if point.normalized_point is None:
+            continue
+        pixel_x = plot_left + plot_width * point.normalized_point[0]
+        pixel_y = plot_top + plot_height * point.normalized_point[1]
+        text_specs.append(
+            (point.scene_id, point.native_canvas_label, 12.0, pixel_x, pixel_y + 5.0, "point")
+        )
+
+    boxes: list[tuple[str, float, float, float, float, str]] = []
+    for owner, text_value, font_size, anchor_x, anchor_y, role in text_specs:
+        units = 0.0
+        for character in text_value:
+            if unicodedata.combining(character):
+                continue
+            if character.isspace():
+                units += 0.35
+            elif unicodedata.east_asian_width(character) in {"W", "F"}:
+                units += 1.0
+            elif character in "MW@#%&":
+                units += 0.95
+            elif character in "il.,:;!|'`":
+                units += 0.35
+            else:
+                units += 0.68
+        width = max(font_size * 0.68, units * font_size)
+        if role == "title":
+            box = (anchor_x - width / 2, 5.0, anchor_x + width / 2, 32.0)
+            allowed = (0.0, 0.0, 500.0, plot_top)
+        elif role == "x-low":
+            box = (anchor_x - width / 2, 475.0, anchor_x + width / 2, 499.0)
+            allowed = (plot_left, 469.0, plot_left + plot_width / 2, 500.0)
+        elif role == "x-high":
+            box = (anchor_x - width / 2, 475.0, anchor_x + width / 2, 499.0)
+            allowed = (plot_left + plot_width / 2, 469.0, 500.0, 500.0)
+        elif role in {"y-low", "y-high"}:
+            box = (0.0, anchor_y - width / 2, 22.0, anchor_y + width / 2)
+            allowed = (
+                0.0,
+                plot_top + (plot_height / 2 if role == "y-low" else 0.0),
+                plot_left,
+                plot_top + (plot_height if role == "y-low" else plot_height / 2),
+            )
+        elif role == "slot":
+            slot_plan = next(item for item in quadrant_plans if item.scene_id == owner)
+            x1, y1, x2, y2 = slot_plan.normalized_bbox
+            box = (anchor_x - width / 2, anchor_y - 3.0, anchor_x + width / 2, anchor_y + 19.0)
+            allowed = (
+                plot_left + plot_width * x1,
+                plot_top + plot_height * y1,
+                plot_left + plot_width * x2,
+                plot_top + plot_height * y2,
+            )
+        else:
+            box = (anchor_x - width / 2, anchor_y - 3.0, anchor_x + width / 2, anchor_y + 17.0)
+            allowed = (0.0, 0.0, 500.0, 500.0)
+        if box[0] < allowed[0] or box[1] < allowed[1] or box[2] > allowed[2] or box[3] > allowed[3]:
+            native_limitations.append(f"{owner} text would be clipped on the pinned canvas")
+        boxes.append((owner, *box, role))
+
+    circles: list[tuple[str, float, float, float, float]] = []
+    for point in planned_points:
+        if point.normalized_point is None:
+            continue
+        center_x = plot_left + plot_width * point.normalized_point[0]
+        center_y = plot_top + plot_height * point.normalized_point[1]
+        circles.append((point.scene_id, center_x - 5, center_y - 5, center_x + 5, center_y + 5))
+
+    comparisons = 0
+    collision_found = False
+    for index, first in enumerate(boxes):
+        for second in boxes[index + 1 :]:
+            comparisons += 1
+            if comparisons > MAX_QUADRANT_COLLISION_COMPARISONS:
+                break
+            if first[0] == second[0]:
+                continue
+            if (
+                first[1] < second[3]
+                and second[1] < first[3]
+                and first[2] < second[4]
+                and second[2] < first[4]
+            ):
+                collision_found = True
+                break
+        if collision_found or comparisons > MAX_QUADRANT_COLLISION_COMPARISONS:
+            break
+    if not collision_found and comparisons <= MAX_QUADRANT_COLLISION_COMPARISONS:
+        for index, first in enumerate(circles):
+            for second in circles[index + 1 :]:
+                comparisons += 1
+                if comparisons > MAX_QUADRANT_COLLISION_COMPARISONS:
+                    break
+                if (
+                    first[1] < second[3]
+                    and second[1] < first[3]
+                    and first[2] < second[4]
+                    and second[2] < first[4]
+                ):
+                    collision_found = True
+                    break
+            if collision_found or comparisons > MAX_QUADRANT_COLLISION_COMPARISONS:
+                break
+    if not collision_found and comparisons <= MAX_QUADRANT_COLLISION_COMPARISONS:
+        for circle in circles:
+            for box in boxes:
+                if circle[0] == box[0]:
+                    continue
+                comparisons += 1
+                if comparisons > MAX_QUADRANT_COLLISION_COMPARISONS:
+                    break
+                if (
+                    circle[1] < box[3]
+                    and box[1] < circle[3]
+                    and circle[2] < box[4]
+                    and box[2] < circle[4]
+                ):
+                    collision_found = True
+                    break
+            if collision_found or comparisons > MAX_QUADRANT_COLLISION_COMPARISONS:
+                break
+    if collision_found:
+        native_limitations.append("native point or text geometry overlaps on the pinned canvas")
+    if comparisons > MAX_QUADRANT_COLLISION_COMPARISONS:
+        native_limitations.append(
+            "native collision preflight exceeds the bounded comparison budget"
+        )
+
+    native_supported = not native_limitations and all(
+        point.normalized_point is not None for point in planned_points
+    )
+    fallback_line_count = (
+        5
+        + int(fallback_canvas_title is not None)
+        + sum(bool(quadrant.label) for quadrant in quadrant_plans)
+        + len(planned_points)
+    )
+    return QuadrantPlan(
+        x_axis=axis_plans["x"],
+        y_axis=axis_plans["y"],
+        quadrants=tuple(quadrant_plans),
+        points=tuple(planned_points),
+        total_points=len(planned_points),
+        native_supported=native_supported,
+        flowchart_supported=(
+            len(planned_points) <= MAX_QUADRANT_POINTS
+            and fallback_line_count + 1 <= MAX_QUADRANT_OUTPUT_LINES
+            and not fallback_source_budget_exhausted
+        ),
+        native_limitations=tuple(dict.fromkeys(native_limitations)),
+        semantic_title=semantic_title,
+        native_source_title=native_source_title,
+        native_canvas_title=native_canvas_title,
+        fallback_source_title=fallback_source_title,
+        fallback_canvas_title=fallback_canvas_title,
+        native_compatibility_substitutions=native_compatibility_substitutions,
+        fallback_compatibility_substitutions=fallback_compatibility_substitutions,
+    )
+
+
+def serialize_quadrant(
+    ir: dict[str, Any],
+    *,
+    experimental: bool = False,
+    native_runtime_valid: bool = True,
+) -> ChartCoreSerialization:
+    """Serialize a terminal-faithful Quadrant or exact disconnected fallback."""
+
+    if not isinstance(native_runtime_valid, bool):
+        raise SerializationError("native_runtime_valid must be a boolean")
+    plan = plan_quadrant_records(ir)
+    accessibility = resolve_accessibility(ir, "quadrant", experimental=experimental)
+    accessibility_source: list[str] = []
+    for value in (accessibility.title, accessibility.description):
+        normalized = " ".join(value.split())
+        if not normalized or len(normalized) > MAX_TEXT_CHARS:
+            raise SerializationError("Quadrant accessibility text must be bounded and non-empty")
+        if any(
+            unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"} for character in normalized
+        ):
+            raise SerializationError("Quadrant accessibility text contains unsupported text")
+        try:
+            normalized.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise SerializationError("Quadrant accessibility text is not valid UTF-8") from exc
+        accessibility_source.append(_xy_neutralize_source_text(normalized))
+
+    use_fallback = not native_runtime_valid or not plan.native_supported
+    fallback_reason: str | None = None
+    if use_fallback:
+        if not plan.flowchart_supported:
+            raise SerializationError(
+                "Quadrant Flowchart fallback exceeds its bounded source or point runtime limits"
+            )
+        lines = [
+            "flowchart TB",
+            f"    accTitle: {accessibility_source[0]}",
+            f"    accDescr: {accessibility_source[1]} "
+            "This Quadrant reconstruction uses an exact-value Flowchart fallback.",
+        ]
+        if plan.fallback_source_title is not None:
+            lines.append(f'    quadrant_title["{plan.fallback_source_title}"]')
+        lines.extend(
+            (
+                f'    {plan.x_axis.scene_id}["{plan.x_axis.fallback_source_label}"]',
+                f'    {plan.y_axis.scene_id}["{plan.y_axis.fallback_source_label}"]',
+            )
+        )
+        lines.extend(
+            f'    {quadrant.scene_id}["{quadrant.fallback_source_label}"]'
+            for quadrant in plan.quadrants
+            if quadrant.label
+        )
+        lines.extend(
+            f'    {point.scene_id}["{point.fallback_source_label}"]' for point in plan.points
+        )
+        fallback_reason = (
+            QUADRANT_RUNTIME_FALLBACK_WARNING
+            if not native_runtime_valid
+            else f"{QUADRANT_FALLBACK_WARNING} {'; '.join(plan.native_limitations)}"
+        )
+        emitted_type = "flowchart"
+    else:
+        lines = [
+            "quadrantChart",
+            f"    accTitle: {accessibility_source[0]}",
+            f"    accDescr: {accessibility_source[1]}",
+        ]
+        if plan.native_source_title is not None:
+            lines.append(f"    title {plan.native_source_title}")
+        lines.extend(
+            (
+                f'    x-axis "{plan.x_axis.native_source_low}" --> '
+                f'"{plan.x_axis.native_source_high}"',
+                f'    y-axis "{plan.y_axis.native_source_low}" --> '
+                f'"{plan.y_axis.native_source_high}"',
+            )
+        )
+        lines.extend(
+            f'    quadrant-{quadrant.slot} "{quadrant.native_source_label}"'
+            for quadrant in plan.quadrants
+            if quadrant.label
+        )
+        lines.extend(
+            f'    "{point.native_source_label}": [{point.x_text}, {point.y_text}]'
+            for point in plan.points
+        )
+        emitted_type = "quadrant"
+
+    code = "\n".join(lines) + "\n"
+    if code.count("\n") + 1 > MAX_QUADRANT_OUTPUT_LINES:
+        raise SerializationError(
+            f"Quadrant output exceeds source-line limit of {MAX_QUADRANT_OUTPUT_LINES}"
+        )
+    utf16_code_units = _utf16_code_units(code, field="Quadrant output")
+    if utf16_code_units > MAX_QUADRANT_OUTPUT_CHARS:
+        raise SerializationError(
+            f"Quadrant output exceeds UTF-16 source-character limit of {MAX_QUADRANT_OUTPUT_CHARS}"
+        )
+    report = MermaidSecurityScanner(SecurityProfile.STRICT).scan(code)
+    if not report.safe:
+        rules = ", ".join(sorted({finding.rule for finding in report.findings}))
+        raise SerializationError(f"Quadrant text violates the strict security profile: {rules}")
+    return code, emitted_type, fallback_reason
 
 
 CHART_CORE_SERIALIZERS: dict[str, Callable[..., ChartCoreSerialization]] = {

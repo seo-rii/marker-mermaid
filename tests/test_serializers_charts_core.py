@@ -43,8 +43,8 @@ CASES = {
             "4": "Improve",
         },
         "points": [
-            {"label": 'Project "A"', "x": 0.3, "y": 0.6},
-            {"label": "Project B", "x": Decimal("0.8"), "y": Decimal("0.25")},
+            {"label": 'Project "A"', "x": 0.15, "y": 0.65},
+            {"label": "Project B", "x": Decimal("0.8"), "y": Decimal("0.15")},
         ],
     },
 }
@@ -77,7 +77,7 @@ def test_outputs_are_deterministic_and_quote_safe() -> None:
         assert '"A"' not in first
     assert '"Web \\"direct\\"" : 62.5' in serialize_chart_core("pie", CASES["pie"])[0]
     assert (
-        '"Project &quot;A&quot;": [0.3, 0.6]'
+        '"Project ″A″": [0.15, 0.65]'
         in serialize_chart_core("quadrant", CASES["quadrant"])[0]
     )
 

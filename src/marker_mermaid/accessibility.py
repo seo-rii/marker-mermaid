@@ -49,6 +49,7 @@ _NODE_FIELDS = (
     "cards",
     "sets",
     "slices",
+    "points",
     "series",
     "dimensions",
     "fields",

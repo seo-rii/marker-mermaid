@@ -4557,7 +4557,7 @@ def test_direct_runtime_structural_type_drift_drops_requested_numeric_gate() -> 
         ),
     ],
 )
-def test_quadrant_reaches_numeric_consistency_gate(
+def test_quadrant_without_record_local_evidence_remains_review_only(
     diagram_type: str,
     ir: dict[str, object],
     source_numbers: str,
@@ -4597,9 +4597,13 @@ def test_quadrant_reaches_numeric_consistency_gate(
 
     assert result.selected is not None
     assert result.selected.diagram_type == diagram_type
-    assert result.selected.generated_scene_ir is None
-    assert result.selected.scores["numeric_consistency"] == 1
-    assert result.selected.aggregate_score is not None
+    assert result.selected.generated_scene_ir is not None
+    assert "numeric_consistency" not in result.selected.scores
+    assert result.selected.aggregate_score is None
+    assert any(
+        "Quadrant axis/point association lacks" in warning
+        for warning in result.selected.warnings
+    )
 
 
 @pytest.mark.parametrize(

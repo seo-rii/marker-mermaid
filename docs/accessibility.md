@@ -74,6 +74,26 @@ engine이 새로 만든 `user_edit`는 승인 근거가 되지 않습니다. 구
 text의 quote·backslash·angle·hash 치환은 compatibility warning으로 공개하고 semantic 원문은
 enriched typed IR·review metadata에 보존합니다.
 
+Native Quadrant도 `accTitle`/`accDescr`를 SVG accessibility metadata로 방출합니다. 별도의 explicit
+`title`은 canvas content이고 두 axis endpoint, supplied quadrant label, point label과 함께 semantic OCR에
+포함합니다. 좌표 숫자는 point geometry이며 native canvas text가 아니고 accessibility directive도 content
+label로 세지 않습니다. Explicit description이 없으면 파생 `accDescr`는 source 순서의 point label을 최대
+다섯 개까지 포함하되 좌표의 추세나 사분면 소속을 추측하지 않습니다. Binary64/pixel/text visibility gate를
+통과하지 못하거나 native runtime validation이
+실패하면 같은 candidate slot의 disconnected exact-value Flowchart를 사용합니다. 이 terminal은 resolved
+accessibility metadata를 유지하고 title·axis·slot·`label · x X, y Y` cell을 실제 canvas text로 셉니다.
+
+Explicit `title`/`description`/`acc_title`/`acc_description`은 accessibility enrichment 전에 non-empty bounded
+text인지 검사합니다. 따라서 빈 directive가 다음 axis directive를 title/description으로 삼키는 Mermaid 문법
+오류를 만들 수 없습니다. 자동 게시에는 axis/point 관측과 분리된 exact OCR/vector 또는 reconstruction 초기의
+exact `user_edit`가 필요하며, supplied slot label도 해당 source 사분면의 독립 근거를 가져야 합니다. Engine이
+새로 만든 `user_edit`, bbox가 없어 slot 위치를 증명하지 못하는 edit나 axis/point evidence의 재사용은 승인
+근거가 아닙니다. Native/fallback visible
+compatibility glyph는 warning으로 공개하고 semantic 원문은 enriched typed IR·review metadata에 보존합니다.
+현재 evidence model에는 title과 description을 구분하는 immutable target role이 없으므로 독립 관측은 exact
+content existence만 증명합니다. Best-effort 정책은 role 교환을 자동으로 맞다고 주장하지 않고 limitation
+warning을 남기며, strict validated 정책은 role-bound provenance가 도입될 때까지 review를 요구합니다.
+
 Native Radar는 pinned Mermaid 11.16에서 `accTitle`/`accDescr`를 지원하므로 두 directive를 SVG
 `<title>`/`<desc>` metadata로 방출합니다. 별도의 explicit `title`만 radar canvas에 보이며 semantic OCR에는
 이 visible title, axis label, `showLegend=true`일 때의 series legend만 들어갑니다. Value, `min`/`max`,

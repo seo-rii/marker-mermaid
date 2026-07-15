@@ -188,8 +188,12 @@ generated Scene attribution에서 제외합니다.
   일치할 때만 fence를 삽입합니다. 객체를 JSON으로 왕복하면 공개 digest는 audit용으로 남지만 private
   trust는 복원되지 않으므로 다시 검증하지 않은 역직렬화 결과는 자동 게시할 수 없습니다.
   Publication receipt의 quality digest는 표시되는 aggregate score와 grade, metric map, generation
-  warning을 함께 고정합니다. Pipeline은 선택 후보 warning을 중복 제거하고 최대 256개·항목당 4,096자로
-  제한한 뒤 결정하므로, 점수나 `scores.json`만 바꿔 신뢰도가 높은 것처럼 표시할 수 없습니다. Digest의
+  warning을 함께 고정합니다. Markdown에 전달하는 봉인 snapshot은 serializer stability도 함께 고정하며,
+  `experimental` candidate는 grade A여도 `Experimental reconstruction` 경고를 표시합니다. Pipeline은 선택 후보 warning을 중복 제거하고 최대 256개·항목당 4,096자로
+  제한한 뒤 결정하므로, 점수나 `scores.json`만 바꿔 신뢰도가 높은 것처럼 표시할 수 없습니다. 이때 게시
+  보류·정책 제한을 설명하는 evaluation warning과 pinned renderer compatibility warning을 engine 진단보다
+  먼저 보존하고 남은 예산만 일반 warning에 사용하므로, noisy engine output이 best-effort 결과의 필수
+  experimental 경고를 밀어낼 수 없습니다. Digest의
   확률 값은 exponent 없는 decimal string으로 encode하고 negative zero를 `"0"`으로 정규화하므로 Python과
   JavaScript verifier가 같은 bytes를 재현할 수 있습니다.
 - Source/generated Scene은 nested record를 포함한 현재 payload가 Pydantic resource 계약을 다시 통과한
@@ -243,7 +247,10 @@ generated Scene attribution에서 제외합니다.
   Sequence fallback의 participant alias·message label만 셉니다. Packet은 terminal이 native일 때만 canvas
   title을 field label 앞에 세고 Flowchart fallback에서는 제외합니다. Pie native terminal은 visible title,
   모든 legend와 positive slice의 percentage를 세며 `showData` value는 legend text에 포함합니다. Pie
-  Flowchart는 exact `label: value` cell만 세고 native-only title과 접근성 metadata는 제외합니다. Sankey native
+  Flowchart는 exact `label: value` cell만 세고 native-only title과 접근성 metadata는 제외합니다. Quadrant
+  native terminal은 visible title, axis endpoint 네 개, supplied quadrant label과 point label만 세고 좌표와
+  접근성 metadata는 제외합니다. Quadrant Flowchart는 title·axis·supplied slot·exact `label · x X, y Y`
+  cell을 셉니다. Sankey native
   terminal은 node label과 renderer가 표시하는 `max(incoming, outgoing)` 합계를 세되 개별 flow weight는 세지 않고, Flowchart terminal은
   node label과 exact edge-weight label을 셉니다. 두 Sankey 경로 모두 title/description을 canvas text로 세지
   않습니다. Radar native terminal은 visible title·axis와 `showLegend=true`인 series legend만 세고, value,
@@ -262,8 +269,8 @@ generated Scene attribution에서 제외합니다.
 - Typed semantic projection이 malformed data나 adapter defect로 예외를 내면 해당 candidate의 OCR을
   direct-code fallback으로 바꾸지 않습니다. 예외를 candidate warning으로 격리하고 aggregate를
   unavailable로 유지하여 다른 candidate 선택과 문서 변환은 계속합니다.
-- 일반 numeric consistency는 source/generated 숫자 occurrence multiset의 precision·recall F1입니다. Pie와
-  Packet의 record-local 결합 검증은 아래 예외를 사용합니다. Bounded
+- 일반 numeric consistency는 source/generated 숫자 occurrence multiset의 precision·recall F1입니다. Pie·XY·
+  Quadrant와 Packet의 record-local 결합 검증은 아래 예외를 사용합니다. Bounded
   evidence 안의 동일 normalized text+bbox는 한 관측으로 합치고, OCR context와 evidence 채널의 numeric
   Counter는 token별 최대 occurrence로 병합합니다. 따라서 위치가 다른 반복값은 보존하면서 채널 간 중복
   보고는 다시 세지 않습니다. 생성한 숫자가 source에 없거나 occurrence 수가 다르면 precision/recall을
@@ -287,6 +294,13 @@ generated Scene attribution에서 제외합니다.
   legend-only zero bbox이고 relation/group은 없습니다. 조건 밖의 valid input과 native runtime rejection은 같은
   candidate slot에서 최대 256개의 zero-geometry `TB` exact-value cell로 재검증합니다. Fallback도 relation을
   만들지 않으며 두 terminal 모두 50,000 UTF-16 code-unit·5,000줄 source preflight를 공유합니다.
+- Quadrant 구조 metric은 `QuadrantPlan`이 고정한 terminal을 따릅니다. Native는 최대 256 point의
+  zero-or-normal binary64 coordinate와 pinned 500×500 renderer의 finite·distinct point/text visibility를
+  요구하고, `(x, 1-y)` point circle·네 axis endpoint·네 quadrant group을 평가합니다. Axis line, connector와
+  quadrant membership은 source에서 증명되지 않았으므로 만들지 않습니다. Native-lossy input과 runtime
+  rejection은 같은 slot의 zero-geometry `TB` title/axis/slot/exact-point cell로 재검증하며 edge/group은
+  비웁니다. Pairwise collision/association은 각각 candidate당 100,000회, source는 50,000 UTF-16
+  code-unit·5,000줄로 제한하고 초과 시 partial score를 만들지 않습니다.
 - Radar 구조 metric은 `RadarPlan`이 확정한 terminal을 따릅니다. Native는 최대 12 series와 zero-or-normal binary64
   round-trip value/bound, positive finite effective span과 finite renderer radius를 요구하고 normalized radial
   point 및 closed marker-less curve relation을 평가합니다. Flowchart는 최대 256 point의 zero-geometry `TB`
@@ -402,5 +416,24 @@ Explicit `title`/`acc_title`·`description`/`acc_description`은 data-owned obse
 OCR/vector evidence 또는 reconstruction 초기 exact `user_edit`를 요구하며, engine-emitted edit와 direct
 Mermaid-only XY는 typed record association을 스스로 만들 수 없습니다. Native가 same-slot Flowchart로 낮아가도
 게시 gate의 semantic type은 XY로 유지되어 동일한 규칙을 적용합니다.
+Quadrant도 typed plan의 axis/point record마다 complete low/high 또는 label/x/y를 candidate-authorized
+OCR/vector와 결합하고 global numeric multiset을 함께 검사합니다. Evidence ID, normalized text+bbox와 source
+record를 재사용하거나 axis/point·좌표를 바꾸는 후보는 숫자 multiset이 같아도 mismatch입니다. X axis는
+horizontal·아래쪽, y axis는 vertical·왼쪽인 bbox 관계도 만족해야 하므로 entire-record swap과 nonstandard
+axis geometry는 review입니다. Supplied
+quadrant label은 전체 source canvas의 해당 사분면 안에 있는 독립 exact observation 또는 reconstruction
+초기의 exact `user_edit` 중 유효한 source-quadrant bbox가 있는 근거를 요구하며 schema에 없는 slot evidence를
+axis/point에서 상속하지 않습니다.
+Explicit metadata도 data-owned observation과 분리해 검사하고, direct Mermaid-only Quadrant와 invalid/missing
+bbox, engine-emitted edit, 모든 spatial/matching phase가 공유하는 100,000회 budget 초과는 review-only입니다. Same-slot Flowchart에서도
+semantic type을 Quadrant로 유지해 이 gate를 우회하지 않습니다. Source quadrant는 detected plot bbox가 아닌
+전체 crop midpoint로 판정하므로 inset/off-center plot은 false-review될 수 있으며 향후 axis/vector plot bbox를
+도입하기 전에는 자동으로 위치를 보정하지 않습니다.
+Explicit title/description/접근성 metadata의 독립 관측은 현재 evidence schema에 immutable target role이 없어
+content existence만 증명합니다. 따라서 best-effort 정책은 role-attribution limitation warning을 남기고
+experimental candidate로만 게시하며, `strict_validated`는 aggregate를 unavailable로 두어 review를 요구합니다.
+Semantic repair가 새 explicit metadata를 제안하면 같은 제한을 다시 계산합니다. Strict 정책에서 제한된
+proposal은 점수 개선으로 채택하지 않되, 이미 검증된 이전 candidate의 code·IR·score·게시 가능성은 그대로
+보존합니다.
 Packet은 candidate-authorized field-local association이 unavailable이거나 `0.0`이면 전역 숫자 multiset이나
 설정된 게시 threshold로 우회하지 않고 aggregate를 `None`으로 둡니다.

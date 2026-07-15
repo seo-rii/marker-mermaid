@@ -483,23 +483,18 @@ def test_unsupported_or_empty_typed_ir_is_unavailable():
     assert typed_ir_to_scene("flowchart", {"nodes": []}) is None
 
 
-@pytest.mark.parametrize(
-    ("diagram_type", "ir"),
-    [
-        (
-            "quadrant",
-            {
-                "x_axis": {"low": "Low", "high": "High"},
-                "y_axis": {"low": "Low", "high": "High"},
-                "points": [{"label": "A", "x": 0.5, "y": 0.5}],
-            },
-        ),
-    ],
-)
-def test_quadrant_has_no_structural_scene_adapter(
-    diagram_type: str, ir: dict[str, object]
-) -> None:
-    assert typed_ir_to_scene(diagram_type, ir) is None
+def test_quadrant_has_terminal_aware_structural_scene_adapter() -> None:
+    scene = typed_ir_to_scene(
+        "quadrant",
+        {
+            "x_axis": {"low": "Low reach", "high": "High reach"},
+            "y_axis": {"low": "Low confidence", "high": "High confidence"},
+            "points": [{"label": "A", "x": 0.5, "y": 0.5}],
+        },
+    )
+
+    assert scene is not None
+    assert scene.diagram_type_candidates == ["quadrant"]
 
 
 def test_radar_scene_requires_complete_dimension_aligned_data() -> None:

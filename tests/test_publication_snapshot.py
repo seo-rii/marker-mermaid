@@ -40,6 +40,9 @@ def _published_result(
     *,
     png: bytes | None = None,
     code: str = _SAFE_CODE,
+    aggregate_score: float = 0.8,
+    grade: str = "B",
+    serialization_stability: str = "stable",
 ) -> ReconstructionResult:
     candidate = MermaidCandidate(
         candidate_id="candidate-1",
@@ -49,7 +52,8 @@ def _published_result(
         syntax_valid=True,
         render_valid=True,
         scores={"ocr_recall": 0.8},
-        aggregate_score=0.8,
+        aggregate_score=aggregate_score,
+        serialization_stability=serialization_stability,
         svg=_SAFE_SVG,
         png=png,
         runtime_diagram_type="flowchart-v2",
@@ -75,7 +79,7 @@ def _published_result(
         source_id="_page_0_Figure_1",
         source_image_name="_page_0_Figure_1.jpeg",
         selected=candidate,
-        grade="B",
+        grade=grade,
         publish=True,
         review_required=False,
         status="success",
@@ -333,11 +337,76 @@ def test_publication_snapshot_cannot_be_forged_or_modified() -> None:
 
 
 @pytest.mark.parametrize(
+    ("serialization_stability", "expects_warning"),
+    [
+        ("stable", False),
+        ("extended", False),
+        ("experimental", True),
+    ],
+)
+def test_grade_a_markdown_discloses_only_experimental_serialization(
+    serialization_stability: str,
+    expects_warning: bool,
+) -> None:
+    result = _published_result(
+        aggregate_score=0.9,
+        grade="A",
+        serialization_stability=serialization_stability,
+    )
+
+    markdown = reconstruction_markdown(result)
+    hidden_warning_markdown = reconstruction_markdown(result, show_warning=False)
+
+    assert (markdown.startswith("> **Experimental reconstruction:**")) is expects_warning
+    assert hidden_warning_markdown.startswith("```mermaid\n")
+    snapshot = result.authorized_publication_snapshot()
+    assert snapshot is not None
+    assert snapshot.serialization_stability == serialization_stability
+    assert snapshot.publication_receipt.serialization_stability == serialization_stability
+
+
+def test_publication_snapshot_rejects_serialization_stability_tampering() -> None:
+    result = _published_result(
+        aggregate_score=0.9,
+        grade="A",
+        serialization_stability="experimental",
+    )
+    snapshot = result.authorized_publication_snapshot()
+    assert snapshot is not None
+    serialized = snapshot.model_dump(mode="python")
+
+    modified = snapshot.model_copy(update={"serialization_stability": "stable"})
+    reconstructed = AuthorizedPublicationSnapshot.model_validate(serialized)
+
+    assert serialized["serialization_stability"] == "experimental"
+    assert not modified.has_trusted_values()
+    assert not reconstructed.has_trusted_values()
+    assert reconstruction_markdown_from_snapshot(modified) == ""
+    assert reconstruction_markdown_from_snapshot(reconstructed) == ""
+
+
+def test_publication_snapshot_rejects_candidate_stability_mutation_after_certification() -> None:
+    result = _published_result(
+        aggregate_score=0.9,
+        grade="A",
+        serialization_stability="experimental",
+    )
+    assert result.selected is not None
+
+    result.selected.serialization_stability = "stable"
+
+    assert not result.has_authorized_publication()
+    assert result.authorized_publication_snapshot() is None
+    assert reconstruction_markdown(result) == ""
+
+
+@pytest.mark.parametrize(
     "update",
     [
         {"source_id": "other-source"},
         {"selected_candidate_id": "other-candidate"},
         {"grade": "A"},
+        {"serialization_stability": "experimental"},
         {"png": _png("red"), "preview_omitted": False},
     ],
 )

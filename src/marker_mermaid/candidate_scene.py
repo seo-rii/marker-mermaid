@@ -30,7 +30,11 @@ from marker_mermaid.serializers import (
     plan_architecture_structure,
     plan_gantt_records,
 )
-from marker_mermaid.serializers_charts_core import plan_pie_records, plan_xychart_records
+from marker_mermaid.serializers_charts_core import (
+    plan_pie_records,
+    plan_quadrant_records,
+    plan_xychart_records,
+)
 from marker_mermaid.serializers_charts_flow import plan_radar_records, plan_sankey_records
 from marker_mermaid.serializers_charts_sets import plan_treemap_records, plan_venn_records
 from marker_mermaid.serializers_experimental import (
@@ -536,6 +540,127 @@ def typed_ir_to_scene(
             groups=[],
             reading_direction="LR",
             diagram_type_candidates=["xychart"],
+            coordinate_space="normalized",
+        )
+    elif diagram_type == "quadrant":
+        try:
+            quadrant_plan = plan_quadrant_records(ir)
+        except SerializationError:
+            return None
+        quadrant_uses_flowchart = (
+            not quadrant_plan.native_supported
+            if emitted_diagram_type is None
+            else emitted_diagram_type.casefold().startswith("flowchart")
+        )
+        if quadrant_uses_flowchart:
+            if not quadrant_plan.flowchart_supported:
+                return None
+            fallback_elements: list[SceneElement] = []
+            if quadrant_plan.fallback_canvas_title is not None:
+                fallback_elements.append(
+                    SceneElement(
+                        id="quadrant_title",
+                        role="title",
+                        text=quadrant_plan.fallback_canvas_title,
+                        bbox=(0.0, 0.0, 0.0, 0.0),
+                        shape="rectangle",
+                        confidence=1.0,
+                        evidence_ids=[],
+                    )
+                )
+            fallback_elements.extend(
+                SceneElement(
+                    id=axis.scene_id,
+                    role="axis",
+                    text=axis.fallback_canvas_label,
+                    bbox=(0.0, 0.0, 0.0, 0.0),
+                    shape="rectangle",
+                    confidence=1.0,
+                    evidence_ids=list(axis.evidence_ids),
+                )
+                for axis in (quadrant_plan.x_axis, quadrant_plan.y_axis)
+            )
+            fallback_elements.extend(
+                SceneElement(
+                    id=quadrant.scene_id,
+                    role="quadrant_label",
+                    text=quadrant.fallback_canvas_label,
+                    bbox=(0.0, 0.0, 0.0, 0.0),
+                    shape="rectangle",
+                    confidence=1.0,
+                    evidence_ids=list(quadrant.evidence_ids),
+                )
+                for quadrant in quadrant_plan.quadrants
+                if quadrant.label
+            )
+            fallback_elements.extend(
+                SceneElement(
+                    id=point.scene_id,
+                    role="data_point",
+                    text=point.fallback_canvas_label,
+                    bbox=(0.0, 0.0, 0.0, 0.0),
+                    shape="rectangle",
+                    confidence=1.0,
+                    evidence_ids=list(point.evidence_ids),
+                )
+                for point in quadrant_plan.points
+            )
+            return DiagramSceneIR(
+                elements=fallback_elements,
+                relations=[],
+                groups=[],
+                reading_direction="TB",
+                diagram_type_candidates=["quadrant"],
+                coordinate_space="pixels",
+            )
+        if not quadrant_plan.native_supported:
+            return None
+        axis_elements = [
+            SceneElement(
+                id=f"{axis.scene_id}_{endpoint}",
+                role="axis_endpoint",
+                text=canvas_label,
+                bbox=(*normalized_point, *normalized_point),
+                shape=None,
+                confidence=1.0,
+                evidence_ids=list(axis.evidence_ids),
+            )
+            for axis in (quadrant_plan.x_axis, quadrant_plan.y_axis)
+            for endpoint, canvas_label, normalized_point in (
+                ("low", axis.native_canvas_low, axis.normalized_low_point),
+                ("high", axis.native_canvas_high, axis.normalized_high_point),
+            )
+        ]
+        point_elements: list[SceneElement] = []
+        for point in quadrant_plan.points:
+            if point.normalized_point is None:
+                return None
+            point_elements.append(
+                SceneElement(
+                    id=point.scene_id,
+                    role="data_point",
+                    text=point.native_canvas_label,
+                    bbox=(*point.normalized_point, *point.normalized_point),
+                    shape="circle",
+                    confidence=1.0,
+                    evidence_ids=list(point.evidence_ids),
+                )
+            )
+        return DiagramSceneIR(
+            elements=[*axis_elements, *point_elements],
+            relations=[],
+            groups=[
+                SceneGroup(
+                    id=quadrant.scene_id,
+                    role="quadrant",
+                    label=quadrant.native_canvas_label or None,
+                    bbox=quadrant.normalized_bbox,
+                    member_ids=[],
+                )
+                for quadrant in quadrant_plan.quadrants
+            ],
+            reading_direction="unknown",
+            diagram_type_candidates=["quadrant"],
             coordinate_space="normalized",
         )
     elif diagram_type == "radar":
@@ -1936,6 +2061,42 @@ def typed_ir_semantic_texts(
                 yield category.native_canvas_label
             if plan.y_axis.native_canvas_label is not None:
                 yield plan.y_axis.native_canvas_label
+        return
+    if diagram_type == "quadrant":
+        plan = plan_quadrant_records(ir)
+        quadrant_uses_flowchart = (
+            not plan.native_supported
+            if emitted_diagram_type is None
+            else emitted_diagram_type.casefold().startswith("flowchart")
+        )
+        if quadrant_uses_flowchart:
+            if not plan.flowchart_supported:
+                raise SerializationError(
+                    "Quadrant Flowchart projection exceeds its bounded source or point limits"
+                )
+            if plan.fallback_canvas_title is not None:
+                yield plan.fallback_canvas_title
+            yield plan.x_axis.fallback_canvas_label
+            yield plan.y_axis.fallback_canvas_label
+            for quadrant in plan.quadrants:
+                if quadrant.label:
+                    yield quadrant.fallback_canvas_label
+            for point in plan.points:
+                yield point.fallback_canvas_label
+        else:
+            if not plan.native_supported:
+                raise SerializationError("native Quadrant projection is not lossless")
+            if plan.native_canvas_title is not None:
+                yield plan.native_canvas_title
+            yield plan.x_axis.native_canvas_low
+            yield plan.x_axis.native_canvas_high
+            yield plan.y_axis.native_canvas_low
+            yield plan.y_axis.native_canvas_high
+            for quadrant in plan.quadrants:
+                if quadrant.label:
+                    yield quadrant.native_canvas_label
+            for point in plan.points:
+                yield point.native_canvas_label
         return
     if diagram_type == "radar":
         plan = plan_radar_records(ir)

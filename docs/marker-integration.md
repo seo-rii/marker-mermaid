@@ -82,6 +82,10 @@ receipt를 한 번에 캡처한 immutable publication snapshot을 process-privat
 snapshot에서 Mermaid fence와 preview를 만듭니다. Snapshot을 직접 만들거나
 `model_copy(update=...)`로 값을 바꾸면 seal 검사가 실패합니다. Preview 생략 진단은 이미 봉인된 candidate
 warning list를 수정하지 않으므로 이후 sidecar 기록의 품질 receipt도 그대로 유효합니다.
+Snapshot과 Marker의 JSON-safe `mermaid` summary는 grade에서 안정도를 추측하지 않고 선택 serializer의
+`stable`/`extended`/`experimental` 값을 그대로 사용합니다. 따라서 grade A experimental 후보도 Markdown과
+internal metadata 양쪽에서 안정도 표시를 잃지 않습니다. `publish=true`인데 같은 trusted snapshot을 만들 수
+없는 변이 결과는 live candidate의 안정도를 다시 믿지 않고 summary에서도 `experimental`로 낮춥니다.
 
 ## metadata
 

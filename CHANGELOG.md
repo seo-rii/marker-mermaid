@@ -59,6 +59,36 @@
   typed plan, fabricated explicit metadata, and engine-emitted self-authorizing user edits remain
   review-only. Explicit-metadata spatial attribution skips unused scans and fails closed beyond
   100,000 evidence-to-record overlap comparisons per candidate.
+- Quadrant serialization, generated Scene, and semantic OCR now share a bounded `QuadrantPlan` that
+  freezes two axis records, four quadrant regions, up to 256 exact fixed-decimal points, deterministic
+  Scene identities, terminal-visible text, and record-local provenance. Native Mermaid 11.16 output
+  requires `[0,1]` zero-or-normal binary64 round trips plus finite, distinct, unclipped, non-overlapping
+  point and text placement on the pinned 500×500 canvas; duplicate/near points, float collapse,
+  subnormal coordinates, and canvas occlusion use the same candidate slot's disconnected
+  `flowchart TB` fallback. The fallback preserves optional title, both axes, supplied quadrant labels,
+  and every exact `label · x X, y Y` cell without inventing edges or geometry, and native runtime
+  rejection receives a fresh full validation pass. Native Scenes expose four visible axis endpoints,
+  normalized point circles, and four unlabeled-or-supplied region groups with no inferred relation or
+  membership; fallback Scenes expose emitted zero-geometry cells. Terminal OCR distinguishes visible
+  native labels from exact fallback cells and excludes native coordinates/accessibility metadata.
+  A two-pass point budget preflight counts native and fallback UTF-16 source independently before allocating
+  terminal projections, stopping early only when both outputs are impossible. Both terminals enforce 50,000
+  UTF-16 source units / 5,000 lines and disclose visible compatibility substitutions. Native output also records
+  Mermaid 11.16's non-finite point-paint compatibility warning without leaking it into the Flowchart fallback.
+  Publication now combines global numeric completeness with candidate-authorized,
+  record-local axis/point OCR or vector binding, independent source-quadrant evidence for supplied slot
+  labels, and independent explicit-metadata attribution. Observation/record reuse, swaps, invalid
+  geometry, direct candidates without a typed plan, engine-emitted self-authorizing user edits, and
+  shared 100,000-comparison budget overflow remain review-only. Horizontal/bottom x-axis versus
+  vertical/left y-axis geometry prevents whole-record swaps. Supplied slot attribution uses a conservative
+  whole-crop midpoint and requires a spatially targeted initial user edit; off-center plots may therefore
+  require review. Explicit title/description evidence currently proves content existence rather than an
+  immutable semantic role, so best-effort output records a limitation warning and strict validation keeps
+  the candidate in review. Default accessible descriptions enumerate up to five observed point labels
+  without inventing a trend or quadrant membership. Publication-policy warnings are retained ahead of noisy
+  engine diagnostics at the bounded warning sink, and a rejected strict semantic-repair proposal cannot
+  downgrade the preceding validated candidate. The sealed Markdown snapshot now carries serializer stability,
+  so experimental Quadrant output remains visibly marked even when its quality score is grade A.
 - Radar serialization, generated Scene, and semantic OCR now share a bounded `RadarPlan` with
   reserved-safe cross-terminal IDs, fixed-decimal values, record-local provenance, and explicit
   native-versus-tabular terminal semantics. Native Radar is limited to 12 series and requires
@@ -291,8 +321,8 @@
   non-empty, collision, endpoint, and resource-cap semantics remain owned by the shared fallback plan.
 - Pie, XY, and Quadrant typed IR now have strict nested prompt/post-validation contracts for finite
   JSON chart numbers, axes, series, slices, points, and canonical quadrant labels. Completeness and
-  representability checks remain serializer-owned; Quadrant remains native-only without a generated
-  Scene adapter, while Pie and XY use shared native/Flowchart terminal plans and record provenance.
+  representability checks remain serializer-owned; all three use shared native/Flowchart terminal plans,
+  generated Scene/OCR projections, and record provenance.
   Publication still requires independent source OCR/vector numeric evidence. XY values must remain inside the
   declared y-axis, and XY axes/series/points require record-local source association;
   ambiguous Quadrant label aliases fail closed, and grammar-aware numeric projection excludes comments,

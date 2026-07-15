@@ -29,7 +29,7 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 | Use-case | `flowchart` | stadium actor/round use-case proxy와 typed relation label; actor glyph, system boundary, group/style/bidirectional metadata는 typed IR에 유지 |
 | Pie | `pie` 또는 `flowchart` | 12-slice·binary64·1% visibility·`showData` exactness native gate, 그 외 및 native runtime 거부는 same-slot exact-value fallback |
 | XY | `xychart` 또는 `flowchart` | bounded exact renderer grid·visible line/bar·binary64 gate, 그 외 및 native runtime 거부는 same-slot exact-value fallback |
-| Quadrant | `quadrant` | explicit finite axis/coordinates 필수; native-only |
+| Quadrant | `quadrant` 또는 `flowchart` | exact normalized coordinate와 pinned canvas visibility를 통과하면 native, 그 외 및 runtime 거부는 same-slot exact-cell fallback |
 | Sankey | `sankey` 또는 `flowchart` | native-safe positive DAG, 그 외 및 native runtime 거부 시 same-slot exact-weight fallback |
 | Radar | `radar` 또는 `flowchart` | 12-series 이하의 zero-or-normal binary64·finite positive span/radius native domain, 그 외 및 native runtime 거부는 same-slot exact-value tabular fallback(최대 256 point) |
 | Treemap | `treemap` 또는 `flowchart` | leaf value 필수; internal value·unsafe binary64/표시 합계·native runtime 거부는 same-slot exact-value fallback |
@@ -387,13 +387,13 @@ Generated Scene은 rule/expression source record의 `evidence_ids`가 null/생�
 검사하고 다른 형이면 후보 전체를 fail closed합니다. 따라서 serializer, Scene, OCR, provenance가 동일한
 bounded plan과 compatibility label을 소비합니다.
 
-### Pie·XY terminal과 Quadrant native-only 경계
+### Pie·XY·Quadrant terminal 경계
 
 Pie·XY·Quadrant는 strict nested extraction contract를 통과합니다. Contract는 record/container, strict finite
 JSON `int`/`float`, boolean, bbox/evidence와 XY `line|bar` token의 형을 검사합니다. Direct serializer가 받을
-수 있는 `Decimal`은 provider structured input 계약이 아닙니다. Quadrant는 `quadrantChart` native grammar만
-방출하지만 Pie와 XY는 native terminal이 원본 값/구조를 손실할 경우 disconnected exact-value
-Flowchart로 낮춥니다. Missing/unreadable value의 structured table/prose 대체는 아직 후속 범위입니다.
+수 있는 `Decimal`은 provider structured input 계약이 아닙니다. 세 유형 모두 native terminal이 원본
+값/구조를 손실할 경우 disconnected exact-value Flowchart로 낮춥니다. Missing/unreadable value의 structured
+table/prose 대체는 아직 후속 범위입니다.
 
 Pie의 non-empty·고유 label·non-negative value·positive total, XY의 categorical/numeric x-axis 배타성,
 axis bounds와 모든 y의 범위 포함 여부, exactly-one values/points, category 길이 및 native uniform numeric grid,
@@ -452,12 +452,41 @@ relation/group을 사용합니다. 각 axis, series, explicit point는 자신의
 metadata는 data-owned observation과 분리된 exact OCR/vector 근거 또는 reconstruction 초기의 exact `user_edit`가
 필요하고 engine이 새로 만든 `user_edit`는 승인 근거가 되지 않습니다.
 
-Quadrant record의 bbox/evidence는 typed IR/review sidecar에 보존되지만 아직 generated Scene adapter가
-없으므로 자동 Scene attribution을 주장하지 않습니다. 공통 accessibility/extra metadata와 원본 dict 보존은
-유지되지만 그 숫자나 typed evidence reference가 별도 source OCR/vector numeric gate를 대신하지 않습니다.
-Source numeric evidence가 없거나 일치도가 낮으면 native parse/render 성공과 무관하게 review에 남습니다.
-Numeric projection은 Quadrant directive의 구조 번호 `quadrant-1`~`quadrant-4`를 제외하되 label과 point 좌표의
-실제 숫자는 유지합니다.
+Quadrant serializer·Scene·OCR은 bounded `QuadrantPlan`을 공유합니다. Native `quadrantChart`는 최대 256개의
+point가 exact `[0,1]` fixed decimal이고 zero-or-normal binary64로 round-trip되며, pinned 500×500 canvas의
+title-dependent plot에서 finite·distinct pixel 위치와 point/label/quadrant/axis/title 비충돌·비클리핑을
+만족할 때만 선택합니다. Pairwise visibility 비교는 100,000회로 제한합니다. Float collapse, subnormal,
+duplicate/near point 또는 text occlusion은 source 값을 버리지 않고 optional title, 두 axis, supplied
+quadrant slot, `label · x X, y Y` rectangle만 가진 disconnected `flowchart TB`로 낮춥니다. Native runtime
+거부도 같은 slot의 fallback을 security/parse/render/SVG/type gate부터 다시 검사합니다. 두 terminal은
+50,000 UTF-16 code-unit·5,000줄 source preflight를 공유합니다.
+
+Point label/coordinate는 terminal-visible projection을 여러 벌 만들기 전에 native와 Flowchart source의
+UTF-16 unit을 별도로 누적합니다. 두 terminal이 모두 50,000-unit limit을 넘는 즉시 fail closed하고, 한쪽만
+넘으면 그 terminal만 unavailable로 두어 다른 쪽의 정확한 출력을 불필요하게 버리지 않습니다. Native
+Mermaid 11.16이 point paint에 non-finite HSL component를 만드는 renderer 호환 문제는 candidate warning으로
+공개하되 finite geometry/text 자체는 유지하며, exact Flowchart에는 해당 경고를 전파하지 않습니다.
+
+Native Scene은 four visible axis endpoint element, `(x, 1-y)` normalized point circle과 upper-right,
+upper-left, lower-left, lower-right `SceneGroup`을 사용합니다. 실제 canvas에 없는 axis line, point edge와
+group membership은 만들지 않고 direction은 `unknown`입니다. Fallback Scene은 emitted title/axis/slot/point
+cell을 source 순서의 zero geometry로 투영하고 relation/group은 비우며 `TB`입니다. OCR도 각 terminal의
+visible text만 세고 native point coordinate와 accessibility metadata는 제외합니다.
+
+Axis/point bbox와 evidence는 generated element의 record-local provenance에 연결되며 각 record의 complete
+low/high 또는 label/x/y observation과 global numeric occurrence가 함께 맞아야 자동 게시됩니다. X axis의
+horizontal·아래쪽 bbox와 y axis의 vertical·왼쪽 bbox 관계도 요구해 전체 axis record 교환을 차단합니다.
+Typed schema에
+별도 evidence가 없는 supplied slot label은 source 해당 사분면의 independent exact OCR/vector 또는 초기
+exact `user_edit` 중 유효한 source-quadrant bbox가 있는 근거로 검증하고 axis/point evidence를 상속하지
+않습니다. Explicit title/accessibility text도
+data-owned bbox와 분리된 근거를 요구합니다. Direct candidate, observation/record reuse, swap, invalid geometry,
+missing source evidence와 공유 100,000회 association budget 초과는 review-only입니다. Numeric projection은 directive의 구조
+번호 `quadrant-1`~`quadrant-4`를 제외하되 visible label과 point coordinate의 실제 숫자를 유지합니다. Slot
+spatial gate는 전체 source crop midpoint를 쓰는 보수적 heuristic이며 off-center plot bbox를 추정하지 않습니다.
+Explicit title/description evidence에는 immutable semantic target이 없으므로 exact content existence만
+검증합니다. Best-effort output은 role-attribution limitation을 경고하고 strict validated output은 review로
+유지합니다.
 
 ### Sankey·Radar·Treemap·Venn의 fallback 경계
 

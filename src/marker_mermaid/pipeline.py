@@ -105,7 +105,13 @@ from marker_mermaid.serializers import (
     serialize_runtime_fallback_result,
     serialize_typed_ir_result,
 )
-from marker_mermaid.serializers_charts_core import plan_pie_records, plan_xychart_records
+from marker_mermaid.serializers_charts_core import (
+    QUADRANT_NATIVE_PAINT_COMPATIBILITY_WARNING,
+    plan_pie_records,
+    plan_quadrant_records,
+    plan_xychart_records,
+    validate_quadrant_explicit_metadata,
+)
 from marker_mermaid.serializers_special import plan_packet_fields
 from marker_mermaid.style_recovery import (
     TrustedEdgeStyleEvidence,
@@ -131,6 +137,7 @@ class _Draft:
     raw_mermaid: str | None = None
     warnings: list[str] | None = None
     evidence_authority_ids: frozenset[str] | None = None
+    quadrant_metadata_role_limited: bool = False
 
 
 @dataclass(slots=True)
@@ -156,6 +163,8 @@ _MAX_PACKET_FIELD_OVERLAP_COMPARISONS = 100_000
 _MAX_PIE_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
 _MAX_PIE_SLICE_OVERLAP_COMPARISONS = 100_000
 _MAX_XY_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
+_MAX_QUADRANT_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
+_MAX_QUADRANT_OVERLAP_COMPARISONS = 100_000
 _MAX_XY_RECORD_OVERLAP_COMPARISONS = 100_000
 _PIL_IMAGING_CORE_TYPE = type(Image.new("RGB", (1, 1)).im)
 _PIL_IMAGE_DICT_DESCRIPTOR = Image.Image.__dict__["__dict__"]
@@ -340,6 +349,7 @@ _PROVENANCE_GATED_TYPES = frozenset(
         "organization",
         "packet",
         "pie",
+        "quadrant",
         "radar",
         "railroad",
         "requirement",
@@ -415,6 +425,29 @@ _XY_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING = (
     "XY explicit accessibility description lacks independent candidate-authorized spatial "
     "OCR/vector or user-edit evidence; review is required"
 )
+_QUADRANT_RECORD_ASSOCIATION_UNAVAILABLE_WARNING = (
+    "Quadrant axis/point association lacks candidate-authorized spatial OCR/vector evidence; "
+    "review is required"
+)
+_QUADRANT_RECORD_ASSOCIATION_MISMATCH_WARNING = (
+    "Quadrant axis/point association conflicts with source evidence; review is required"
+)
+_QUADRANT_SLOT_ATTRIBUTION_UNAVAILABLE_WARNING = (
+    "Quadrant slot label lacks independent candidate-authorized spatial OCR/vector or "
+    "user-edit evidence; review is required"
+)
+_QUADRANT_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING = (
+    "Quadrant title/accTitle lacks independent candidate-authorized spatial OCR/vector or "
+    "user-edit evidence; review is required"
+)
+_QUADRANT_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING = (
+    "Quadrant explicit accessibility description lacks independent candidate-authorized "
+    "spatial OCR/vector or user-edit evidence; review is required"
+)
+_QUADRANT_METADATA_ROLE_LIMITATION_WARNING = (
+    "Quadrant explicit metadata uses content-existence attribution; immutable source roles "
+    "for title, description, accTitle, and accDescr are unavailable."
+)
 
 _EVALUATION_WARNING_TEXT = frozenset(
     {
@@ -432,11 +465,21 @@ _EVALUATION_WARNING_TEXT = frozenset(
         _XY_RECORD_ASSOCIATION_MISMATCH_WARNING,
         _XY_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING,
         _XY_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING,
+        _QUADRANT_RECORD_ASSOCIATION_UNAVAILABLE_WARNING,
+        _QUADRANT_RECORD_ASSOCIATION_MISMATCH_WARNING,
+        _QUADRANT_SLOT_ATTRIBUTION_UNAVAILABLE_WARNING,
+        _QUADRANT_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING,
+        _QUADRANT_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING,
+        _QUADRANT_METADATA_ROLE_LIMITATION_WARNING,
         "numeric consistency is below the automatic publication threshold",
         "numeric diagram lacks OCR/vector numeric evidence and cannot auto-publish",
         "unlabeled scene-only candidates require OCR/VLM fusion before publishing",
     }
 )
+
+_PUBLICATION_PRIORITY_WARNING_TEXT = _EVALUATION_WARNING_TEXT | {
+    QUADRANT_NATIVE_PAINT_COMPATIBILITY_WARNING,
+}
 
 
 def _without_evaluation_warnings(warnings: list[str]) -> list[str]:
@@ -488,6 +531,24 @@ def _generated_node_provenance_score(
     if not generated_elements:
         return None
     known = {item.id for item in evidence}
+    quadrant_scene = generated_scene.diagram_type_candidates == ["quadrant"]
+    if quadrant_scene:
+        # Axis endpoints reuse one axis record's evidence by design.  Native region
+        # groups are derived geometry, while fallback title/slot cells are governed
+        # by independent attribution gates below.  The specialized local gate keeps
+        # evidence ownership injective across actual axis/point records.
+        traceable_elements = [
+            element
+            for element in generated_elements
+            if element.role not in {"title", "quadrant_label"}
+        ]
+        if not traceable_elements:
+            return None
+        supported = sum(
+            bool(known.intersection(element.evidence_ids))
+            for element in traceable_elements
+        )
+        return supported / len(traceable_elements)
     if xy_scene and generated_scene.coordinate_space == "pixels":
         # The exact-value Flowchart has one visible cell per planned axis, category,
         # and point.  Values-mode points intentionally share their series record's
@@ -1857,6 +1918,12 @@ class ReconstructionPipeline:
                 ]
                 for typed in eligible_typed_candidates[:candidate_budget]:
                     try:
+                        if typed.diagram_type == "quadrant":
+                            # Accessibility enrichment fills empty directives with
+                            # derived text. Validate the raw payload first so an
+                            # explicitly empty field cannot be laundered into a
+                            # publishable Quadrant candidate.
+                            validate_quadrant_explicit_metadata(typed.ir)
                         enriched_ir = enrich_accessibility_ir(
                             typed.ir,
                             typed.diagram_type,
@@ -1919,6 +1986,18 @@ class ReconstructionPipeline:
                                 observation.fusion_typed_evidence_authority_for(typed)
                                 if is_fused
                                 else observation_authority
+                            ),
+                            quadrant_metadata_role_limited=(
+                                typed.diagram_type == "quadrant"
+                                and any(
+                                    typed.ir.get(field) is not None
+                                    for field in (
+                                        "title",
+                                        "description",
+                                        "acc_title",
+                                        "acc_description",
+                                    )
+                                )
                             ),
                         )
                     )
@@ -2452,6 +2531,7 @@ class ReconstructionPipeline:
                 references=references,
                 type_fitness=type_fitness,
                 image=context.image,
+                quadrant_metadata_role_limited=draft.quadrant_metadata_role_limited,
             )
             candidate.scores = evaluation.scores
             candidate.aggregate_score = evaluation.aggregate_score
@@ -2476,7 +2556,17 @@ class ReconstructionPipeline:
         if selected is not None:
             bounded_warnings: list[str] = []
             warnings_truncated = False
-            for warning in selected.warnings:
+            publication_safety_warnings = [
+                warning
+                for warning in selected.warnings
+                if warning in _PUBLICATION_PRIORITY_WARNING_TEXT
+            ]
+            ordinary_warnings = [
+                warning
+                for warning in selected.warnings
+                if warning not in _PUBLICATION_PRIORITY_WARNING_TEXT
+            ]
+            for warning in [*publication_safety_warnings, *ordinary_warnings]:
                 normalized = _sink_safe_diagnostic_text(warning)
                 if len(normalized) > MAX_WARNING_CHARS:
                     normalized = normalized[: MAX_WARNING_CHARS - 1] + "…"
@@ -2589,6 +2679,7 @@ class ReconstructionPipeline:
         references: _ReferenceTexts,
         type_fitness: float | None,
         image: Image.Image,
+        quadrant_metadata_role_limited: bool,
     ) -> _CandidateEvaluation:
         """Score initial and repaired candidates through one availability/gating path."""
 
@@ -2665,6 +2756,10 @@ class ReconstructionPipeline:
         xy_binding_state: Literal["exact", "mismatch", "unavailable"] | None = None
         xy_title_attribution_state: Literal["exact", "unavailable"] | None = None
         xy_description_attribution_state: Literal["exact", "unavailable"] | None = None
+        quadrant_binding_state: Literal["exact", "mismatch", "unavailable"] | None = None
+        quadrant_slot_attribution_state: Literal["exact", "unavailable"] | None = None
+        quadrant_title_attribution_state: Literal["exact", "unavailable"] | None = None
+        quadrant_description_attribution_state: Literal["exact", "unavailable"] | None = None
         if gate_diagram_type == "packet":
             # Packet ranges need a field-local proof.  A document-wide number multiset can
             # stay identical when two labels exchange their ranges, so it is not publication
@@ -3342,6 +3437,542 @@ class ReconstructionPipeline:
                 if pie_binding_state == "mismatch"
                 else None
             )
+        elif gate_diagram_type == "quadrant":
+            # Quadrant coordinates and axis endpoints need record-local proof.  A
+            # global label/number multiset remains unchanged when axes, labels, or
+            # point coordinates exchange owners.
+            quadrant_binding_state = "unavailable"
+            quadrant_plan = None
+            if typed_ir is not None:
+                try:
+                    quadrant_plan = plan_quadrant_records(typed_ir)
+                except SerializationError:
+                    quadrant_plan = None
+
+            record_specs: list[
+                tuple[str, object, tuple[str, ...], set[str]]
+            ] = []
+            quadrant_x_axis_owner_id: str | None = None
+            quadrant_y_axis_owner_id: str | None = None
+            if quadrant_plan is not None:
+                quadrant_x_axis_owner_id = quadrant_plan.x_axis.scene_id
+                quadrant_y_axis_owner_id = quadrant_plan.y_axis.scene_id
+                for axis in (quadrant_plan.x_axis, quadrant_plan.y_axis):
+                    record_specs.append(
+                        (
+                            axis.scene_id,
+                            axis.source_record,
+                            axis.evidence_ids,
+                            {
+                                _normalized_label(f"{axis.low} {axis.high}"),
+                                _normalized_label(f"{axis.low} to {axis.high}"),
+                                _normalized_label(f"{axis.low} → {axis.high}"),
+                                _normalized_label(f"{axis.low}: {axis.high}"),
+                            },
+                        )
+                    )
+                for point in quadrant_plan.points:
+                    record_specs.append(
+                        (
+                            point.scene_id,
+                            point.source_record,
+                            point.evidence_ids,
+                            {
+                                _normalized_label(
+                                    f"{point.label} {point.x_text} {point.y_text}"
+                                ),
+                                _normalized_label(
+                                    f"{point.label}: {point.x_text} {point.y_text}"
+                                ),
+                                _normalized_label(
+                                    f"{point.label}: [{point.x_text}, {point.y_text}]"
+                                ),
+                                _normalized_label(
+                                    f"{point.label} [{point.x_text}, {point.y_text}]"
+                                ),
+                                _normalized_label(
+                                    f"{point.label}: ({point.x_text}, {point.y_text})"
+                                ),
+                            },
+                        )
+                    )
+
+            image_width, image_height = image.size
+            record_boxes: dict[str, tuple[float, float, float, float]] = {}
+            spatial_evidence_safe = bool(record_specs)
+            quadrant_comparison_budget = max(
+                0, _MAX_QUADRANT_OVERLAP_COMPARISONS
+            )
+            for owner_id, source_record, _evidence_ids, _allowed in record_specs:
+                if not isinstance(source_record, dict):
+                    spatial_evidence_safe = False
+                    break
+                raw_bbox = source_record.get("bbox")
+                if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+                    spatial_evidence_safe = False
+                    break
+                bbox = tuple(float(value) for value in raw_bbox)
+                x1, y1, x2, y2 = bbox
+                if (
+                    not all(math.isfinite(value) for value in bbox)
+                    or x2 <= x1
+                    or y2 <= y1
+                    or x1 < 0
+                    or y1 < 0
+                    or x2 > image_width
+                    or y2 > image_height
+                ):
+                    spatial_evidence_safe = False
+                    break
+                record_boxes[owner_id] = bbox
+
+            if (
+                spatial_evidence_safe
+                and quadrant_x_axis_owner_id is not None
+                and quadrant_y_axis_owner_id is not None
+            ):
+                x_axis_bbox = record_boxes[quadrant_x_axis_owner_id]
+                y_axis_bbox = record_boxes[quadrant_y_axis_owner_id]
+                x_axis_width = x_axis_bbox[2] - x_axis_bbox[0]
+                x_axis_height = x_axis_bbox[3] - x_axis_bbox[1]
+                y_axis_width = y_axis_bbox[2] - y_axis_bbox[0]
+                y_axis_height = y_axis_bbox[3] - y_axis_bbox[1]
+                x_axis_center = (
+                    (x_axis_bbox[0] + x_axis_bbox[2]) / 2,
+                    (x_axis_bbox[1] + x_axis_bbox[3]) / 2,
+                )
+                y_axis_center = (
+                    (y_axis_bbox[0] + y_axis_bbox[2]) / 2,
+                    (y_axis_bbox[1] + y_axis_bbox[3]) / 2,
+                )
+                if (
+                    x_axis_width <= x_axis_height
+                    or y_axis_height <= y_axis_width
+                    or x_axis_center[0] <= y_axis_center[0]
+                    or x_axis_center[1] <= y_axis_center[1]
+                ):
+                    spatial_evidence_safe = False
+
+            ordered_record_boxes = sorted(record_boxes.items())
+            if spatial_evidence_safe:
+                for index, (_owner_id, bbox) in enumerate(ordered_record_boxes):
+                    for _other_id, other_bbox in ordered_record_boxes[index + 1 :]:
+                        if quadrant_comparison_budget <= 0:
+                            spatial_evidence_safe = False
+                            break
+                        quadrant_comparison_budget -= 1
+                        if (
+                            bbox[0] < other_bbox[2]
+                            and bbox[2] > other_bbox[0]
+                            and bbox[1] < other_bbox[3]
+                            and bbox[3] > other_bbox[1]
+                        ):
+                            spatial_evidence_safe = False
+                            break
+                    if not spatial_evidence_safe:
+                        break
+
+            evidence_by_id: dict[str, VisualEvidence] = {}
+            authorized_texts_by_bbox: dict[
+                tuple[float, float, float, float], set[str]
+            ] = {}
+            if spatial_evidence_safe:
+                for item in evidence:
+                    if item.id in evidence_by_id:
+                        spatial_evidence_safe = False
+                        break
+                    evidence_by_id[item.id] = item
+                    if (
+                        item.kind in {"ocr_token", "vector_text"}
+                        and item.text
+                        and item.bbox is not None
+                    ):
+                        bbox = tuple(float(value) for value in item.bbox)
+                        normalized_text = _normalized_label(item.text)
+                        if normalized_text:
+                            authorized_texts_by_bbox.setdefault(bbox, set()).add(
+                                normalized_text
+                            )
+
+            record_observations: dict[
+                str, list[tuple[str, tuple[float, float, float, float], str]]
+            ] = {owner_id: [] for owner_id, *_rest in record_specs}
+            evidence_id_owners: dict[str, str] = {}
+            observation_owners: dict[
+                tuple[str, tuple[float, float, float, float]], str
+            ] = {}
+            record_evidence_ids: set[str] = set()
+            reference_count = 0
+            if spatial_evidence_safe:
+                for owner_id, _source_record, evidence_ids, _allowed in record_specs:
+                    reference_count += len(evidence_ids)
+                    if reference_count > _MAX_QUADRANT_ASSOCIATION_REFERENCES:
+                        spatial_evidence_safe = False
+                        break
+                    owner_bbox = record_boxes[owner_id]
+                    for evidence_id in evidence_ids:
+                        item = evidence_by_id.get(evidence_id)
+                        if item is None:
+                            spatial_evidence_safe = False
+                            break
+                        previous_id_owner = evidence_id_owners.get(evidence_id)
+                        if previous_id_owner is not None and previous_id_owner != owner_id:
+                            spatial_evidence_safe = False
+                            break
+                        evidence_id_owners[evidence_id] = owner_id
+                        record_evidence_ids.add(evidence_id)
+                        if item.kind not in {"ocr_token", "vector_text"}:
+                            continue
+                        if not item.text or item.bbox is None:
+                            spatial_evidence_safe = False
+                            break
+                        evidence_bbox = tuple(float(value) for value in item.bbox)
+                        ex1, ey1, ex2, ey2 = evidence_bbox
+                        if (
+                            not all(math.isfinite(value) for value in evidence_bbox)
+                            or ex2 <= ex1
+                            or ey2 <= ey1
+                            or ex1 < owner_bbox[0]
+                            or ey1 < owner_bbox[1]
+                            or ex2 > owner_bbox[2]
+                            or ey2 > owner_bbox[3]
+                            or len(authorized_texts_by_bbox.get(evidence_bbox, set())) != 1
+                        ):
+                            spatial_evidence_safe = False
+                            break
+                        normalized_text = _normalized_label(item.text)
+                        if not normalized_text:
+                            spatial_evidence_safe = False
+                            break
+                        observation_key = (normalized_text, evidence_bbox)
+                        previous_owner = observation_owners.get(observation_key)
+                        if previous_owner is not None and previous_owner != owner_id:
+                            spatial_evidence_safe = False
+                            break
+                        observation_owners[observation_key] = owner_id
+                        record_observations[owner_id].append(
+                            (normalized_text, evidence_bbox, item.text)
+                        )
+                    if not spatial_evidence_safe:
+                        break
+
+            if spatial_evidence_safe and all(record_observations.values()):
+                association_text_count = len(record_specs) + sum(
+                    len(items) for items in record_observations.values()
+                )
+                association_char_count = sum(
+                    len(value)
+                    for _owner_id, _source_record, _evidence_ids, allowed in record_specs
+                    for value in allowed
+                ) + sum(
+                    len(item_text)
+                    for items in record_observations.values()
+                    for _normalized_text, _bbox, item_text in items
+                )
+                token_count = sum(
+                    ocr_token_multiset((item_text,)).total()
+                    for items in record_observations.values()
+                    for _normalized_text, _bbox, item_text in items
+                )
+                if (
+                    association_text_count <= _MAX_OCR_REFERENCE_TEXTS
+                    and association_char_count <= _MAX_OCR_REFERENCE_CHARS
+                    and token_count <= _MAX_OCR_REFERENCE_TOKENS
+                ):
+                    association_matches = True
+                    for owner_id, _source_record, _evidence_ids, allowed in record_specs:
+                        if owner_id == quadrant_y_axis_owner_id:
+                            ordered = sorted(
+                                record_observations[owner_id],
+                                key=lambda item: (
+                                    -item[1][1],
+                                    item[1][0],
+                                    -item[1][3],
+                                    item[1][2],
+                                    item[0],
+                                ),
+                            )
+                        else:
+                            ordered = sorted(
+                                record_observations[owner_id],
+                                key=lambda item: (
+                                    item[1][0],
+                                    item[1][1],
+                                    item[1][2],
+                                    item[1][3],
+                                    item[0],
+                                ),
+                            )
+                        observation_text = _normalized_label(
+                            " ".join(item[2] for item in ordered)
+                        )
+                        if observation_text not in allowed:
+                            association_matches = False
+                    quadrant_binding_state = (
+                        "exact" if association_matches else "mismatch"
+                    )
+
+            global_quadrant_numeric = numeric_consistency(references.numeric_tokens, code)
+            if quadrant_binding_state == "exact" and global_quadrant_numeric != 1.0:
+                quadrant_binding_state = (
+                    "mismatch" if global_quadrant_numeric is not None else "unavailable"
+                )
+
+            if quadrant_plan is not None and typed_ir is not None:
+                accessibility_base_ir = {
+                    key: value
+                    for key, value in typed_ir.items()
+                    if key not in {"acc_title", "acc_description"}
+                }
+                derived_accessibility = resolve_accessibility(
+                    accessibility_base_ir,
+                    "quadrant",
+                    experimental=self.config.mode != Mode.STRICT,
+                )
+                required_title_texts: set[str] = set()
+                if quadrant_plan.semantic_title is not None:
+                    required_title_texts.add(
+                        _normalized_label(quadrant_plan.semantic_title)
+                    )
+                accessibility_title = typed_ir.get("acc_title")
+                if (
+                    isinstance(accessibility_title, str)
+                    and _normalized_label(accessibility_title)
+                    != _normalized_label(derived_accessibility.title)
+                ):
+                    required_title_texts.add(_normalized_label(accessibility_title))
+                required_description_texts: set[str] = set()
+                explicit_description = typed_ir.get("description")
+                if isinstance(explicit_description, str) and explicit_description:
+                    required_description_texts.add(_normalized_label(explicit_description))
+                accessibility_description = typed_ir.get("acc_description")
+                accessibility_description_text = (
+                    accessibility_description.removesuffix(
+                        f" {EXPERIMENTAL_NOTICE}"
+                    ).removesuffix(EXPERIMENTAL_NOTICE)
+                    if isinstance(accessibility_description, str)
+                    else None
+                )
+                derived_description_text = derived_accessibility.description.removesuffix(
+                    f" {EXPERIMENTAL_NOTICE}"
+                ).removesuffix(EXPERIMENTAL_NOTICE)
+                if (
+                    accessibility_description_text
+                    and _normalized_label(accessibility_description_text)
+                    != _normalized_label(derived_description_text)
+                ):
+                    required_description_texts.add(
+                        _normalized_label(accessibility_description_text)
+                    )
+
+                required_independent: list[
+                    tuple[str, str, Literal[1, 2, 3, 4] | None, str]
+                ] = [
+                    (
+                        f"slot-{slot.slot}",
+                        _normalized_label(slot.label),
+                        slot.slot,
+                        "slot",
+                    )
+                    for slot in quadrant_plan.quadrants
+                    if slot.label
+                ]
+                required_independent.extend(
+                    (f"title-{index}", text, None, "title")
+                    for index, text in enumerate(sorted(required_title_texts), start=1)
+                )
+                required_independent.extend(
+                    (f"description-{index}", text, None, "description")
+                    for index, text in enumerate(
+                        sorted(required_description_texts), start=1
+                    )
+                )
+                if any(slot.label for slot in quadrant_plan.quadrants):
+                    quadrant_slot_attribution_state = "unavailable"
+                if required_title_texts:
+                    quadrant_title_attribution_state = "unavailable"
+                if required_description_texts:
+                    quadrant_description_attribution_state = "unavailable"
+
+                independent_candidates: list[
+                    tuple[
+                        str,
+                        str,
+                        tuple[float, float, float, float] | None,
+                        Literal[1, 2, 3, 4] | None,
+                    ]
+                ] = []
+                independent_comparison_safe = spatial_evidence_safe
+                if required_independent and independent_comparison_safe:
+                    for item in evidence:
+                        if item.id in record_evidence_ids or not item.text:
+                            continue
+                        normalized_text = _normalized_label(item.text)
+                        if item.kind == "user_edit":
+                            if item.id not in approved_user_edit_evidence_ids:
+                                continue
+                            if item.bbox is None:
+                                independent_candidates.append(
+                                    (item.id, normalized_text, None, None)
+                                )
+                                continue
+                            candidate_bbox = tuple(float(value) for value in item.bbox)
+                        elif (
+                            item.kind in {"ocr_token", "vector_text"}
+                            and item.bbox is not None
+                        ):
+                            candidate_bbox = tuple(float(value) for value in item.bbox)
+                            observation_key = (normalized_text, candidate_bbox)
+                            if (
+                                len(
+                                    authorized_texts_by_bbox.get(candidate_bbox, set())
+                                )
+                                != 1
+                                or observation_key in observation_owners
+                            ):
+                                continue
+                        else:
+                            continue
+
+                        x1, y1, x2, y2 = candidate_bbox
+                        if (
+                            not all(math.isfinite(value) for value in candidate_bbox)
+                            or x2 <= x1
+                            or y2 <= y1
+                            or x1 < 0
+                            or y1 < 0
+                            or x2 > image_width
+                            or y2 > image_height
+                        ):
+                            continue
+                        overlaps_record = False
+                        for record_bbox in record_boxes.values():
+                            if quadrant_comparison_budget <= 0:
+                                independent_comparison_safe = False
+                                break
+                            quadrant_comparison_budget -= 1
+                            if (
+                                candidate_bbox[0] < record_bbox[2]
+                                and candidate_bbox[2] > record_bbox[0]
+                                and candidate_bbox[1] < record_bbox[3]
+                                and candidate_bbox[3] > record_bbox[1]
+                            ):
+                                overlaps_record = True
+                                break
+                        if not independent_comparison_safe:
+                            break
+                        if overlaps_record:
+                            continue
+
+                        center_x = (x1 + x2) / 2
+                        center_y = (y1 + y2) / 2
+                        source_slot: Literal[1, 2, 3, 4]
+                        if center_x >= image_width / 2 and center_y < image_height / 2:
+                            source_slot = 1
+                        elif center_x < image_width / 2 and center_y < image_height / 2:
+                            source_slot = 2
+                        elif center_x < image_width / 2 and center_y >= image_height / 2:
+                            source_slot = 3
+                        else:
+                            source_slot = 4
+                        independent_candidates.append(
+                            (item.id, normalized_text, candidate_bbox, source_slot)
+                        )
+
+                proven_independent: set[str] = set()
+                used_independent_ids: set[str] = set()
+                used_independent_observations: set[
+                    tuple[str, tuple[float, float, float, float]]
+                ] = set()
+                if required_independent and independent_comparison_safe:
+                    ordered_independent_candidates = sorted(
+                        independent_candidates,
+                        key=lambda item: (
+                            item[2] is None,
+                            item[2] or (0.0, 0.0, 0.0, 0.0),
+                            item[0],
+                        ),
+                    )
+                    for owner_id, required_text, required_slot, _owner_kind in (
+                        required_independent
+                    ):
+                        for (
+                            evidence_id,
+                            candidate_text,
+                            candidate_bbox,
+                            candidate_slot,
+                        ) in ordered_independent_candidates:
+                            if quadrant_comparison_budget <= 0:
+                                independent_comparison_safe = False
+                                break
+                            quadrant_comparison_budget -= 1
+                            observation_key = (
+                                (candidate_text, candidate_bbox)
+                                if candidate_bbox is not None
+                                else None
+                            )
+                            if (
+                                evidence_id in used_independent_ids
+                                or candidate_text != required_text
+                                or (
+                                    required_slot is not None
+                                    and candidate_slot != required_slot
+                                )
+                                or (
+                                    observation_key is not None
+                                    and observation_key in used_independent_observations
+                                )
+                            ):
+                                continue
+                            used_independent_ids.add(evidence_id)
+                            if observation_key is not None:
+                                used_independent_observations.add(observation_key)
+                            proven_independent.add(owner_id)
+                            break
+                        if not independent_comparison_safe:
+                            break
+
+                required_slot_owners = {
+                    owner_id
+                    for owner_id, _text, _slot, kind in required_independent
+                    if kind == "slot"
+                }
+                required_title_owners = {
+                    owner_id
+                    for owner_id, _text, _slot, kind in required_independent
+                    if kind == "title"
+                }
+                required_description_owners = {
+                    owner_id
+                    for owner_id, _text, _slot, kind in required_independent
+                    if kind == "description"
+                }
+                if (
+                    independent_comparison_safe
+                    and required_slot_owners
+                    and required_slot_owners <= proven_independent
+                ):
+                    quadrant_slot_attribution_state = "exact"
+                if (
+                    independent_comparison_safe
+                    and required_title_owners
+                    and required_title_owners <= proven_independent
+                ):
+                    quadrant_title_attribution_state = "exact"
+                if (
+                    independent_comparison_safe
+                    and required_description_owners
+                    and required_description_owners <= proven_independent
+                ):
+                    quadrant_description_attribution_state = "exact"
+
+            numeric = (
+                1.0
+                if quadrant_binding_state == "exact"
+                else 0.0
+                if quadrant_binding_state == "mismatch"
+                else None
+            )
         elif gate_diagram_type == "xychart":
             # XY publication authority is record-local.  A document-wide numeric
             # multiset cannot detect category, series, value, or explicit-x swaps.
@@ -3811,6 +4442,15 @@ class ReconstructionPipeline:
         elif gate_diagram_type == "pie" and pie_binding_state == "mismatch":
             aggregate = None
             warnings.append(_PIE_NUMERIC_ASSOCIATION_MISMATCH_WARNING)
+        elif (
+            gate_diagram_type == "quadrant"
+            and quadrant_binding_state == "unavailable"
+        ):
+            aggregate = None
+            warnings.append(_QUADRANT_RECORD_ASSOCIATION_UNAVAILABLE_WARNING)
+        elif gate_diagram_type == "quadrant" and quadrant_binding_state == "mismatch":
+            aggregate = None
+            warnings.append(_QUADRANT_RECORD_ASSOCIATION_MISMATCH_WARNING)
         elif gate_diagram_type == "xychart" and xy_binding_state == "unavailable":
             aggregate = None
             warnings.append(_XY_RECORD_ASSOCIATION_UNAVAILABLE_WARNING)
@@ -3835,6 +4475,28 @@ class ReconstructionPipeline:
         if gate_diagram_type == "pie" and pie_description_attribution_state == "unavailable":
             aggregate = None
             warnings.append(_PIE_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING)
+        if (
+            gate_diagram_type == "quadrant"
+            and quadrant_slot_attribution_state == "unavailable"
+        ):
+            aggregate = None
+            warnings.append(_QUADRANT_SLOT_ATTRIBUTION_UNAVAILABLE_WARNING)
+        if (
+            gate_diagram_type == "quadrant"
+            and quadrant_title_attribution_state == "unavailable"
+        ):
+            aggregate = None
+            warnings.append(_QUADRANT_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING)
+        if (
+            gate_diagram_type == "quadrant"
+            and quadrant_description_attribution_state == "unavailable"
+        ):
+            aggregate = None
+            warnings.append(_QUADRANT_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING)
+        if gate_diagram_type == "quadrant" and quadrant_metadata_role_limited:
+            warnings.append(_QUADRANT_METADATA_ROLE_LIMITATION_WARNING)
+            if self.config.publish_policy == PublishPolicy.STRICT_VALIDATED:
+                aggregate = None
         if gate_diagram_type == "xychart" and xy_title_attribution_state == "unavailable":
             aggregate = None
             warnings.append(_XY_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING)
@@ -4099,6 +4761,39 @@ class ReconstructionPipeline:
                 emitted_type=current.emitted_diagram_type,
                 runtime_type=runtime_type,
             )
+            repair_quadrant_metadata_role_limited = (
+                _QUADRANT_METADATA_ROLE_LIMITATION_WARNING in current.warnings
+            )
+            if (
+                gate_diagram_type == "quadrant"
+                and not repair_quadrant_metadata_role_limited
+            ):
+                accessibility_base_ir = {
+                    key: value
+                    for key, value in validated_ir.items()
+                    if key not in {"acc_title", "acc_description"}
+                }
+                derived_accessibility = resolve_accessibility(
+                    accessibility_base_ir,
+                    "quadrant",
+                    experimental=self.config.mode != Mode.STRICT,
+                )
+                proposed_acc_title = validated_ir.get("acc_title")
+                proposed_acc_description = validated_ir.get("acc_description")
+                repair_quadrant_metadata_role_limited = bool(
+                    validated_ir.get("title") is not None
+                    or validated_ir.get("description") is not None
+                    or (
+                        isinstance(proposed_acc_title, str)
+                        and _normalized_label(proposed_acc_title)
+                        != _normalized_label(derived_accessibility.title)
+                    )
+                    or (
+                        isinstance(proposed_acc_description, str)
+                        and _normalized_label(proposed_acc_description)
+                        != _normalized_label(derived_accessibility.description)
+                    )
+                )
             evaluation = self._evaluate_candidate(
                 code=proposal_code,
                 runtime=outcome.runtime,
@@ -4122,6 +4817,7 @@ class ReconstructionPipeline:
                 references=references,
                 type_fitness=current.scores.get("type_fitness"),
                 image=context.image,
+                quadrant_metadata_role_limited=repair_quadrant_metadata_role_limited,
             )
             before_semantic = semantic_score(current.scores, self.config)
             after_semantic = semantic_score(evaluation.scores, self.config)

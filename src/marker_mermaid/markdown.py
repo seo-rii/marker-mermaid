@@ -26,8 +26,14 @@ def reconstruction_markdown_from_snapshot(
     )
     fence = "`" * max(3, longest_backtick_run + 1)
     warning = ""
-    if show_warning and snapshot.grade != "A":
-        message = "일부 요소는 검토가 필요합니다."
+    if show_warning and (
+        snapshot.grade != "A" or snapshot.serialization_stability == "experimental"
+    ):
+        message = (
+            "실험적 복원 경로를 사용했으므로 원본과 대조해 주세요."
+            if snapshot.grade == "A"
+            else "일부 요소는 검토가 필요합니다."
+        )
         if snapshot.grade == "C":
             message = "의미 정확도가 낮을 수 있으므로 반드시 원본과 대조해 주세요."
         elif snapshot.grade in {"D", "U"}:
