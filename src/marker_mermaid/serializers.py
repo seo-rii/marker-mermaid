@@ -913,6 +913,8 @@ def serialize_typed_ir_result(
     """Serialize typed IR while retaining native/fallback grammar metadata."""
 
     accessibility_source_ir = ir
+    state_record_compatibility_substitutions = False
+    state_plan = None
     if diagram_type == "pie":
         _validate_pie_explicit_accessibility_fields(ir)
     elif diagram_type == "xychart":
@@ -923,17 +925,53 @@ def serialize_typed_ir_result(
         _validate_sankey_explicit_accessibility_fields(ir)
     elif diagram_type in {"treemap", "venn"}:
         accessibility_source_ir = _validated_chart_set_accessibility_ir(diagram_type, ir)
+    elif diagram_type == "state":
+        from marker_mermaid.serializers_uml import (
+            plan_state_records,
+            validated_state_accessibility_ir,
+        )
+
+        accessibility_source_ir = validated_state_accessibility_ir(ir)
+        state_plan = plan_state_records(accessibility_source_ir)
+        state_record_compatibility_substitutions = state_plan.compatibility_substitutions
     _ensure_extended_serializers()
-    enriched_ir = enrich_accessibility_ir(
-        accessibility_source_ir,
-        diagram_type,
-        experimental=experimental,
-    )
+    if diagram_type == "state":
+        from marker_mermaid.serializers_uml import enrich_state_accessibility_ir
+
+        enriched_ir = enrich_state_accessibility_ir(
+            accessibility_source_ir,
+            experimental=experimental,
+            state_plan=state_plan,
+        )
+    else:
+        enriched_ir = enrich_accessibility_ir(
+            accessibility_source_ir,
+            diagram_type,
+            experimental=experimental,
+        )
     result = SERIALIZATION_REGISTRY.dispatch(
         diagram_type,
         enriched_ir,
         experimental=experimental,
     )
+    if diagram_type == "state":
+        from marker_mermaid.serializers_uml import (
+            STATE_TEXT_COMPATIBILITY_WARNING,
+            plan_state_accessibility,
+        )
+
+        if (
+            state_record_compatibility_substitutions
+            or plan_state_accessibility(
+                enriched_ir,
+                experimental=experimental,
+                state_plan=state_plan,
+            ).compatibility_substitutions
+        ) and STATE_TEXT_COMPATIBILITY_WARNING not in result.warnings:
+            result = replace(
+                result,
+                warnings=(*result.warnings, STATE_TEXT_COMPATIBILITY_WARNING),
+            )
     if supports_accessibility_directives(result.emitted_type):
         return result
     warning = accessibility_limitation_warning(result.emitted_type)

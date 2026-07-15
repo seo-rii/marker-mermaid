@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import time
 from collections import Counter
 
 import pytest
 
 from marker_mermaid.config import MermaidConfig, PublishPolicy, SecurityProfile
-from marker_mermaid.models import MermaidCandidate
+from marker_mermaid.models import MAX_TEXT_CHARS, MermaidCandidate
 from marker_mermaid.protocols import RuntimeResult
 from marker_mermaid.scoring import (
     aggregate_scores,
@@ -34,6 +35,45 @@ from marker_mermaid.validation import CandidateValidator, NodeMermaidRuntime, in
 )
 def test_strict_scanner_rejects_active_or_external_syntax(code):
     assert not MermaidSecurityScanner(SecurityProfile.STRICT).scan(code).safe
+
+
+def test_strict_scanner_allows_only_exact_state_pseudostate_declarations() -> None:
+    scanner = MermaidSecurityScanner(SecurityProfile.STRICT)
+    code = (
+        "stateDiagram-v2\n"
+        "    state decision <<choice>>\n"
+        "    state parallel_start <<fork>>\n"
+        "    state parallel_end <<join>>\n"
+    )
+
+    assert scanner.scan(code).safe
+    assert not scanner.scan("flowchart LR\n    state decision <<choice>>\n").safe
+    assert not scanner.scan("stateDiagram-v2\n    state decision <<script>>\n").safe
+    assert not scanner.scan("stateDiagram-v2\n    state decision <<choice>> <b>\n").safe
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        ":" * MAX_TEXT_CHARS,
+        "{" * MAX_TEXT_CHARS,
+        "<a" * (MAX_TEXT_CHARS // 2),
+    ],
+    ids=["colon", "brace", "unclosed-html-openers"],
+)
+def test_statement_scanner_is_bounded_for_long_state_label_punctuation(payload: str) -> None:
+    code = (
+        "stateDiagram-v2\n"
+        "    accTitle: State fixture\n"
+        "    accDescr: State fixture description\n"
+        f'    state "{payload}" as S\n'
+    )
+    started = time.perf_counter()
+
+    report = MermaidSecurityScanner(SecurityProfile.STRICT).scan(code)
+
+    assert time.perf_counter() - started < 5
+    assert report.safe
 
 
 def test_style_only_allows_local_style_but_not_remote_css():

@@ -79,6 +79,40 @@ malformed transition이나 unknown endpoint는 nodes-only partial Scene으로 �
 fail closed됩니다. 다만 boundary edge의 label은 SVG canvas에 실제로 표시되므로 structural Scene과 별도의
 semantic OCR projection에는 포함합니다.
 
+State plan은 의미 text, Mermaid source text, Mermaid 11.16 canvas text를 구분합니다. 일반 state의
+명시 label은 exact built-in string과 raw/normalized `MAX_TEXT_CHARS`, UTF-8을 요구하고 Unicode whitespace
+run을 ASCII space 하나로 고정하며, 남은 control/format/surrogate와 normalized-empty 값을 runtime 전에
+거부합니다. Exact `""`은 기존 state ID fallback이고 choice/fork/join의 비표시 label은 이 visible-text
+계약에 관여하지 않으며 접근성 요약에서도 source ID로 대체됩니다. Quoted state node의 ASCII quote는 `″`로,
+node/transition의 시작·끝·연속 run·CommonMark escapable punctuation 앞 backslash는 `∖`로 바꾸지만 안전한
+중간 backslash는 원문을 유지합니다. Regex tail search 대신 bounded linear delimiter scanner가 multi-backtick
+code span, balanced/empty/nested-label link, star/underscore emphasis, 1·2개 tilde strike만 식별합니다.
+Active delimiter와 entity-like literal은 renderer가 삭제·해석하지 않도록 visible Unicode glyph로 바꾸고
+inactive punctuation 및 typed IR 원문은 유지합니다. Bare email과 `www` autolink는 source-only separator를
+삽입해 visible canvas를 원문 그대로 유지합니다. Accessibility directive는 raw
+quote/backslash/Markdown/named entity를 그대로 보존하고, 손실되는 numeric entity와 `<`만 `＆＃…`/`‹`로
+고정합니다. Transition의 기존
+`:`/`;` 금지는 normalized semantic text에 적용합니다. `direction` 같은 State grammar word와 URL/callback/
+directive처럼 scanner-active한 text는 source에만 zero-width separator를 삽입하고 Scene/OCR에서는 제거합니다.
+
+State의 raw `title`/`description`/`acc_title`/`acc_description`은 접근성 enrichment보다 먼저 검증합니다.
+Absent/`None`은 허용하고 exact `""`은 omitted으로 제거하지만, 그 외 값은 exact built-in string, raw와
+normalized `MAX_TEXT_CHARS`, non-empty normalized text, UTF-8을 요구하며 `Cc`/`Cf`/`Cs`/`Zl`/`Zp`를
+거부합니다. Direct serializer, public typed API, initial pipeline candidate, semantic repair가 같은 snapshot을
+사용하므로 malformed `acc_*`가 derived string으로 바뀌거나 exact-empty field가 저장 IR에 남지 않습니다.
+Pipeline의 initial/repair candidate에는 validated raw snapshot을 저장하고, 매 serialization마다 현재 구조에서
+접근성 text를 다시 계산하므로 accepted label repair가 이전 derived description을 고정하지 않습니다. Node와
+transition canvas는 Scene/OCR에, accessibility canvas는 SVG `<title>`/`<desc>` metadata에 각각 투영합니다.
+실제 visible glyph 치환이 있을 때만 `SerializationResult` warning을 추가하며 accepted semantic repair도
+canonical record/accessibility plan에 따라 이 warning을 추가하거나 제거합니다.
+
+State source ID는 normalized identity를 유지하는 것이 기본이지만 Mermaid 11.16 lexer/strict scanner의
+예약 토큰 또는 `iconify` substring과 충돌하면 위험 원문을 포함하지 않는 `mmx_state_id_…` emitted alias를
+사용합니다. Alias allocator는 먼저 모든 normalized source ID를 예약하고 suffix를 결정하므로 사용자가 이미
+같은 alias를 제공해도 빼앗지 않습니다. `StateNodePlan.source_id`와 typed
+record/evidence는 원본 identity를 유지하고 declaration, transition, generated Scene은 같은 emitted ID를
+사용합니다. 실제 Mermaid fixture는 이 mapping을 source/target 양쪽에 놓고 SVG transition 수까지 검사합니다.
+
 Gantt도 공용 plan이 section-local `Task N` fallback과 실제 task/section label을 serializer, generated Scene,
 OCR projection에 공유합니다. Mermaid Gantt source에 Scene identity 문법은 없으므로 source code는 기존 task
 ID를 그대로 보존하되, attribution용 section/task ID는 전체 diagram namespace에서 collision-free하게

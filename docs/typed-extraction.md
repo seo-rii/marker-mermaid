@@ -759,6 +759,34 @@ cardinality, Requirement·Block 및 C4의 위 token과 Deployment/Component port
 같은 집합으로 제한합니다. Root list 이외의 record field는 partial reconstruction을 위해 선택이며,
 필드 존재, non-empty, 표시 text, ID 중복, endpoint 참조 같은 의미 조건은 계속 serializer가
 판정합니다.
+
+State serializer의 후속 plan은 일반 node와 명시 transition label을 exact built-in string으로 다시
+검사합니다. Exact-empty node label은 ID fallback, exact-empty transition label은 omitted 의미를 유지하지만,
+그 밖의 text는 raw/normalized 길이·UTF-8·control/format/surrogate·normalized-empty gate를 통과해야 합니다.
+Unicode whitespace는 한 칸으로 정규화하고 일반 node quote는 `″`, node/transition의 시작·끝·연속 run·
+CommonMark escape backslash만 `∖`로 바꿉니다. Bounded linear scanner가 실제 active Markdown delimiter와
+entity-like literal을 renderer-safe visible Unicode canvas glyph로 고정하고 일반 punctuation·안전한 중간
+backslash는 유지합니다. Bare email/`www` autolink는 source-only separator로 비활성화해 visible text를
+보존합니다. Resolved accessibility text의 quote/backslash/Markdown/named entity는
+원문 glyph를 유지하되 numeric entity와 `<`는 `＆＃…`/`‹`로 고정합니다. Hidden pseudo-state label은 접근성
+derivation에서 제외하고 ID만 사용합니다. Prompt/typed IR은 semantic 원문을 보존하고 generated Scene·
+semantic OCR은 node/transition plan의 terminal-visible text를 사용하며, State grammar/scanner-active token의
+source-only separator는 projection에서 제외합니다. Accessibility text는 별도의 SVG `<title>`/`<desc>`
+metadata projection을 사용합니다.
+
+State raw `title`/`description`/`acc_title`/`acc_description`은 nested label plan과 함께 generic accessibility
+enrichment보다 먼저 검증됩니다. Absent/`None`과 exact-empty omitted 의미만 허용하며, 나머지는 exact
+built-in string, raw/normalized bound, non-empty normalized text, UTF-8 및 Unicode category gate를 통과해야
+합니다. Public/direct serialization과 initial/repair가 이 raw gate와 canonical accessibility plan을 공유하고,
+pipeline의 initial/accepted-repair typed IR에는 validated raw snapshot을 저장합니다. 따라서 사용자 coercion
+hook이나 malformed `acc_*`가 derived metadata로 세탁되지 않고, label repair 뒤 접근성 description도 현재
+구조에서 다시 생성됩니다.
+
+State record의 source ID가 Mermaid lexer/security 예약 토큰이거나 normalized ID에 strict `iconify` substring이
+있으면 plan은 typed record와 evidence의 source identity를 바꾸지 않고 위험 token이 없는 collision-free
+`mmx_state_id_…` emitted alias를 배정합니다. 전체 normalized source namespace를 먼저 예약해 prefix 충돌을
+피하고, declaration·transition·generated Scene endpoint가 동일 mapping을 사용합니다.
+
 `evidence_ids`도 prompt에서는 필수지만 legacy/partial candidate 호환을 위해 model에서는 선택 사항이며,
 생략·`null`·빈 목록은 계속 허용합니다. 값이 있으면 strict string list이면서 record별 256개 이하여야
 하고, 초과 후보는 serializer에 도달하기 전 nested post-validation에서 격리됩니다. 실제 자동 게시

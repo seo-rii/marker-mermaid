@@ -108,7 +108,7 @@ def test_state_serializer_is_deterministic_and_preserves_explicit_boundaries():
     first = serialize_state(STATE_IR, experimental=True)
     assert first == serialize_state(STATE_IR, experimental=True)
     assert first.startswith("stateDiagram-v2\n")
-    assert 'state "Pending &quot;review&quot;" as pending' in first
+    assert 'state "Pending ″review″" as pending' in first
     assert "[*] --> pending" in first
     assert "paid --> [*]" in first
     assert "experimental and requires review" in first

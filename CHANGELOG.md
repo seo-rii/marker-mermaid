@@ -202,6 +202,27 @@
   duplicate source section/task IDs cannot erase rendered records. Invalid Block endpoints and malformed State
   records or transitions fail closed instead of producing a partial semantic Scene. Boundary markers stay out of
   structural Scene relations while their rendered transition labels remain in the semantic OCR projection.
+- State now freezes grammar-specific semantic, source, and Mermaid 11.16 canvas text in one shared plan.
+  Ordinary node labels normalize Unicode whitespace, reject malformed/empty terminal text before runtime, and
+  use visible `″` plus selective `∖` glyphs where State Markdown consumes quotes or grammar-active backslashes.
+  A bounded linear delimiter scan preserves inactive punctuation while protecting active code spans, links,
+  emphasis, strike text, and entity-like literals from renderer deletion or decoding. Source-only separators
+  preserve bare email/`www` autolinks without changing their visible canvas text. Accessibility directives
+  retain raw quote/backslash/Markdown/named-entity text, but use visible glyphs for lossy numeric entities and
+  `<`; State grammar and scanner-active tokens receive renderer-invisible separators. Hidden pseudo-state labels
+  cannot re-enter derived accessibility text, exact-empty label defaults retain their prior semantics, and
+  node/transition Scene/OCR plus accessibility SVG metadata consume their respective canvas projections. Raw State
+  `title`/`description`/`acc_title`/`acc_description`
+  now pass the same exact-string, bounds, Unicode/UTF-8, and exact-empty-as-omitted gate before enrichment in
+  direct/public serialization, initial candidates, and semantic repair; initial/repair typed IR stores this raw
+  snapshot so derived descriptions are regenerated after structural edits. Typed results emit a compatibility
+  warning only for visible substitutions, including canonical warning addition/removal after an accepted repair.
+  Mermaid State lexer/security reserved node IDs and strict `iconify` substrings now receive collision-free,
+  token-free `mmx_state_id_…` emitted aliases while the
+  typed source ID, evidence attribution, Scene endpoints, and serializer transitions remain consistently mapped;
+  this prevents both parse failures and the renderer's silent loss of `state`-sourced edges.
+  The strict scanner now admits only exact State `choice`/`fork`/`join` declarations and uses bounded accessibility
+  prefix checks plus linear HTML detection for punctuation-heavy terminal text.
 - Packet semantic OCR projection is now terminal-aware: a validated native Packet includes its normalized canvas
   title, while a same-slot Flowchart fallback excludes that native-only text. Native serialization and scoring
   share entity-compatible title normalization; invisible source-security separators are omitted from OCR tokens,

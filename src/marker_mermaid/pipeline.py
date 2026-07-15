@@ -124,6 +124,11 @@ from marker_mermaid.serializers_charts_sets import (
     validated_venn_accessibility_ir,
 )
 from marker_mermaid.serializers_special import plan_packet_fields
+from marker_mermaid.serializers_uml import (
+    STATE_TEXT_COMPATIBILITY_WARNING,
+    enrich_state_accessibility_ir,
+    validated_state_accessibility_ir,
+)
 from marker_mermaid.style_recovery import (
     TrustedEdgeStyleEvidence,
     recover_flowchart_styles,
@@ -2048,11 +2053,22 @@ class ReconstructionPipeline:
                             # explicitly empty field cannot be laundered into a
                             # publishable Quadrant candidate.
                             validate_quadrant_explicit_metadata(typed.ir)
-                        enriched_ir = enrich_accessibility_ir(
-                            accessibility_source_ir,
-                            typed.diagram_type,
-                            experimental=self.config.mode != Mode.STRICT,
-                        )
+                        elif typed.diagram_type == "state":
+                            # Resolve State accessibility only after exact raw
+                            # metadata types, bounds, and omitted-empty semantics
+                            # have been frozen.
+                            accessibility_source_ir = validated_state_accessibility_ir(typed.ir)
+                        if typed.diagram_type == "state":
+                            enriched_ir = enrich_state_accessibility_ir(
+                                accessibility_source_ir,
+                                experimental=self.config.mode != Mode.STRICT,
+                            )
+                        else:
+                            enriched_ir = enrich_accessibility_ir(
+                                accessibility_source_ir,
+                                typed.diagram_type,
+                                experimental=self.config.mode != Mode.STRICT,
+                            )
                         enriched_snapshot = canonical_typed_ir_snapshot(enriched_ir)
                         if enriched_snapshot is None:
                             raise TypeError("accessibility-enriched typed IR must be an object")
@@ -2071,6 +2087,14 @@ class ReconstructionPipeline:
                             enriched_ir,
                             experimental=self.config.mode != Mode.STRICT,
                         )
+                        stored_typed_ir = (
+                            accessibility_source_ir
+                            if typed.diagram_type == "state"
+                            else enriched_ir
+                        )
+                        stored_typed_ir = canonical_typed_ir_snapshot(stored_typed_ir)
+                        if stored_typed_ir is None:  # pragma: no cover - object contract guard
+                            raise TypeError("stored typed IR must be an object")
                     except (
                         SerializationError,
                         SerializationContractError,
@@ -2101,7 +2125,7 @@ class ReconstructionPipeline:
                             emitted_diagram_type=serialized.emitted_type,
                             fallback_chain=list(serialized.fallback_chain),
                             serialization_stability=serialized.stability,
-                            typed_ir=enriched_ir,
+                            typed_ir=stored_typed_ir,
                             node_id_mappings=(
                                 observation.fusion_node_id_mappings_for(typed) if is_fused else []
                             ),
@@ -6959,6 +6983,8 @@ class ReconstructionPipeline:
                     validated_ir = validated_treemap_accessibility_ir(validated_ir)
                 elif current.diagram_type == "venn":
                     validated_ir = validated_venn_accessibility_ir(validated_ir)
+                elif current.diagram_type == "state":
+                    validated_ir = validated_state_accessibility_ir(validated_ir)
                 if current.node_id_mappings:
                     proposed_nodes = validated_ir.get("nodes")
                     proposed_node_ids = (
@@ -7167,10 +7193,21 @@ class ReconstructionPipeline:
             attempted.scores = evaluation.scores
             attempted.aggregate_score = evaluation.aggregate_score
             attempted.generated_scene_ir = evaluation.generated_scene_ir
+            retained_warnings = _without_evaluation_warnings(attempted.warnings)
+            canonical_compatibility_warnings: list[str] = []
+            if current.diagram_type == "state":
+                retained_warnings = [
+                    warning
+                    for warning in retained_warnings
+                    if warning != STATE_TEXT_COMPATIBILITY_WARNING
+                ]
+                if STATE_TEXT_COMPATIBILITY_WARNING in canonical.warnings:
+                    canonical_compatibility_warnings.append(STATE_TEXT_COMPATIBILITY_WARNING)
             attempted.warnings = list(
                 dict.fromkeys(
                     [
-                        *_without_evaluation_warnings(attempted.warnings),
+                        *retained_warnings,
+                        *canonical_compatibility_warnings,
                         *outcome.warnings,
                         *evaluation.warnings,
                     ]

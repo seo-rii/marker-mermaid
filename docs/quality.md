@@ -224,6 +224,28 @@ generated Scene attribution에서 제외합니다.
   Scene이 하나의 plan을 공유하고 malformed 또는 unknown endpoint transition은 전체 Scene을 fail closed합니다.
   `[*]` boundary marker는 structural relation으로 만들지 않지만 화면에 표시되는 transition label은 OCR
   projection에 유지합니다.
+  일반 State label은 plan이 whitespace-normalized semantic/source/canvas text를 분리합니다. Quoted node의
+  ASCII quote는 `″`로 바꾸고, node/transition의 시작·끝·연속 run·CommonMark escape 앞처럼 renderer가
+  소비하는 backslash만 `∖`로 projection합니다. 중간의 안전한 `C\path`나 `A\ B`는 ASCII backslash를
+  유지합니다. 50,000자 입력에도 bounded linear scan을 사용해 active code span/link/emphasis/strike와
+  entity-like literal만 visible compatibility glyph로 고정하고 inactive punctuation은 보존합니다. Bare
+  email/`www` autolink는 source-only separator로 비활성화해 zero-width 제거 후 원문 canvas를 유지합니다.
+  Accessibility directive는 raw quote/backslash/Markdown/named entity를 유지하되 Mermaid 11.16이 손실하는
+  numeric entity와 `<`만 `＆＃…`/`‹`로 표시합니다. State grammar/scanner-active token에 삽입한 source-only
+  zero-width separator는 node/transition OCR에서 제거합니다. 따라서 renderer가 실제로 삭제·해석하는
+  glyph에 raw label credit을 주지 않으며 whitespace-only·non-whitespace control/format/surrogate label은
+  runtime과 scoring 전에 fail closed됩니다. Accessibility title/description은 Scene/OCR content가 아니라
+  SVG `<title>`/`<desc>` metadata로 검사합니다. Hidden choice/fork/join label은 derived accessibility에 다시
+  들어가지 않고 ID로 대체됩니다.
+  `title`/`description`/`acc_title`/`acc_description`도 enrichment 전에 exact built-in string, raw/normalized
+  bound, Unicode/UTF-8 gate를 거치며 exact `""`은 omitted 의미로 고정됩니다. 이 raw gate는 public/direct/
+  initial/repair에 공통이고 pipeline은 initial과 accepted repair 모두 derived `acc_*`가 아닌 validated raw
+  snapshot을 저장합니다. Compatibility warning은 accepted repair의 canonical plan에 맞춰 재조정됩니다.
+  State lexer/security 예약어 또는 strict remote-icon scanner의 `iconify` substring과 충돌하는 source ID는
+  전체 normalized ID 집합을 먼저 예약한 뒤 원래 위험 token을 포함하지 않는 collision-free
+  `mmx_state_id_…` emitted ID로 바꿉니다. Typed IR과 evidence는 source identity를 유지하고 Scene relation과 Mermaid
+  transition은 같은 emitted endpoint를 사용하므로, parse 성공처럼 보이면서 `state` source edge가 사라지는
+  silent renderer loss도 실제 SVG transition-count gate에서 검출합니다.
   Gantt section/task는 source ID가 중복되어도 collision-free Scene identity를 배정해 렌더링된 record와
   provenance를 모두 보존합니다.
 - Requested type이 fallback으로 방출되는 경우 projection은 요청 문법이 아니라 실제 emitted serializer를

@@ -29,13 +29,17 @@ class MermaidSecurityScanner:
         "callback": re.compile(r"\b(?:call|callback)\s*\(", re.IGNORECASE),
         "external_url": re.compile(r"(?:https?|ftp|file|data|javascript):", re.IGNORECASE),
         "protocol_relative_url": re.compile(r"[\"'(=]\s*//[^/\s]", re.IGNORECASE),
-        "html": re.compile(r"<\s*/?\s*[A-Za-z][^>]*>", re.IGNORECASE),
         "frontmatter": re.compile(r"^\s*(?:---|config\s*:)", re.IGNORECASE),
         "css_import": re.compile(r"@import\b", re.IGNORECASE),
         "remote_icon": re.compile(r"iconify|fa:|logos:", re.IGNORECASE),
     }
     _click_syntax = re.compile(r"^\s*click\s+", re.IGNORECASE)
     _flowchart_header = re.compile(r"^\s*(?:flowchart|graph)\b", re.IGNORECASE)
+    _state_header = re.compile(r"^\s*stateDiagram(?:-v2)?\s*$", re.IGNORECASE)
+    _state_pseudostate_declaration = re.compile(
+        r"^\s*state\s+[A-Za-z_][A-Za-z0-9_]*\s+<<(?:choice|fork|join)>>\s*$",
+        re.IGNORECASE,
+    )
     _line_comment = re.compile(r"^\s*%%")
     _accessibility_text_prefix = re.compile(r"\s*acc(?:Title|Descr)\s*:\s*", re.IGNORECASE)
     _accessibility_block_prefix = re.compile(r"\s*accDescr\s*\{\s*", re.IGNORECASE)
@@ -56,10 +60,32 @@ class MermaidSecurityScanner:
     )
     # Longer one-line prefixes fail closed instead of making quote-dense input quadratic.
     _max_quoted_label_prefix_chars = 1_024
+    _max_accessibility_prefix_chars = 128
     _style_syntax = re.compile(r"^\s*(?:style|classDef|linkStyle)\b", re.IGNORECASE)
 
     def __init__(self, profile: SecurityProfile = SecurityProfile.STRICT):
         self.profile = profile
+
+    @staticmethod
+    def _contains_html_tag(line: str) -> bool:
+        """Detect tag-like angle syntax in one linear pass."""
+
+        final_close = line.rfind(">")
+        if final_close < 0:
+            return False
+        search_from = 0
+        while (opening := line.find("<", search_from, final_close)) >= 0:
+            cursor = opening + 1
+            while cursor < final_close and line[cursor].isspace():
+                cursor += 1
+            if cursor < final_close and line[cursor] == "/":
+                cursor += 1
+                while cursor < final_close and line[cursor].isspace():
+                    cursor += 1
+            if cursor < final_close and ("A" <= line[cursor] <= "Z" or "a" <= line[cursor] <= "z"):
+                return True
+            search_from = opening + 1
+        return False
 
     @classmethod
     def _statement_segments(cls, code: str) -> list[tuple[int, str]]:
@@ -126,12 +152,16 @@ class MermaidSecurityScanner:
                     segment_line = line_number
                 else:
                     current.append(character)
-                    if character == ":" and cls._accessibility_text_prefix.fullmatch(
-                        "".join(current)
+                    if (
+                        character == ":"
+                        and len(current) <= cls._max_accessibility_prefix_chars
+                        and cls._accessibility_text_prefix.fullmatch("".join(current))
                     ):
                         in_accessibility_text = True
-                    elif character == "{" and cls._accessibility_block_prefix.fullmatch(
-                        "".join(current)
+                    elif (
+                        character == "{"
+                        and len(current) <= cls._max_accessibility_prefix_chars
+                        and cls._accessibility_block_prefix.fullmatch("".join(current))
                     ):
                         in_accessibility_block = True
             if in_double_quote or in_accessibility_block:
@@ -147,6 +177,15 @@ class MermaidSecurityScanner:
 
     def scan(self, code: str) -> SecurityReport:
         findings: list[SecurityFinding] = []
+        first_statement = next(
+            (
+                line
+                for line in code.splitlines()
+                if line.strip() and not self._line_comment.match(line)
+            ),
+            "",
+        )
+        state_mode = bool(self._state_header.fullmatch(first_statement))
         statements_by_line: dict[int, list[str]] = {}
         for line_number, statement in self._statement_segments(code):
             statements_by_line.setdefault(line_number, []).append(statement)
@@ -158,6 +197,16 @@ class MermaidSecurityScanner:
                             rule=rule, line=line_number, message=f"forbidden {rule} syntax"
                         )
                     )
+            if self._contains_html_tag(line) and not (
+                state_mode and self._state_pseudostate_declaration.fullmatch(line)
+            ):
+                findings.append(
+                    SecurityFinding(
+                        rule="html",
+                        line=line_number,
+                        message="forbidden html syntax",
+                    )
+                )
             statements = statements_by_line.get(line_number, [])
             if any(self._click_syntax.search(statement) for statement in statements):
                 findings.append(

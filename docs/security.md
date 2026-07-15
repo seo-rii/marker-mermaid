@@ -54,6 +54,24 @@ quoted-label 상태를 시작합니다. `class`, `direction`, Gantt title과 접
 적용받습니다. 큰따옴표로 감싼 node label, `accTitle`/`accDescr` text, 줄 시작의 optional whitespace 뒤
 `%%` comment 안의 세미콜론·keyword만 statement로 오인하지 않습니다.
 
+State의 `state ID <<choice|fork|join>>`은 Mermaid 자체의 pseudo-state 문법이므로 HTML이 아닙니다. Source
+scanner는 첫 statement가 exact `stateDiagram`/`stateDiagram-v2` header이고 전체 줄이 normalized identifier와
+세 종류 stereotype 중 하나로만 구성된 경우에만 이 angle syntax를 허용합니다. Flowchart 안의 같은 문자열,
+unknown stereotype, suffix HTML은 계속 `html` finding으로 거부합니다. State label의 bare email/`www`
+autolink는 `@` 뒤와 `www.` 내부의 source-only separator로 비활성화해 visible text를 보존합니다. 일반
+`<b>` text나 수식의 `<`도 source-only separator로 동작만 비활성화합니다.
+
+Statement scanner의 accessibility prefix 판정은 128자로 제한하고 그 이후의 `:`/`{`를 전체 prefix와
+반복 비교하지 않습니다. HTML-like source도 line별 linear scan으로 찾으므로 최대 label 안의 반복
+punctuation이 candidate budget보다 큰 regex/statement 비용으로 증폭되지 않습니다. 제한을 넘는 비정상
+indentation은 accessibility text 상태로 완화하지 않고 일반 statement처럼 fail closed합니다.
+
+State node ID가 `state`, `class`, `click`, `accTitle`, `as` 같은 lexer/security 예약 토큰과 충돌하거나 normalized
+ID에 strict remote-icon rule의 `iconify` substring이 있으면 serializer가 source identity와 evidence를 그대로
+둔 채 위험 token을 포함하지 않는 collision-free `mmx_state_id_…` emitted ID를 배정합니다. 기존 normalized ID
+전체를 먼저 예약하므로 사용자가 이미 같은 alias를 제공해도 다른 node를 덮어쓰지 않습니다. 이 mapping은
+strict scanner 우회가 아니라 비활성 identifier 치환이며 Scene endpoint와 Mermaid edge가 공유합니다.
+
 Specialized typed serializer의 label에 위 token이 관찰돼도 active statement로 방출하지 않습니다.
 keyword와 URL-like token 내부의 zero-width separator는 scanner와 parser 양쪽에서 동작을 비활성화하고,
 Flowchart label의 source `&`도 entity로 재해석되지 않도록 같은 방식으로 분리합니다. Event Modeling edge의
