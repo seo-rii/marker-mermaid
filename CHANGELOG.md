@@ -40,6 +40,25 @@
   label/value swaps, suffix omissions, uncited slices, shared observations, or fabricated metadata from
   auto-publishing. Both terminals preflight 50,000 UTF-16 source units / 5,000 lines and disclose
   terminal-visible compatibility substitutions while preserving semantic source text in typed/review IR.
+- XY Chart serialization, generated Scene, and semantic OCR now share a bounded `XYPlan` that freezes
+  axis/series/point source records, exact fixed-decimal x/y values, deterministic Scene identities,
+  terminal-visible text, and record-local provenance. Native Mermaid 11.16 output requires
+  zero-or-normal binary64 round trips, positive normal finite axis spans, and a bounded simulation
+  of the renderer's numeric x loop with exact point count/endpoints and strict progress. One-point
+  lines, zero-height bars, overlapping bar or identical line series, palette overflow, non-uniform
+  explicit x coordinates, point-drop grids, and stalled loops use the same candidate slot's
+  disconnected `flowchart TB` fallback with up to 256 title/axis/category/exact-value cells and no
+  invented edges. Native Scenes expose normalized axes, categorical anchors, hidden-text line/bar
+  geometry, and marker-less adjacent line topology; fallback Scenes expose the emitted zero-geometry
+  cells exactly, while terminal-aware OCR excludes hidden values and accessibility metadata.
+  Native runtime rejection receives a fresh full fallback validation pass. Both terminals preflight
+  50,000 UTF-16 source units / 5,000 lines, disclose terminal-visible compatibility substitutions,
+  and retain semantic source text in typed/review IR. Publication now requires candidate-authorized,
+  bbox-contained axis/series/explicit-point OCR or vector records plus global numeric completeness;
+  category/value/x swaps, cross-record evidence reuse, invalid geometry, direct candidates without a
+  typed plan, fabricated explicit metadata, and engine-emitted self-authorizing user edits remain
+  review-only. Explicit-metadata spatial attribution skips unused scans and fails closed beyond
+  100,000 evidence-to-record overlap comparisons per candidate.
 - Radar serialization, generated Scene, and semantic OCR now share a bounded `RadarPlan` with
   reserved-safe cross-terminal IDs, fixed-decimal values, record-local provenance, and explicit
   native-versus-tabular terminal semantics. Native Radar is limited to 12 series and requires
@@ -272,10 +291,10 @@
   non-empty, collision, endpoint, and resource-cap semantics remain owned by the shared fallback plan.
 - Pie, XY, and Quadrant typed IR now have strict nested prompt/post-validation contracts for finite
   JSON chart numbers, axes, series, slices, points, and canonical quadrant labels. Completeness and
-  representability checks remain serializer-owned; XY and Quadrant remain native-only without generated
-  Scene adapters, while Pie now uses its shared native/Flowchart terminal plan and slice Scene/provenance.
+  representability checks remain serializer-owned; Quadrant remains native-only without a generated
+  Scene adapter, while Pie and XY use shared native/Flowchart terminal plans and record provenance.
   Publication still requires independent source OCR/vector numeric evidence. XY values must remain inside the
-  declared y-axis,
+  declared y-axis, and XY axes/series/points require record-local source association;
   ambiguous Quadrant label aliases fail closed, and grammar-aware numeric projection excludes comments,
   supported native/colon titles, supported colon/block accessibility metadata, and Quadrant slot indices
   while retaining visible labels/data and Sankey metadata-like CSV labels. Spatially distinct source

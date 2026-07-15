@@ -336,7 +336,7 @@ source ID 분리, normalization 및 `usecase_` prefix 뒤의 2차 collision, rel
 `plan_usecase_fallback`과 serializer가 최종 판정합니다. 기본 방향은 `LR`이고 허용되지 않은 값은 portable
 Flowchart와 generated Scene에서 `TB`로 정규화됩니다.
 
-### Pie terminal과 XY·Quadrant native chart 계약
+### Pie·XY terminal과 Quadrant native chart 계약
 
 세 core chart는 다음 root와 record를 provider prompt에 정확히 공개하고 응답 후 같은 strict nested
 model로 검사합니다.
@@ -354,10 +354,10 @@ NaN과 Infinity는 거부합니다. 직접 serializer API가 내부적으로 `De
 model에서 선택입니다.
 
 Nested contract는 형만 확정합니다. Pie의 non-empty·고유 label·non-negative value·positive total, XY의
-축 mode와 bounds·모든 y의 범위 포함·series 선택 및 길이·uniform numeric grid, Quadrant의 non-empty 고유
-label과 `[0,1]` 좌표 및 같은 quadrant slot의 alias 충돌 같은 표현 가능성은 serializer가 계속 fail closed로
-판정합니다. XY와 Quadrant는 native `xychart-beta`·`quadrantChart`만 방출하며 의미 오류나 runtime 실패를
-table/prose/Flowchart로 낮추지 않습니다.
+축 mode와 bounds·모든 y의 범위 포함·series 선택 및 길이, Quadrant의 non-empty 고유 label과
+`[0,1]` 좌표 및 같은 quadrant slot의 alias 충돌 같은 completeness/표현 가능성은 serializer가 계속
+fail closed로 판정합니다. Quadrant는 native `quadrantChart`만 방출합니다. XY의 valid하지만
+native-lossy한 grid·binary64·visibility 조건은 completeness 실패와 구분하여 exact-value Flowchart로 낮춥니다.
 
 Pie는 contract를 통과한 raw record를 `PiePlan`에서 다시 bounded snapshot으로 만들고 serializer, generated
 Scene, semantic OCR이 함께 소비합니다. 최대 12개 slice, zero-or-normal binary64 round-trip, JavaScript
@@ -384,12 +384,30 @@ separator를 사용합니다. Native title과 Flowchart cell에 필요한 visibl
 공개하고 semantic 원문은 typed IR/review metadata에 보존합니다. 두 terminal은 Mermaid JavaScript
 `text.length`와 같은 50,000 UTF-16 code-unit 및 5,000 line preflight를 공유합니다.
 
-XY·Quadrant record의 bbox와 `evidence_ids`는 strict 형으로 검증되어 원본 typed IR/review sidecar에 보존되지만,
-현재 generated Scene adapter는 없습니다. 따라서 이 metadata를 Scene node/relation attribution이나 구조 점수로
-승격했다고 해석하면 안 됩니다. 공통 accessibility root와 미등록 metadata는 `extra="allow"` 규칙으로 계속
-받을 수 있고 검증 model도 원본 dict를 대체하지 않습니다. 그러나 accessibility/extra metadata 안의 숫자나
-typed value의 evidence ID만으로 source numeric gate가 충족되지는 않습니다. 자동 게시는 별도의 source
-OCR/vector 숫자 관측과 generated 숫자 일치를 요구합니다.
+XY contract를 통과한 raw record는 `XYPlan`에서 axis·series·point source identity, fixed-decimal x/y,
+record-local evidence, terminal별 text와 normalized native geometry로 다시 snapshot됩니다. Native는 zero-or-normal
+binary64 exact round-trip, positive normal finite axis span, bounded renderer x-loop의 exact count/endpoint/progress,
+보이는 2-point 이상 line·positive-height bar, 10-series palette cap을 모두 요구합니다. Non-uniform
+explicit x, last-point drop/stalled loop, 겹치는 duplicate line/multiple bar, y-minimum bar는 원본 값을 버리지 않고
+최대 256 point의 disconnected `flowchart TB`로 낮춥니다. Categorical fallback은 각 value cell에
+category를 같이 넣고 explicit point fallback은 exact x/y를 넣으며 추정 edge를 만들지 않습니다.
+Native runtime rejection도 같은 candidate slot의 전체 Flowchart 재검증으로 처리하고 두 terminal은
+50,000 UTF-16 code-unit·5,000 line preflight와 compatibility warning을 공유합니다.
+
+Native generated Scene은 normalized axis/category anchor, text 없는 data point/bar, marker-less adjacent line relation을
+반영하고 OCR은 visible title·axis·category만 세어 hidden value를 canvas text로 가정하지 않습니다.
+Flowchart Scene/OCR은 title·axis·category·exact data cell을 emitted 순서 그대로 반영하고 relation/group을
+만들지 않습니다. 자동 게시는 axis/series/explicit point 각 record의 bbox 안에서 candidate-authorized
+OCR/vector observation이 전체 label/category/value/x-y 결합을 증명하고 전역 numeric occurrence도 일치할
+때만 허용합니다. Record/value/x swap, 공유 observation, invalid bbox, missing evidence는 review입니다.
+Explicit title/accessibility text는 data-owned bbox와 겹치지 않는 independent exact OCR/vector 근거 또는
+reconstruction 초기 exact `user_edit`를 요구하며 engine-emitted edit는 스스로 승인 근거가 되지 않습니다.
+
+Quadrant record의 bbox와 `evidence_ids`는 strict 형으로 검증되어 원본 typed IR/review sidecar에
+보존되지만 현재 generated Scene adapter는 없습니다. 공통 accessibility root와 미등록 metadata는
+`extra="allow"` 규칙으로 계속 받을 수 있고 검증 model도 원본 dict를 대체하지 않습니다. 그러나
+accessibility/extra metadata 안의 숫자나 typed value의 evidence ID만으로 source numeric gate가 충족되지
+않으며 자동 게시는 별도 source OCR/vector 숫자 관측과 generated 숫자 일치를 요구합니다.
 
 ### Sankey·Radar·Treemap·Venn chart 계약
 

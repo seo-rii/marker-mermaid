@@ -58,6 +58,22 @@ reconstruction 초기 입력으로 전달된 `user_edit`의 exact text도 허용
 관측을 요구하지 않습니다. Quote와 numeric entity-like text는 source-only separator를 거쳐
 `<title>`/`<desc>`에서 원문 그대로 유지됩니다.
 
+Native XY Chart도 pinned Mermaid 11.16의 `accTitle`/`accDescr`를 사용해 SVG accessibility
+metadata를 만듭니다. 별도 `title`은 canvas에 보이므로 semantic OCR에 포함하지만 axis
+bound, series value, 자동 tick과 accessibility metadata는 visible content text로 세지 않습니다. Native의
+binary64/grid/visibility 조건을 만족하지 못하거나 runtime validation이 실패하면 같은 candidate
+slot의 exact-value Flowchart로 낮춥니다. 이 terminal은 resolved accessibility metadata를 유지하고
+description에 proportional plot이 아닌 exact-value fallback임을 덧붙이며, explicit canvas title은 별도
+rectangle으로 표시합니다.
+
+XY의 explicit `title`/`acc_title`과 `description`/`acc_description`도 자동 게시 전에 독립된
+candidate-authorized OCR/vector exact text 또는 reconstruction 초기의 exact `user_edit` evidence가 필요합니다.
+Axis/series/point record가 소유한 observation·bbox와 겹치거나 그 evidence ID를 재사용할 수 없으며,
+engine이 새로 만든 `user_edit`는 승인 근거가 되지 않습니다. 구조에서 결정적으로 파생한
+기본 title/description과 experimental notice만 별도 source observation 없이 허용합니다. Native/fallback
+text의 quote·backslash·angle·hash 치환은 compatibility warning으로 공개하고 semantic 원문은
+enriched typed IR·review metadata에 보존합니다.
+
 Native Radar는 pinned Mermaid 11.16에서 `accTitle`/`accDescr`를 지원하므로 두 directive를 SVG
 `<title>`/`<desc>` metadata로 방출합니다. 별도의 explicit `title`만 radar canvas에 보이며 semantic OCR에는
 이 visible title, axis label, `showLegend=true`일 때의 series legend만 들어갑니다. Value, `min`/`max`,

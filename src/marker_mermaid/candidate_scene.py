@@ -30,7 +30,7 @@ from marker_mermaid.serializers import (
     plan_architecture_structure,
     plan_gantt_records,
 )
-from marker_mermaid.serializers_charts_core import plan_pie_records
+from marker_mermaid.serializers_charts_core import plan_pie_records, plan_xychart_records
 from marker_mermaid.serializers_charts_flow import plan_radar_records, plan_sankey_records
 from marker_mermaid.serializers_charts_sets import plan_treemap_records, plan_venn_records
 from marker_mermaid.serializers_experimental import (
@@ -377,6 +377,165 @@ def typed_ir_to_scene(
             groups=[],
             reading_direction="radial",
             diagram_type_candidates=["pie"],
+            coordinate_space="normalized",
+        )
+    elif diagram_type == "xychart":
+        try:
+            xy_plan = plan_xychart_records(ir)
+        except SerializationError:
+            return None
+        xy_uses_flowchart = (
+            not xy_plan.native_supported
+            if emitted_diagram_type is None
+            else emitted_diagram_type.casefold().startswith("flowchart")
+        )
+        if xy_uses_flowchart:
+            if not xy_plan.flowchart_supported:
+                return None
+            fallback_elements: list[SceneElement] = []
+            if xy_plan.fallback_canvas_title is not None:
+                fallback_elements.append(
+                    SceneElement(
+                        id="xy_title",
+                        role="title",
+                        text=xy_plan.fallback_canvas_title,
+                        bbox=(0.0, 0.0, 0.0, 0.0),
+                        shape="rectangle",
+                        confidence=1.0,
+                        evidence_ids=[],
+                    )
+                )
+            fallback_elements.extend(
+                SceneElement(
+                    id=axis.scene_id,
+                    role="axis",
+                    text=axis.fallback_canvas_label,
+                    bbox=(0.0, 0.0, 0.0, 0.0),
+                    shape="rectangle",
+                    confidence=1.0,
+                    evidence_ids=list(axis.evidence_ids),
+                )
+                for axis in (xy_plan.x_axis, xy_plan.y_axis)
+            )
+            fallback_elements.extend(
+                SceneElement(
+                    id=category.scene_id,
+                    role="category",
+                    text=category.native_canvas_label,
+                    bbox=(0.0, 0.0, 0.0, 0.0),
+                    shape="rectangle",
+                    confidence=1.0,
+                    evidence_ids=list(category.evidence_ids),
+                )
+                for category in xy_plan.x_axis.categories
+            )
+            fallback_elements.extend(
+                SceneElement(
+                    id=point.scene_id,
+                    role="data_bar" if series.kind == "bar" else "data_point",
+                    text=point.fallback_canvas_label,
+                    bbox=(0.0, 0.0, 0.0, 0.0),
+                    shape="rectangle",
+                    confidence=1.0,
+                    evidence_ids=list(point.evidence_ids),
+                )
+                for series in xy_plan.series
+                for point in series.points
+            )
+            return DiagramSceneIR(
+                elements=fallback_elements,
+                relations=[],
+                groups=[],
+                reading_direction="TB",
+                diagram_type_candidates=["xychart"],
+                coordinate_space="pixels",
+            )
+        if not xy_plan.native_supported:
+            return None
+        elements = [
+            SceneElement(
+                id=xy_plan.x_axis.scene_id,
+                role="axis",
+                text=xy_plan.x_axis.native_canvas_label,
+                bbox=(0.0, 1.0, 1.0, 1.0),
+                shape="line",
+                confidence=1.0,
+                evidence_ids=list(xy_plan.x_axis.evidence_ids),
+            ),
+            SceneElement(
+                id=xy_plan.y_axis.scene_id,
+                role="axis",
+                text=xy_plan.y_axis.native_canvas_label,
+                bbox=(0.0, 0.0, 0.0, 1.0),
+                shape="line",
+                confidence=1.0,
+                evidence_ids=list(xy_plan.y_axis.evidence_ids),
+            ),
+        ]
+        elements.extend(
+            SceneElement(
+                id=category.scene_id,
+                role="category",
+                text=category.native_canvas_label,
+                bbox=(*category.normalized_point, *category.normalized_point),
+                shape=None,
+                confidence=1.0,
+                evidence_ids=list(category.evidence_ids),
+            )
+            for category in xy_plan.x_axis.categories
+        )
+        for series in xy_plan.series:
+            for point in series.points:
+                if point.normalized_point is None:
+                    return None
+                x_position, y_position = point.normalized_point
+                elements.append(
+                    SceneElement(
+                        id=point.scene_id,
+                        role="data_bar" if series.kind == "bar" else "data_point",
+                        text=None,
+                        bbox=(
+                            (x_position, y_position, x_position, 1.0)
+                            if series.kind == "bar"
+                            else (x_position, y_position, x_position, y_position)
+                        ),
+                        shape="rectangle" if series.kind == "bar" else None,
+                        confidence=1.0,
+                        evidence_ids=list(point.evidence_ids),
+                    )
+                )
+        relations: list[SceneRelation] = []
+        for series_index, series in enumerate(xy_plan.series, start=1):
+            if series.kind != "line":
+                continue
+            for point_index, (source, target) in enumerate(
+                zip(series.points, series.points[1:], strict=False),
+                start=1,
+            ):
+                if source.normalized_point is None or target.normalized_point is None:
+                    return None
+                relations.append(
+                    SceneRelation(
+                        id=f"xy_line_{series_index}_{point_index}",
+                        source_id=source.scene_id,
+                        target_id=target.scene_id,
+                        relation_type="series_line",
+                        semantic_relation="association",
+                        label=None,
+                        polyline=[source.normalized_point, target.normalized_point],
+                        arrow_at_start=False,
+                        arrow_at_end=False,
+                        line_style=None,
+                        confidence=1.0,
+                        evidence_ids=list(series.evidence_ids),
+                    )
+                )
+        return DiagramSceneIR(
+            elements=elements,
+            relations=relations,
+            groups=[],
+            reading_direction="LR",
+            diagram_type_candidates=["xychart"],
             coordinate_space="normalized",
         )
     elif diagram_type == "radar":
@@ -1744,6 +1903,39 @@ def typed_ir_semantic_texts(
                 yield slice_plan.native_legend_canvas_text
                 if slice_plan.percentage_text is not None:
                     yield slice_plan.percentage_text
+        return
+    if diagram_type == "xychart":
+        plan = plan_xychart_records(ir)
+        xy_uses_flowchart = (
+            not plan.native_supported
+            if emitted_diagram_type is None
+            else emitted_diagram_type.casefold().startswith("flowchart")
+        )
+        if xy_uses_flowchart:
+            if not plan.flowchart_supported:
+                raise SerializationError(
+                    "XY Chart Flowchart projection exceeds the runtime point limit"
+                )
+            if plan.fallback_canvas_title is not None:
+                yield plan.fallback_canvas_title
+            yield plan.x_axis.fallback_canvas_label
+            yield plan.y_axis.fallback_canvas_label
+            for category in plan.x_axis.categories:
+                yield category.native_canvas_label
+            for series in plan.series:
+                for point in series.points:
+                    yield point.fallback_canvas_label
+        else:
+            if not plan.native_supported:
+                raise SerializationError("native XY Chart projection is not lossless")
+            if plan.native_canvas_title is not None:
+                yield plan.native_canvas_title
+            if plan.x_axis.native_canvas_label is not None:
+                yield plan.x_axis.native_canvas_label
+            for category in plan.x_axis.categories:
+                yield category.native_canvas_label
+            if plan.y_axis.native_canvas_label is not None:
+                yield plan.y_axis.native_canvas_label
         return
     if diagram_type == "radar":
         plan = plan_radar_records(ir)

@@ -487,14 +487,6 @@ def test_unsupported_or_empty_typed_ir_is_unavailable():
     ("diagram_type", "ir"),
     [
         (
-            "xychart",
-            {
-                "x_axis": {"categories": ["A"]},
-                "y_axis": {"min": 0, "max": 1},
-                "series": [{"kind": "line", "values": [1]}],
-            },
-        ),
-        (
             "quadrant",
             {
                 "x_axis": {"low": "Low", "high": "High"},
@@ -504,7 +496,7 @@ def test_unsupported_or_empty_typed_ir_is_unavailable():
         ),
     ],
 )
-def test_xy_and_quadrant_have_no_structural_scene_adapter(
+def test_quadrant_has_no_structural_scene_adapter(
     diagram_type: str, ir: dict[str, object]
 ) -> None:
     assert typed_ir_to_scene(diagram_type, ir) is None

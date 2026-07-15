@@ -4546,15 +4546,6 @@ def test_direct_runtime_structural_type_drift_drops_requested_numeric_gate() -> 
     ("diagram_type", "ir", "source_numbers"),
     [
         (
-            "xychart",
-            {
-                "x_axis": {"min": 0, "max": 10},
-                "y_axis": {"min": 0, "max": 10},
-                "series": [{"kind": "line", "values": [1, 2]}],
-            },
-            "0 10 0 10 1 2",
-        ),
-        (
             "quadrant",
             {
                 "x_axis": {"low": "Low reach", "high": "High reach"},
@@ -4566,7 +4557,7 @@ def test_direct_runtime_structural_type_drift_drops_requested_numeric_gate() -> 
         ),
     ],
 )
-def test_typed_core_charts_reach_numeric_consistency_gate(
+def test_quadrant_reaches_numeric_consistency_gate(
     diagram_type: str,
     ir: dict[str, object],
     source_numbers: str,

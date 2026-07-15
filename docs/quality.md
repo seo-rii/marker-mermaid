@@ -391,5 +391,16 @@ numeric consistency가 게시 threshold보다 낮을 때 aggregate를 `None`으�
 Pie는 candidate-authorized slice-local association, 전역 numeric completeness, explicit accessibility
 attribution 중 하나라도 unavailable/mismatch이면 설정된 게시 threshold로 우회하지 않고 aggregate를
 `None`으로 둡니다.
+XY는 typed plan이 지정한 axis·series·explicit point별로 candidate-authorized OCR/vector
+observation을 바인딩합니다. 각 source record의 finite in-image bbox 안에 있는 cited text가 axis
+label+category/bounds, series kind+ordered values, 또는 point x+y의 허용된 전체 표현과 일치해야 합니다.
+Evidence ID 또는 normalized text+bbox observation을 두 record가 공유하거나 category/value/x를 바꾸고 전역
+숫자 multiset만 맞추는 후보, invalid/missing bbox, budget 초과는 unavailable/mismatch로 review에 남습니다.
+Explicit metadata가 없으면 별도 bbox overlap scan을 실행하지 않고, 있는 경우에도 spatial
+evidence×record bbox 검사를 candidate당 100,000회로 제한해 초과 입력을 fail closed로 처리합니다.
+Explicit `title`/`acc_title`·`description`/`acc_description`은 data-owned observation·bbox와 분리된 exact
+OCR/vector evidence 또는 reconstruction 초기 exact `user_edit`를 요구하며, engine-emitted edit와 direct
+Mermaid-only XY는 typed record association을 스스로 만들 수 없습니다. Native가 same-slot Flowchart로 낮아가도
+게시 gate의 semantic type은 XY로 유지되어 동일한 규칙을 적용합니다.
 Packet은 candidate-authorized field-local association이 unavailable이거나 `0.0`이면 전역 숫자 multiset이나
 설정된 게시 threshold로 우회하지 않고 aggregate를 `None`으로 둡니다.

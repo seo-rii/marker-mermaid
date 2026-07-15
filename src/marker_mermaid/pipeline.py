@@ -105,7 +105,7 @@ from marker_mermaid.serializers import (
     serialize_runtime_fallback_result,
     serialize_typed_ir_result,
 )
-from marker_mermaid.serializers_charts_core import plan_pie_records
+from marker_mermaid.serializers_charts_core import plan_pie_records, plan_xychart_records
 from marker_mermaid.serializers_special import plan_packet_fields
 from marker_mermaid.style_recovery import (
     TrustedEdgeStyleEvidence,
@@ -155,6 +155,8 @@ _MAX_PACKET_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
 _MAX_PACKET_FIELD_OVERLAP_COMPARISONS = 100_000
 _MAX_PIE_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
 _MAX_PIE_SLICE_OVERLAP_COMPARISONS = 100_000
+_MAX_XY_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
+_MAX_XY_RECORD_OVERLAP_COMPARISONS = 100_000
 _PIL_IMAGING_CORE_TYPE = type(Image.new("RGB", (1, 1)).im)
 _PIL_IMAGE_DICT_DESCRIPTOR = Image.Image.__dict__["__dict__"]
 
@@ -351,6 +353,7 @@ _PROVENANCE_GATED_TYPES = frozenset(
         "usecase",
         "venn",
         "wardley",
+        "xychart",
         "zenuml",
     }
 )
@@ -397,6 +400,21 @@ _PIE_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING = (
     "OCR/vector or user-edit evidence; "
     "review is required"
 )
+_XY_RECORD_ASSOCIATION_UNAVAILABLE_WARNING = (
+    "XY axis/series/point association lacks candidate-authorized spatial OCR/vector evidence; "
+    "review is required"
+)
+_XY_RECORD_ASSOCIATION_MISMATCH_WARNING = (
+    "XY axis/series/point association conflicts with source evidence; review is required"
+)
+_XY_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING = (
+    "XY title/accTitle lacks independent candidate-authorized spatial OCR/vector or user-edit "
+    "evidence; review is required"
+)
+_XY_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING = (
+    "XY explicit accessibility description lacks independent candidate-authorized spatial "
+    "OCR/vector or user-edit evidence; review is required"
+)
 
 _EVALUATION_WARNING_TEXT = frozenset(
     {
@@ -410,6 +428,10 @@ _EVALUATION_WARNING_TEXT = frozenset(
         _PIE_NUMERIC_ASSOCIATION_MISMATCH_WARNING,
         _PIE_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING,
         _PIE_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING,
+        _XY_RECORD_ASSOCIATION_UNAVAILABLE_WARNING,
+        _XY_RECORD_ASSOCIATION_MISMATCH_WARNING,
+        _XY_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING,
+        _XY_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING,
         "numeric consistency is below the automatic publication threshold",
         "numeric diagram lacks OCR/vector numeric evidence and cannot auto-publish",
         "unlabeled scene-only candidates require OCR/VLM fusion before publishing",
@@ -453,9 +475,31 @@ def _generated_node_provenance_score(
         generated_elements = [
             element for element in generated_elements if element.role != "data_point"
         ]
+    xy_scene = generated_scene.diagram_type_candidates == ["xychart"]
+    if xy_scene and generated_scene.coordinate_space == "normalized":
+        # Native XY categories and values become renderer-derived tick/data geometry.
+        # Their record-local OCR/vector association is enforced separately below;
+        # provenance here remains scoped to the two independently attributable axes.
+        generated_elements = [
+            element
+            for element in generated_elements
+            if element.role not in {"category", "data_point", "data_bar"}
+        ]
     if not generated_elements:
         return None
     known = {item.id for item in evidence}
+    if xy_scene and generated_scene.coordinate_space == "pixels":
+        # The exact-value Flowchart has one visible cell per planned axis, category,
+        # and point.  Values-mode points intentionally share their series record's
+        # evidence, so traceability is record-scoped rather than node-injective.  A
+        # visible title is governed by the independent title-attribution gate.
+        traceable_elements = [element for element in generated_elements if element.role != "title"]
+        if not traceable_elements:
+            return None
+        supported = sum(
+            bool(known.intersection(element.evidence_ids)) for element in traceable_elements
+        )
+        return supported / len(traceable_elements)
     source_by_id = {
         element.id: element for element in (source_scene.elements if source_scene else [])
     }
@@ -2618,6 +2662,9 @@ class ReconstructionPipeline:
         pie_binding_state: Literal["exact", "mismatch", "unavailable"] | None = None
         pie_title_attribution_state: Literal["exact", "unavailable"] | None = None
         pie_description_attribution_state: Literal["exact", "unavailable"] | None = None
+        xy_binding_state: Literal["exact", "mismatch", "unavailable"] | None = None
+        xy_title_attribution_state: Literal["exact", "unavailable"] | None = None
+        xy_description_attribution_state: Literal["exact", "unavailable"] | None = None
         if gate_diagram_type == "packet":
             # Packet ranges need a field-local proof.  A document-wide number multiset can
             # stay identical when two labels exchange their ranges, so it is not publication
@@ -3295,6 +3342,402 @@ class ReconstructionPipeline:
                 if pie_binding_state == "mismatch"
                 else None
             )
+        elif gate_diagram_type == "xychart":
+            # XY publication authority is record-local.  A document-wide numeric
+            # multiset cannot detect category, series, value, or explicit-x swaps.
+            xy_binding_state = "unavailable"
+            xy_plan = None
+            if typed_ir is not None:
+                try:
+                    xy_plan = plan_xychart_records(typed_ir)
+                except SerializationError:
+                    xy_plan = None
+            record_specs: list[
+                tuple[
+                    str,
+                    object,
+                    tuple[str, ...],
+                    set[str],
+                ]
+            ] = []
+            if xy_plan is not None:
+                x_parts = [xy_plan.x_axis.label] if xy_plan.x_axis.label else []
+                if xy_plan.x_axis.categories:
+                    x_parts.extend(category.label for category in xy_plan.x_axis.categories)
+                else:
+                    x_parts.extend(
+                        (
+                            xy_plan.x_axis.minimum_text,
+                            xy_plan.x_axis.maximum_text,
+                        )
+                    )
+                y_parts = [xy_plan.y_axis.label] if xy_plan.y_axis.label else []
+                y_parts.extend(
+                    (
+                        xy_plan.y_axis.minimum_text,
+                        xy_plan.y_axis.maximum_text,
+                    )
+                )
+                for owner_id, source_record, evidence_ids, raw_parts in (
+                    (
+                        xy_plan.x_axis.scene_id,
+                        xy_plan.x_axis.source_record,
+                        xy_plan.x_axis.evidence_ids,
+                        x_parts,
+                    ),
+                    (
+                        xy_plan.y_axis.scene_id,
+                        xy_plan.y_axis.source_record,
+                        xy_plan.y_axis.evidence_ids,
+                        y_parts,
+                    ),
+                ):
+                    parts = [part for part in raw_parts if part is not None]
+                    plain = _normalized_label(" ".join(parts))
+                    allowed = {plain}
+                    if len(parts) > 1:
+                        allowed.update(
+                            {
+                                _normalized_label(f"{parts[0]}: {' '.join(parts[1:])}"),
+                                _normalized_label(f"{parts[0]} = {' '.join(parts[1:])}"),
+                                _normalized_label(f"{parts[0]}: {', '.join(parts[1:])}"),
+                            }
+                        )
+                    record_specs.append((owner_id, source_record, evidence_ids, allowed))
+
+                for series in xy_plan.series:
+                    explicit_points = any(point.x_text is not None for point in series.points)
+                    if explicit_points:
+                        record_specs.append(
+                            (
+                                series.emitted_id,
+                                series.source_record,
+                                series.evidence_ids,
+                                {_normalized_label(series.kind)},
+                            )
+                        )
+                        for point in series.points:
+                            assert point.x_text is not None
+                            plain = _normalized_label(f"{point.x_text} {point.y_text}")
+                            record_specs.append(
+                                (
+                                    point.scene_id,
+                                    point.source_record,
+                                    point.evidence_ids,
+                                    {
+                                        plain,
+                                        _normalized_label(f"x {point.x_text} y {point.y_text}"),
+                                        _normalized_label(
+                                            f"{series.kind} x {point.x_text} y {point.y_text}"
+                                        ),
+                                        _normalized_label(
+                                            f"{series.kind} · x {point.x_text}, y {point.y_text}"
+                                        ),
+                                    },
+                                )
+                            )
+                    else:
+                        value_texts = [point.y_text for point in series.points]
+                        plain = _normalized_label(f"{series.kind} {' '.join(value_texts)}")
+                        record_specs.append(
+                            (
+                                series.emitted_id,
+                                series.source_record,
+                                series.evidence_ids,
+                                {
+                                    plain,
+                                    _normalized_label(f"{series.kind}: {' '.join(value_texts)}"),
+                                    _normalized_label(f"{series.kind} [{', '.join(value_texts)}]"),
+                                },
+                            )
+                        )
+
+            image_width, image_height = image.size
+            record_boxes: dict[str, tuple[float, float, float, float]] = {}
+            spatial_evidence_safe = bool(record_specs)
+            for owner_id, source_record, _evidence_ids, _allowed in record_specs:
+                if not isinstance(source_record, dict):
+                    spatial_evidence_safe = False
+                    break
+                raw_bbox = source_record.get("bbox")
+                if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+                    spatial_evidence_safe = False
+                    break
+                bbox = tuple(float(value) for value in raw_bbox)
+                x1, y1, x2, y2 = bbox
+                if (
+                    not all(math.isfinite(value) for value in bbox)
+                    or x2 <= x1
+                    or y2 <= y1
+                    or x1 < 0
+                    or y1 < 0
+                    or x2 > image_width
+                    or y2 > image_height
+                ):
+                    spatial_evidence_safe = False
+                    break
+                record_boxes[owner_id] = bbox
+
+            evidence_by_id: dict[str, VisualEvidence] = {}
+            authorized_texts_by_bbox: dict[tuple[float, float, float, float], set[str]] = {}
+            if spatial_evidence_safe:
+                for item in evidence:
+                    if item.id in evidence_by_id:
+                        spatial_evidence_safe = False
+                        break
+                    evidence_by_id[item.id] = item
+                    if (
+                        item.kind in {"ocr_token", "vector_text"}
+                        and item.text
+                        and item.bbox is not None
+                    ):
+                        bbox = tuple(float(value) for value in item.bbox)
+                        normalized_text = _normalized_label(item.text)
+                        if normalized_text:
+                            authorized_texts_by_bbox.setdefault(bbox, set()).add(normalized_text)
+
+            record_observations: dict[
+                str, list[tuple[str, tuple[float, float, float, float], str]]
+            ] = {owner_id: [] for owner_id, *_rest in record_specs}
+            evidence_id_owners: dict[str, str] = {}
+            observation_owners: dict[tuple[str, tuple[float, float, float, float]], str] = {}
+            record_evidence_ids: set[str] = set()
+            reference_count = 0
+            if spatial_evidence_safe:
+                for owner_id, _source_record, evidence_ids, _allowed in record_specs:
+                    reference_count += len(evidence_ids)
+                    if reference_count > _MAX_XY_ASSOCIATION_REFERENCES:
+                        spatial_evidence_safe = False
+                        break
+                    owner_bbox = record_boxes[owner_id]
+                    for evidence_id in evidence_ids:
+                        item = evidence_by_id.get(evidence_id)
+                        if item is None:
+                            spatial_evidence_safe = False
+                            break
+                        if item.kind not in {"ocr_token", "vector_text"}:
+                            continue
+                        if not item.text or item.bbox is None:
+                            spatial_evidence_safe = False
+                            break
+                        evidence_bbox = tuple(float(value) for value in item.bbox)
+                        ex1, ey1, ex2, ey2 = evidence_bbox
+                        if (
+                            not all(math.isfinite(value) for value in evidence_bbox)
+                            or ex2 <= ex1
+                            or ey2 <= ey1
+                            or ex1 < owner_bbox[0]
+                            or ey1 < owner_bbox[1]
+                            or ex2 > owner_bbox[2]
+                            or ey2 > owner_bbox[3]
+                            or len(authorized_texts_by_bbox.get(evidence_bbox, set())) != 1
+                        ):
+                            spatial_evidence_safe = False
+                            break
+                        normalized_text = _normalized_label(item.text)
+                        if not normalized_text:
+                            spatial_evidence_safe = False
+                            break
+                        previous_id_owner = evidence_id_owners.get(evidence_id)
+                        if previous_id_owner is not None and previous_id_owner != owner_id:
+                            spatial_evidence_safe = False
+                            break
+                        observation_key = (normalized_text, evidence_bbox)
+                        previous_owner = observation_owners.get(observation_key)
+                        if previous_owner is not None and previous_owner != owner_id:
+                            spatial_evidence_safe = False
+                            break
+                        evidence_id_owners[evidence_id] = owner_id
+                        observation_owners[observation_key] = owner_id
+                        record_evidence_ids.add(evidence_id)
+                        record_observations[owner_id].append(
+                            (normalized_text, evidence_bbox, item.text)
+                        )
+                    if not spatial_evidence_safe:
+                        break
+
+            if spatial_evidence_safe and all(record_observations.values()):
+                association_text_count = len(record_specs) + sum(
+                    len(items) for items in record_observations.values()
+                )
+                association_char_count = sum(
+                    len(value)
+                    for _owner_id, _source_record, _evidence_ids, allowed in record_specs
+                    for value in allowed
+                ) + sum(
+                    len(item_text)
+                    for items in record_observations.values()
+                    for _normalized_text, _bbox, item_text in items
+                )
+                token_count = sum(
+                    ocr_token_multiset((item_text,)).total()
+                    for items in record_observations.values()
+                    for _normalized_text, _bbox, item_text in items
+                )
+                if (
+                    association_text_count <= _MAX_OCR_REFERENCE_TEXTS
+                    and association_char_count <= _MAX_OCR_REFERENCE_CHARS
+                    and token_count <= _MAX_OCR_REFERENCE_TOKENS
+                ):
+                    association_matches = True
+                    for owner_id, _source_record, _evidence_ids, allowed in record_specs:
+                        ordered = sorted(
+                            record_observations[owner_id],
+                            key=lambda item: (
+                                item[1][0],
+                                item[1][1],
+                                item[1][2],
+                                item[1][3],
+                                item[0],
+                            ),
+                        )
+                        observation_text = _normalized_label(" ".join(item[2] for item in ordered))
+                        if observation_text not in allowed:
+                            association_matches = False
+                    xy_binding_state = "exact" if association_matches else "mismatch"
+
+            numeric_projection_code = code
+            if (
+                xy_plan is not None
+                and _canonical_runtime_type(runtime.diagram_type) == "xychart"
+            ):
+                explicit_x_values = [
+                    point.x_text
+                    for series in xy_plan.series
+                    for point in series.points
+                    if point.x_text is not None
+                ]
+                if explicit_x_values:
+                    # Mermaid emits explicit, uniform x coordinates only as derived
+                    # geometry.  Add them to the scoring projection (not the validated
+                    # source) so occurrence-preserving numeric recall still covers x.
+                    numeric_projection_code += (
+                        "    line [" + ", ".join(explicit_x_values) + "]\n"
+                    )
+            global_xy_numeric = numeric_consistency(
+                references.numeric_tokens,
+                numeric_projection_code,
+            )
+            if xy_binding_state == "exact" and global_xy_numeric != 1.0:
+                xy_binding_state = "mismatch" if global_xy_numeric is not None else "unavailable"
+
+            if xy_plan is not None and typed_ir is not None:
+                accessibility_base_ir = {
+                    key: value
+                    for key, value in typed_ir.items()
+                    if key not in {"acc_title", "acc_description"}
+                }
+                derived_accessibility = resolve_accessibility(
+                    accessibility_base_ir,
+                    "xychart",
+                    experimental=self.config.mode != Mode.STRICT,
+                )
+                required_title_texts: set[str] = set()
+                if xy_plan.semantic_title is not None:
+                    required_title_texts.add(_normalized_label(xy_plan.semantic_title))
+                accessibility_title = typed_ir.get("acc_title")
+                if isinstance(accessibility_title, str) and _normalized_label(
+                    accessibility_title
+                ) != _normalized_label(derived_accessibility.title):
+                    required_title_texts.add(_normalized_label(accessibility_title))
+                required_description_texts: set[str] = set()
+                explicit_description = typed_ir.get("description")
+                if isinstance(explicit_description, str) and explicit_description:
+                    required_description_texts.add(_normalized_label(explicit_description))
+                accessibility_description = typed_ir.get("acc_description")
+                accessibility_description_text = (
+                    accessibility_description.removesuffix(f" {EXPERIMENTAL_NOTICE}").removesuffix(
+                        EXPERIMENTAL_NOTICE
+                    )
+                    if isinstance(accessibility_description, str)
+                    else None
+                )
+                derived_description_text = derived_accessibility.description.removesuffix(
+                    f" {EXPERIMENTAL_NOTICE}"
+                ).removesuffix(EXPERIMENTAL_NOTICE)
+                if accessibility_description_text and _normalized_label(
+                    accessibility_description_text
+                ) != _normalized_label(derived_description_text):
+                    required_description_texts.add(
+                        _normalized_label(accessibility_description_text)
+                    )
+                if required_title_texts:
+                    xy_title_attribution_state = "unavailable"
+                if required_description_texts:
+                    xy_description_attribution_state = "unavailable"
+
+                proven_title_texts: set[str] = set()
+                proven_description_texts: set[str] = set()
+                if required_title_texts or required_description_texts:
+                    spatial_attribution_evidence_count = sum(
+                        item.kind in {"ocr_token", "vector_text"}
+                        and bool(item.text)
+                        and item.bbox is not None
+                        for item in evidence
+                    )
+                    spatial_overlap_safe = (
+                        spatial_attribution_evidence_count * len(record_boxes)
+                        <= _MAX_XY_RECORD_OVERLAP_COMPARISONS
+                    )
+                    for item in evidence:
+                        if item.id in record_evidence_ids or not item.text:
+                            continue
+                        normalized_text = _normalized_label(item.text)
+                        if item.kind == "user_edit":
+                            if item.id not in approved_user_edit_evidence_ids:
+                                continue
+                            if normalized_text in required_title_texts:
+                                proven_title_texts.add(normalized_text)
+                            if normalized_text in required_description_texts:
+                                proven_description_texts.add(normalized_text)
+                            continue
+                        if (
+                            not spatial_overlap_safe
+                            or item.kind not in {"ocr_token", "vector_text"}
+                            or item.bbox is None
+                        ):
+                            continue
+                        evidence_bbox = tuple(float(value) for value in item.bbox)
+                        x1, y1, x2, y2 = evidence_bbox
+                        observation_key = (normalized_text, evidence_bbox)
+                        if (
+                            not all(math.isfinite(value) for value in evidence_bbox)
+                            or x2 <= x1
+                            or y2 <= y1
+                            or x1 < 0
+                            or y1 < 0
+                            or x2 > image_width
+                            or y2 > image_height
+                            or len(authorized_texts_by_bbox.get(evidence_bbox, set())) != 1
+                            or observation_key in observation_owners
+                            or any(
+                                evidence_bbox[0] < record_bbox[2]
+                                and evidence_bbox[2] > record_bbox[0]
+                                and evidence_bbox[1] < record_bbox[3]
+                                and evidence_bbox[3] > record_bbox[1]
+                                for record_bbox in record_boxes.values()
+                            )
+                        ):
+                            continue
+                        if normalized_text in required_title_texts:
+                            proven_title_texts.add(normalized_text)
+                        if normalized_text in required_description_texts:
+                            proven_description_texts.add(normalized_text)
+                if required_title_texts and proven_title_texts == required_title_texts:
+                    xy_title_attribution_state = "exact"
+                if (
+                    required_description_texts
+                    and proven_description_texts == required_description_texts
+                ):
+                    xy_description_attribution_state = "exact"
+
+            numeric = (
+                1.0
+                if xy_binding_state == "exact"
+                else 0.0
+                if xy_binding_state == "mismatch"
+                else None
+            )
         else:
             numeric = numeric_consistency(references.numeric_tokens, code)
         if numeric is not None and gate_diagram_type in _NUMERIC_TYPES:
@@ -3368,6 +3811,12 @@ class ReconstructionPipeline:
         elif gate_diagram_type == "pie" and pie_binding_state == "mismatch":
             aggregate = None
             warnings.append(_PIE_NUMERIC_ASSOCIATION_MISMATCH_WARNING)
+        elif gate_diagram_type == "xychart" and xy_binding_state == "unavailable":
+            aggregate = None
+            warnings.append(_XY_RECORD_ASSOCIATION_UNAVAILABLE_WARNING)
+        elif gate_diagram_type == "xychart" and xy_binding_state == "mismatch":
+            aggregate = None
+            warnings.append(_XY_RECORD_ASSOCIATION_MISMATCH_WARNING)
         elif gate_diagram_type in _NUMERIC_TYPES and numeric is None:
             aggregate = None
             warnings.append(
@@ -3386,6 +3835,12 @@ class ReconstructionPipeline:
         if gate_diagram_type == "pie" and pie_description_attribution_state == "unavailable":
             aggregate = None
             warnings.append(_PIE_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING)
+        if gate_diagram_type == "xychart" and xy_title_attribution_state == "unavailable":
+            aggregate = None
+            warnings.append(_XY_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING)
+        if gate_diagram_type == "xychart" and xy_description_attribution_state == "unavailable":
+            aggregate = None
+            warnings.append(_XY_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING)
         if (
             source_scene is not None
             and not any(element.text for element in source_scene.elements)

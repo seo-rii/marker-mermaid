@@ -308,19 +308,27 @@ def test_xychart_accepts_decimal_y_values_on_inclusive_axis_bounds(
     x_axis: dict[str, object],
     series: dict[str, object],
 ) -> None:
-    code = serialize_chart_core(
+    code, emitted_type, warning = serialize_chart_core(
         "xychart",
         {
             "x_axis": x_axis,
             "y_axis": {"min": Decimal("-2"), "max": Decimal("2")},
             "series": [series],
         },
-    )[0]
+    )
 
-    assert "[-2, 2]" in code
+    if series["kind"] == "bar":
+        assert emitted_type == "flowchart"
+        assert warning is not None
+        assert 'xy_series_1_point_1["bar · Low: value -2"]' in code
+        assert 'xy_series_1_point_2["bar · High: value 2"]' in code
+    else:
+        assert emitted_type == "xychart"
+        assert warning is None
+        assert "[-2, 2]" in code
 
 
-def test_xychart_rejects_non_uniform_points_instead_of_distorting_x_coordinates() -> None:
+def test_xychart_falls_back_for_non_uniform_points_instead_of_distorting_coordinates() -> None:
     candidate = TypedIRCandidate(
         diagram_type="xychart",
         ir={
@@ -339,20 +347,24 @@ def test_xychart_rejects_non_uniform_points_instead_of_distorting_x_coordinates(
         },
     )
 
-    with pytest.raises(SerializationError, match="cannot preserve non-uniform"):
-        serialize_chart_core("xychart", candidate.ir)
+    code, emitted_type, warning = serialize_chart_core("xychart", candidate.ir)
+
+    assert emitted_type == "flowchart"
+    assert warning is not None
+    assert 'xy_series_1_point_2["line · x 3, y 2"]' in code
+    assert " --> " not in code
 
 
 def test_xychart_preserves_uppercase_kind_until_serializer_normalizes_it() -> None:
     ir = {
-        "x_axis": {"categories": ["A"]},
+        "x_axis": {"categories": ["A", "B"]},
         "y_axis": {"min": 0, "max": 2},
-        "series": [{"kind": "LINE", "values": [1]}],
+        "series": [{"kind": "LINE", "values": [1, 2]}],
     }
     candidate = TypedIRCandidate(diagram_type="xychart", ir=ir)
 
     assert candidate.ir == ir
-    assert "    line [1]" in serialize_chart_core("xychart", candidate.ir)[0]
+    assert "    line [1, 2]" in serialize_chart_core("xychart", candidate.ir)[0]
 
 
 @pytest.mark.parametrize("coordinate", [-0.01, 1.01, None, "0.5"])

@@ -10,7 +10,7 @@ NaN/Infinity, unknown endpoint, series 길이 불일치, 잘못된 축 범위를
 | type | native 조건 | fallback |
 | --- | --- | --- |
 | Pie | 고유 label, non-negative slice, positive total, 12개 이하 slice, zero-or-normal binary64와 1% visibility/`showData` 표시 동등성 | 최대 256개 slice의 edge 없는 exact-value Flowchart |
-| XY | category/value 길이 일치 또는 explicit uniform numeric x grid, y bounds | 없음; 비균일 x는 왜곡 대신 실패 |
+| XY | category/value 길이 일치, bounded exact numeric grid, visible line/bar, zero-or-normal binary64 axis/value, 최대 10 series | 최대 256 point의 edge 없는 title/axis/category/exact-value Flowchart |
 | Quadrant | 두 축 low/high label, 모든 point의 explicit `[0,1]` 좌표 | 없음 |
 | Sankey | positive weighted DAG, 모든 node 참여, native-safe 고유 label | exact weight label을 가진 flowchart |
 | Radar | 3개 이상 dimension, 동일 series 길이, 일관 bounds, 12개 이하 series, non-negative zero-or-normal binary64 domain과 finite positive renderer span | 최대 256 point의 edge 없는 exact-value tabular flowchart |
@@ -29,14 +29,15 @@ contract를 사용합니다.
 | Quadrant | 축 `low`/`high`, `quadrants: string[4]\|{quadrant-1:string,quadrant-2:string,quadrant-3:string,quadrant-4:string}`, point `label`·`x`·`y`와 bbox/evidence | non-empty·고유 point label, 좌표 `[0,1]`; quadrant list는 정확히 4개이고 object는 canonical `quadrant-1`~`quadrant-4` 또는 compatibility key `1`~`4`의 부분 집합을 허용하되 같은 slot의 alias 충돌은 거부 |
 
 세 계약의 root container는 필수지만 개별 record field는 partial extraction을 위해 선택입니다. Completeness와
-Mermaid 표현 가능성은 serializer가 판정하며, 실패하면 후보 단위로 끝납니다. XY와 Quadrant는 여전히 native
-`xychart-beta`·`quadrantChart`만 방출합니다. Pie는 native renderer가 source 값을 손실 없이 표시할 수 없거나
-native runtime validation이 실패하면 같은 candidate slot에서 exact-value Flowchart를 재검증합니다.
+Mermaid 표현 가능성은 serializer가 판정하며, 실패하면 후보 단위로 끝납니다. Quadrant는 아직
+native `quadrantChart`만 방출합니다. Pie와 XY는 native renderer가 source 값·구조를 손실 없이
+표시할 수 없거나 native runtime validation이 실패하면 같은 candidate slot에서 exact-value
+Flowchart를 재검증합니다.
 
-각 record의 bbox/evidence는 strict 검증 후 typed IR/review sidecar에 보존됩니다. Pie는 이 evidence를 generated
-Scene attribution과 slice-local label/value 검증에 연결하지만, XY와 Quadrant에는 아직 generated Scene adapter가
-없습니다. 공통 accessibility root와 미등록 extra metadata도 원본 dict에 보존되지만, 그 안의 숫자는 누락된
-slice/axis/point 값을 채우는 chart data evidence가 아닙니다.
+각 record의 bbox/evidence는 strict 검증 후 typed IR/review sidecar에 보존됩니다. Pie와 XY는 이 evidence를
+generated Scene attribution과 record-local label/value 검증에 연결하지만 Quadrant에는 아직 generated
+Scene adapter가 없습니다. 공통 accessibility root와 미등록 extra metadata도 원본 dict에 보존되지만,
+그 안의 숫자는 누락된 slice/axis/point 값을 채우는 chart data evidence가 아닙니다.
 
 ### Pie terminal plan
 
@@ -70,6 +71,38 @@ zero-width separator를 넣습니다. Native title은 Mermaid 11.16이 그대로
 label도 quote/backslash/angle/hash를 visible glyph로 바꾸고 source-only separator를 적용합니다. Unicode
 whitespace는 한 ASCII space로 고정합니다. Canvas-visible 치환은 warning으로 공개하고 semantic 원문은 typed
 IR/review metadata에 유지합니다.
+
+### XY terminal plan
+
+XY serializer·generated Scene·semantic OCR은 `plan_xychart_records()`가 만든 하나의 bounded
+`XYPlan`을 공유합니다. Plan은 axis·series·explicit point의 source record, deterministic Scene ID,
+fixed-decimal x/y, record-local evidence, terminal별 source·canvas text를 고정합니다. Categorical mode는
+각 value를 category text와 바인딩하고 numeric mode는 axis bound와 ordered value 또는 explicit x/y를 유지합니다.
+Valid하지만 non-uniform한 explicit x는 실패하거나 균일하게 다시 만들지 않고 exact fallback cell에
+원본 x/y를 남깁니다.
+
+Native `xychart-beta`는 축 bound와 y, explicit x가 zero 또는 normal binary64로 exact round-trip되고
+선언된 numeric 축 span이 positive normal finite일 때만 사용합니다. Numeric x-axis는 Mermaid 11.16의
+`for (x = min; x <= max; x += step)` 동작을 입력 길이+1로 제한해 미리 실행하고, 매 step이
+엄격히 증가하며 정확한 개수·시작·종료 좌표를 만드는지 확인합니다. 따라서 `[0,1]`에
+10개 value를 놓았을 때 마지막 point가 사라지는 경우와 `2^53` 근처에서 float 덧셈이 진전하지
+않는 무한 loop 위험을 runtime 전에 닫습니다.
+
+추가로 line은 보이는 segment를 위해 두 point 이상이어야 하고, 동일 line 경로가 완전히
+겹치거나 두 개 이상의 bar series가 같은 x/width를 공유해 가리는 경우, bar가 y-axis minimum에서
+0 높이가 되는 경우는 fallback을 선택합니다. Pinned palette를 넘는 11번째 series도 fallback입니다.
+Native 조건을 통과하지 못하면 최대 256 point의 disconnected `flowchart TB`를 사용하며,
+visible title, 두 axis, category, category-bound value 또는 exact x/y cell을 추정 edge 없이 방출합니다.
+Native CandidateValidator가 parse/render/SVG/type gate에서 거부해도 새 candidate를 소비하지 않고
+같은 slot에서 이 Flowchart를 한 번 전체 재검증합니다. 두 terminal은 50,000 UTF-16 code-unit·5,000
+line source preflight와 strict security scan을 공유합니다.
+
+Native Scene은 normalized x/y axis, categorical tick anchor, hidden-text data point/bar를 만듭니다. Line은
+인접 point 사이의 marker-less `series_line` association이고 bar는 y point에서 plot bottom까지의 bbox입니다.
+Semantic OCR은 canvas에 실제로 보이는 title·axis label·category만 세고 hidden value와 accessibility
+metadata는 제외합니다. Flowchart Scene은 source 순서와 동일한 zero-geometry title·axis·category·data
+cell을 만들고 relation/group은 비웁니다. Quote·backslash·angle·hash compatibility glyph과
+source-only scanner separator는 plan에서 terminal별로 고정하고 visible 치환을 warning으로 공개합니다.
 
 ## Extended chart structured extraction
 

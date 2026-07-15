@@ -612,7 +612,10 @@ def _ensure_extended_serializers() -> None:
     from marker_mermaid.serializers_charts_core import (
         PIE_FALLBACK_TEXT_COMPATIBILITY_WARNING,
         PIE_NATIVE_TEXT_COMPATIBILITY_WARNING,
+        XY_FALLBACK_TEXT_COMPATIBILITY_WARNING,
+        XY_NATIVE_TEXT_COMPATIBILITY_WARNING,
         plan_pie_records,
+        plan_xychart_records,
         serialize_chart_core,
     )
     from marker_mermaid.serializers_charts_flow import serialize_chart_flow
@@ -720,6 +723,11 @@ def _ensure_extended_serializers() -> None:
                 ):
                     native_warnings = (PIE_NATIVE_TEXT_COMPATIBILITY_WARNING,)
                 elif (
+                    _requested_type == "xychart"
+                    and plan_xychart_records(ir).native_compatibility_substitutions
+                ):
+                    native_warnings = (XY_NATIVE_TEXT_COMPATIBILITY_WARNING,)
+                elif (
                     _requested_type == "treemap"
                     and plan_treemap_records(ir).native_compatibility_substitutions
                 ):
@@ -743,6 +751,11 @@ def _ensure_extended_serializers() -> None:
                 and plan_pie_records(ir).fallback_compatibility_substitutions
             ):
                 fallback_warnings.append(PIE_FALLBACK_TEXT_COMPATIBILITY_WARNING)
+            elif (
+                _requested_type == "xychart"
+                and plan_xychart_records(ir).fallback_compatibility_substitutions
+            ):
+                fallback_warnings.append(XY_FALLBACK_TEXT_COMPATIBILITY_WARNING)
             return SerializationResult.fallback(
                 _requested_type,
                 emitted_type,
@@ -837,6 +850,14 @@ def _validate_pie_explicit_accessibility_fields(ir: dict[str, Any]) -> None:
     validate_pie_explicit_metadata(ir)
 
 
+def _validate_xychart_explicit_accessibility_fields(ir: dict[str, Any]) -> None:
+    """Keep public XY serialization from stringifying malformed explicit metadata."""
+
+    from marker_mermaid.serializers_charts_core import validate_xychart_explicit_metadata
+
+    validate_xychart_explicit_metadata(ir)
+
+
 def serialize_typed_ir_result(
     diagram_type: str,
     ir: dict[str, Any],
@@ -847,6 +868,8 @@ def serialize_typed_ir_result(
 
     if diagram_type == "pie":
         _validate_pie_explicit_accessibility_fields(ir)
+    elif diagram_type == "xychart":
+        _validate_xychart_explicit_accessibility_fields(ir)
     _ensure_extended_serializers()
     enriched_ir = enrich_accessibility_ir(
         ir,
@@ -880,6 +903,8 @@ def serialize_runtime_fallback_result(
 
     if diagram_type == "pie":
         _validate_pie_explicit_accessibility_fields(ir)
+    elif diagram_type == "xychart":
+        _validate_xychart_explicit_accessibility_fields(ir)
     if diagram_type in {"architecture", "c4", "deployment", "component"}:
         initial = serialize_typed_ir_result(
             diagram_type,
@@ -941,6 +966,30 @@ def serialize_runtime_fallback_result(
             code,
             warnings=tuple(warnings),
             stability="extended",
+        )
+    if diagram_type == "xychart":
+        from marker_mermaid.serializers_charts_core import (
+            XY_FALLBACK_TEXT_COMPATIBILITY_WARNING,
+            plan_xychart_records,
+            serialize_xychart,
+        )
+
+        code, emitted_type, reason = serialize_xychart(
+            ir,
+            experimental=experimental,
+            native_runtime_valid=False,
+        )
+        if emitted_type == "xychart":
+            return None
+        warnings = [reason or "CandidateValidator rejected native XY Chart."]
+        if plan_xychart_records(ir).fallback_compatibility_substitutions:
+            warnings.append(XY_FALLBACK_TEXT_COMPATIBILITY_WARNING)
+        return SerializationResult.fallback(
+            "xychart",
+            emitted_type,
+            code,
+            warnings=tuple(warnings),
+            stability="experimental",
         )
     if diagram_type == "sankey":
         from marker_mermaid.serializers_charts_flow import serialize_sankey
