@@ -377,9 +377,36 @@ def _native_sankey_total_text(total: float) -> str | None:
     return rendered.removesuffix(".0")
 
 
+def validate_sankey_explicit_metadata(ir: Mapping[str, Any]) -> None:
+    """Reject explicit Sankey metadata before accessibility enrichment can stringify it."""
+
+    for field in ("title", "description", "acc_title", "acc_description"):
+        value = ir.get(field)
+        if value is None:
+            continue
+        if type(value) is not str:
+            raise SerializationError(f"sankey {field} must be text when provided")
+        if value == "":
+            continue
+        if len(value) > MAX_TEXT_CHARS:
+            raise SerializationError(f"sankey {field} must be bounded non-empty text")
+        normalized = " ".join(value.split())
+        if not normalized or len(normalized) > MAX_TEXT_CHARS:
+            raise SerializationError(f"sankey {field} must be bounded non-empty text")
+        if any(
+            unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"} for character in normalized
+        ):
+            raise SerializationError(f"sankey {field} contains unsupported text")
+        try:
+            normalized.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise SerializationError(f"sankey {field} is not valid UTF-8") from exc
+
+
 def plan_sankey_records(ir: Mapping[str, Any]) -> SankeyPlan:
     """Validate Sankey records and freeze native/fallback visible semantics."""
 
+    validate_sankey_explicit_metadata(ir)
     records = _required_records(ir.get("nodes"), field="Sankey nodes")
     node_rows: list[tuple[Mapping[str, Any], str, str, tuple[str, ...]]] = []
     seen_ids: set[str] = set()

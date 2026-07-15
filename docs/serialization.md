@@ -533,6 +533,16 @@ invalid geometry와 bounded association budget 초과는 fail closed입니다. N
 repair는 같은 typed plan/scoped evidence로 이 검사를 다시 수행하고, direct/untyped Sankey는 flow-local
 소유권을 만들 수 없어 review에 남습니다.
 
+Raw accessibility metadata는 enrichment보다 먼저 별도 경계에서 검사합니다. Pipeline candidate 경계와 public
+typed serializer 모두 Sankey의 `title`, `description`, `acc_title`, `acc_description`이 `None`이 아니면 exact
+built-in `str`인지 확인합니다. Raw 길이를 whitespace 정규화보다 먼저 `MAX_TEXT_CHARS`로 제한하고, 호환용
+exact empty string 외에는 정규화 결과도 non-empty·bounded여야 합니다. 또한 UTF-8 encoding이 가능하고
+정규화된 text에 Unicode category `Cc`/`Cf`/`Zl`/`Zp` 문자가 없어야 합니다. 따라서 custom subclass,
+non-text, huge-whitespace를 포함한 overlong raw/normalized text, whitespace-only, ZWSP/control-only,
+lone-surrogate 값은 provider별 Mermaid 생성과 runtime validation에 도달하지 않습니다. `None`/JSON `null`은
+absent입니다. Pie/XY의 기존 호환 규칙과 같이 exact empty string은 입력으로 허용하지만 omitted로 resolve해
+deterministic title/description을 파생하며, explicit empty SVG metadata로 직렬화하지 않습니다.
+
 Sankey accessibility gate도 terminal 결과에 맞춰 적용합니다. Native Sankey는 title/description을 방출하지
 않으므로 exempt입니다. Same-slot Flowchart fallback은 resolved accessibility title과 description을 SVG
 `<title>`/`<desc>` metadata로 직렬화하며 canvas node로 만들지 않습니다. `acc_title`이 `title`을,

@@ -5,7 +5,12 @@ from copy import deepcopy
 import pytest
 
 from marker_mermaid.config import SecurityProfile
-from marker_mermaid.serializers import SerializationError
+from marker_mermaid.models import MAX_TEXT_CHARS
+from marker_mermaid.serializers import (
+    SerializationError,
+    serialize_runtime_fallback_result,
+    serialize_typed_ir_result,
+)
 from marker_mermaid.serializers_charts_flow import (
     MAX_RADAR_TICKS,
     SANKEY_ACCESSIBILITY_LIMITATION,
@@ -60,6 +65,102 @@ def test_sankey_native_output_is_deterministic_and_discloses_accessibility_limit
     assert first.code.startswith("sankey-beta\n")
     assert '"Input, total",Useful work,75.5' in first.code
     assert first.warnings == (SANKEY_ACCESSIBILITY_LIMITATION,)
+
+
+@pytest.mark.parametrize("field", ["title", "description", "acc_title", "acc_description"])
+@pytest.mark.parametrize("value", [True, 7])
+def test_sankey_public_serializers_reject_non_text_explicit_metadata(
+    field: str,
+    value: object,
+) -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir[field] = value
+
+    with pytest.raises(SerializationError, match=rf"sankey {field} must be text"):
+        serialize_typed_ir_result("sankey", ir)
+    with pytest.raises(SerializationError, match=rf"sankey {field} must be text"):
+        serialize_runtime_fallback_result("sankey", ir)
+    with pytest.raises(SerializationError, match=rf"sankey {field} must be text"):
+        serialize_sankey(ir)
+
+
+@pytest.mark.parametrize("field", ["title", "description", "acc_title", "acc_description"])
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        (" ", "bounded non-empty text"),
+        ("\u200b", "unsupported text"),
+        ("metadata\x00", "unsupported text"),
+        ("x" * (MAX_TEXT_CHARS + 1), "bounded non-empty text"),
+        (" " * MAX_TEXT_CHARS + "x", "bounded non-empty text"),
+        ("\ud800", "not valid UTF-8"),
+    ],
+)
+def test_sankey_public_serializers_reject_malformed_explicit_text(
+    field: str,
+    value: str,
+    message: str,
+) -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir[field] = value
+
+    with pytest.raises(SerializationError, match=message):
+        serialize_typed_ir_result("sankey", ir)
+    with pytest.raises(SerializationError, match=message):
+        serialize_runtime_fallback_result("sankey", ir)
+    with pytest.raises(SerializationError, match=message):
+        serialize_sankey(ir)
+
+
+@pytest.mark.parametrize("field", ["title", "description", "acc_title", "acc_description"])
+@pytest.mark.parametrize("value", [None, ""])
+def test_sankey_null_and_empty_explicit_metadata_remain_compatible(
+    field: str,
+    value: str | None,
+) -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir[field] = value
+
+    assert serialize_typed_ir_result("sankey", ir).emitted_type == "sankey"
+    fallback = serialize_runtime_fallback_result("sankey", ir)
+    assert fallback is not None
+    assert fallback.emitted_type == "flowchart"
+    assert serialize_sankey(ir).emitted_type == "sankey"
+
+
+def test_sankey_ordinary_explicit_metadata_preserves_fallback_accessibility() -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir["acc_title"] = "Energy flow summary"
+    ir["acc_description"] = "Energy moves to useful work and loss."
+
+    native = serialize_typed_ir_result("sankey", ir)
+    fallback = serialize_runtime_fallback_result("sankey", ir)
+
+    assert native.code == serialize_sankey(ir).code
+    assert fallback is not None
+    assert "accTitle: Energy flow summary" in fallback.code
+    assert "accDescr: Energy moves to useful work and loss." in fallback.code
+
+
+def test_sankey_string_subclass_is_rejected_without_executing_its_hook() -> None:
+    class HookedString(str):
+        calls = 0
+
+        def __str__(self) -> str:
+            type(self).calls += 1
+            raise AssertionError("untrusted string hook executed")
+
+    value = HookedString("metadata")
+    ir = deepcopy(SANKEY_IR)
+    ir["acc_title"] = value
+
+    with pytest.raises(SerializationError, match="sankey acc_title must be text"):
+        serialize_typed_ir_result("sankey", ir)
+    with pytest.raises(SerializationError, match="sankey acc_title must be text"):
+        serialize_runtime_fallback_result("sankey", ir)
+    with pytest.raises(SerializationError, match="sankey acc_title must be text"):
+        serialize_sankey(ir)
+    assert HookedString.calls == 0
 
 
 def test_sankey_cycle_uses_exact_weighted_flowchart_fallback() -> None:

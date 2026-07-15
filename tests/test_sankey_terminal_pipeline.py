@@ -17,7 +17,7 @@ from marker_mermaid.models import (
 )
 from marker_mermaid.pipeline import ReconstructionPipeline
 from marker_mermaid.protocols import RepairProposal, RuntimeResult
-from marker_mermaid.serializers import serialize_typed_ir_result
+from marker_mermaid.serializers import SerializationError, serialize_typed_ir_result
 from marker_mermaid.validation import CandidateValidator
 
 SANKEY_IR = {
@@ -249,6 +249,60 @@ def _reconstruct_sankey(
         evidence=source_evidence or None,
     )
     return result, runtime
+
+
+@pytest.mark.parametrize("reject_native", [False, True])
+@pytest.mark.parametrize("field", ["title", "description", "acc_title", "acc_description"])
+def test_sankey_invalid_explicit_metadata_never_reaches_either_runtime_terminal(
+    field: str,
+    reject_native: bool,
+) -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir[field] = " "
+
+    result, runtime = _reconstruct_sankey(ir=ir, reject_native=reject_native)
+
+    assert result.selected is None
+    assert not result.publish
+    assert runtime.calls == []
+    assert any(
+        failure.stage == "serialization" and failure.error_type == "SerializationError"
+        for failure in result.failures
+    )
+
+
+def test_sankey_pipeline_validates_raw_metadata_before_accessibility_enrichment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def reject_raw_metadata(ir: object) -> None:
+        del ir
+        calls.append("validate")
+        raise SerializationError("invalid raw Sankey metadata")
+
+    def unexpected_enrichment(*args: object, **kwargs: object) -> dict[str, object]:
+        del args, kwargs
+        calls.append("enrich")
+        raise AssertionError("accessibility enrichment ran before validation")
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "validate_sankey_explicit_metadata",
+        reject_raw_metadata,
+    )
+    monkeypatch.setattr(pipeline_module, "enrich_accessibility_ir", unexpected_enrichment)
+
+    result, runtime = _reconstruct_sankey()
+
+    assert result.selected is None
+    assert not result.publish
+    assert runtime.calls == []
+    assert calls == ["validate"]
+    assert any(
+        failure.stage == "serialization" and failure.error_type == "SerializationError"
+        for failure in result.failures
+    )
 
 
 @pytest.mark.parametrize("reject_native", [False, True])

@@ -232,6 +232,15 @@
   evidence, missing or invalid data-record geometry, and engine-emitted `user_edit` self-authorization force
   review, and semantic repair reruns the same gate. Numeric tokens from the selected OCR/vector metadata proof are
   removed only from the flow-weight reference multiset so valid metadata digits do not masquerade as extra flows.
+- Sankey raw explicit metadata now passes a pre-enrichment boundary in both the reconstruction pipeline and the public
+  typed serializer. Non-`None` `title`, `description`, `acc_title`, and `acc_description` values must be exact built-in
+  strings whose raw length is checked against `MAX_TEXT_CHARS` before whitespace normalization. Apart from the
+  compatibility empty string, normalized text must remain non-empty and bounded, encode as UTF-8, and contain no
+  normalized `Cc`/`Cf`/`Zl`/`Zp` Unicode characters. Subclasses, non-text values, whitespace-only or control-only text,
+  zero-width spaces, overlong raw or normalized text, and lone surrogates fail before provider-specific Mermaid
+  serialization or runtime validation. `None` remains absent. For compatibility with the established Pie/XY contract,
+  an exact empty string is accepted but resolves as omitted, allowing deterministic accessible text to be derived
+  instead of emitting explicit empty metadata.
 - Treemap serialization, generated Scene attribution, and semantic OCR projection now share one bounded DFS
   preorder plan. It freezes source or collision-safe `treemap_node_N[_suffix]` Scene identities, Flowchart
   `N1..Nn` identities, parent/child slots, exact value tokens, and record-local provenance. Source image/bbox

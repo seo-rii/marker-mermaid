@@ -210,6 +210,17 @@ geometry와 bounded association budget 초과는 부분 점수 없이 review입�
 semantic repair는 같은 typed plan과 scoped evidence로 이 gate를 다시 계산하며 direct/untyped Sankey는
 flow owner를 증명할 수 없어 review-only입니다.
 
+Terminal별 귀속을 계산하기 전에 raw Sankey IR의 `title`, `description`, `acc_title`, `acc_description`을
+accessibility enrichment와 분리해 검증합니다. Reconstruction pipeline 후보 경계와 public typed serializer가
+같은 규칙을 적용하며, 값이 `None`이 아니면 subclass가 아닌 exact built-in `str`여야 합니다. 숫자·container·
+custom string subclass는 거부됩니다. 정규화 작업 전에 raw 문자열 길이가 `MAX_TEXT_CHARS` 이하인지 먼저
+검사하고, 호환용 exact `""`을 제외한 문자열은 whitespace 정규화 뒤에도 non-empty·bounded여야 합니다. 또한
+UTF-8로 encoding할 수 있고 정규화된 text에 Unicode category `Cc`/`Cf`/`Zl`/`Zp` 문자가 없어야 합니다. 따라서
+huge-whitespace를 포함한 overlong raw/normalized text, whitespace-only, ZWSP/control-only, lone-surrogate 입력도
+provider별 Mermaid 직렬화나 runtime 호출 전에 실패합니다. JSON `null`은 필드 부재와 같고, 기존 Pie/XY
+호환성을 유지하기 위해 exact `""`은 허용하되 명시적 빈 metadata로 방출하지 않고 omitted로 해석해
+deterministic accessibility text를 파생합니다.
+
 접근성 귀속은 terminal별로 다릅니다. Native Sankey는 title/description을 방출하지 않으므로 이 metadata
 gate의 대상이 아닙니다. Same-slot Flowchart fallback은 resolved accessibility title과 description을 SVG
 metadata로 방출하며 content OCR label로 세지 않습니다. 이때 `acc_title`이 `title`을, `acc_description`이

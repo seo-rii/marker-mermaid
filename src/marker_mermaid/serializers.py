@@ -880,6 +880,14 @@ def _validate_quadrant_explicit_accessibility_fields(ir: dict[str, Any]) -> None
     validate_quadrant_explicit_metadata(ir)
 
 
+def _validate_sankey_explicit_accessibility_fields(ir: dict[str, Any]) -> None:
+    """Keep public Sankey serialization from stringifying malformed metadata."""
+
+    from marker_mermaid.serializers_charts_flow import validate_sankey_explicit_metadata
+
+    validate_sankey_explicit_metadata(ir)
+
+
 def serialize_typed_ir_result(
     diagram_type: str,
     ir: dict[str, Any],
@@ -894,6 +902,8 @@ def serialize_typed_ir_result(
         _validate_xychart_explicit_accessibility_fields(ir)
     elif diagram_type == "quadrant":
         _validate_quadrant_explicit_accessibility_fields(ir)
+    elif diagram_type == "sankey":
+        _validate_sankey_explicit_accessibility_fields(ir)
     _ensure_extended_serializers()
     enriched_ir = enrich_accessibility_ir(
         ir,
@@ -931,6 +941,8 @@ def serialize_runtime_fallback_result(
         _validate_xychart_explicit_accessibility_fields(ir)
     elif diagram_type == "quadrant":
         _validate_quadrant_explicit_accessibility_fields(ir)
+    elif diagram_type == "sankey":
+        _validate_sankey_explicit_accessibility_fields(ir)
     if diagram_type in {"architecture", "c4", "deployment", "component"}:
         initial = serialize_typed_ir_result(
             diagram_type,

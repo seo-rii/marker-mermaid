@@ -485,6 +485,18 @@ occurrence도 exact할 때만 허용합니다. Evidence ID나 normalized text+bb
 invalid geometry와 bounded association work 초과는 native·same-slot Flowchart·semantic repair를 모두
 review로 닫습니다. Direct 또는 typed flow plan이 없는 Sankey도 flow-local owner binding을 만들 수 없어
 review-only입니다.
+
+Sankey의 네 raw explicit metadata field(`title`, `description`, `acc_title`, `acc_description`)는 accessibility
+enrichment 전에 별도로 검증합니다. Pipeline은 provider가 반환한 typed candidate의 raw snapshot에서, public
+typed serializer는 caller가 넘긴 raw IR에서 같은 검사를 수행합니다. Non-`None` 값은 exact built-in `str`만
+허용합니다. Whitespace 정규화 전에 raw 길이를 `MAX_TEXT_CHARS`로 제한하고, 호환용 exact `""` 외의 문자열은
+정규화 후에도 non-empty·bounded·valid UTF-8이어야 하며 정규화된 text에 Unicode category
+`Cc`/`Cf`/`Zl`/`Zp` 문자가 없어야 합니다. String subclass·숫자·container뿐 아니라 huge-whitespace를 포함한
+overlong raw/normalized text, whitespace-only, ZWSP/control-only, lone-surrogate 입력도 provider별 Mermaid
+serialization이나 runtime validation 전에 fail closed입니다. JSON `null`은 absent로 취급합니다. Pie/XY의
+기존 input compatibility를 따라 exact `""`은 허용하지만 omitted로 resolve하며, 따라서 빈 explicit metadata가
+아니라 deterministic accessibility text가 파생됩니다.
+
 Sankey의 explicit accessibility metadata는 terminal별로 판정합니다. Native Sankey는 title/description을
 방출하지 않으므로 이 귀속 검사를 요구하지 않습니다. Same-slot Flowchart fallback은 resolved title과
 description을 SVG metadata로 방출하며 content OCR label로 세지 않습니다. `acc_title`이 `title`을,

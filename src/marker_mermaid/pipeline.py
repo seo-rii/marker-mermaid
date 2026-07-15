@@ -112,7 +112,11 @@ from marker_mermaid.serializers_charts_core import (
     plan_xychart_records,
     validate_quadrant_explicit_metadata,
 )
-from marker_mermaid.serializers_charts_flow import plan_radar_records, plan_sankey_records
+from marker_mermaid.serializers_charts_flow import (
+    plan_radar_records,
+    plan_sankey_records,
+    validate_sankey_explicit_metadata,
+)
 from marker_mermaid.serializers_special import plan_packet_fields
 from marker_mermaid.style_recovery import (
     TrustedEdgeStyleEvidence,
@@ -1972,7 +1976,12 @@ class ReconstructionPipeline:
                 ]
                 for typed in eligible_typed_candidates[:candidate_budget]:
                     try:
-                        if typed.diagram_type == "quadrant":
+                        if typed.diagram_type == "sankey":
+                            # Accessibility enrichment can turn malformed explicit
+                            # metadata into ordinary strings. Validate the raw payload
+                            # before either the native or portable terminal sees it.
+                            validate_sankey_explicit_metadata(typed.ir)
+                        elif typed.diagram_type == "quadrant":
                             # Accessibility enrichment fills empty directives with
                             # derived text. Validate the raw payload first so an
                             # explicitly empty field cannot be laundered into a
