@@ -679,6 +679,22 @@ Set/intersection object 재사용, unknown/repeated member, duplicate canonical 
 intersection보다 큰 intersection, area·membership resource 초과는 serializer 전에 거부합니다. Malformed
 evidence list는 해당 record의 전체 evidence tuple만 비우고 code·topology·다른 provenance는 유지합니다.
 
+Pipeline publication gate는 plan의 evidence ID를 단순 coverage 신호로 쓰지 않습니다. 모든 set/intersection
+source record는 finite positive in-image bbox와 exact 일치하는 candidate-authorized cited `contour`, 그리고 그
+bbox 안에 완전히 포함된 별도 cited `ocr_token`/`vector_text`를 가져야 합니다. Reading order로 결합한 text는
+실제 label과 explicit fixed-decimal
+value의 허용된 full-record 표현과 일치해야 합니다. Optional label/value가 없으면 해당 field를 요구하거나
+합성하지 않지만 둘 다 없는 intersection은 text owner proof를 만들 수 없어 review입니다. Evidence ID와
+normalized text+bbox observation은 owner 간 injective하고 same-bbox contradiction, missing authority/evidence,
+invalid geometry와 bounded work 초과는 fail closed입니다. Venn area가 본질적으로 겹치므로 source record
+bbox끼리의 overlap은 금지하지 않습니다. 대신 intersection bbox는 declared member set 모두에 inclusively
+contained되고 undeclared set에는 완전히 contained되지 않아야 하며, higher-order intersection은 모든 explicit
+strict-subset intersection 안에 있어야 합니다. Equal containment는 허용합니다. 모든 set scan,
+intersection-pair scan, contour 비교와 text containment는 하나의 100,000 spatial-work budget을 공유합니다.
+이 membership geometry, cited observation의 owner-local containment, record content와 전역 numeric occurrence
+exactness는 native, runtime Flowchart fallback과 semantic repair에 동일하게 적용됩니다. Runtime fallback의
+repair는 같은 Flowchart terminal로 canonical 재직렬화하며 direct/untyped Venn은 자동 게시하지 않습니다.
+
 Native `venn-beta`는 모든 set/intersection size가 관측되고 positive normal binary64로 exact round-trip되며,
 Python `int` 입력의 safe-integer range와 `largest set / smallest positive area <= 200` visibility gate를 만족할 때만 선택합니다.
 Intersection이 member set 또는 더 작은 explicit intersection과 같은 exact-containment, zero·subnormal·

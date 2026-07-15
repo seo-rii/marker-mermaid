@@ -550,6 +550,22 @@ exact-value Flowchart로 낮추되 값을 합성하지 않습니다. 관측 cont
 거부합니다. Portable membership은 500 edge까지만 허용하고 native area notation에는 그 Flowchart 전용
 상한을 적용하지 않으며, 두 terminal source는 50,000자·5,000줄 예산을 공유합니다.
 
+Typed value와 record의 evidence ID가 있다는 사실만으로 자동 게시 권한을 만들 수는 없습니다. 모든 planned
+set/intersection의 finite positive in-image source bbox는 candidate-authorized cited contour와 exact 일치해야
+하고, 그 안의 별도 cited OCR/vector text로
+실제 label과 explicit fixed-decimal value를 full-record 단위로 증명해야 합니다. Label 또는 value가 optional이면
+존재하는 field만 요구하고 합성하지 않지만 둘 다 없는 intersection은 textual owner proof가 없어 review입니다.
+Evidence ID와 normalized text+bbox observation은 record 간 injective하고 same-bbox contradiction, missing
+authority/evidence, invalid geometry와 20,000 reference·50,000 text·1,000,000 character·100,000 OCR token·
+100,000 shared spatial work 초과를 fail closed로 처리합니다. Set/intersection source bbox끼리의 overlap은 Venn
+의미이므로 허용하지만 intersection은 declared member set 모두에 inclusively contained되고 undeclared set에는
+완전히 contained되지 않아야 합니다. Higher-order intersection은 모든 explicit strict-subset intersection 안에
+있어야 하며 equal containment는 허용합니다. 100,000 shared spatial work에는 모든 set scan,
+intersection-pair scan, contour 비교와 text containment가 포함됩니다. 이 membership geometry와 cited
+observation의 owner-local containment, local record binding, 전역 numeric occurrence exactness를 native,
+same-slot Flowchart와 repair에서 함께 재평가하고 runtime fallback repair는 같은 terminal로 canonical
+재직렬화합니다. Direct/untyped Venn은 review-only입니다.
+
 ### Journey·Kanban·GitGraph 계획 다이어그램 계약
 
 세 계획 유형도 canonical record를 provider prompt에 공개하고 같은 strict nested model로 응답을

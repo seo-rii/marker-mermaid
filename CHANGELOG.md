@@ -293,6 +293,21 @@
   terminal-visible compatibility warnings, and the independent numeric publication gate. Native Venn's
   `accTitle`/`accDescr` limitation remains explicit; the Flowchart stores resolved accessibility text as SVG
   metadata rather than OCR content.
+- Venn publication now binds every planned set and explicit intersection to its own candidate-authorized contour
+  plus spatial OCR/vector record. Each positive finite in-image source bbox must exactly match a separately cited
+  contour, and each owner requires exact normalized label/value
+  content for the fields that were actually observed; an unlabeled intersection may prove its explicit value
+  without inventing a label, while an intersection with neither field remains review-only. Evidence IDs and
+  normalized text+bbox observations are injective
+  across owners, same-position contradictions, invalid geometry, missing candidate authority, and bounded work
+  exhaustion force review. Set/intersection source bboxes may overlap because overlap is the diagram's meaning,
+  but every intersection must be inclusively contained by each declared member set, excluded from complete
+  containment by undeclared sets, and nested inside every explicit strict-subset intersection. Equal containment
+  remains valid for the documented portable fallback. Every set scan, intersection-pair scan, contour comparison,
+  and text containment consumes one shared bounded spatial-work budget. Record-local binding is conjoined with
+  global numeric occurrence completeness for native Venn, its same-slot Flowchart fallback, and semantic repair;
+  repairs of a runtime fallback are canonically reserialized into that same terminal. Direct or otherwise untyped
+  Venn remains review-only.
 - Bounded pre-validation source repair with audit events, diagnostics, idempotence, and AST adapter seam.
 - Page-level missed-diagram proposals with occupied-region exclusion and virtual source crops.
 - Profile-gated flowchart fill, border, and link style recovery with strict CSS allowlists.

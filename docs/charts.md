@@ -363,6 +363,26 @@ fixed-decimal value token, terminal별 label과 record-local evidence를 한 번
 containment 위반, area·membership resource 초과는 serialization 전에 거부합니다. Malformed evidence list는
 해당 record의 전체 evidence tuple만 비우며 code·topology·다른 record provenance는 유지합니다.
 
+자동 게시에서는 이 provenance tuple의 존재만으로 set/intersection 내용을 승인하지 않습니다. Plan의 모든
+set과 explicit intersection은 source image 안의 finite positive bbox를 갖고, candidate publication authority에
+포함된 별도 cited `contour` bbox와 exact 일치해야 합니다. 같은 owner의 cited `ocr_token`/`vector_text`는 그
+bbox 안에서 실제 관측된 label과 explicit value를 하나의 bounded
+record로 정확히 증명해야 합니다. Label이 없는 intersection은 관측된 value만 요구하고, value가 없는 record에는
+숫자를 만들거나 요구하지 않습니다. 둘 다 없는 intersection은 textual owner proof가 없어 review입니다.
+Evidence ID와 normalized text+bbox observation은 owner 사이에서
+injective하며 같은 bbox의 상충 text, missing evidence, invalid geometry와 association budget 소진은 전체 결합을
+unavailable/review로 둡니다.
+
+Venn에서는 set과 intersection 영역의 겹침 자체가 의미이므로 record bbox끼리 non-overlap을 요구하지 않습니다.
+다만 intersection bbox는 선언한 모든 member set에 inclusively contained되고, 선언하지 않은 set에는 완전히
+contained되지 않아야 합니다. Higher-order intersection은 입력에 존재하는 모든 strict-subset intersection
+bbox 안에 있어야 하며 equal containment는 허용해 documented exact-containment Flowchart fallback을 막지
+않습니다. 모든 set scan, intersection-pair scan, contour 비교와 text containment는 같은 100,000 spatial-work
+budget을 소비합니다. 이 membership geometry와 각 cited observation의 owner-local containment, 교차 owner
+재사용 금지, 전체 source/generated 숫자 occurrence exactness가 모두 통과해야 게시할 수 있습니다. Native,
+same-slot Flowchart fallback과 semantic repair는 같은 gate를 다시 실행하며 runtime fallback의 repair는 그
+Flowchart terminal로 canonical 재직렬화합니다. Typed owner plan이 없는 direct Venn은 review-only입니다.
+
 Native `venn-beta`는 모든 set/intersection value가 positive normal binary64로 원문과 round-trip되고,
 Python `int` 입력이 JavaScript safe 범위를 넘지 않으며, 최대 set과 최소 positive area의 비가 `200:1` 이하일 때만
 선택합니다. Intersection이 member set 또는 더 작은 explicit intersection과 정확히 같은 크기인

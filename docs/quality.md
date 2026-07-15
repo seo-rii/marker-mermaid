@@ -384,6 +384,20 @@ generated Scene attribution에서 제외합니다.
   `unknown` direction, fallback은 labeled end-arrow membership과 `LR`을 사용합니다. Runtime native rejection은
   같은 candidate slot의 exact-value Flowchart를 한 번 재검증합니다. Flowchart projection만 500-edge hard
   cap을 적용하며 near-limit render 성능은 별도 runtime timeout에 계속 의존합니다.
+- Venn numeric publication은 document-wide occurrence multiset만 사용하지 않습니다. 모든 planned set과
+  intersection의 finite positive in-image source bbox는 candidate-authorized cited contour와 exact 일치해야 하고,
+  별도의 cited OCR/vector observation으로
+  실제 label과 explicit value를 record 단위로 결합해야 합니다. Label/value swap, evidence ID 또는 normalized
+  text+bbox의 교차 owner 재사용, same-bbox contradiction, missing authority/geometry와 bounded association work
+  소진은 aggregate를 unavailable로 둡니다. Label이나 value가 원래 없는 intersection에는 그 field를 합성하지
+  않고 둘 다 없으면 textual owner proof가 없어 review합니다. Set/intersection bbox의 상호 overlap은 Venn
+  의미상 허용하지만 intersection은 declared set 모두에 inclusively contained되고 undeclared set에는 완전히
+  contained되지 않아야 하며, higher-order intersection은 모든 explicit strict-subset intersection 안에 있어야
+  합니다. Equal containment는 허용합니다. 모든 set scan, intersection-pair scan, contour 비교와 text
+  containment가 하나의 bounded spatial-work counter를 공유합니다. 이 membership geometry와 cited
+  observation의 owner-local containment, local content binding, global numeric exactness는 native, same-slot
+  Flowchart와 repair에서 함께 재평가되며 runtime fallback repair는 같은 terminal로 canonical serialization을
+  유지합니다. Direct/untyped Venn은 review-only입니다.
 - Pie는 slice-local association과 전역 occurrence completeness를 함께 사용합니다. Native Pie, 같은-slot exact-value
   Flowchart, semantic repair 모두 각 typed slice가 candidate publication authority의 `ocr_token` 또는
   `vector_text`를 직접 참조해야 합니다. Slice/evidence bbox는 양의 면적이고 source image 안에 있어야 하며,

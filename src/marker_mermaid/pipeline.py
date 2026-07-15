@@ -117,7 +117,7 @@ from marker_mermaid.serializers_charts_flow import (
     plan_sankey_records,
     validate_sankey_explicit_metadata,
 )
-from marker_mermaid.serializers_charts_sets import plan_treemap_records
+from marker_mermaid.serializers_charts_sets import plan_treemap_records, plan_venn_records
 from marker_mermaid.serializers_special import plan_packet_fields
 from marker_mermaid.style_recovery import (
     TrustedEdgeStyleEvidence,
@@ -177,6 +177,8 @@ _MAX_SANKEY_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
 _MAX_SANKEY_FLOW_OVERLAP_COMPARISONS = 100_000
 _MAX_TREEMAP_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
 _MAX_TREEMAP_NODE_OVERLAP_COMPARISONS = 100_000
+_MAX_VENN_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
+_MAX_VENN_RECORD_COMPARISONS = 100_000
 _MAX_XY_RECORD_OVERLAP_COMPARISONS = 100_000
 _PIL_IMAGING_CORE_TYPE = type(Image.new("RGB", (1, 1)).im)
 _PIL_IMAGE_DICT_DESCRIPTOR = Image.Image.__dict__["__dict__"]
@@ -507,6 +509,15 @@ _TREEMAP_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING = (
     "Treemap terminal description/accDescr lacks independent candidate-authorized spatial "
     "OCR/vector or user-edit evidence; review is required"
 )
+_VENN_RECORD_ASSOCIATION_UNAVAILABLE_WARNING = (
+    "Venn set/intersection label/value association lacks candidate-authorized spatial "
+    "OCR/vector evidence; numeric consistency alone cannot authorize publication and review "
+    "is required"
+)
+_VENN_RECORD_ASSOCIATION_MISMATCH_WARNING = (
+    "Venn set/intersection association conflicts with exact source labels or values; "
+    "review is required"
+)
 
 _EVALUATION_WARNING_TEXT = frozenset(
     {
@@ -542,6 +553,8 @@ _EVALUATION_WARNING_TEXT = frozenset(
         _TREEMAP_RECORD_ASSOCIATION_MISMATCH_WARNING,
         _TREEMAP_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING,
         _TREEMAP_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING,
+        _VENN_RECORD_ASSOCIATION_UNAVAILABLE_WARNING,
+        _VENN_RECORD_ASSOCIATION_MISMATCH_WARNING,
         "numeric consistency is below the automatic publication threshold",
         "numeric diagram lacks OCR/vector numeric evidence and cannot auto-publish",
         "unlabeled scene-only candidates require OCR/VLM fusion before publishing",
@@ -2855,6 +2868,7 @@ class ReconstructionPipeline:
         treemap_binding_state: Literal["exact", "mismatch", "unavailable"] | None = None
         treemap_title_attribution_state: Literal["exact", "unavailable"] | None = None
         treemap_description_attribution_state: Literal["exact", "unavailable"] | None = None
+        venn_binding_state: Literal["exact", "mismatch", "unavailable"] | None = None
         if gate_diagram_type == "packet":
             # Packet ranges need a field-local proof.  A document-wide number multiset can
             # stay identical when two labels exchange their ranges, so it is not publication
@@ -5575,6 +5589,341 @@ class ReconstructionPipeline:
             # Keep the legacy global score visible, but never use it as publication
             # authority without the exact node-local association above.
             numeric = global_treemap_numeric
+        elif gate_diagram_type == "venn":
+            # A document-wide number multiset cannot prove which observed size belongs
+            # to which set or explicit intersection. Venn source regions overlap by
+            # definition, so ownership is established by candidate-authorized citations
+            # rather than by requiring record bboxes to be disjoint.
+            venn_binding_state = "unavailable"
+            venn_plan = None
+            if typed_ir is not None:
+                try:
+                    venn_plan = plan_venn_records(typed_ir)
+                except SerializationError:
+                    venn_plan = None
+
+            venn_records: list[tuple[str, object, str | None, str | None, tuple[str, ...]]] = []
+            if venn_plan is not None:
+                venn_records.extend(
+                    (
+                        f"set:{item.source_id}",
+                        item.source_record,
+                        item.semantic_label,
+                        item.value_text,
+                        item.evidence_ids,
+                    )
+                    for item in venn_plan.sets
+                )
+                venn_records.extend(
+                    (
+                        f"intersection:{item.scene_id}",
+                        item.source_record,
+                        item.semantic_label,
+                        item.value_text,
+                        item.evidence_ids,
+                    )
+                    for item in venn_plan.intersections
+                )
+
+            image_width, image_height = image.size
+            venn_record_boxes: dict[str, tuple[float, float, float, float]] = {}
+            venn_spatial_safe = bool(venn_records)
+            venn_spatial_comparisons = 0
+            for owner_id, source_record, label, value_text, _evidence_ids in venn_records:
+                if not isinstance(source_record, dict) or (label is None and value_text is None):
+                    venn_spatial_safe = False
+                    break
+                raw_bbox = source_record.get("bbox")
+                if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+                    venn_spatial_safe = False
+                    break
+                try:
+                    bbox = tuple(float(value) for value in raw_bbox)
+                except (TypeError, ValueError, OverflowError):
+                    venn_spatial_safe = False
+                    break
+                x1, y1, x2, y2 = bbox
+                if (
+                    not all(math.isfinite(value) for value in bbox)
+                    or x2 <= x1
+                    or y2 <= y1
+                    or x1 < 0
+                    or y1 < 0
+                    or x2 > image_width
+                    or y2 > image_height
+                ):
+                    venn_spatial_safe = False
+                    break
+                venn_record_boxes[owner_id] = bbox
+
+            if venn_plan is not None and venn_spatial_safe:
+                set_boxes = {
+                    item.source_id: venn_record_boxes[f"set:{item.source_id}"]
+                    for item in venn_plan.sets
+                }
+                intersection_members = {
+                    item.scene_id: frozenset(item.member_source_ids)
+                    for item in venn_plan.intersections
+                }
+                for intersection in venn_plan.intersections:
+                    intersection_bbox = venn_record_boxes[f"intersection:{intersection.scene_id}"]
+                    declared_members = intersection_members[intersection.scene_id]
+                    for set_id, set_bbox in set_boxes.items():
+                        venn_spatial_comparisons += 1
+                        if venn_spatial_comparisons > _MAX_VENN_RECORD_COMPARISONS:
+                            venn_spatial_safe = False
+                            break
+                        contained = (
+                            set_bbox[0] <= intersection_bbox[0]
+                            and set_bbox[1] <= intersection_bbox[1]
+                            and intersection_bbox[2] <= set_bbox[2]
+                            and intersection_bbox[3] <= set_bbox[3]
+                        )
+                        if (set_id in declared_members and not contained) or (
+                            set_id not in declared_members and contained
+                        ):
+                            venn_spatial_safe = False
+                            break
+                    if not venn_spatial_safe:
+                        break
+                    for subset in venn_plan.intersections:
+                        venn_spatial_comparisons += 1
+                        if venn_spatial_comparisons > _MAX_VENN_RECORD_COMPARISONS:
+                            venn_spatial_safe = False
+                            break
+                        if subset.scene_id == intersection.scene_id:
+                            continue
+                        if not intersection_members[subset.scene_id] < declared_members:
+                            continue
+                        subset_bbox = venn_record_boxes[f"intersection:{subset.scene_id}"]
+                        if not (
+                            subset_bbox[0] <= intersection_bbox[0]
+                            and subset_bbox[1] <= intersection_bbox[1]
+                            and intersection_bbox[2] <= subset_bbox[2]
+                            and intersection_bbox[3] <= subset_bbox[3]
+                        ):
+                            venn_spatial_safe = False
+                            break
+                    if not venn_spatial_safe:
+                        break
+
+            venn_evidence_by_id: dict[str, VisualEvidence] = {}
+            venn_texts_by_bbox: dict[tuple[float, float, float, float], set[str]] = {}
+            if venn_spatial_safe:
+                for item in evidence:
+                    if item.id in venn_evidence_by_id:
+                        venn_spatial_safe = False
+                        break
+                    venn_evidence_by_id[item.id] = item
+                    if (
+                        item.kind not in {"ocr_token", "vector_text"}
+                        or not item.text
+                        or item.bbox is None
+                        or not isinstance(item.bbox, (list, tuple))
+                        or len(item.bbox) != 4
+                    ):
+                        continue
+                    try:
+                        evidence_bbox = tuple(float(value) for value in item.bbox)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    normalized_text = _normalized_label(item.text)
+                    if normalized_text and all(math.isfinite(value) for value in evidence_bbox):
+                        venn_texts_by_bbox.setdefault(evidence_bbox, set()).add(normalized_text)
+
+            venn_reference_count = 0
+            venn_evidence_id_owners: dict[str, str] = {}
+            venn_observation_owners: dict[tuple[str, tuple[float, float, float, float]], str] = {}
+            venn_record_observations: dict[
+                str, list[tuple[str, tuple[float, float, float, float], str, str]]
+            ] = {owner_id: [] for owner_id, *_rest in venn_records}
+            venn_record_contour_proof = {owner_id: False for owner_id, *_rest in venn_records}
+            if venn_spatial_safe:
+                for owner_id, _source_record, _label, _value_text, evidence_ids in venn_records:
+                    if not evidence_ids or len(set(evidence_ids)) != len(evidence_ids):
+                        venn_spatial_safe = False
+                        break
+                    venn_reference_count += len(evidence_ids)
+                    if venn_reference_count > _MAX_VENN_ASSOCIATION_REFERENCES:
+                        venn_spatial_safe = False
+                        break
+                    owner_bbox = venn_record_boxes[owner_id]
+                    for evidence_id in evidence_ids:
+                        item = venn_evidence_by_id.get(evidence_id)
+                        if item is None:
+                            venn_spatial_safe = False
+                            break
+                        previous_id_owner = venn_evidence_id_owners.get(evidence_id)
+                        if previous_id_owner is not None and previous_id_owner != owner_id:
+                            venn_spatial_safe = False
+                            break
+                        venn_evidence_id_owners[evidence_id] = owner_id
+                        if item.kind == "contour":
+                            venn_spatial_comparisons += 1
+                            if venn_spatial_comparisons > _MAX_VENN_RECORD_COMPARISONS:
+                                venn_spatial_safe = False
+                                break
+                            if (
+                                item.bbox is None
+                                or not isinstance(item.bbox, (list, tuple))
+                                or len(item.bbox) != 4
+                            ):
+                                venn_spatial_safe = False
+                                break
+                            try:
+                                contour_bbox = tuple(float(value) for value in item.bbox)
+                            except (TypeError, ValueError, OverflowError):
+                                venn_spatial_safe = False
+                                break
+                            cx1, cy1, cx2, cy2 = contour_bbox
+                            if (
+                                not all(math.isfinite(value) for value in contour_bbox)
+                                or cx2 <= cx1
+                                or cy2 <= cy1
+                                or cx1 < 0
+                                or cy1 < 0
+                                or cx2 > image_width
+                                or cy2 > image_height
+                                or contour_bbox != owner_bbox
+                            ):
+                                venn_spatial_safe = False
+                                break
+                            venn_record_contour_proof[owner_id] = True
+                            continue
+                        if item.kind not in {"ocr_token", "vector_text"}:
+                            continue
+                        venn_spatial_comparisons += 1
+                        if venn_spatial_comparisons > _MAX_VENN_RECORD_COMPARISONS:
+                            venn_spatial_safe = False
+                            break
+                        if (
+                            not item.text
+                            or item.bbox is None
+                            or not isinstance(item.bbox, (list, tuple))
+                            or len(item.bbox) != 4
+                        ):
+                            venn_spatial_safe = False
+                            break
+                        try:
+                            evidence_bbox = tuple(float(value) for value in item.bbox)
+                        except (TypeError, ValueError, OverflowError):
+                            venn_spatial_safe = False
+                            break
+                        ex1, ey1, ex2, ey2 = evidence_bbox
+                        if (
+                            not all(math.isfinite(value) for value in evidence_bbox)
+                            or ex2 <= ex1
+                            or ey2 <= ey1
+                            or ex1 < owner_bbox[0]
+                            or ey1 < owner_bbox[1]
+                            or ex2 > owner_bbox[2]
+                            or ey2 > owner_bbox[3]
+                            or len(venn_texts_by_bbox.get(evidence_bbox, set())) != 1
+                        ):
+                            venn_spatial_safe = False
+                            break
+                        normalized_text = _normalized_label(item.text)
+                        if not normalized_text:
+                            venn_spatial_safe = False
+                            break
+                        observation_key = (normalized_text, evidence_bbox)
+                        previous_observation_owner = venn_observation_owners.get(observation_key)
+                        if (
+                            previous_observation_owner is not None
+                            and previous_observation_owner != owner_id
+                        ):
+                            venn_spatial_safe = False
+                            break
+                        if previous_observation_owner == owner_id:
+                            continue
+                        venn_observation_owners[observation_key] = owner_id
+                        venn_record_observations[owner_id].append(
+                            (normalized_text, evidence_bbox, item.text, evidence_id)
+                        )
+                    if not venn_spatial_safe:
+                        break
+
+            if venn_spatial_safe and not all(venn_record_contour_proof.values()):
+                venn_spatial_safe = False
+
+            venn_association_texts: list[str] = []
+            venn_expected_texts: list[str] = []
+            if venn_spatial_safe and all(venn_record_observations.values()):
+                allowed_observations: dict[str, set[str]] = {}
+                expected_numbers: dict[str, Counter[str]] = {}
+                for owner_id, _source_record, label, value_text, _evidence_ids in venn_records:
+                    if label is not None and value_text is not None:
+                        raw_allowed = (
+                            f"{label} {value_text}",
+                            f"{label}: {value_text}",
+                            f"{label} (value: {value_text})",
+                            f"{label} value {value_text}",
+                        )
+                        expected_number_source = f"{label} {value_text}"
+                    elif label is not None:
+                        raw_allowed = (label,)
+                        expected_number_source = label
+                    elif value_text is not None:
+                        raw_allowed = (
+                            value_text,
+                            f"value {value_text}",
+                            f"value: {value_text}",
+                            f"(value: {value_text})",
+                        )
+                        expected_number_source = value_text
+                    else:
+                        venn_spatial_safe = False
+                        break
+                    allowed_observations[owner_id] = {
+                        _normalized_label(value) for value in raw_allowed
+                    }
+                    expected_numbers[owner_id] = numeric_token_multiset((expected_number_source,))
+
+                venn_association_texts = [
+                    observation[2]
+                    for observations in venn_record_observations.values()
+                    for observation in observations
+                ]
+                venn_expected_texts = [
+                    value for allowed in allowed_observations.values() for value in allowed
+                ]
+                bounded_tokens = bounded_ocr_token_multiset(
+                    [*venn_association_texts, *venn_expected_texts],
+                    max_texts=_MAX_OCR_REFERENCE_TEXTS,
+                    max_chars=_MAX_OCR_REFERENCE_CHARS,
+                    max_tokens=_MAX_OCR_REFERENCE_TOKENS,
+                )
+                if bounded_tokens is not None and venn_spatial_safe:
+                    association_matches = True
+                    for owner_id, *_rest in venn_records:
+                        ordered = sorted(
+                            venn_record_observations[owner_id],
+                            key=lambda item: (
+                                item[1][1],
+                                item[1][0],
+                                item[1][3],
+                                item[1][2],
+                                item[0],
+                                item[3],
+                            ),
+                        )
+                        source_texts = [item[2] for item in ordered]
+                        observed_text = _normalized_label(" ".join(source_texts))
+                        if (
+                            observed_text not in allowed_observations[owner_id]
+                            or numeric_token_multiset(source_texts) != expected_numbers[owner_id]
+                        ):
+                            association_matches = False
+                    venn_binding_state = "exact" if association_matches else "mismatch"
+
+            global_venn_numeric = numeric_consistency(references.numeric_tokens, code)
+            if venn_binding_state == "exact" and global_venn_numeric != 1.0:
+                venn_binding_state = (
+                    "mismatch" if global_venn_numeric is not None else "unavailable"
+                )
+            # Keep the global diagnostic score, but require the exact record-local
+            # state independently for publication.
+            numeric = global_venn_numeric
         elif gate_diagram_type == "xychart":
             # XY publication authority is record-local.  A document-wide numeric
             # multiset cannot detect category, series, value, or explicit-x swaps.
@@ -6063,6 +6412,12 @@ class ReconstructionPipeline:
         elif gate_diagram_type == "treemap" and treemap_binding_state == "mismatch":
             aggregate = None
             warnings.append(_TREEMAP_RECORD_ASSOCIATION_MISMATCH_WARNING)
+        elif gate_diagram_type == "venn" and venn_binding_state == "unavailable":
+            aggregate = None
+            warnings.append(_VENN_RECORD_ASSOCIATION_UNAVAILABLE_WARNING)
+        elif gate_diagram_type == "venn" and venn_binding_state == "mismatch":
+            aggregate = None
+            warnings.append(_VENN_RECORD_ASSOCIATION_MISMATCH_WARNING)
         elif gate_diagram_type == "xychart" and xy_binding_state == "unavailable":
             aggregate = None
             warnings.append(_XY_RECORD_ASSOCIATION_UNAVAILABLE_WARNING)
@@ -6301,6 +6656,17 @@ class ReconstructionPipeline:
                     validated_ir,
                     experimental=self.config.mode != Mode.STRICT,
                 )
+                if canonical.emitted_type != current.emitted_diagram_type:
+                    runtime_fallback = serialize_runtime_fallback_result(
+                        current.diagram_type,
+                        validated_ir,
+                        experimental=self.config.mode != Mode.STRICT,
+                    )
+                    if (
+                        runtime_fallback is not None
+                        and runtime_fallback.emitted_type == current.emitted_diagram_type
+                    ):
+                        canonical = runtime_fallback
             except Exception as exc:
                 repair_ir_detail = (
                     "semantic repair cannot change a provenance-mapped node set"
