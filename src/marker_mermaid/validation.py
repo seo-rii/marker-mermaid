@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import base64
 import json
+import math
 import os
 import re
 import selectors
@@ -48,7 +49,12 @@ def default_runtime_dir() -> Path:
     return cache_root / "marker-mermaid" / "runtime"
 
 
-def inspect_svg(svg: str, profile: SecurityProfile) -> list[str]:
+def inspect_svg(
+    svg: str,
+    profile: SecurityProfile,
+    *,
+    diagram_type: str | None = None,
+) -> list[str]:
     findings: list[str] = []
     try:
         root = ET.fromstring(svg)
@@ -58,6 +64,10 @@ def inspect_svg(svg: str, profile: SecurityProfile) -> list[str]:
         findings.append("rendered output does not have an SVG root")
     if not any(root.get(attribute) for attribute in ("viewBox", "width", "height")):
         findings.append("rendered SVG has no dimensions")
+    if diagram_type is None:
+        is_gantt = (root.get("aria-roledescription") or "").strip().casefold() == "gantt"
+    else:
+        is_gantt = type(diagram_type) is str and diagram_type.strip().casefold() == "gantt"
     forbidden = {"script", "iframe", "object", "embed", "link"}
     geometry_attributes = {
         "cx",
@@ -94,6 +104,18 @@ def inspect_svg(svg: str, profile: SecurityProfile) -> list[str]:
         tag = element.tag.rsplit("}", 1)[-1]
         if tag in forbidden:
             findings.append(f"rendered SVG contains forbidden <{tag}>")
+        if is_gantt and tag == "rect":
+            classes = set((element.get("class") or "").split())
+            if "task" in classes:
+                try:
+                    width = float(element.get("width", ""))
+                    height = float(element.get("height", ""))
+                except ValueError:
+                    width = height = 0
+                if not (
+                    math.isfinite(width) and math.isfinite(height) and width > 0 and height > 0
+                ):
+                    findings.append("rendered Gantt contains a non-visible task rectangle")
         for raw_name, value in element.attrib.items():
             name = raw_name.rsplit("}", 1)[-1].lower()
             lowered = value.strip().lower()
@@ -308,7 +330,11 @@ class CandidateValidator:
                     error="rendered SVG exceeds the artifact size limit",
                 )
                 return ValidationOutcome(runtime_result, warnings)
-            svg_warnings = inspect_svg(runtime_result.svg, profile)
+            svg_warnings = inspect_svg(
+                runtime_result.svg,
+                profile,
+                diagram_type=runtime_result.diagram_type,
+            )
             warnings.extend(svg_warnings)
             if svg_warnings:
                 runtime_result = RuntimeResult(

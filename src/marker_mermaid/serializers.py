@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import re
+import unicodedata
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from marker_mermaid.accessibility import (
@@ -26,6 +30,7 @@ from marker_mermaid.flowchart_structure import (
 )
 from marker_mermaid.models import (
     MAX_ID_CHARS,
+    MAX_SCENE_ELEMENTS,
     MAX_SCENE_GROUPS,
     MAX_SCENE_RELATIONS,
     MAX_TEXT_CHARS,
@@ -353,10 +358,331 @@ def serialize_timeline(ir: dict[str, Any], *, experimental: bool = False) -> str
     return "\n".join(lines) + "\n"
 
 
+_GANTT_ZERO_WIDTH_SPACE = "\u200b"
+_GANTT_METADATA_FIELDS = (
+    "title",
+    "description",
+    "acc_title",
+    "acc_description",
+    "date_format",
+)
+_GANTT_ACCESSIBILITY_FIELDS = (
+    "title",
+    "description",
+    "acc_title",
+    "acc_description",
+)
+_GANTT_NUMERIC_ENTITY = re.compile(r"&(?P<body>#[0-9]+|#x[0-9A-F]+);", re.IGNORECASE)
+_GANTT_DIRECTIVE_OPEN = re.compile(r"%%(?P<gap>\s*)\{")
+_GANTT_DANGEROUS_SCHEME = re.compile(r"(?:https?|ftp|file|data|javascript):", re.IGNORECASE)
+_GANTT_REMOTE_ICON = re.compile(r"iconify|fa:|logos:", re.IGNORECASE)
+_GANTT_CALLBACK = re.compile(r"\b(?:call|callback)\s*\(", re.IGNORECASE)
+_GANTT_CSS_IMPORT = re.compile(r"@import\b", re.IGNORECASE)
+_GANTT_CONFIG = re.compile(r"\bconfig\s*:", re.IGNORECASE)
+_GANTT_CONTROL_WORD = re.compile(
+    r"\b(?:accDescription|accDescr|accTitle|axisFormat|call|callback|classDef|click|"
+    r"dateFormat|excludes|gantt|href|includes|inclusiveEndDates|linkStyle|section|"
+    r"style|tickInterval|title|todayMarker|topAxis|weekday|weekend)\b",
+    re.IGNORECASE,
+)
+_GANTT_DATE_PREFIX = re.compile(r"^(?P<first>[0-9])(?=[0-9]{3}-[0-9]{2}-[0-9]{2}\b)")
+_GANTT_STATUS_TOKENS = frozenset({"active", "crit", "done", "milestone"})
+_GANTT_RUNTIME_TASK_TAGS = frozenset({"active", "done", "crit", "milestone", "vert"})
+_GANTT_RESERVED_TASK_IDS = frozenset({"__proto__"})
+_GANTT_DURATION = re.compile(r"(?P<value>[0-9]+(?:\.[0-9]+)?)(?P<unit>ms|[Mdhmswy])")
+_GANTT_DURATION_MS_PER_UNIT = {
+    "ms": Decimal(1),
+    "s": Decimal(1_000),
+    "m": Decimal(60_000),
+    "h": Decimal(3_600_000),
+    "d": Decimal(86_400_000),
+    "w": Decimal(604_800_000),
+    "M": Decimal(2_678_400_000),
+    "y": Decimal(31_622_400_000),
+}
+_GANTT_INTEGER_DURATION_UNITS = frozenset({"ms", "d", "w", "M", "y"})
+_GANTT_MAX_DURATION_MILLISECONDS = Decimal(86_400_000_000_000)
+_GANTT_MAX_EPOCH_MILLISECONDS = Decimal(8_640_000_000_000_000)
+_GANTT_AFTER_DEPENDENCY = re.compile(r"after (?P<ids>[A-Za-z0-9_-]+(?: [A-Za-z0-9_-]+)*)")
+_GANTT_DEPENDENCY_PREFIX = re.compile(r"(?:after|until)\b", re.IGNORECASE)
+_GANTT_DATE_RUNS = frozenset({"Y", "M", "D", "H", "h", "m", "s", "S", "Z"})
+
+GANTT_TEXT_COMPATIBILITY_WARNING = (
+    "Gantt text uses visible ratio-colon (∶), fullwidth percent (％), or single-angle "
+    "(‹) glyphs where Mermaid 11.16 cannot preserve task, title, or accessibility "
+    "text literally; semantic text remains in typed IR."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class GanttTextPlan:
+    semantic: str
+    source: str
+    canvas: str
+    compatibility_substitutions: bool
+
+
+def validated_gantt_metadata_ir(ir: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate raw Gantt metadata before generic accessibility enrichment."""
+
+    for field in _GANTT_METADATA_FIELDS:
+        value = ir.get(field)
+        if value is None:
+            continue
+        if type(value) is not str:
+            raise SerializationError(f"gantt {field} must be text when provided")
+        if value == "":
+            continue
+        if len(value) > MAX_TEXT_CHARS:
+            raise SerializationError(f"gantt {field} must be bounded non-empty text")
+        if any(
+            unicodedata.category(character) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for character in value
+        ):
+            raise SerializationError(f"gantt {field} contains unsupported text")
+        normalized = " ".join(value.split())
+        if not normalized or len(normalized) > MAX_TEXT_CHARS:
+            raise SerializationError(f"gantt {field} must be bounded non-empty text")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as exc:  # pragma: no cover - Cs is rejected above
+            raise SerializationError(f"gantt {field} is not valid UTF-8 text") from exc
+    date_format = ir.get("date_format")
+    if date_format is not None and date_format != "":
+        _gantt_python_date_format(date_format, field="gantt date_format")
+    return {
+        key: value for key, value in ir.items() if key not in _GANTT_METADATA_FIELDS or value != ""
+    }
+
+
+def _gantt_semantic_text(value: Any, *, field: str) -> str:
+    if type(value) is not str:
+        raise SerializationError(f"{field} must be text")
+    if len(value) > MAX_TEXT_CHARS:
+        raise SerializationError(f"{field} must be bounded non-empty text")
+    for character in value:
+        category = unicodedata.category(character)
+        if category in {"Cf", "Cs"} or (category == "Cc" and not character.isspace()):
+            raise SerializationError(f"{field} contains unsupported text")
+    semantic = " ".join(value.split())
+    if not semantic or len(semantic) > MAX_TEXT_CHARS:
+        raise SerializationError(f"{field} must be bounded non-empty text")
+    try:
+        semantic.encode("utf-8")
+    except UnicodeEncodeError as exc:  # pragma: no cover - Cs is rejected above
+        raise SerializationError(f"{field} is not valid UTF-8 text") from exc
+    return semantic
+
+
+def _split_gantt_numeric_entity(match: re.Match[str]) -> str:
+    body = match.group("body")
+    if body[:2].casefold() == "#x":
+        return f"&{body[:2]}{_GANTT_ZERO_WIDTH_SPACE}{body[2:]};"
+    return f"&#{_GANTT_ZERO_WIDTH_SPACE}{body[1:]};"
+
+
+def _neutralize_gantt_source(text: str, *, task_label: bool) -> str:
+    source = _GANTT_NUMERIC_ENTITY.sub(_split_gantt_numeric_entity, text)
+    source = _GANTT_DIRECTIVE_OPEN.sub(
+        lambda match: f"%{_GANTT_ZERO_WIDTH_SPACE}%{match.group('gap')}{{",
+        source,
+    )
+    source = source.replace("//", f"/{_GANTT_ZERO_WIDTH_SPACE}/")
+    source = source.replace("<", f"<{_GANTT_ZERO_WIDTH_SPACE}")
+    source = _GANTT_CSS_IMPORT.sub(
+        lambda match: f"{match.group(0)[:1]}{_GANTT_ZERO_WIDTH_SPACE}{match.group(0)[1:]}",
+        source,
+    )
+    source = _GANTT_DANGEROUS_SCHEME.sub(
+        lambda match: f"{match.group(0)[:-1]}{_GANTT_ZERO_WIDTH_SPACE}:",
+        source,
+    )
+    source = _GANTT_REMOTE_ICON.sub(
+        lambda match: (
+            f"{match.group(0)[:4]}{_GANTT_ZERO_WIDTH_SPACE}{match.group(0)[4:]}"
+            if match.group(0).casefold() == "iconify"
+            else match.group(0).replace(":", f"{_GANTT_ZERO_WIDTH_SPACE}:")
+        ),
+        source,
+    )
+    source = _GANTT_CALLBACK.sub(
+        lambda match: match.group(0).replace("(", f"{_GANTT_ZERO_WIDTH_SPACE}("),
+        source,
+    )
+    source = _GANTT_CONTROL_WORD.sub(
+        lambda match: f"{match.group(0)[0]}{_GANTT_ZERO_WIDTH_SPACE}{match.group(0)[1:]}",
+        source,
+    )
+    source = _GANTT_CONFIG.sub(
+        lambda match: match.group(0).replace(":", f"{_GANTT_ZERO_WIDTH_SPACE}:"),
+        source,
+    )
+    source = source.replace("---", f"-{_GANTT_ZERO_WIDTH_SPACE}--")
+    if task_label:
+        source = _GANTT_DATE_PREFIX.sub(
+            lambda match: f"{match.group('first')}{_GANTT_ZERO_WIDTH_SPACE}",
+            source,
+        )
+    return source
+
+
+def _plan_gantt_text(value: Any, *, field: str, role: str) -> GanttTextPlan:
+    semantic = _gantt_semantic_text(value, field=field)
+    canvas = semantic
+    if role == "task":
+        canvas = canvas.replace(":", "∶").replace("%", "％")
+    elif role in {"title", "accessibility"}:
+        canvas = canvas.replace("<", "‹")
+    source = _neutralize_gantt_source(canvas, task_label=role == "task")
+    terminal_canvas = source.replace(_GANTT_ZERO_WIDTH_SPACE, "")
+    return GanttTextPlan(
+        semantic=semantic,
+        source=source,
+        canvas=terminal_canvas,
+        compatibility_substitutions=terminal_canvas != semantic,
+    )
+
+
+def _gantt_optional_id(value: Any, *, fallback: str, field: str) -> str:
+    if value is None or (type(value) is str and value == ""):
+        return fallback
+    text = _gantt_semantic_text(value, field=field)
+    if len(text) > MAX_ID_CHARS:
+        raise SerializationError(f"{field} must be a bounded identifier")
+    return text
+
+
+def _gantt_schedule_text(value: Any, *, field: str, identifier: bool = False) -> str:
+    text = _gantt_semantic_text(value, field=field)
+    if any(character in text for character in (",", "#", ";")):
+        raise SerializationError(f"{field} contains unsupported schedule syntax")
+    if identifier and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", text) is None:
+        raise SerializationError(f"{field} cannot be represented as a Gantt task id")
+    return text
+
+
+def _gantt_python_date_format(value: Any, *, field: str) -> tuple[str, str, str]:
+    """Compile the supported numeric Day.js date subset to ``strptime`` syntax."""
+
+    text = _gantt_schedule_text(value, field=field)
+    if text == "X":
+        raise SerializationError(
+            f"{field} token X is not supported because Mermaid 11.16 parses its start and end "
+            "values with different units"
+        )
+    if text == "x":
+        return text, text, r"(?:0|[1-9][0-9]*)"
+    output: list[str] = []
+    shape: list[str] = []
+    has_year = False
+    has_month = False
+    has_day = False
+    uses_12_hour = False
+    uses_meridiem = False
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if character == "[":
+            closing = text.find("]", index + 1)
+            if closing < 0:
+                raise SerializationError(f"{field} contains an unterminated literal")
+            literal = text[index + 1 : closing]
+            output.append(literal.replace("%", "%%"))
+            shape.append(re.escape(literal))
+            index = closing + 1
+            continue
+        if character in _GANTT_DATE_RUNS:
+            end = index + 1
+            while end < len(text) and text[end] == character:
+                end += 1
+            token = text[index:end]
+            token_map = {
+                "YY": "%y",
+                "YYYY": "%Y",
+                "M": "%m",
+                "MM": "%m",
+                "D": "%d",
+                "DD": "%d",
+                "H": "%H",
+                "HH": "%H",
+                "h": "%I",
+                "hh": "%I",
+                "m": "%M",
+                "mm": "%M",
+                "s": "%S",
+                "ss": "%S",
+                "SSS": "%f",
+            }
+            token_shape = {
+                "YY": r"[0-9]{2}",
+                "YYYY": r"[0-9]{4}",
+                "M": r"(?:[1-9]|1[0-2])",
+                "MM": r"[0-9]{2}",
+                "D": r"(?:[1-9]|[12][0-9]|3[01])",
+                "DD": r"[0-9]{2}",
+                "H": r"(?:[0-9]|1[0-9]|2[0-3])",
+                "HH": r"[0-9]{2}",
+                "h": r"(?:[1-9]|1[0-2])",
+                "hh": r"[0-9]{2}",
+                "m": r"(?:[0-9]|[1-5][0-9])",
+                "mm": r"[0-9]{2}",
+                "s": r"(?:[0-9]|[1-5][0-9])",
+                "ss": r"[0-9]{2}",
+                "SSS": r"[0-9]{3}",
+            }
+            converted = token_map.get(token)
+            converted_shape = token_shape.get(token)
+            if converted is None or converted_shape is None:
+                raise SerializationError(f"{field} uses an unsupported date token: {token}")
+            output.append(converted)
+            shape.append(converted_shape)
+            has_year |= character == "Y"
+            has_month |= character == "M"
+            has_day |= character == "D"
+            uses_12_hour |= character == "h"
+            index = end
+            continue
+        if character in {"A", "a"}:
+            output.append("%p")
+            shape.append(r"[AP]M" if character == "A" else r"[ap]m")
+            uses_meridiem = True
+        elif character == "T":
+            output.append("T")
+            shape.append("T")
+        elif character.isalpha():
+            raise SerializationError(f"{field} uses an unsupported date token: {character}")
+        else:
+            output.append("%%" if character == "%" else character)
+            shape.append(re.escape(character))
+        index += 1
+    if not (has_year and has_month and has_day):
+        raise SerializationError(f"{field} must include year, month, and day tokens")
+    if uses_12_hour != uses_meridiem:
+        raise SerializationError(f"{field} must pair h/hh with A/a")
+    return text, "".join(output), "".join(shape)
+
+
+def _gantt_status_fields(value: Any, *, field: str) -> tuple[str, ...]:
+    if value is None or (type(value) is str and value == ""):
+        return ()
+    text = _gantt_semantic_text(value, field=field)
+    raw_tokens = text.split(",")
+    tokens = tuple(token.strip().casefold() for token in raw_tokens)
+    if (
+        any(not token for token in tokens)
+        or any(token not in _GANTT_STATUS_TOKENS for token in tokens)
+        or len(tokens) != len(set(tokens))
+    ):
+        raise SerializationError(f"{field} contains unsupported status tokens")
+    if "active" in tokens and "done" in tokens:
+        raise SerializationError(f"{field} cannot combine active and done")
+    return tokens
+
+
 @dataclass(frozen=True, slots=True)
 class GanttTaskPlan:
     source_record: dict[str, Any]
     scene_id: str
+    semantic_label: str
     visible_label: str
     code_label: str
     fields: tuple[str, ...]
@@ -366,6 +692,7 @@ class GanttTaskPlan:
 class GanttSectionPlan:
     source_record: dict[str, Any]
     scene_id: str
+    semantic_label: str
     visible_label: str
     code_label: str
     tasks: tuple[GanttTaskPlan, ...]
@@ -374,20 +701,97 @@ class GanttSectionPlan:
 @dataclass(frozen=True, slots=True)
 class GanttPlan:
     sections: tuple[GanttSectionPlan, ...]
+    title: GanttTextPlan | None
+    compatibility_substitutions: bool
+
+
+@dataclass(frozen=True, slots=True)
+class GanttAccessibilityPlan:
+    title_semantic: str
+    title_source: str
+    title_canvas: str
+    description_semantic: str
+    description_source: str
+    description_canvas: str
+    compatibility_substitutions: bool
 
 
 def plan_gantt_records(ir: dict[str, Any]) -> GanttPlan:
-    """Validate Gantt records and allocate collision-free Scene identities."""
+    """Freeze Gantt terminal text and allocate collision-free Scene identities."""
 
-    sections = ir.get("sections")
+    validated_ir = validated_gantt_metadata_ir(ir)
+    sections = validated_ir.get("sections")
     if not isinstance(sections, list) or not sections:
         raise SerializationError("gantt IR requires sections")
-    used_scene_ids: set[str] = set()
-    planned_sections: list[GanttSectionPlan] = []
+    if len(sections) > MAX_SCENE_GROUPS:
+        raise SerializationError("gantt section count exceeds the Scene group limit")
+    raw_date_format = validated_ir.get("date_format")
+    _, python_date_format, date_value_shape = _gantt_python_date_format(
+        "YYYY-MM-DD" if raw_date_format is None else raw_date_format,
+        field="gantt date_format",
+    )
+    task_ids_by_position: dict[tuple[int, int], str] = {}
+    task_order_by_id: dict[str, int] = {}
+    all_task_ids: set[str] = set()
+    task_count = 0
     for section_index, section in enumerate(sections, start=1):
         if not isinstance(section, dict):
             raise SerializationError("gantt sections must be objects")
-        preferred_section_id = str(section.get("id") or f"section_{section_index}")
+        tasks = section.get("tasks", [])
+        if not isinstance(tasks, list):
+            raise SerializationError("gantt section tasks must be a list")
+        task_count += len(tasks)
+        if task_count > MAX_SCENE_ELEMENTS:
+            raise SerializationError("gantt task count exceeds the Scene element limit")
+        for task_index, task in enumerate(tasks, start=1):
+            if not isinstance(task, dict):
+                raise SerializationError("gantt tasks must be objects")
+            task_id = _gantt_optional_id(
+                task.get("id"),
+                fallback=f"section_{section_index}_task_{task_index}",
+                field=f"gantt section {section_index} task {task_index} id",
+            )
+            task_id = _gantt_schedule_text(
+                task_id,
+                field=f"gantt section {section_index} task {task_index} id",
+                identifier=True,
+            )
+            folded_task_id = task_id.casefold()
+            if (
+                folded_task_id in _GANTT_RUNTIME_TASK_TAGS
+                or folded_task_id in _GANTT_RESERVED_TASK_IDS
+                or "iconify" in folded_task_id
+            ):
+                raise SerializationError(
+                    f"gantt section {section_index} task {task_index} task id is reserved"
+                )
+            if task_id in all_task_ids:
+                raise SerializationError(f"duplicate gantt task id: {task_id}")
+            all_task_ids.add(task_id)
+            task_order_by_id[task_id] = len(task_order_by_id)
+            task_ids_by_position[(section_index, task_index)] = task_id
+    raw_title = validated_ir.get("title")
+    title_plan = (
+        _plan_gantt_text(raw_title, field="gantt title", role="title")
+        if raw_title is not None
+        else None
+    )
+    used_scene_ids: set[str] = set()
+    planned_sections: list[GanttSectionPlan] = []
+    task_end_milliseconds_by_id: dict[str, Decimal] = {}
+    task_count = 0
+    compatibility_substitutions = bool(
+        title_plan is not None and title_plan.compatibility_substitutions
+    )
+    for section_index, section in enumerate(sections, start=1):
+        tasks = section.get("tasks", [])
+        if not tasks:
+            continue
+        preferred_section_id = _gantt_optional_id(
+            section.get("id"),
+            fallback=f"section_{section_index}",
+            field=f"gantt section {section_index} id",
+        )
         section_scene_id = preferred_section_id
         if (
             not section_scene_id
@@ -400,23 +804,197 @@ def plan_gantt_records(ir: dict[str, Any]) -> GanttPlan:
                 section_scene_id = f"gantt_section_{section_index}_{suffix}"
                 suffix += 1
         used_scene_ids.add(section_scene_id)
-        section_label = section.get("title") or "Tasks"
-        tasks = section.get("tasks", [])
-        if not isinstance(tasks, list):
-            raise SerializationError("gantt section tasks must be a list")
+        raw_section_label = section.get("title")
+        section_label = (
+            "Tasks"
+            if raw_section_label is None
+            or (type(raw_section_label) is str and raw_section_label == "")
+            else raw_section_label
+        )
+        section_text = _plan_gantt_text(
+            section_label,
+            field=f"gantt section {section_index} title",
+            role="section",
+        )
+        compatibility_substitutions |= section_text.compatibility_substitutions
         planned_tasks: list[GanttTaskPlan] = []
         for task_index, task in enumerate(tasks, start=1):
-            if not isinstance(task, dict):
-                raise SerializationError("gantt tasks must be objects")
-            task_label = task.get("label") or f"Task {task_index}"
-            start = task.get("start")
-            end = task.get("end") or task.get("duration")
-            if not start or not end:
+            raw_task_label = task.get("label")
+            task_label = (
+                f"Task {task_index}"
+                if raw_task_label is None or (type(raw_task_label) is str and raw_task_label == "")
+                else raw_task_label
+            )
+            task_text = _plan_gantt_text(
+                task_label,
+                field=f"gantt section {section_index} task {task_index} label",
+                role="task",
+            )
+            compatibility_substitutions |= task_text.compatibility_substitutions
+            task_id = task_ids_by_position[(section_index, task_index)]
+            status_fields = _gantt_status_fields(
+                task.get("status"),
+                field=f"gantt section {section_index} task {task_index} status",
+            )
+            start = _gantt_schedule_text(
+                task.get("start"),
+                field=f"gantt section {section_index} task {task_index} start",
+            )
+            after_match = _GANTT_AFTER_DEPENDENCY.fullmatch(start)
+            start_dependencies: tuple[str, ...] = ()
+            start_date: datetime | Decimal | None = None
+            if after_match is not None:
+                start_dependencies = tuple(after_match.group("ids").split(" "))
+                if len(start_dependencies) != len(set(start_dependencies)):
+                    raise SerializationError(
+                        f"gantt section {section_index} task {task_index} dependency repeats "
+                        "a target"
+                    )
+                missing_dependencies = [
+                    target for target in start_dependencies if target not in all_task_ids
+                ]
+                if missing_dependencies:
+                    raise SerializationError(
+                        f"gantt section {section_index} task {task_index} dependency target "
+                        "does not exist"
+                    )
+                if any(
+                    task_order_by_id[target] >= task_order_by_id[task_id]
+                    for target in start_dependencies
+                ):
+                    raise SerializationError(
+                        f"gantt section {section_index} task {task_index} dependency must "
+                        "reference a prior task"
+                    )
+                if python_date_format == "x":
+                    start_date = max(
+                        task_end_milliseconds_by_id[target] for target in start_dependencies
+                    )
+            else:
+                if _GANTT_DEPENDENCY_PREFIX.match(start):
+                    raise SerializationError(
+                        f"gantt section {section_index} task {task_index} dependency syntax "
+                        "is unsupported"
+                    )
+                try:
+                    if python_date_format == "x":
+                        if re.fullmatch(date_value_shape, start) is None:
+                            raise ValueError
+                        start_date = Decimal(start)
+                        if start_date > _GANTT_MAX_EPOCH_MILLISECONDS:
+                            raise ValueError
+                    else:
+                        if re.fullmatch(date_value_shape, start) is None:
+                            raise ValueError
+                        start_date = datetime.strptime(start, python_date_format)
+                except (ValueError, ArithmeticError) as exc:
+                    raise SerializationError(
+                        f"gantt section {section_index} task {task_index} start date is invalid"
+                    ) from exc
+            raw_end = task.get("end")
+            raw_duration = task.get("duration")
+            has_end = raw_end is not None and not (type(raw_end) is str and raw_end == "")
+            has_duration = raw_duration is not None and not (
+                type(raw_duration) is str and raw_duration == ""
+            )
+            if has_end == has_duration:
                 raise SerializationError(
-                    f"gantt task {_text(task_label)!r} lacks start and end/duration evidence"
+                    f"gantt section {section_index} task {task_index} requires exactly one of "
+                    "end or duration"
                 )
-            preferred_task_id = str(task.get("id") or f"section_{section_index}_task_{task_index}")
-            task_scene_id = preferred_task_id
+            end = _gantt_schedule_text(
+                raw_end if has_end else raw_duration,
+                field=(
+                    f"gantt section {section_index} task {task_index} "
+                    f"{'end' if has_end else 'duration'}"
+                ),
+            )
+            duration_milliseconds: Decimal | None = None
+            end_date: datetime | Decimal | None = None
+            if has_duration:
+                duration_match = _GANTT_DURATION.fullmatch(end)
+                if duration_match is None:
+                    raise SerializationError(
+                        f"gantt section {section_index} task {task_index} duration is invalid"
+                    )
+                duration_value = Decimal(duration_match.group("value"))
+                duration_unit = duration_match.group("unit")
+                if (
+                    duration_unit in _GANTT_INTEGER_DURATION_UNITS
+                    and duration_value != duration_value.to_integral_value()
+                ):
+                    raise SerializationError(
+                        f"gantt section {section_index} task {task_index} duration would be "
+                        "rounded by Mermaid"
+                    )
+                duration_milliseconds = duration_value * _GANTT_DURATION_MS_PER_UNIT[duration_unit]
+                if duration_milliseconds != duration_milliseconds.to_integral_value():
+                    raise SerializationError(
+                        f"gantt section {section_index} task {task_index} duration is below "
+                        "Mermaid's millisecond precision"
+                    )
+                if duration_milliseconds > _GANTT_MAX_DURATION_MILLISECONDS:
+                    raise SerializationError(
+                        f"gantt section {section_index} task {task_index} duration exceeds "
+                        "the bounded runtime range"
+                    )
+                if duration_milliseconds == 0 and "milestone" not in status_fields:
+                    raise SerializationError(
+                        f"gantt section {section_index} task {task_index} duration must be positive"
+                    )
+            else:
+                if _GANTT_DEPENDENCY_PREFIX.match(end):
+                    raise SerializationError(
+                        f"gantt section {section_index} task {task_index} until dependency is not "
+                        "supported without relation attribution"
+                    )
+                if start_dependencies:
+                    raise SerializationError(
+                        f"gantt section {section_index} task {task_index} end date cannot be "
+                        "validated with an after dependency; use duration"
+                    )
+                try:
+                    if python_date_format == "x":
+                        if re.fullmatch(date_value_shape, end) is None:
+                            raise ValueError
+                        end_date = Decimal(end)
+                        if end_date > _GANTT_MAX_EPOCH_MILLISECONDS:
+                            raise ValueError
+                    else:
+                        if re.fullmatch(date_value_shape, end) is None:
+                            raise ValueError
+                        end_date = datetime.strptime(end, python_date_format)
+                except (ValueError, ArithmeticError) as exc:
+                    raise SerializationError(
+                        f"gantt section {section_index} task {task_index} end date is invalid"
+                    ) from exc
+                if start_date is None:  # pragma: no cover - guarded by start_dependencies above
+                    raise SerializationError("gantt task start date could not be validated")
+                if end_date < start_date or (
+                    end_date == start_date and "milestone" not in status_fields
+                ):
+                    raise SerializationError(
+                        f"gantt section {section_index} task {task_index} end date must follow "
+                        "start"
+                    )
+            if python_date_format == "x":
+                if not isinstance(start_date, Decimal):  # pragma: no cover - internal invariant
+                    raise SerializationError("gantt task start date could not be resolved")
+                if has_duration:
+                    if duration_milliseconds is None:  # pragma: no cover - internal invariant
+                        raise SerializationError("gantt task duration could not be resolved")
+                    resolved_end = start_date + duration_milliseconds
+                    if resolved_end > _GANTT_MAX_EPOCH_MILLISECONDS:
+                        raise SerializationError(
+                            f"gantt section {section_index} task {task_index} resolved end "
+                            "exceeds the ECMAScript Date range"
+                        )
+                else:
+                    if not isinstance(end_date, Decimal):  # pragma: no cover - invariant
+                        raise SerializationError("gantt task end date could not be resolved")
+                    resolved_end = end_date
+                task_end_milliseconds_by_id[task_id] = resolved_end
+            task_scene_id = task_id
             if (
                 not task_scene_id
                 or len(task_scene_id) > MAX_ID_CHARS
@@ -428,35 +1006,123 @@ def plan_gantt_records(ir: dict[str, Any]) -> GanttPlan:
                     task_scene_id = f"gantt_task_{section_index}_{task_index}_{suffix}"
                     suffix += 1
             used_scene_ids.add(task_scene_id)
-            fields = (task.get("status"), task.get("id"), start, end)
             planned_tasks.append(
                 GanttTaskPlan(
                     source_record=task,
                     scene_id=task_scene_id,
-                    visible_label=str(task_label).replace("\n", " ").strip(),
-                    code_label=_text(task_label),
-                    fields=tuple(_text(value) for value in fields if value not in {None, ""}),
+                    semantic_label=task_text.semantic,
+                    visible_label=task_text.canvas,
+                    code_label=task_text.source,
+                    fields=(*status_fields, task_id, start, end),
                 )
             )
         planned_sections.append(
             GanttSectionPlan(
                 source_record=section,
                 scene_id=section_scene_id,
-                visible_label=str(section_label).replace("\n", " ").strip(),
-                code_label=_text(section_label),
+                semantic_label=section_text.semantic,
+                visible_label=section_text.canvas,
+                code_label=section_text.source,
                 tasks=tuple(planned_tasks),
             )
         )
-    return GanttPlan(sections=tuple(planned_sections))
+    if not planned_sections:
+        raise SerializationError("gantt IR requires at least one renderable task")
+    return GanttPlan(
+        sections=tuple(planned_sections),
+        title=title_plan,
+        compatibility_substitutions=compatibility_substitutions,
+    )
+
+
+def plan_gantt_accessibility(
+    ir: dict[str, Any],
+    *,
+    experimental: bool,
+    gantt_plan: GanttPlan | None = None,
+) -> GanttAccessibilityPlan:
+    validated_ir = validated_gantt_metadata_ir(ir)
+    if gantt_plan is None:
+        gantt_plan = plan_gantt_records(validated_ir)
+    accessibility_ir = {
+        field: validated_ir[field] for field in _GANTT_ACCESSIBILITY_FIELDS if field in validated_ir
+    }
+    accessibility_ir["sections"] = [
+        {
+            "id": section.scene_id,
+            "label": section.semantic_label,
+            "tasks": [
+                {"id": task.scene_id, "label": task.semantic_label} for task in section.tasks
+            ],
+        }
+        for section in gantt_plan.sections
+    ]
+    resolved = resolve_accessibility(accessibility_ir, "gantt", experimental=experimental)
+    title = _plan_gantt_text(
+        resolved.title,
+        field="gantt accessible title",
+        role="accessibility",
+    )
+    description = _plan_gantt_text(
+        resolved.description,
+        field="gantt accessible description",
+        role="accessibility",
+    )
+    return GanttAccessibilityPlan(
+        title_semantic=title.semantic,
+        title_source=title.source,
+        title_canvas=title.canvas,
+        description_semantic=description.semantic,
+        description_source=description.source,
+        description_canvas=description.canvas,
+        compatibility_substitutions=(
+            title.compatibility_substitutions or description.compatibility_substitutions
+        ),
+    )
+
+
+def enrich_gantt_accessibility_ir(
+    ir: dict[str, Any],
+    *,
+    experimental: bool,
+    gantt_plan: GanttPlan | None = None,
+) -> dict[str, Any]:
+    """Return a raw-validated Gantt snapshot with hook-free resolved metadata."""
+
+    validated_ir = validated_gantt_metadata_ir(ir)
+    if gantt_plan is None:
+        gantt_plan = plan_gantt_records(validated_ir)
+    accessibility = plan_gantt_accessibility(
+        validated_ir,
+        experimental=experimental,
+        gantt_plan=gantt_plan,
+    )
+    return {
+        **validated_ir,
+        "acc_title": accessibility.title_semantic,
+        "acc_description": accessibility.description_semantic,
+    }
 
 
 def serialize_gantt(ir: dict[str, Any], *, experimental: bool = False) -> str:
-    plan = plan_gantt_records(ir)
-    lines = ["gantt", *_accessibility(ir, experimental, diagram_type="gantt")]
-    if ir.get("title"):
-        lines.append(f"    title {_text(ir['title'])}")
-    if ir.get("date_format"):
-        lines.append(f"    dateFormat {_text(ir['date_format'])}")
+    validated_ir = validated_gantt_metadata_ir(ir)
+    plan = plan_gantt_records(validated_ir)
+    accessibility = plan_gantt_accessibility(
+        validated_ir,
+        experimental=experimental,
+        gantt_plan=plan,
+    )
+    lines = [
+        "gantt",
+        f"    accTitle: {accessibility.title_source}",
+        f"    accDescr: {accessibility.description_source}",
+    ]
+    if plan.title is not None:
+        lines.append(f"    title {plan.title.source}")
+    date_format = validated_ir.get("date_format")
+    if date_format is not None:
+        date_format = _gantt_schedule_text(date_format, field="gantt date_format")
+        lines.append(f"    dateFormat {date_format}")
     for section in plan.sections:
         lines.append(f"    section {section.code_label}")
         for task in section.tasks:
@@ -915,6 +1581,7 @@ def serialize_typed_ir_result(
     accessibility_source_ir = ir
     state_record_compatibility_substitutions = False
     state_plan = None
+    gantt_plan = None
     if diagram_type == "pie":
         _validate_pie_explicit_accessibility_fields(ir)
     elif diagram_type == "xychart":
@@ -925,6 +1592,9 @@ def serialize_typed_ir_result(
         _validate_sankey_explicit_accessibility_fields(ir)
     elif diagram_type in {"treemap", "venn"}:
         accessibility_source_ir = _validated_chart_set_accessibility_ir(diagram_type, ir)
+    elif diagram_type == "gantt":
+        accessibility_source_ir = validated_gantt_metadata_ir(ir)
+        gantt_plan = plan_gantt_records(accessibility_source_ir)
     elif diagram_type == "state":
         from marker_mermaid.serializers_uml import (
             plan_state_records,
@@ -935,7 +1605,13 @@ def serialize_typed_ir_result(
         state_plan = plan_state_records(accessibility_source_ir)
         state_record_compatibility_substitutions = state_plan.compatibility_substitutions
     _ensure_extended_serializers()
-    if diagram_type == "state":
+    if diagram_type == "gantt":
+        enriched_ir = enrich_gantt_accessibility_ir(
+            accessibility_source_ir,
+            experimental=experimental,
+            gantt_plan=gantt_plan,
+        )
+    elif diagram_type == "state":
         from marker_mermaid.serializers_uml import enrich_state_accessibility_ir
 
         enriched_ir = enrich_state_accessibility_ir(
@@ -971,6 +1647,19 @@ def serialize_typed_ir_result(
             result = replace(
                 result,
                 warnings=(*result.warnings, STATE_TEXT_COMPATIBILITY_WARNING),
+            )
+    elif diagram_type == "gantt" and (
+        gantt_plan.compatibility_substitutions
+        or plan_gantt_accessibility(
+            enriched_ir,
+            experimental=experimental,
+            gantt_plan=gantt_plan,
+        ).compatibility_substitutions
+    ):
+        if GANTT_TEXT_COMPATIBILITY_WARNING not in result.warnings:
+            result = replace(
+                result,
+                warnings=(*result.warnings, GANTT_TEXT_COMPATIBILITY_WARNING),
             )
     if supports_accessibility_directives(result.emitted_type):
         return result

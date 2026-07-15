@@ -1933,9 +1933,9 @@ def typed_ir_semantic_texts(
                 yield str(label)
         return
     if diagram_type == "gantt":
-        if ir.get("title"):
-            yield str(ir["title"])
         plan = plan_gantt_records(ir)
+        if plan.title is not None:
+            yield plan.title.canvas
         for section in plan.sections:
             yield section.visible_label
             for task in section.tasks:

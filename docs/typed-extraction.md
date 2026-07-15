@@ -38,7 +38,7 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | Sequence | string 또는 object participant, message |
 | Mindmap | 재귀 root/children hierarchy |
 | Timeline | event와 여러 label을 담는 `events: string[]` |
-| Gantt | section과 task/date/duration field |
+| Gantt | section과 task ID/status/start/end/duration field; terminal plan이 semantic/source/canvas text와 schedule 의미를 후검증 |
 | Architecture | service, group, edge/port field |
 | State | state/kind와 transition endpoint/label |
 | Class | class/member와 relation/cardinality field |
@@ -759,6 +759,52 @@ cardinality, Requirement·Block 및 C4의 위 token과 Deployment/Component port
 같은 집합으로 제한합니다. Root list 이외의 record field는 partial reconstruction을 위해 선택이며,
 필드 존재, non-empty, 표시 text, ID 중복, endpoint 참조 같은 의미 조건은 계속 serializer가
 판정합니다.
+
+Gantt record plan은 top-level `title`/`description`/`acc_title`/`acc_description`/`date_format`을 generic
+accessibility enrichment 전에 다시 검사합니다. `None`/absent와 exact-empty omitted을 구분하고, 나머지는 exact
+built-in string, raw/normalized `MAX_TEXT_CHARS`, valid UTF-8과 control/format/surrogate/line-separator 부재를
+요구합니다. Initial candidate와 semantic repair도 같은 raw snapshot을 사용하므로 malformed metadata나
+coercion hook이 derived `acc_*`로 바뀌지 않습니다. 별도 accessibility plan은 record plan의 semantic label로
+description을 만들고 자신의 source/canvas encoding을 적용하며 task compatibility canvas를 복사하지 않습니다.
+Explicit `description`/`acc_description`이 있으면 계속 authoritative하고, 둘 다 없을 때만 accepted repair의
+현재 section/task 구조에서 description을 다시 파생합니다. Explicit title/acc-title도 우선합니다.
+
+Plan은 task가 없는 section을 생략하고 renderable task가 하나도 없으면 거부합니다. Missing/exact-empty section
+title과 task label은 각각 `Tasks`, section-local `Task N`으로 고정합니다. Status는 중복 없는
+`active`/`crit`/`done`/`milestone`만 받고 `active`와 `done`의 동시 지정은 거부합니다. 각 task에는 `end` 또는
+`duration` 중 정확히 하나가 있어야 합니다.
+Task ID는 ASCII Gantt identifier 문법으로 표현 가능하고 전체 diagram에서 고유해야 합니다. Mermaid runtime
+tag `active`/`done`/`crit`/`milestone`/`vert`, `__proto__`, 대소문자 무관 `iconify` substring은 ID로 거부합니다.
+Start/end/duration/date format의 `,`/`#`/`;`도 거부합니다. `date_format`은 지원하는 numeric Day.js token subset을
+strict parsing format으로 변환하고 calendar-valid start/end를 요구합니다. `h`/`hh` 12-hour token은 `A`/`a`
+meridiem과 반드시 함께 있어야 합니다. Mermaid 11.16에서 end date가 zero-width가 되는 `Z`/`ZZ`와 `S`/`SS`는
+거부하고 `SSS`만 허용합니다. Unit 불일치 seconds timestamp `X`도 거부하며 milliseconds `x`는 canonical
+no-leading-zero decimal이고 ECMAScript Date 최대값 이하여야 합니다. Duration을 적용한 resolved `x` end도
+prior-only `after` chain 전체에서 같은 최대값 이하여야 합니다. End는 start보다 뒤여야 하며 milestone
+status만 equality를 허용합니다. Duration은 exact decimal+unit grammar 뒤 fractional `ms`/`d`/`w`/`M`/`y`를
+Mermaid-rounded calendar 값으로 거부합니다. Fractional `h`/`m`/`s`는 정확한 양의 integer millisecond로
+환산되고 bounded runtime magnitude 안에 있어야 하며 exact zero는 milestone에만 허용합니다. `after id...`는 기존 task ID 중
+source order상 현재 task보다 먼저 나온 중복 없는 target만 허용해 forward/multi-target partial resolution과
+cycle/depth 문제를 차단합니다. `after` start에는 duration만 허용하고 `until`은 relation attribution 전까지
+fail-closed합니다.
+검증된 `after` schedule도 현재 generated Scene에는 dependency `SceneRelation`을 만들지 않습니다.
+`MMM`, timezone, 부분 날짜처럼 Mermaid 자체가 지원하더라도 이 numeric validation subset 밖인 format은 typed
+자동 게시 coverage가 아니며 direct 후보 또는 review가 필요합니다.
+
+Serializer를 통과한 뒤에도 실제 pinned-runtime scale에서 양수 task가 0폭으로 반올림될 수 있습니다. Final SVG
+inspection은 runtime type `gantt`의 모든 `class~=task` rectangle에 finite positive width/height를 요구하며,
+위반하면 typed/direct 구분 없이 render-invalid로 처리합니다. Journey나 Flowchart의 동명 custom class는 runtime
+type gate 밖이므로 이 검사에 포함하지 않습니다.
+
+Record plan의 title·section·task는 semantic/source/canvas text를 공유합니다. Task canvas의 모든 `:`/`%`는
+`∶`/`％`, title/accessibility `<`는 `‹`로 표시하고 visible substitution이 실제로 있을 때만 warning을
+추가합니다. Task directive-like `%`도 fullwidth가 되지만 title/section의 plain `%%`은 active opener가 아니면
+literal로 남을 수 있습니다. Directive/comment/URL/callback/icon/config/Gantt control word/numeric entity/
+task-leading ISO date 등 grammar/scanner-active token에는 visually inert zero-width separator를 넣습니다.
+Normalized canvas와 Scene/OCR에서는 이를 제거하지만 raw SVG DOM text/title/description에는 남을 수 있습니다.
+Generated Scene과 semantic OCR은 empty-section 제거 뒤의 title/section/task record canvas만 사용하고 hidden task
+`text`, 내부 ID, schedule/accessibility metadata를 content label로 승격하지 않습니다. 별도 accessibility canvas는
+SVG `<title>`/`<desc>` metadata projection으로 검사합니다.
 
 State serializer의 후속 plan은 일반 node와 명시 transition label을 exact built-in string으로 다시
 검사합니다. Exact-empty node label은 ID fallback, exact-empty transition label은 omitted 의미를 유지하지만,

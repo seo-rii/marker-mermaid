@@ -113,10 +113,68 @@ State source ID는 normalized identity를 유지하는 것이 기본이지만 Me
 record/evidence는 원본 identity를 유지하고 declaration, transition, generated Scene은 같은 emitted ID를
 사용합니다. 실제 Mermaid fixture는 이 mapping을 source/target 양쪽에 놓고 SVG transition 수까지 검사합니다.
 
-Gantt도 공용 plan이 section-local `Task N` fallback과 실제 task/section label을 serializer, generated Scene,
-OCR projection에 공유합니다. Mermaid Gantt source에 Scene identity 문법은 없으므로 source code는 기존 task
-ID를 그대로 보존하되, attribution용 section/task ID는 전체 diagram namespace에서 collision-free하게
-배정합니다. 중복 source ID가 있어도 렌더링된 task나 group membership, record provenance를 누락하지 않습니다.
+Gantt record plan은 title·section·task의 semantic/source/Mermaid 11.16 canvas text를 한 번 고정해 serializer,
+generated Scene, OCR projection에 공유합니다. Accessibility는 이 plan과 별도이며 section/task의 semantic
+label로 description을 파생한 뒤 접근성 grammar 전용 source/canvas plan을 적용합니다. 따라서 task의 `∶`/`％`
+canvas를 접근성 문장에 그대로 복사하지 않습니다. Explicit `description`/`acc_description`이 있으면 그 값이
+구조 파생 문장보다 우선하며, repair 뒤 현재 section/task에서 description을 다시 파생하는 것은 두 explicit
+field가 모두 없을 때뿐입니다. Title/`acc_title`도 같은 explicit 우선순위를 유지합니다.
+
+Missing 또는 exact `""` section/task label은 각각 `Tasks`와 section-local `Task N`을 사용합니다. Task가 없는
+section은 source에 방출하거나 Scene group으로 세지 않고, 모든 section이 비어 있으면 partial Gantt를 만들지
+않고 serialization을 거부합니다. Mermaid Gantt source에 Scene identity 문법은 없으므로 section attribution
+identity는 diagram namespace에서 collision-free하게 배정합니다. 반면 task ID는 schedule dependency와 runtime
+record의 실제 key이므로 전체 diagram에서 고유해야 하며 중복은 거부합니다. `active`/`done`/`crit`/
+`milestone`/`vert`, `__proto__`, 대소문자와 무관한 `iconify` substring도 runtime/security 충돌로 거부합니다.
+
+Top-level `title`/`description`/`acc_title`/`acc_description`/`date_format`은 generic 접근성 enrichment보다
+먼저 exact built-in string, raw/normalized bound, UTF-8, Unicode control/format/surrogate/line-separator gate를
+통과합니다. Absent/`None`은 누락, exact `""`은 omitted 의미로 저장 snapshot에서도 제거합니다. Pipeline의
+initial candidate와 semantic repair가 같은 raw gate를 사용하고, serializer는 현재 validated structure에서
+접근성 plan을 다시 계산합니다. 이때 explicit description은 그대로 유지하고, explicit description이 없는
+derived summary만 accepted task/section repair의 현재 semantic label을 반영합니다. Hidden `text`/내부 ID는
+어느 경우에도 derived summary에 들어가지 않습니다.
+
+Task status는 `active`/`crit`/`done`/`milestone`의 중복 없는 조합만 허용하고 서로 모순되는 `active`와
+`done`은 함께 쓸 수 없습니다. 각 task는 `end`와 `duration` 중 정확히 하나만 가져야 합니다. Task ID는
+ASCII Gantt identifier여야 하며 schedule text의 `,`/`#`/`;`는 새
+field 주입을 막기 위해 거부합니다. `date_format`은 지원하는 numeric Day.js token subset만 Python parsing
+format으로 변환하고 year/month/day를 요구합니다. `h`/`hh` 12-hour token과 `A`/`a` meridiem token은 반드시
+서로 함께 있어야 합니다. Mermaid 11.16에서 end date가 zero-width로 붕괴하는 timezone `Z`/`ZZ`와 fractional
+second `S`/`SS`는 거부하고 정확히 세 자리 `SSS`만 지원합니다. Runtime의 start/end unit이 다른 seconds
+timestamp `X`도 거부합니다. Milliseconds timestamp `x`는 `0` 또는 leading zero 없는 decimal만 허용하며
+ECMAScript Date 최대 범위를 넘을 수 없습니다. `x` start에 duration을 더한 resolved end도 `after` chain을
+포함해 같은 범위 안이어야 합니다. Start/end는 이 format으로 strict calendar parsing하며
+non-milestone end는 start보다 뒤여야 하고 milestone만 같은 시각을 허용합니다.
+Duration은 decimal과 `ms|M|d|h|m|s|w|y` unit의 exact grammar를 사용하되 Mermaid가 calendar 단위에서
+반올림하는 fractional `ms`/`d`/`w`/`M`/`y`를 거부합니다. Fractional `h`/`m`/`s`는 환산값이 정확한 양의 정수
+millisecond일 때만 허용하고 전체 magnitude도 bounded runtime range를 넘지 않아야 합니다. Exact zero는
+explicit milestone에만 허용합니다.
+
+이 numeric subset은 Marker가 terminal 의미를 독립적으로 검증할 수 있는 보수적 coverage입니다. Mermaid가
+자체적으로 render할 수 있는 `MMM`, timezone, 부분 날짜 같은 다른 format은 현재 typed Gantt 자동 게시에서
+거부되고 direct 후보 또는 review 경로로 남습니다.
+
+`after id...` start는 diagram의 실제 task ID 중 source order에서 현재 task보다 먼저 나온 target만 참조할 수
+있고 한 record 안의 중복 target도 거부합니다. 이 backward-only 정책으로 forward/multi-target partial
+resolution, cycle과 과도한 dependency depth를 runtime 전에 차단합니다. `after` start에는 비교 가능한 absolute
+start가 없으므로 end date를 함께 쓰지 않고 duration을 사용해야 합니다. `until`은 attributed relation을 만들기
+전까지 전부 fail-closed합니다. 검증된 `after`도 아직 `SceneRelation` provenance로 승격하지 않으므로 dependency
+edge/path attribution은 후속 범위입니다.
+
+Task canvas의 모든 `:`/`%`는 Mermaid가 literal을 유지하지 못하므로 `∶`/`％`, title/accessibility canvas의
+`<`는 `‹`로 표시하고 조건부 compatibility warning을 남깁니다. 따라서 task의 directive-like `%`도 visible
+fullwidth text가 되지만 title/section의 plain `%%`은 active `%%{...}` opener가 아니면 literal로 남을 수
+있습니다. Directive opener·comment·URL/callback/icon·numeric entity·Gantt control word·task 선두 ISO date처럼
+source grammar나 strict scanner를 활성화하는 token에는 visually inert zero-width separator를 넣습니다.
+Normalized Gantt canvas와 Scene/OCR은 separator를 제거하지만 raw SVG DOM의 text/title/description에는 남을
+수 있으므로 DOM literal과 사용자-visible text를 동일시하지 않습니다.
+
+계산 단계만으로 실제 Mermaid scale rounding을 모두 예측하지는 않습니다. 따라서 final SVG inspection은
+runtime diagram type이 `gantt`일 때 모든 `rect[class~="task"]`의 width와 height가 finite positive인지
+검사합니다. 긴 task 옆의 짧은 양수 duration이 0폭으로 반올림되면 runtime이 parse/render 성공을 보고해도
+candidate를 render-invalid로 내립니다. 같은 검사는 typed와 Direct Mermaid 결과에 공통이며, milestone과
+vertical marker도 pinned 11.16 SVG에서 양수 geometry를 가져야 합니다.
 
 Requirement·Block은 serializer 전에 strict nested extraction 계약을 통과합니다. Requirement의
 requirement/element/relation과 Block의 block/edge는 각각 object list여야 하고, 알려진 scalar,

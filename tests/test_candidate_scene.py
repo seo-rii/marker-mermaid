@@ -656,7 +656,7 @@ def test_gantt_scene_uses_serializer_task_fallback_numbering_per_section() -> No
     ]
 
 
-def test_gantt_scene_preserves_duplicate_source_ids_with_collision_free_attribution() -> None:
+def test_gantt_scene_preserves_duplicate_section_ids_with_collision_free_attribution() -> None:
     ir = {
         "sections": [
             {
@@ -664,14 +664,14 @@ def test_gantt_scene_preserves_duplicate_source_ids_with_collision_free_attribut
                 "title": "First phase",
                 "tasks": [
                     {
-                        "id": "shared-task",
+                        "id": "task-1",
                         "label": "First task",
                         "start": "2026-07-01",
                         "end": "2026-07-02",
                         "evidence_ids": ["ocr-first"],
                     },
                     {
-                        "id": "shared-task",
+                        "id": "task-2",
                         "label": "Second task",
                         "start": "2026-07-02",
                         "end": "2026-07-03",
@@ -683,13 +683,13 @@ def test_gantt_scene_preserves_duplicate_source_ids_with_collision_free_attribut
                 "id": "phase",
                 "tasks": [
                     {
-                        "id": "shared-task",
+                        "id": "task-3",
                         "start": "2026-07-03",
                         "end": "2026-07-04",
                         "evidence_ids": ["ocr-third"],
                     },
                     {
-                        "id": "shared-task",
+                        "id": "task-4",
                         "label": "Fourth task",
                         "start": "2026-07-04",
                         "end": "2026-07-05",
@@ -704,19 +704,19 @@ def test_gantt_scene_preserves_duplicate_source_ids_with_collision_free_attribut
     code = serialize_gantt(ir)
 
     assert scene is not None
-    assert code.count(":shared-task,") == 4
+    assert all(f":task-{index}," in code for index in range(1, 5))
     assert "gantt_task_" not in code
     assert "gantt_section_" not in code
     assert [(element.id, element.text, element.evidence_ids) for element in scene.elements] == [
-        ("shared-task", "First task", ["ocr-first"]),
-        ("gantt_task_1_2", "Second task", ["ocr-second"]),
-        ("gantt_task_2_1", "Task 1", ["ocr-third"]),
-        ("gantt_task_2_2", "Fourth task", ["ocr-fourth"]),
+        ("task-1", "First task", ["ocr-first"]),
+        ("task-2", "Second task", ["ocr-second"]),
+        ("task-3", "Task 1", ["ocr-third"]),
+        ("task-4", "Fourth task", ["ocr-fourth"]),
     ]
     assert len({element.id for element in scene.elements}) == 4
     assert [(group.id, group.label, group.member_ids) for group in scene.groups] == [
-        ("phase", "First phase", ["shared-task", "gantt_task_1_2"]),
-        ("gantt_section_2", "Tasks", ["gantt_task_2_1", "gantt_task_2_2"]),
+        ("phase", "First phase", ["task-1", "task-2"]),
+        ("gantt_section_2", "Tasks", ["task-3", "task-4"]),
     ]
     assert len({group.id for group in scene.groups}) == 2
     assert list(typed_ir_semantic_texts("gantt", ir, scene)) == [

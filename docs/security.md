@@ -72,6 +72,42 @@ ID에 strict remote-icon rule의 `iconify` substring이 있으면 serializer가 
 전체를 먼저 예약하므로 사용자가 이미 같은 alias를 제공해도 다른 node를 덮어쓰지 않습니다. 이 mapping은
 strict scanner 우회가 아니라 비활성 identifier 치환이며 Scene endpoint와 Mermaid edge가 공유합니다.
 
+Gantt의 raw `title`/`description`/`acc_title`/`acc_description`/`date_format`은 generic enrichment와 semantic
+repair 직렬화보다 먼저 exact built-in string, raw/normalized 길이, UTF-8, Unicode category를 검사합니다.
+Absent/`None`과 exact-empty omitted만 허용하고 whitespace-only, subclass/hook, control/format/surrogate/
+line-separator text는 derived 접근성 문구로 세탁되기 전에 후보 단위로 격리합니다. Record plan과 별도인
+accessibility plan은 semantic section/task label만 사용합니다. Explicit description/acc-description은 repair
+뒤에도 authoritative하고, 둘 다 없을 때만 current repaired IR에서 description을 다시 파생합니다.
+
+Task status는 닫힌 token 집합이며 `active`와 `done`을 함께 허용하지 않습니다. 정확히 하나의 end/duration과
+bounded task ID/start/end/duration/date-format syntax를 요구합니다. Task ID는 전체 diagram에서 고유해야
+하고 runtime tag `active`/`done`/`crit`/`milestone`/
+`vert`, `__proto__`, `iconify` substring을 거부합니다. Schedule field를 추가할 수 있는 `,`/`#`/`;`도 거부합니다.
+지원하는 numeric date-format token만 parsing format으로 변환해 invalid calendar date를 차단하고, end는 start
+뒤여야 하되 milestone만 equality를 허용합니다. `h`/`hh`는 `A`/`a`와 짝지어야 합니다. End date가 zero-width가
+되는 `Z`/`ZZ`·`S`/`SS`는 거부하고 `SSS`만 지원합니다. Seconds timestamp `X`도 Mermaid 11.16의 unit 불일치로
+거부하며, milliseconds `x`는 canonical no-leading-zero decimal과 ECMAScript Date maximum을 요구합니다.
+Duration과 prior-only `after` chain을 적용한 resolved end도 그 maximum을 넘을 수 없습니다.
+Duration은 exact decimal+unit grammar 뒤 Mermaid-rounded fractional `ms`/`d`/`w`/`M`/`y`를 거부합니다.
+Fractional `h`/`m`/`s`는 정확한 양의 integer millisecond로 환산되어야 하고 전체 magnitude도 bounded runtime
+range 안이어야 하며, exact zero는 milestone에만 허용합니다. `after` target은 실제 고유 ID이면서 source order상 현재 task보다
+앞서야 합니다. 이 backward-only gate로 forward/partial resolution과 cycle을 막습니다. `after`와 end date의
+조합 및 모든 `until`은 fail-closed합니다.
+
+Runtime type이 `gantt`인 final SVG는 whitespace class token `task`를 가진 모든 rectangle에 finite positive
+width/height를 요구합니다. 이 pinned-runtime shape gate는 다른 diagram의 `task` class에는 적용되지 않으며,
+parse/render-valid처럼 보이는 mixed-scale 0폭 task를 인증·게시 전에 render-invalid로 격리합니다. Runtime type을
+알 수 없는 standalone/review SVG 검사는 root `aria-roledescription="gantt"`일 때만 같은 gate를 적용합니다.
+
+Gantt label source에서는 directive opener, `//`, URL/data/JavaScript scheme, `@import`, callback, remote icon,
+config와 Gantt control word, numeric entity, `---`, task 선두 ISO date를 visually inert zero-width separator로
+비활성화합니다. Normalized canvas와 Scene/OCR은 separator를 제거하지만 raw SVG DOM text/title/description에는
+남을 수 있습니다. Mermaid 11.16이 task의 `:`/`%`와 title/accessibility의 `<`를 literal canvas로 보존하지
+못하는 경우에는 각각 `∶`/`％`/`‹`를 보이는 문자로 사용하고 compatibility warning을 남깁니다. Task의 모든
+`%`는 fullwidth이므로 directive-like text도 visible substitution을 사용하고, title/section의 plain `%%`은
+active directive opener가 아니면 literal로 남을 수 있습니다. Initial/repair 후보는 validated raw snapshot과
+각각의 record/accessibility plan을 다시 검사하며 accepted repair는 현재 plan에 맞춰 warning을 조정합니다.
+
 Specialized typed serializer의 label에 위 token이 관찰돼도 active statement로 방출하지 않습니다.
 keyword와 URL-like token 내부의 zero-width separator는 scanner와 parser 양쪽에서 동작을 비활성화하고,
 Flowchart label의 source `&`도 entity로 재해석되지 않도록 같은 방식으로 분리합니다. Event Modeling edge의

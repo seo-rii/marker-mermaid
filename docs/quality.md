@@ -246,8 +246,25 @@ generated Scene attribution에서 제외합니다.
   `mmx_state_id_…` emitted ID로 바꿉니다. Typed IR과 evidence는 source identity를 유지하고 Scene relation과 Mermaid
   transition은 같은 emitted endpoint를 사용하므로, parse 성공처럼 보이면서 `state` source edge가 사라지는
   silent renderer loss도 실제 SVG transition-count gate에서 검출합니다.
-  Gantt section/task는 source ID가 중복되어도 collision-free Scene identity를 배정해 렌더링된 record와
-  provenance를 모두 보존합니다.
+  Gantt record plan은 title·section·task의 semantic/source/canvas text를 고정합니다. 별도 accessibility plan은
+  semantic section/task label로 derived description을 만들고 접근성 grammar의 canvas를 따르므로 task
+  compatibility canvas를 재사용하지 않습니다. Explicit `description`/`acc_description`은 계속 authoritative하며,
+  accepted repair가 현재 label로 description을 다시 파생하는 것은 두 field가 모두 없을 때뿐입니다. OCR
+  content에는 실제 canvas에 보이는 title과, empty-section 제거 뒤 남은 section/task label만 넣으며 task
+  `:`/`%`와 title `<`의 `∶`/`％`/`‹` compatibility glyph도 그대로 비교합니다.
+  Hidden task `text`, 내부 ID, schedule/status field와 SVG accessibility metadata는 canvas recall에 넣지 않습니다.
+  Missing 또는 exact-empty task는 section-local `Task N`, section은 `Tasks`로 투영합니다. Zero-width separator는
+  normalized canvas/Scene/OCR 비교에서 제거하지만 raw SVG DOM text/title/desc에는 남을 수 있습니다. Section
+  Scene identity는 collision-free하게 배정하고 terminal task ID 중복은 거부하며, task 없는 section은 Scene/OCR에서
+  제외하고 all-empty candidate는 scoring 전에 거부합니다. Date/token shape와 ECMAScript timestamp range,
+  prior-only `after` chain까지 계산한 resolved `x` end, millisecond-exact bounded duration을 serialization에서
+  먼저 검사해 renderer의 zero-width task를 scoring하지
+  않습니다. 그 뒤 runtime type이 Gantt인 SVG의 모든 `class~=task` rectangle도 finite positive width/height를
+  가져야 하므로 mixed-scale rounding으로 남은 0폭 task는 render-invalid이고 scoring/publication에 들어가지
+  않습니다. Valid `after` target은 source order상 현재 task보다
+  먼저 나와야 하므로 forward/partial resolution과 cycle을 serialization에서 차단합니다. 아직
+  `SceneRelation`을 만들지 않으므로 Gantt dependency edge/path score와 relation provenance는 unavailable일 수
+  있습니다.
 - Requested type이 fallback으로 방출되는 경우 projection은 요청 문법이 아니라 실제 emitted serializer를
   따릅니다. C4의 `architecture` 또는 nested Flowchart 결과는 위 공용 plan의 emitted boundary group과
   service label만 세고 technology, relation label, description은 제외합니다. Architecture도 native와

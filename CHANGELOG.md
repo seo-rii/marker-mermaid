@@ -198,8 +198,9 @@
   only their rendered label/ID while choice/fork/join pseudo-states retain topology without inventing canvas text,
   Sequence supplies `[unreadable]` for unlabeled messages, and Gantt uses the per-section `Task N` default instead
   of hidden task text or IDs. State serialization and Scene attribution now share normalized node IDs, exact
-  transition endpoints, and boundary-transition validation; Gantt allocates collision-free Scene identities so
-  duplicate source section/task IDs cannot erase rendered records. Invalid Block endpoints and malformed State
+  transition endpoints, and boundary-transition validation; Gantt allocates collision-free section/Scene identities
+  and rejects duplicate terminal task IDs so collisions cannot silently erase rendered records. Invalid Block
+  endpoints and malformed State
   records or transitions fail closed instead of producing a partial semantic Scene. Boundary markers stay out of
   structural Scene relations while their rendered transition labels remain in the semantic OCR projection.
 - State now freezes grammar-specific semantic, source, and Mermaid 11.16 canvas text in one shared plan.
@@ -223,6 +224,36 @@
   this prevents both parse failures and the renderer's silent loss of `state`-sourced edges.
   The strict scanner now admits only exact State `choice`/`fork`/`join` declarations and uses bounded accessibility
   prefix checks plus linear HTML detection for punctuation-heavy terminal text.
+- Gantt now freezes semantic, source, and Mermaid 11.16 canvas text for titles, sections, and tasks in one record
+  plan. A separate accessibility plan derives metadata from semantic section/task labels and applies its own
+  source/canvas rules; explicit accessibility fields remain authoritative. Exact-empty top-level metadata is omitted
+  before enrichment, while missing or exact-empty section/task labels retain deterministic `Tasks` / section-local
+  `Task N` defaults. Empty sections are skipped, while an all-empty diagram fails before runtime. Task records accept
+  only the closed `active`/`crit`/`done`/`milestone` status set, reject contradictory `active` + `done`, and require
+  exactly one of `end` or `duration`. Terminal task IDs are
+  globally unique and exclude runtime tags, `__proto__`, and the `iconify` substring; a supported numeric Day.js
+  date-format subset is compiled for strict calendar validation, 12-hour tokens require a matching meridiem token,
+  `Z`/`ZZ` and fractional `S`/`SS` tokens are rejected, and only `SSS` retains millisecond precision. Inconsistent
+  seconds timestamp `X` is rejected; timestamp `x` must be a canonical no-leading-zero decimal within the ECMAScript
+  Date range. Explicit end dates must follow their start except equal milestone endpoints. A resolved `x` start plus
+  duration, including starts inherited through `after`, must also stay in that Date range. Durations reject Mermaid-
+  rounded fractional `ms`/`d`/`w`/`M`/`y`, require fractional `h`/`m`/`s` to resolve to an integral millisecond, and
+  stay within a bounded runtime magnitude; exact zero remains milestone-only. Existing `after`
+  targets must be globally unique tasks that appear earlier in source order; end dates cannot pair with `after`, and
+  `until` remains fail-closed until relation attribution exists. Task `:`/`%` and title/accessibility `<` use
+  disclosed visible `∶`/`％`/`‹` compatibility glyphs where Mermaid cannot preserve the literal canvas; directives,
+  scanner words,
+  URL/callback/icon patterns, numeric entities, comments, and task-leading ISO dates receive visually inert zero-width
+  separators. Normalized canvas/Scene/OCR text removes those separators, although raw SVG DOM text/title/description
+  may retain them; task `%` is always visibly fullwidth while plain `%%` in title/section text may remain literal.
+  Generated Scene/OCR consumes record-plan canvas labels instead of hidden `text` or internal IDs. Initial and repair
+  candidates validate raw metadata before enrichment and store that snapshot; an accepted repair regenerates a
+  derived accessibility description from current semantic labels only when neither `description` nor
+  `acc_description` is present, and reconciles the compatibility warning. Gantt `after <id>` schedule dependencies
+  remain serialized fields; they are not yet emitted as attributed Scene relations for edge or path scoring.
+  Final SVG inspection now requires every pinned-runtime Gantt `class~=task` rectangle, including milestone and
+  vertical markers, to have finite positive width and height. A mixed-scale task that parse/render reports as valid
+  but rounds to zero width is therefore render-invalid for typed and Direct Mermaid candidates.
 - Packet semantic OCR projection is now terminal-aware: a validated native Packet includes its normalized canvas
   title, while a same-slot Flowchart fallback excludes that native-only text. Native serialization and scoring
   share entity-compatible title normalization; invisible source-security separators are omitted from OCR tokens,

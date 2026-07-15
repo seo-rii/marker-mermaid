@@ -529,6 +529,37 @@ def test_svg_inspection_rejects_non_finite_geometry(attribute: str, value: str) 
     )
 
 
+def test_svg_inspection_rejects_zero_area_gantt_tasks() -> None:
+    invisible = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50" '
+        'aria-roledescription="gantt">'
+        '<rect id="task-a" class="task task0" x="10" y="10" width="0" height="20"/>'
+        "</svg>"
+    )
+    milestone = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50" '
+        'aria-roledescription="gantt">'
+        '<rect id="task-a" class="task milestone task0" x="10" y="10" '
+        'width="20" height="20"/>'
+        "</svg>"
+    )
+    unrelated = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50">'
+        '<rect class="task" width="0" height="20"/>'
+        "</svg>"
+    )
+
+    finding = "rendered Gantt contains a non-visible task rectangle"
+    assert finding in inspect_svg(invisible, SecurityProfile.STRICT)
+    assert finding not in inspect_svg(milestone, SecurityProfile.STRICT)
+    assert finding not in inspect_svg(unrelated, SecurityProfile.STRICT)
+    assert finding not in inspect_svg(
+        invisible,
+        SecurityProfile.STRICT,
+        diagram_type="journey",
+    )
+
+
 @pytest.mark.parametrize(
     "svg",
     [None, "", "  \n", b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>'],
