@@ -713,6 +713,19 @@ data reference에서 빼며 `user_edit`는 bbox 유무와 관계없이 빼지 �
 있으면 OCR/vector를 먼저 선택해 evidence ID가 numeric score를 바꾸지 않게 합니다. Runtime/intrinsic fallback과
 repair는 같은 terminal-effective gate를 재실행합니다.
 
+Venn serializer는 accessibility enrichment보다 앞에서 raw explicit metadata를 검증합니다. Pipeline 후보와
+`serialize_typed_ir_result()`, `serialize_runtime_fallback_result()`, `serialize_venn()`은 모두 네 field의 원본
+값을 같은 계약으로 검사합니다. `None`과 field 부재는 absent이고 exact `""`은 호환을 위해 omitted로 resolve합니다.
+그 밖의 값은 exact built-in `str`, normalization 전 `MAX_TEXT_CHARS` 이하, raw `Cc`/`Cf`/`Zl`/`Zp` 부재,
+normalization 후 non-empty·bounded, valid UTF-8을 모두 만족해야 합니다. Raw control 검사 후에 whitespace를
+접으므로 newline/tab이 평범한 공백으로 세탁되지 않습니다. 실패는 native/fallback 코드 생성과 runtime
+validation 전에 `SerializationError`로 닫힙니다. Semantic repair도 exact-empty field를 제거한 동일 canonical
+snapshot을 코드 직렬화, 품질 평가와 선택 후보 저장에 사용합니다.
+
+여기서 direct Venn serializer는 typed `serialize_venn()` API를 뜻합니다. Typed metadata field가 없는 Raw
+Direct Mermaid 후보에는 이 gate를 적용하지 않으며, 해당 후보는 기존 security·parse·render 검사와
+typed-plan 부재 시의 review-only 정책을 따릅니다.
+
 Native `venn-beta`는 모든 set/intersection size가 관측되고 positive normal binary64로 exact round-trip되며,
 Python `int` 입력의 safe-integer range와 `largest set / smallest positive area <= 200` visibility gate를 만족할 때만 선택합니다.
 Intersection이 member set 또는 더 작은 explicit intersection과 같은 exact-containment, zero·subnormal·

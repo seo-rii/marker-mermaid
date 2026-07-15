@@ -320,6 +320,16 @@
   terminal gate. Exact OCR/vector proof is preferred over an equivalent approved edit so evidence IDs cannot alter
   numeric scoring; an explicit experimental-notice string in `strict` mode remains ordinary source text because the
   pipeline did not append it.
+- Venn raw explicit metadata now has the same pre-enrichment boundary in the reconstruction pipeline, public typed
+  serializer, runtime fallback, and typed direct chart-set `serialize_venn()` API. Raw Direct Mermaid candidates
+  have no typed metadata fields and retain the security/parse/render plus typed-plan-absent review-only gates.
+  Non-`None` `title`, `description`, `acc_title`, and `acc_description` values must be exact built-in strings. Exact
+  `""` retains omitted-field compatibility; every
+  other value is raw-length bounded before normalization, valid UTF-8, non-empty and bounded after whitespace
+  normalization, and free of raw `Cc`/`Cf`/`Zl`/`Zp` characters. This rejects subclasses, containers, numbers,
+  overlong whitespace, newline/tab laundering, zero-width controls, and lone surrogates before Mermaid runtime.
+  Exact-empty repair fields are removed from the canonical IR used for serialization, evaluation, and storage so
+  derived accessibility text cannot be misclassified as an explicit notice-only override.
 - Bounded pre-validation source repair with audit events, diagnostics, idempotence, and AST adapter seam.
 - Page-level missed-diagram proposals with occupied-region exclusion and virtual source crops.
 - Profile-gated flowchart fill, border, and link style recovery with strict CSS allowlists.

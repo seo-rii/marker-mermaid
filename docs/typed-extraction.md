@@ -582,6 +582,19 @@ occurrence만 data reference에서 제거하고 `user_edit` 숫자는 제거하�
 repair에서 같은 scoped evidence로 재평가합니다. 동일 exact observation의 OCR/vector와 승인 edit가 함께 있으면
 source channel을 우선해 evidence ID 이름이 numeric score를 바꾸지 않게 합니다.
 
+이 owner 계산에 앞서 네 raw explicit metadata field를 검증합니다. Provider typed candidate의 raw snapshot은
+pipeline enrichment 전에, public typed/runtime fallback과 direct Venn serializer input은 각 public entry point에서
+검사합니다. Non-`None`은 exact built-in `str`이어야 하고 raw length를 먼저 제한하며 raw `Cc`/`Cf`/`Zl`/`Zp`를
+허용하지 않습니다. Exact `""`은 omitted compatibility로 허용하지만 다른 문자열은 whitespace normalization
+후에도 non-empty·bounded·valid UTF-8이어야 합니다. 이 순서로 newline/tab laundering, overlong whitespace,
+zero-width format, string subclass, container/number와 lone surrogate를 accessibility derivation 및 Mermaid
+runtime보다 먼저 격리합니다. Semantic repair의 typed IR도 같은 검사를 재실행하고 exact-empty field를 제거한
+canonical snapshot을 직렬화·평가·저장에 공통 사용합니다.
+
+여기서 direct Venn serializer는 typed `serialize_venn()` API를 가리킵니다. Raw Direct Mermaid 후보는 typed
+metadata field를 갖지 않으므로 이 검사의 대상이 아니며 security·parse·render와 typed-plan 부재 시
+review-only gate로 제한합니다.
+
 ### Journey·Kanban·GitGraph 계획 다이어그램 계약
 
 세 계획 유형도 canonical record를 provider prompt에 공개하고 같은 strict nested model로 응답을

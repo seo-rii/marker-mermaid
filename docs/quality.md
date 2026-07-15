@@ -409,6 +409,15 @@ generated Scene attribution에서 제외합니다.
   `user_edit` occurrence는 차감하지 않으며, 동일 exact proof에서는 source observation을 edit보다 우선해 ID-order
   독립성을 보장합니다. `strict`의 명시적 notice 문구는 pipeline suffix가 아니므로 증명 대상이고, fallback
   title/description이 같은 text여도 별도 proof를 요구합니다.
+- Venn raw metadata gate는 attribution 전에 실행됩니다. Pipeline과 public typed/runtime fallback serializer는
+  enrichment 전의 네 explicit field를 공통 검사하고, direct chart-set serializer는 planning 시작 시 검사합니다.
+  `None`/absent와 omitted-compatible exact `""` 외에는 exact built-in string, raw/normalized length limit,
+  normalized non-empty, valid UTF-8, raw `Cc`/`Cf`/`Zl`/`Zp` 부재를 요구합니다. Newline/tab normalization,
+  zero-width format, string subclass, non-text container/number, huge whitespace와 surrogate는 runtime 호출 전에
+  serialization failure로 격리되며 repair proposal도 같은 public serializer 경계를 우회하지 못합니다. Repair는
+  exact-empty를 제거한 canonical IR을 직렬화·평가·저장에 공통 사용합니다.
+  여기서 direct chart-set serializer는 typed `serialize_venn()` API이며, typed metadata가 없는 Raw Direct
+  Mermaid 후보는 security·parse·render와 typed-plan 부재 시 review-only gate를 그대로 사용합니다.
 - Pie는 slice-local association과 전역 occurrence completeness를 함께 사용합니다. Native Pie, 같은-slot exact-value
   Flowchart, semantic repair 모두 각 typed slice가 candidate publication authority의 `ocr_token` 또는
   `vector_text`를 직접 참조해야 합니다. Slice/evidence bbox는 양의 면적이고 source image 안에 있어야 하며,

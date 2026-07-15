@@ -18,6 +18,7 @@ from marker_mermaid.models import (
 from marker_mermaid.pipeline import ReconstructionPipeline
 from marker_mermaid.protocols import RepairProposal, RuntimeResult
 from marker_mermaid.serializers import (
+    SerializationError,
     serialize_runtime_fallback_result,
     serialize_typed_ir_result,
 )
@@ -106,8 +107,11 @@ class _VennMembershipSwapRepair:
         return RepairProposal(code=serialized.code, operation=self.name, typed_ir=typed_ir)
 
 
-class _VennFallbackLabelRepair:
-    name = "venn_fallback_label"
+class _VennTerminalLabelRepair:
+    name = "venn_terminal_label"
+
+    def __init__(self, *, exact_empty_metadata: bool = False) -> None:
+        self.exact_empty_metadata = exact_empty_metadata
 
     def repair(self, context, candidate):
         del context
@@ -115,14 +119,27 @@ class _VennFallbackLabelRepair:
         first_set = typed_ir["sets"][0]
         first_set["label"] = "Verified Buyers"
         first_set["evidence_ids"] = ["ocr-a-correct", "ocr-a-value", "contour-a"]
-        typed_ir.pop("acc_title", None)
-        typed_ir.pop("acc_description", None)
-        serialized = serialize_runtime_fallback_result(
-            "venn",
-            typed_ir,
-            experimental=True,
-        )
-        assert serialized is not None
+        if self.exact_empty_metadata:
+            typed_ir.update(
+                {
+                    "title": "",
+                    "description": "",
+                    "acc_title": "",
+                    "acc_description": "",
+                }
+            )
+        else:
+            typed_ir.pop("acc_title", None)
+            typed_ir.pop("acc_description", None)
+        if candidate.emitted_diagram_type == "flowchart":
+            serialized = serialize_runtime_fallback_result(
+                "venn",
+                typed_ir,
+                experimental=True,
+            )
+            assert serialized is not None
+        else:
+            serialized = serialize_typed_ir_result("venn", typed_ir, experimental=True)
         return RepairProposal(code=serialized.code, operation=self.name, typed_ir=typed_ir)
 
 
@@ -155,6 +172,20 @@ class _VennMetadataRepair:
             typed_ir["title"] = "Fabricated terminal review"
             serialized = serialize_typed_ir_result("venn", typed_ir, experimental=True)
         return RepairProposal(code=serialized.code, operation=self.name, typed_ir=typed_ir)
+
+
+class _VennInvalidRawMetadataRepair:
+    name = "venn_invalid_raw_metadata"
+
+    def repair(self, context, candidate):
+        del context
+        typed_ir = deepcopy(candidate.typed_ir)
+        typed_ir["acc_title"] = "Invalid\nmetadata"
+        return RepairProposal(
+            code=f"{candidate.mermaid_code.rstrip()}\n%% invalid raw metadata repair\n",
+            operation=self.name,
+            typed_ir=typed_ir,
+        )
 
 
 class _PromptOmittingVennEngine(JsonFixtureEngine):
@@ -362,6 +393,90 @@ def _reconstruct_venn(
         evidence=active_evidence if evidence_as_prior else None,
     )
     return result, runtime
+
+
+@pytest.mark.parametrize("reject_native", [False, True])
+@pytest.mark.parametrize("field", ["title", "description", "acc_title", "acc_description"])
+@pytest.mark.parametrize(
+    "value",
+    [" ", "Visible\nmetadata"],
+    ids=["whitespace", "newline"],
+)
+def test_venn_invalid_raw_metadata_never_reaches_either_runtime_terminal(
+    field: str,
+    reject_native: bool,
+    value: str,
+) -> None:
+    ir = deepcopy(VENN_IR)
+    ir[field] = value
+
+    result, runtime = _reconstruct_venn(ir=ir, reject_native=reject_native)
+
+    assert result.selected is None
+    assert not result.publish
+    assert runtime.calls == []
+    assert any(
+        failure.stage == "serialization" and failure.error_type == "SerializationError"
+        for failure in result.failures
+    )
+
+
+@pytest.mark.parametrize("reject_native", [False, True])
+def test_venn_exact_empty_metadata_derives_defaults_for_both_terminals(
+    reject_native: bool,
+) -> None:
+    ir = {
+        **deepcopy(VENN_IR),
+        "title": "",
+        "description": "",
+        "acc_title": "",
+        "acc_description": "",
+    }
+
+    result, _runtime = _reconstruct_venn(ir=ir, reject_native=reject_native)
+
+    assert result.selected is not None
+    assert result.selected.emitted_diagram_type == ("flowchart" if reject_native else "venn")
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+    if reject_native:
+        assert "accTitle: Venn reconstruction" in result.selected.mermaid_code
+    else:
+        assert not any(line.strip().startswith("title ") for line in result.selected.mermaid_code)
+
+
+def test_venn_pipeline_validates_raw_metadata_before_accessibility_enrichment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def reject_raw_metadata(ir: object) -> None:
+        del ir
+        calls.append("validate")
+        raise SerializationError("invalid raw Venn metadata")
+
+    def unexpected_enrichment(*args: object, **kwargs: object) -> dict[str, object]:
+        del args, kwargs
+        calls.append("enrich")
+        raise AssertionError("accessibility enrichment ran before validation")
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "validated_venn_accessibility_ir",
+        reject_raw_metadata,
+    )
+    monkeypatch.setattr(pipeline_module, "enrich_accessibility_ir", unexpected_enrichment)
+
+    result, runtime = _reconstruct_venn()
+
+    assert result.selected is None
+    assert not result.publish
+    assert runtime.calls == []
+    assert calls == ["validate"]
+    assert any(
+        failure.stage == "serialization" and failure.error_type == "SerializationError"
+        for failure in result.failures
+    )
 
 
 @pytest.mark.parametrize("reject_native", [False, True])
@@ -1621,6 +1736,28 @@ def test_venn_semantic_repair_cannot_inject_unproven_terminal_metadata(
     assert result.selected.repair_history[-1].after_score is None
 
 
+@pytest.mark.parametrize("reject_native", [False, True])
+def test_venn_semantic_repair_rejects_invalid_raw_metadata_before_runtime(
+    reject_native: bool,
+) -> None:
+    result, runtime = _reconstruct_venn(
+        reject_native=reject_native,
+        repair_engine=_VennInvalidRawMetadataRepair(),
+    )
+
+    assert result.selected is not None
+    assert result.selected.typed_ir.get("acc_title") != "Invalid\nmetadata"
+    assert len(runtime.calls) == (2 if reject_native else 1)
+    assert result.selected.repair_history
+    assert result.selected.repair_history[-1].operation == "venn_invalid_raw_metadata"
+    assert not result.selected.repair_history[-1].accepted
+    assert result.selected.repair_history[-1].after_score is None
+    assert any(
+        "semantic repair IR could not be serialized: SerializationError" in warning
+        for warning in result.selected.warnings
+    )
+
+
 def test_venn_semantic_repair_accepts_independently_proven_native_title() -> None:
     evidence = [
         *_venn_evidence(),
@@ -1664,7 +1801,15 @@ def test_venn_semantic_repair_cannot_use_metadata_outside_candidate_authority() 
     assert result.selected.repair_history[-1].after_score is None
 
 
-def test_venn_runtime_fallback_repair_uses_the_matching_fallback_serializer() -> None:
+@pytest.mark.parametrize(
+    ("reject_native", "exact_empty_metadata"),
+    [(True, False), (False, True), (True, True)],
+    ids=["forced-fallback", "native-exact-empty", "forced-fallback-exact-empty"],
+)
+def test_venn_terminal_repair_uses_matching_serializer_and_omits_exact_empty_metadata(
+    reject_native: bool,
+    exact_empty_metadata: bool,
+) -> None:
     ir = deepcopy(VENN_IR)
     ir["sets"][0]["label"] = "Buyres"
     ir["sets"][0]["evidence_ids"] = [
@@ -1699,16 +1844,28 @@ def test_venn_runtime_fallback_repair_uses_the_matching_fallback_serializer() ->
     result, _runtime = _reconstruct_venn(
         ir=ir,
         evidence=evidence,
-        reject_native=True,
-        repair_engine=_VennFallbackLabelRepair(),
+        reject_native=reject_native,
+        repair_engine=_VennTerminalLabelRepair(
+            exact_empty_metadata=exact_empty_metadata,
+        ),
     )
 
     assert result.selected is not None
     assert result.selected.candidate_id == "candidate-1-repair-1"
-    assert result.selected.emitted_diagram_type == "flowchart"
+    assert result.selected.emitted_diagram_type == ("flowchart" if reject_native else "venn")
     assert result.selected.typed_ir["sets"][0]["label"] == "Verified Buyers"
     assert result.selected.repair_history[-1].accepted
     assert not any("code and typed IR diverged" in warning for warning in result.selected.warnings)
+    if exact_empty_metadata:
+        assert (
+            not {
+                "title",
+                "description",
+                "acc_title",
+                "acc_description",
+            }
+            & result.selected.typed_ir.keys()
+        )
     [baseline] = result.alternatives
     assert baseline.typed_ir["sets"][0]["label"] == "Buyres"
 

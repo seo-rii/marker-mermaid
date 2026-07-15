@@ -774,9 +774,51 @@ def serialize_treemap(
     return _preflight_treemap_code("\n".join(lines) + "\n"), "treemap", None
 
 
+def validate_venn_explicit_metadata(ir: Mapping[str, Any]) -> None:
+    """Reject malformed Venn metadata before accessibility enrichment.
+
+    Accessibility enrichment stringifies explicit values and normalizes line
+    breaks. Validating the raw fields first keeps non-text values,
+    whitespace-only text, and control/format characters from being laundered
+    into terminal metadata. Exact empty strings retain legacy omitted semantics.
+    """
+
+    for field in ("title", "description", "acc_title", "acc_description"):
+        value = ir.get(field)
+        if value is None:
+            continue
+        if type(value) is not str:
+            raise SerializationError(f"venn {field} must be text when provided")
+        if value == "":
+            continue
+        if len(value) > MAX_TEXT_CHARS:
+            raise SerializationError(f"venn {field} must be bounded non-empty text")
+        if any(unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"} for character in value):
+            raise SerializationError(f"venn {field} contains unsupported text")
+        normalized = " ".join(value.split())
+        if not normalized or len(normalized) > MAX_TEXT_CHARS:
+            raise SerializationError(f"venn {field} must be bounded non-empty text")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise SerializationError(f"venn {field} is not valid UTF-8") from exc
+
+
+def validated_venn_accessibility_ir(ir: Mapping[str, Any]) -> dict[str, Any]:
+    """Return validated Venn input with exact-empty metadata treated as omitted."""
+
+    validate_venn_explicit_metadata(ir)
+    return {
+        key: value
+        for key, value in ir.items()
+        if key not in {"title", "description", "acc_title", "acc_description"} or value != ""
+    }
+
+
 def plan_venn_records(ir: Mapping[str, Any]) -> VennPlan:
     """Validate Venn evidence and freeze native/fallback terminal semantics."""
 
+    validate_venn_explicit_metadata(ir)
     raw_sets = ir.get("sets")
     raw_intersections = ir.get("intersections")
     if not isinstance(raw_sets, list) or len(raw_sets) < 2:
@@ -1197,7 +1239,11 @@ def _venn_flowchart_fallback(
         }
         for membership in plan.memberships
     ]
-    accessibility = resolve_accessibility(dict(ir), "venn", experimental=experimental)
+    accessibility = resolve_accessibility(
+        validated_venn_accessibility_ir(ir),
+        "venn",
+        experimental=experimental,
+    )
     (
         _semantic_accessible_title,
         _native_accessible_title,

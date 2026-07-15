@@ -117,7 +117,11 @@ from marker_mermaid.serializers_charts_flow import (
     plan_sankey_records,
     validate_sankey_explicit_metadata,
 )
-from marker_mermaid.serializers_charts_sets import plan_treemap_records, plan_venn_records
+from marker_mermaid.serializers_charts_sets import (
+    plan_treemap_records,
+    plan_venn_records,
+    validated_venn_accessibility_ir,
+)
 from marker_mermaid.serializers_special import plan_packet_fields
 from marker_mermaid.style_recovery import (
     TrustedEdgeStyleEvidence,
@@ -2022,11 +2026,17 @@ class ReconstructionPipeline:
                 ]
                 for typed in eligible_typed_candidates[:candidate_budget]:
                     try:
+                        accessibility_source_ir = typed.ir
                         if typed.diagram_type == "sankey":
                             # Accessibility enrichment can turn malformed explicit
                             # metadata into ordinary strings. Validate the raw payload
                             # before either the native or portable terminal sees it.
                             validate_sankey_explicit_metadata(typed.ir)
+                        elif typed.diagram_type == "venn":
+                            # Venn accessibility enrichment has the same raw-input
+                            # boundary even though its native grammar emits only title.
+                            # Exact empty strings retain their legacy omitted meaning.
+                            accessibility_source_ir = validated_venn_accessibility_ir(typed.ir)
                         elif typed.diagram_type == "quadrant":
                             # Accessibility enrichment fills empty directives with
                             # derived text. Validate the raw payload first so an
@@ -2034,7 +2044,7 @@ class ReconstructionPipeline:
                             # publishable Quadrant candidate.
                             validate_quadrant_explicit_metadata(typed.ir)
                         enriched_ir = enrich_accessibility_ir(
-                            typed.ir,
+                            accessibility_source_ir,
                             typed.diagram_type,
                             experimental=self.config.mode != Mode.STRICT,
                         )
@@ -6938,6 +6948,10 @@ class ReconstructionPipeline:
                 validated_ir = canonical_typed_ir_snapshot(proposal_candidate.ir)
                 if validated_ir is None:  # pragma: no cover - model contract guard
                     raise TypeError("validated semantic repair typed IR must be an object")
+                if current.diagram_type == "venn":
+                    # Keep repair serialization, evaluation, and the stored IR on the
+                    # same exact-empty-as-omitted snapshot used by initial candidates.
+                    validated_ir = validated_venn_accessibility_ir(validated_ir)
                 if current.node_id_mappings:
                     proposed_nodes = validated_ir.get("nodes")
                     proposed_node_ids = (

@@ -888,6 +888,14 @@ def _validate_sankey_explicit_accessibility_fields(ir: dict[str, Any]) -> None:
     validate_sankey_explicit_metadata(ir)
 
 
+def _validated_venn_accessibility_ir(ir: dict[str, Any]) -> dict[str, Any]:
+    """Validate Venn metadata and preserve exact-empty omitted semantics."""
+
+    from marker_mermaid.serializers_charts_sets import validated_venn_accessibility_ir
+
+    return validated_venn_accessibility_ir(ir)
+
+
 def serialize_typed_ir_result(
     diagram_type: str,
     ir: dict[str, Any],
@@ -896,6 +904,7 @@ def serialize_typed_ir_result(
 ) -> SerializationResult:
     """Serialize typed IR while retaining native/fallback grammar metadata."""
 
+    accessibility_source_ir = ir
     if diagram_type == "pie":
         _validate_pie_explicit_accessibility_fields(ir)
     elif diagram_type == "xychart":
@@ -904,9 +913,11 @@ def serialize_typed_ir_result(
         _validate_quadrant_explicit_accessibility_fields(ir)
     elif diagram_type == "sankey":
         _validate_sankey_explicit_accessibility_fields(ir)
+    elif diagram_type == "venn":
+        accessibility_source_ir = _validated_venn_accessibility_ir(ir)
     _ensure_extended_serializers()
     enriched_ir = enrich_accessibility_ir(
-        ir,
+        accessibility_source_ir,
         diagram_type,
         experimental=experimental,
     )
@@ -943,6 +954,8 @@ def serialize_runtime_fallback_result(
         _validate_quadrant_explicit_accessibility_fields(ir)
     elif diagram_type == "sankey":
         _validate_sankey_explicit_accessibility_fields(ir)
+    elif diagram_type == "venn":
+        _validated_venn_accessibility_ir(ir)
     if diagram_type in {"architecture", "c4", "deployment", "component"}:
         initial = serialize_typed_ir_result(
             diagram_type,

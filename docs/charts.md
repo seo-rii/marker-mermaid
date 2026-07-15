@@ -402,6 +402,19 @@ OCR/vector metadata proof의 numeric occurrence만 global Venn data reference에
 observation을 우선해 evidence ID 정렬이 numeric 결과를 바꾸지 않게 합니다. Native/fallback과 semantic repair가
 모두 이 gate를 다시 계산합니다.
 
+이 terminal attribution보다 먼저 네 raw field(`title`, `description`, `acc_title`, `acc_description`)를
+검증합니다. Pipeline typed candidate와 public typed/runtime-fallback/chart-set serializer 모두 accessibility
+enrichment 전의 원본 값을 검사합니다. Non-`None` 값은 exact built-in `str`만 허용하고 raw 길이를
+`MAX_TEXT_CHARS`로 먼저 제한합니다. Exact `""`은 기존 omitted semantics로 허용하지만, 그 밖의 문자열은
+normalization 후 non-empty·bounded·valid UTF-8이어야 하며 raw text에 `Cc`/`Cf`/`Zl`/`Zp` Unicode category가
+없어야 합니다. 따라서 whitespace-only, huge-whitespace, newline/tab, zero-width format, string subclass,
+container/number와 lone surrogate는 native/fallback Mermaid validation 전에 거절됩니다. Semantic repair도 public
+typed serializer를 거치므로 같은 경계를 다시 통과하며, exact-empty field를 제거한 동일 snapshot을 직렬화·평가·
+저장에 사용합니다.
+
+여기서 chart-set serializer는 typed `serialize_venn()` API입니다. Typed metadata field가 없는 Raw Direct
+Mermaid 후보는 이 gate 대신 security·parse·render 검사와 typed-plan 부재 시 review-only 정책을 따릅니다.
+
 Native `venn-beta`는 모든 set/intersection value가 positive normal binary64로 원문과 round-trip되고,
 Python `int` 입력이 JavaScript safe 범위를 넘지 않으며, 최대 set과 최소 positive area의 비가 `200:1` 이하일 때만
 선택합니다. Intersection이 member set 또는 더 작은 explicit intersection과 정확히 같은 크기인
