@@ -566,6 +566,22 @@ observation의 owner-local containment, local record binding, 전역 numeric occ
 same-slot Flowchart와 repair에서 함께 재평가하고 runtime fallback repair는 같은 terminal로 canonical
 재직렬화합니다. Direct/untyped Venn은 review-only입니다.
 
+Venn metadata owner도 terminal-effective output에서 계산합니다. Native는 explicit canvas title만 요구하고
+unsupported accessibility/description field는 면제합니다. Flowchart fallback은 실제 resolved accessibility
+title/description 중 structure-only baseline과 다른 non-derived 역할만 요구하며 effective `acc_*`가 shadow한
+legacy field는 세지 않습니다. Deterministic default와 pipeline-added experimental suffix는 면제하지만
+experimental notice-only explicit description override는 fail closed입니다. `strict`에서 명시한 같은 문구는
+pipeline suffix가 아니므로 일반 source text처럼 증명합니다. 같은 fallback title/description text도 역할이 다르므로
+별도 owner입니다.
+
+각 owner는 모든 Venn data bbox 밖의 candidate-authorized spatial OCR/vector exact observation 또는 초기 입력의
+approved exact `user_edit`를 요구합니다. Data contour/text와 metadata 사이 ID·normalized text+bbox 재사용,
+same-bbox ambiguity, area overlap, engine-created edit와 combined 20,000 reference·50,000 text·1,000,000
+character·100,000 token·100,000 spatial work 소진은 review입니다. 선택한 OCR/vector proof의 numeric
+occurrence만 data reference에서 제거하고 `user_edit` 숫자는 제거하지 않으며 native/intrinsic/runtime fallback과
+repair에서 같은 scoped evidence로 재평가합니다. 동일 exact observation의 OCR/vector와 승인 edit가 함께 있으면
+source channel을 우선해 evidence ID 이름이 numeric score를 바꾸지 않게 합니다.
+
 ### Journey·Kanban·GitGraph 계획 다이어그램 계약
 
 세 계획 유형도 canonical record를 provider prompt에 공개하고 같은 strict nested model로 응답을

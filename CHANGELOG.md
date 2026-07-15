@@ -308,6 +308,18 @@
   global numeric occurrence completeness for native Venn, its same-slot Flowchart fallback, and semantic repair;
   repairs of a runtime fallback are canonically reserialized into that same terminal. Direct or otherwise untyped
   Venn remains review-only.
+- Venn explicit metadata attribution is terminal-effective. Native `venn-beta` proves only its canvas-visible
+  explicit title; unsupported accessibility and description fields remain review metadata and do not shadow that
+  line. Intrinsic and runtime Flowchart fallbacks instead prove only the non-derived resolved accessibility title
+  and description actually emitted, so effective `acc_*` overrides shadow their hidden legacy fields. Derived
+  defaults and the pipeline-added experimental suffix are exempt, while a notice-only explicit description fails
+  closed. Every required role needs an independent candidate-authorized OCR/vector observation outside all Venn
+  area bboxes or an approved exact initial `user_edit`; data-owned, ambiguous, reused, overlapping, engine-created,
+  or shared-budget-exhausting evidence forces review. Only selected OCR/vector proof occurrences are subtracted
+  from the global Venn data-number reference multiset—`user_edit` numbers never are—and repair reruns the same
+  terminal gate. Exact OCR/vector proof is preferred over an equivalent approved edit so evidence IDs cannot alter
+  numeric scoring; an explicit experimental-notice string in `strict` mode remains ordinary source text because the
+  pipeline did not append it.
 - Bounded pre-validation source repair with audit events, diagnostics, idempotence, and AST adapter seam.
 - Page-level missed-diagram proposals with occupied-region exclusion and virtual source crops.
 - Profile-gated flowchart fill, border, and link style recovery with strict CSS allowlists.

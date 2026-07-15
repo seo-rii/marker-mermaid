@@ -398,6 +398,17 @@ generated Scene attribution에서 제외합니다.
   observation의 owner-local containment, local content binding, global numeric exactness는 native, same-slot
   Flowchart와 repair에서 함께 재평가되며 runtime fallback repair는 같은 terminal로 canonical serialization을
   유지합니다. Direct/untyped Venn은 review-only입니다.
+- Venn metadata gate는 terminal이 실제 내보내는 역할만 평가합니다. Native는 explicit visible title만,
+  intrinsic/runtime Flowchart는 non-derived resolved accessibility title/description만 요구합니다. Native에서
+  unsupported인 acc/description field와 fallback에서 effective `acc_*`에 shadow된 legacy field, deterministic
+  defaults와 pipeline-added notice suffix는 면제하지만 notice-only explicit description은 fail closed입니다.
+  각 역할은 모든 data area 밖의 candidate-authorized OCR/vector exact observation 또는 승인된 초기 exact
+  `user_edit`를 독립적으로 가져야 합니다. Data/metadata owner 사이 ID·normalized observation 재사용,
+  same-bbox ambiguity, area overlap, engine edit와 data gate가 공유하는 bounded work 소진은 aggregate를
+  unavailable로 둡니다. 증명된 OCR/vector metadata numeric occurrence만 global data reference에서 차감하고
+  `user_edit` occurrence는 차감하지 않으며, 동일 exact proof에서는 source observation을 edit보다 우선해 ID-order
+  독립성을 보장합니다. `strict`의 명시적 notice 문구는 pipeline suffix가 아니므로 증명 대상이고, fallback
+  title/description이 같은 text여도 별도 proof를 요구합니다.
 - Pie는 slice-local association과 전역 occurrence completeness를 함께 사용합니다. Native Pie, 같은-slot exact-value
   Flowchart, semantic repair 모두 각 typed slice가 candidate publication authority의 `ocr_token` 또는
   `vector_text`를 직접 참조해야 합니다. Slice/evidence bbox는 양의 면적이고 source image 안에 있어야 하며,

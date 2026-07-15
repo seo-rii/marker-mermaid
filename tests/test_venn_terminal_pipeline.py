@@ -115,6 +115,8 @@ class _VennFallbackLabelRepair:
         first_set = typed_ir["sets"][0]
         first_set["label"] = "Verified Buyers"
         first_set["evidence_ids"] = ["ocr-a-correct", "ocr-a-value", "contour-a"]
+        typed_ir.pop("acc_title", None)
+        typed_ir.pop("acc_description", None)
         serialized = serialize_runtime_fallback_result(
             "venn",
             typed_ir,
@@ -132,6 +134,26 @@ class _VennIntrinsicFallbackRepair:
         typed_ir = deepcopy(candidate.typed_ir)
         del typed_ir["sets"][1]["value"]
         serialized = serialize_typed_ir_result("venn", typed_ir, experimental=True)
+        return RepairProposal(code=serialized.code, operation=self.name, typed_ir=typed_ir)
+
+
+class _VennMetadataRepair:
+    name = "venn_metadata_injection"
+
+    def repair(self, context, candidate):
+        del context
+        typed_ir = deepcopy(candidate.typed_ir)
+        if candidate.emitted_diagram_type == "flowchart":
+            typed_ir["acc_title"] = "Fabricated terminal review"
+            serialized = serialize_runtime_fallback_result(
+                "venn",
+                typed_ir,
+                experimental=True,
+            )
+            assert serialized is not None
+        else:
+            typed_ir["title"] = "Fabricated terminal review"
+            serialized = serialize_typed_ir_result("venn", typed_ir, experimental=True)
         return RepairProposal(code=serialized.code, operation=self.name, typed_ir=typed_ir)
 
 
@@ -154,6 +176,25 @@ class _SameResponseVennEngine(JsonFixtureEngine):
     def observe(self, context):
         observation = super().observe(context)
         observation._set_prompt_supplied_prior_evidence_ids(set())
+        return observation
+
+
+class _MetadataPromptOmittingVennEngine(JsonFixtureEngine):
+    name = "metadata_prompt_omitting_venn_fixture"
+    fusion_source = "vlm"
+
+    def observe(self, context):
+        observation = super().observe(context)
+        observation._set_prompt_supplied_prior_evidence_ids(
+            {
+                "ocr-a",
+                "ocr-b",
+                "ocr-both",
+                "contour-a",
+                "contour-b",
+                "contour-both",
+            }
+        )
         return observation
 
 
@@ -190,6 +231,25 @@ def _venn_evidence(
 
 def _evidence_by_id(evidence: list[VisualEvidence], evidence_id: str) -> VisualEvidence:
     return next(item for item in evidence if item.id == evidence_id)
+
+
+def _venn_metadata_evidence(
+    evidence_id: str,
+    text: str,
+    *,
+    bbox: tuple[float, float, float, float] | None = (5, 0, 95, 8),
+    kind: str = "ocr_token",
+) -> VisualEvidence:
+    return VisualEvidence(id=evidence_id, kind=kind, text=text, bbox=bbox)
+
+
+def _intrinsic_venn_fallback_ir(
+    **metadata: str,
+) -> tuple[dict[str, object], list[VisualEvidence]]:
+    ir = deepcopy(VENN_IR)
+    del ir["sets"][1]["value"]
+    ir.update(metadata)
+    return ir, _venn_evidence(b_text="Members")
 
 
 def _nested_venn_ir_and_evidence() -> tuple[dict[str, object], list[VisualEvidence]]:
@@ -279,9 +339,11 @@ def _reconstruct_venn(
     repair_engine: object | None = None,
     engine_type: type[JsonFixtureEngine] = JsonFixtureEngine,
     evidence_as_prior: bool = False,
+    evaluation_mode: Mode = Mode.EXTENDED,
 ) -> tuple[object, _VennRuntime]:
     runtime = _VennRuntime(reject_native=reject_native)
     config = MermaidConfig(candidate_count=1, publish_min_score=0)
+    config.mode = evaluation_mode
     active_evidence = evidence if evidence is not None else _venn_evidence()
     observation = EngineObservation(
         prediction=DiagramTypePrediction(candidates=["venn"], scores=[1]),
@@ -765,6 +827,726 @@ def test_venn_same_response_contours_have_no_prompt_publication_authority() -> N
     assert not result.publish
 
 
+def test_native_venn_requires_only_its_visible_explicit_title() -> None:
+    ir = {
+        **deepcopy(VENN_IR),
+        "title": "Visible 2025 title",
+        "acc_title": "Hidden accessible title",
+        "description": "Hidden description",
+        "acc_description": "Hidden accessible description",
+    }
+    evidence = [
+        *_venn_evidence(),
+        _venn_metadata_evidence("meta-visible-title", "Visible 2025 title"),
+    ]
+
+    result, _runtime = _reconstruct_venn(ir=ir, evidence=evidence)
+
+    assert result.selected is not None
+    assert result.selected.emitted_diagram_type == "venn"
+    assert result.selected.scores["numeric_consistency"] == 1
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+
+
+def test_native_venn_unproven_explicit_title_requires_review() -> None:
+    ir = {**deepcopy(VENN_IR), "title": "Unproven visible title"}
+
+    result, _runtime = _reconstruct_venn(ir=ir)
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("terminal title role" in warning for warning in result.selected.warnings)
+
+
+@pytest.mark.parametrize("field", ["description", "acc_title", "acc_description"])
+def test_native_venn_exempts_unsupported_explicit_metadata(field: str) -> None:
+    ir = {**deepcopy(VENN_IR), field: f"Unsupported native {field}"}
+
+    result, _runtime = _reconstruct_venn(ir=ir)
+
+    assert result.selected is not None
+    assert result.selected.emitted_diagram_type == "venn"
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+    assert not any("terminal title role" in warning for warning in result.selected.warnings)
+    assert not any("terminal description role" in warning for warning in result.selected.warnings)
+
+
+def test_native_venn_does_not_subtract_hidden_accessibility_numbers() -> None:
+    ir = {**deepcopy(VENN_IR), "acc_title": "Hidden 2029 accessibility title"}
+    evidence = [
+        *_venn_evidence(),
+        _venn_metadata_evidence(
+            "hidden-acc-title",
+            "Hidden 2029 accessibility title",
+        ),
+    ]
+
+    result, _runtime = _reconstruct_venn(ir=ir, evidence=evidence)
+
+    assert result.selected is not None
+    assert result.selected.scores["numeric_consistency"] < 1
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert not any("terminal title role" in warning for warning in result.selected.warnings)
+
+
+@pytest.mark.parametrize("field", ["title", "description", "acc_title", "acc_description"])
+@pytest.mark.parametrize("terminal", ["forced-fallback", "intrinsic-fallback"])
+def test_venn_fallback_requires_effective_explicit_metadata_proof(
+    field: str,
+    terminal: str,
+) -> None:
+    value = f"Fabricated {field} metadata"
+    if terminal == "intrinsic-fallback":
+        ir, evidence = _intrinsic_venn_fallback_ir(**{field: value})
+        reject_native = False
+    else:
+        ir = {**deepcopy(VENN_IR), field: value}
+        evidence = _venn_evidence()
+        reject_native = True
+
+    result, _runtime = _reconstruct_venn(
+        ir=ir,
+        evidence=evidence,
+        reject_native=reject_native,
+    )
+
+    assert result.selected is not None
+    assert result.selected.emitted_diagram_type == "flowchart"
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    role = "title role" if field in {"title", "acc_title"} else "description role"
+    assert any(role in warning for warning in result.selected.warnings)
+
+
+@pytest.mark.parametrize("terminal", ["forced-fallback", "intrinsic-fallback"])
+def test_venn_fallback_proves_only_effective_shadowing_metadata(terminal: str) -> None:
+    metadata = {
+        "title": "Shadowed legacy title",
+        "acc_title": "Effective accessible title",
+        "description": "Shadowed legacy description",
+        "acc_description": "Effective accessible description",
+    }
+    if terminal == "intrinsic-fallback":
+        ir, evidence = _intrinsic_venn_fallback_ir(**metadata)
+        reject_native = False
+    else:
+        ir = {**deepcopy(VENN_IR), **metadata}
+        evidence = _venn_evidence()
+        reject_native = True
+    evidence.extend(
+        [
+            _venn_metadata_evidence("meta-effective-title", "Effective accessible title"),
+            _venn_metadata_evidence(
+                "meta-effective-description",
+                "Effective accessible description",
+                bbox=(105, 0, 195, 8),
+                kind="vector_text",
+            ),
+        ]
+    )
+
+    result, _runtime = _reconstruct_venn(
+        ir=ir,
+        evidence=evidence,
+        reject_native=reject_native,
+    )
+
+    assert result.selected is not None
+    assert result.selected.emitted_diagram_type == "flowchart"
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+
+
+@pytest.mark.parametrize("terminal", ["native", "forced-fallback", "intrinsic-fallback"])
+def test_venn_deterministic_accessibility_defaults_need_no_proof(terminal: str) -> None:
+    if terminal == "intrinsic-fallback":
+        ir, evidence = _intrinsic_venn_fallback_ir()
+        reject_native = False
+    else:
+        ir = deepcopy(VENN_IR)
+        evidence = _venn_evidence()
+        reject_native = terminal == "forced-fallback"
+
+    result, _runtime = _reconstruct_venn(
+        ir=ir,
+        evidence=evidence,
+        reject_native=reject_native,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+    assert not any("terminal title role" in warning for warning in result.selected.warnings)
+    assert not any("terminal description role" in warning for warning in result.selected.warnings)
+
+
+@pytest.mark.parametrize("terminal", ["native", "forced-fallback", "intrinsic-fallback"])
+def test_venn_identical_effective_title_fields_collapse_to_one_owner(terminal: str) -> None:
+    metadata = {"title": "Shared effective title", "acc_title": "Shared effective title"}
+    if terminal == "intrinsic-fallback":
+        ir, evidence = _intrinsic_venn_fallback_ir(**metadata)
+        reject_native = False
+    else:
+        ir = {**deepcopy(VENN_IR), **metadata}
+        evidence = _venn_evidence()
+        reject_native = terminal == "forced-fallback"
+    evidence.append(_venn_metadata_evidence("meta-shared-title", "Shared effective title"))
+
+    result, _runtime = _reconstruct_venn(
+        ir=ir,
+        evidence=evidence,
+        reject_native=reject_native,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+
+
+@pytest.mark.parametrize("terminal", ["forced-fallback", "intrinsic-fallback"])
+def test_venn_fallback_title_and_description_roles_need_distinct_proofs(
+    terminal: str,
+) -> None:
+    metadata = {
+        "acc_title": "Shared terminal metadata",
+        "acc_description": "Shared terminal metadata",
+    }
+    if terminal == "intrinsic-fallback":
+        ir, base_evidence = _intrinsic_venn_fallback_ir(**metadata)
+        reject_native = False
+    else:
+        ir = {**deepcopy(VENN_IR), **metadata}
+        base_evidence = _venn_evidence()
+        reject_native = True
+    one_proof = [
+        *base_evidence,
+        _venn_metadata_evidence("meta-shared", "Shared terminal metadata"),
+    ]
+
+    rejected, _runtime = _reconstruct_venn(
+        ir=ir,
+        evidence=one_proof,
+        reject_native=reject_native,
+    )
+
+    assert rejected.selected is not None
+    assert rejected.selected.aggregate_score is None
+    assert not rejected.publish
+
+    two_proofs = [
+        *one_proof,
+        _venn_metadata_evidence(
+            "meta-shared-description",
+            "Shared terminal metadata",
+            bbox=(105, 0, 195, 8),
+            kind="vector_text",
+        ),
+    ]
+    accepted, _runtime = _reconstruct_venn(
+        ir=ir,
+        evidence=two_proofs,
+        reject_native=reject_native,
+    )
+
+    assert accepted.selected is not None
+    assert accepted.selected.aggregate_score is not None, accepted.selected.warnings
+    assert accepted.publish
+
+
+@pytest.mark.parametrize("field", ["description", "acc_description"])
+@pytest.mark.parametrize("terminal", ["forced-fallback", "intrinsic-fallback"])
+def test_venn_fallback_notice_only_description_override_fails_closed(
+    field: str,
+    terminal: str,
+) -> None:
+    metadata = {field: pipeline_module.EXPERIMENTAL_NOTICE}
+    if terminal == "intrinsic-fallback":
+        ir, evidence = _intrinsic_venn_fallback_ir(**metadata)
+        reject_native = False
+    else:
+        ir = {**deepcopy(VENN_IR), **metadata}
+        evidence = _venn_evidence()
+        reject_native = True
+
+    result, _runtime = _reconstruct_venn(
+        ir=ir,
+        evidence=evidence,
+        reject_native=reject_native,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("terminal description role" in warning for warning in result.selected.warnings)
+
+
+@pytest.mark.parametrize("field", ["description", "acc_description"])
+def test_venn_strict_fallback_proves_an_explicit_notice_as_source_text(field: str) -> None:
+    ir, evidence = _intrinsic_venn_fallback_ir(**{field: pipeline_module.EXPERIMENTAL_NOTICE})
+    evidence.append(
+        _venn_metadata_evidence(
+            "meta-explicit-notice",
+            pipeline_module.EXPERIMENTAL_NOTICE,
+        )
+    )
+
+    result, _runtime = _reconstruct_venn(
+        ir=ir,
+        evidence=evidence,
+        evaluation_mode=Mode.STRICT,
+    )
+
+    assert result.selected is not None
+    assert result.selected.emitted_diagram_type == "flowchart"
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+
+
+def test_venn_approved_initial_user_edit_can_prove_metadata() -> None:
+    ir = {**deepcopy(VENN_IR), "title": "Confirmed review title"}
+    evidence = [
+        *_venn_evidence(),
+        _venn_metadata_evidence(
+            "user-title",
+            "Confirmed review title",
+            bbox=None,
+            kind="user_edit",
+        ),
+    ]
+
+    result, _runtime = _reconstruct_venn(
+        ir=ir,
+        evidence=evidence,
+        evidence_as_prior=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+
+
+def test_venn_bbox_user_edit_cannot_prove_metadata_inside_a_data_area() -> None:
+    ir = {**deepcopy(VENN_IR), "title": "Confirmed review title"}
+    evidence = [
+        *_venn_evidence(),
+        _venn_metadata_evidence(
+            "user-title",
+            "Confirmed review title",
+            bbox=(10, 20, 70, 28),
+            kind="user_edit",
+        ),
+    ]
+
+    result, _runtime = _reconstruct_venn(
+        ir=ir,
+        evidence=evidence,
+        evidence_as_prior=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("terminal title role" in warning for warning in result.selected.warnings)
+
+
+def test_venn_engine_user_edit_cannot_self_authorize_metadata() -> None:
+    ir = {**deepcopy(VENN_IR), "title": "Engine review title"}
+    evidence = [
+        *_venn_evidence(),
+        _venn_metadata_evidence(
+            "engine-title",
+            "Engine review title",
+            bbox=None,
+            kind="user_edit",
+        ),
+    ]
+
+    result, _runtime = _reconstruct_venn(ir=ir, evidence=evidence)
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("terminal title role" in warning for warning in result.selected.warnings)
+
+
+def test_venn_bbox_user_edits_with_conflicting_text_are_ambiguous() -> None:
+    ir = {
+        **deepcopy(VENN_IR),
+        "acc_title": "Approved title",
+        "acc_description": "Approved description",
+    }
+    shared_bbox = (5, 0, 95, 8)
+    evidence = [
+        *_venn_evidence(),
+        _venn_metadata_evidence(
+            "user-title",
+            "Approved title",
+            bbox=shared_bbox,
+            kind="user_edit",
+        ),
+        _venn_metadata_evidence(
+            "user-description",
+            "Approved description",
+            bbox=shared_bbox,
+            kind="user_edit",
+        ),
+    ]
+
+    result, _runtime = _reconstruct_venn(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+        evidence_as_prior=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+
+
+def test_venn_distinct_bboxless_user_edits_can_prove_separate_roles() -> None:
+    ir = {
+        **deepcopy(VENN_IR),
+        "acc_title": "Approved title",
+        "acc_description": "Approved description",
+    }
+    evidence = [
+        *_venn_evidence(),
+        _venn_metadata_evidence(
+            "user-title",
+            "Approved title",
+            bbox=None,
+            kind="user_edit",
+        ),
+        _venn_metadata_evidence(
+            "user-description",
+            "Approved description",
+            bbox=None,
+            kind="user_edit",
+        ),
+    ]
+
+    result, _runtime = _reconstruct_venn(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+        evidence_as_prior=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+
+
+@pytest.mark.parametrize(
+    ("ocr_id", "user_edit_id"),
+    [("a-ocr", "z-user"), ("z-ocr", "a-user")],
+)
+def test_venn_spatial_source_proof_precedes_same_observation_user_edit(
+    ocr_id: str,
+    user_edit_id: str,
+) -> None:
+    ir = {**deepcopy(VENN_IR), "title": "Cohort 2025 summary"}
+    bbox = (5, 0, 95, 8)
+    evidence = [
+        *_venn_evidence(),
+        _venn_metadata_evidence(ocr_id, "Cohort 2025 summary", bbox=bbox),
+        _venn_metadata_evidence(
+            user_edit_id,
+            "Cohort 2025 summary",
+            bbox=bbox,
+            kind="user_edit",
+        ),
+    ]
+
+    result, _runtime = _reconstruct_venn(
+        ir=ir,
+        evidence=evidence,
+        evidence_as_prior=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.scores["numeric_consistency"] == 1
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+
+
+def test_venn_metadata_candidate_authority_omission_requires_review() -> None:
+    ir = {**deepcopy(VENN_IR), "title": "Authorized visible title"}
+    evidence = [
+        *_venn_evidence(),
+        _venn_metadata_evidence("meta-title", "Authorized visible title"),
+    ]
+
+    result, _runtime = _reconstruct_venn(
+        ir=ir,
+        evidence=evidence,
+        engine_type=_MetadataPromptOmittingVennEngine,
+        evidence_as_prior=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("terminal title role" in warning for warning in result.selected.warnings)
+
+
+def test_venn_data_text_evidence_cannot_be_reused_as_metadata() -> None:
+    ir = {**deepcopy(VENN_IR), "title": "Buyers: 10"}
+
+    result, _runtime = _reconstruct_venn(ir=ir)
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("terminal title role" in warning for warning in result.selected.warnings)
+
+
+def test_venn_data_contour_evidence_cannot_be_reused_as_metadata() -> None:
+    ir = {**deepcopy(VENN_IR), "title": "Observed contour title"}
+    evidence = _venn_evidence()
+    _evidence_by_id(evidence, "contour-a").text = "Observed contour title"
+
+    result, _runtime = _reconstruct_venn(ir=ir, evidence=evidence)
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("terminal title role" in warning for warning in result.selected.warnings)
+
+
+def test_venn_metadata_must_not_overlap_any_area_bbox() -> None:
+    ir = {**deepcopy(VENN_IR), "title": "Observed title"}
+    evidence = [
+        *_venn_evidence(),
+        _venn_metadata_evidence(
+            "meta-title",
+            "Observed title",
+            bbox=(10, 20, 70, 28),
+        ),
+    ]
+
+    result, _runtime = _reconstruct_venn(ir=ir, evidence=evidence)
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+
+
+@pytest.mark.parametrize("unsafe", ["missing", "nonfinite", "zero-area", "outside"])
+def test_venn_ocr_metadata_requires_valid_geometry(unsafe: str) -> None:
+    ir = {**deepcopy(VENN_IR), "title": "Observed title"}
+    metadata = _venn_metadata_evidence("meta-title", "Observed title")
+    if unsafe == "missing":
+        metadata.bbox = None
+    elif unsafe == "nonfinite":
+        metadata.bbox = (5, 0, float("nan"), 8)
+    elif unsafe == "zero-area":
+        metadata.bbox = (5, 0, 5, 8)
+    else:
+        metadata.bbox = (5, 0, 205, 8)
+    evidence = [*_venn_evidence(), metadata]
+
+    result, _runtime = _reconstruct_venn(ir=ir, evidence=evidence)
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+
+
+def test_venn_same_bbox_metadata_contradiction_requires_review() -> None:
+    ir = {**deepcopy(VENN_IR), "title": "Observed title"}
+    bbox = (5, 0, 95, 8)
+    evidence = [
+        *_venn_evidence(),
+        _venn_metadata_evidence("meta-title", "Observed title", bbox=bbox),
+        _venn_metadata_evidence(
+            "meta-conflict",
+            "Different title",
+            bbox=bbox,
+            kind="vector_text",
+        ),
+    ]
+
+    result, _runtime = _reconstruct_venn(ir=ir, evidence=evidence)
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+
+
+def test_venn_duplicate_metadata_observation_cannot_prove_two_roles() -> None:
+    ir = {
+        **deepcopy(VENN_IR),
+        "acc_title": "Shared metadata",
+        "acc_description": "Shared metadata",
+    }
+    bbox = (5, 0, 95, 8)
+    evidence = [
+        *_venn_evidence(),
+        _venn_metadata_evidence("meta-ocr", "Shared metadata", bbox=bbox),
+        _venn_metadata_evidence(
+            "meta-vector",
+            "Shared metadata",
+            bbox=bbox,
+            kind="vector_text",
+        ),
+    ]
+
+    result, _runtime = _reconstruct_venn(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+
+
+def test_venn_ocr_metadata_numeric_occurrence_is_removed_from_data_score() -> None:
+    ir = {**deepcopy(VENN_IR), "title": "Cohort 2025 summary"}
+    evidence = [
+        *_venn_evidence(),
+        _venn_metadata_evidence("meta-title", "Cohort 2025 summary"),
+    ]
+
+    result, _runtime = _reconstruct_venn(ir=ir, evidence=evidence)
+
+    assert result.selected is not None
+    assert result.selected.scores["numeric_consistency"] == 1
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+
+
+def test_venn_metadata_numeric_subtraction_preserves_occurrence_multiplicity() -> None:
+    ir = {**deepcopy(VENN_IR), "title": "Cohort 2025 2025 summary"}
+    base_evidence = [
+        *_venn_evidence(),
+        _venn_metadata_evidence(
+            "meta-title",
+            "Cohort 2025 2025 summary",
+        ),
+    ]
+
+    exact, _runtime = _reconstruct_venn(ir=ir, evidence=base_evidence)
+
+    assert exact.selected is not None
+    assert exact.selected.scores["numeric_consistency"] == 1
+    assert exact.selected.aggregate_score is not None, exact.selected.warnings
+    assert exact.publish
+
+    extra_evidence = [
+        *base_evidence,
+        _venn_metadata_evidence(
+            "ocr-extra-2025",
+            "2025",
+            bbox=(105, 0, 130, 8),
+        ),
+    ]
+    extra, _runtime = _reconstruct_venn(ir=ir, evidence=extra_evidence)
+
+    assert extra.selected is not None
+    assert extra.selected.scores["numeric_consistency"] < 1
+    assert extra.selected.aggregate_score is None
+    assert not extra.publish
+
+
+@pytest.mark.parametrize("user_edit_bbox", [None, (5, 0, 95, 8)])
+def test_venn_user_edit_metadata_never_subtracts_an_ocr_number(
+    user_edit_bbox: tuple[float, float, float, float] | None,
+) -> None:
+    ir = {**deepcopy(VENN_IR), "title": "Confirmed 50 review"}
+    evidence = [
+        *_venn_evidence(),
+        _venn_metadata_evidence(
+            "ocr-unrelated-number",
+            "50",
+            bbox=(105, 0, 120, 8),
+        ),
+        _venn_metadata_evidence(
+            "user-title",
+            "Confirmed 50 review",
+            bbox=user_edit_bbox,
+            kind="user_edit",
+        ),
+    ]
+
+    result, _runtime = _reconstruct_venn(
+        ir=ir,
+        evidence=evidence,
+        evidence_as_prior=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.scores["numeric_consistency"] < 1
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert not any("terminal title role" in warning for warning in result.selected.warnings)
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "exact_limit"),
+    [
+        ("_MAX_VENN_ASSOCIATION_REFERENCES", 8),
+        ("_MAX_VENN_RECORD_COMPARISONS", 18),
+        ("_MAX_OCR_REFERENCE_TEXTS", 19),
+        ("_MAX_OCR_REFERENCE_CHARS", 236),
+        ("_MAX_OCR_REFERENCE_TOKENS", 46),
+    ],
+)
+def test_venn_combined_data_and_metadata_budget_exact_and_plus_one(
+    monkeypatch: pytest.MonkeyPatch,
+    limit_name: str,
+    exact_limit: int,
+) -> None:
+    ir = {
+        **deepcopy(VENN_IR),
+        "acc_title": "Title 2025",
+        "acc_description": "Description 2026",
+    }
+    evidence = [
+        *_venn_evidence(),
+        _venn_metadata_evidence("meta-title", "Title 2025"),
+        _venn_metadata_evidence(
+            "meta-description",
+            "Description 2026",
+            bbox=(105, 0, 195, 8),
+            kind="vector_text",
+        ),
+    ]
+    monkeypatch.setattr(pipeline_module, limit_name, exact_limit)
+
+    exact_result, _runtime = _reconstruct_venn(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+    )
+
+    assert exact_result.selected is not None
+    assert exact_result.selected.aggregate_score is not None, exact_result.selected.warnings
+    assert exact_result.publish
+
+    monkeypatch.setattr(pipeline_module, limit_name, exact_limit - 1)
+    over_result, _runtime = _reconstruct_venn(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+    )
+
+    assert over_result.selected is not None
+    assert over_result.selected.aggregate_score is None
+    assert not over_result.publish
+    assert any(
+        "terminal title role" in warning or "terminal description role" in warning
+        for warning in over_result.selected.warnings
+    )
+
+
 def test_venn_semantic_repair_cannot_bypass_record_local_binding() -> None:
     result, _runtime = _reconstruct_venn(repair_engine=_VennValueSwapRepair())
 
@@ -808,6 +1590,76 @@ def test_venn_semantic_repair_cannot_bypass_membership_geometry() -> None:
     assert result.selected.scores["numeric_consistency"] == 1
     assert result.selected.repair_history
     assert result.selected.repair_history[-1].operation == "venn_membership_swap"
+    assert not result.selected.repair_history[-1].accepted
+    assert result.selected.repair_history[-1].after_score is None
+
+
+@pytest.mark.parametrize("terminal", ["native", "forced-fallback", "intrinsic-fallback"])
+def test_venn_semantic_repair_cannot_inject_unproven_terminal_metadata(
+    terminal: str,
+) -> None:
+    if terminal == "intrinsic-fallback":
+        ir, evidence = _intrinsic_venn_fallback_ir()
+        reject_native = False
+    else:
+        ir = deepcopy(VENN_IR)
+        evidence = _venn_evidence()
+        reject_native = terminal == "forced-fallback"
+
+    result, _runtime = _reconstruct_venn(
+        ir=ir,
+        evidence=evidence,
+        reject_native=reject_native,
+        repair_engine=_VennMetadataRepair(),
+    )
+
+    assert result.selected is not None
+    assert result.selected.typed_ir.get("title") != "Fabricated terminal review"
+    assert result.selected.typed_ir.get("acc_title") != "Fabricated terminal review"
+    assert result.selected.repair_history
+    assert not result.selected.repair_history[-1].accepted
+    assert result.selected.repair_history[-1].after_score is None
+
+
+def test_venn_semantic_repair_accepts_independently_proven_native_title() -> None:
+    evidence = [
+        *_venn_evidence(),
+        _venn_metadata_evidence(
+            "meta-repair-title",
+            "Fabricated terminal review",
+        ),
+    ]
+
+    result, _runtime = _reconstruct_venn(
+        evidence=evidence,
+        repair_engine=_VennMetadataRepair(),
+    )
+
+    assert result.selected is not None
+    assert result.selected.candidate_id == "candidate-1-repair-1"
+    assert result.selected.typed_ir["title"] == "Fabricated terminal review"
+    assert result.selected.repair_history[-1].accepted
+
+
+def test_venn_semantic_repair_cannot_use_metadata_outside_candidate_authority() -> None:
+    evidence = [
+        *_venn_evidence(),
+        _venn_metadata_evidence(
+            "meta-repair-title",
+            "Fabricated terminal review",
+        ),
+    ]
+
+    result, _runtime = _reconstruct_venn(
+        evidence=evidence,
+        evidence_as_prior=True,
+        engine_type=_MetadataPromptOmittingVennEngine,
+        repair_engine=_VennMetadataRepair(),
+    )
+
+    assert result.selected is not None
+    assert result.selected.typed_ir.get("title") != "Fabricated terminal review"
+    assert result.selected.repair_history
     assert not result.selected.repair_history[-1].accepted
     assert result.selected.repair_history[-1].after_score is None
 
@@ -903,6 +1755,48 @@ def test_direct_venn_candidate_remains_review_only_without_typed_plan() -> None:
 
     assert result.selected is not None
     assert result.selected.scores["numeric_consistency"] == 1
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any(
+        "Venn set/intersection label/value association lacks" in warning
+        for warning in result.selected.warnings
+    )
+
+
+def test_direct_venn_metadata_evidence_cannot_replace_a_typed_terminal_plan() -> None:
+    runtime = _VennRuntime()
+    config = MermaidConfig(mode=Mode.MAXIMAL, candidate_count=1, publish_min_score=0)
+    observation = EngineObservation(
+        prediction=DiagramTypePrediction(candidates=["venn"], scores=[1]),
+        direct_candidates=[
+            DirectMermaidCandidate(
+                diagram_type="venn",
+                code=(
+                    "venn-beta\n"
+                    "    title Direct observed title\n"
+                    '    set A["Buyers"]: 10\n'
+                    '    set B["Members"]: 8\n'
+                    '    union A,B["Both"]: 3\n'
+                ),
+            )
+        ],
+        evidence=[
+            *_venn_evidence(),
+            _venn_metadata_evidence("meta-direct-title", "Direct observed title"),
+        ],
+    )
+
+    result = ReconstructionPipeline(
+        config,
+        [JsonFixtureEngine(observation)],
+        CandidateValidator(runtime, config.security_profile),
+    ).reconstruct(
+        "direct-venn-metadata",
+        "source.png",
+        Image.new("RGB", (200, 120), "white"),
+    )
+
+    assert result.selected is not None
     assert result.selected.aggregate_score is None
     assert not result.publish
     assert any(

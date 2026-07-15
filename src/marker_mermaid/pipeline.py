@@ -518,6 +518,14 @@ _VENN_RECORD_ASSOCIATION_MISMATCH_WARNING = (
     "Venn set/intersection association conflicts with exact source labels or values; "
     "review is required"
 )
+_VENN_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING = (
+    "Venn terminal title role lacks independent candidate-authorized spatial OCR/vector "
+    "or approved user-edit evidence; review is required"
+)
+_VENN_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING = (
+    "Venn terminal description role lacks independent candidate-authorized spatial OCR/vector "
+    "or approved user-edit evidence; review is required"
+)
 
 _EVALUATION_WARNING_TEXT = frozenset(
     {
@@ -555,6 +563,8 @@ _EVALUATION_WARNING_TEXT = frozenset(
         _TREEMAP_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING,
         _VENN_RECORD_ASSOCIATION_UNAVAILABLE_WARNING,
         _VENN_RECORD_ASSOCIATION_MISMATCH_WARNING,
+        _VENN_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING,
+        _VENN_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING,
         "numeric consistency is below the automatic publication threshold",
         "numeric diagram lacks OCR/vector numeric evidence and cannot auto-publish",
         "unlabeled scene-only candidates require OCR/VLM fusion before publishing",
@@ -2869,6 +2879,8 @@ class ReconstructionPipeline:
         treemap_title_attribution_state: Literal["exact", "unavailable"] | None = None
         treemap_description_attribution_state: Literal["exact", "unavailable"] | None = None
         venn_binding_state: Literal["exact", "mismatch", "unavailable"] | None = None
+        venn_title_attribution_state: Literal["exact", "unavailable"] | None = None
+        venn_description_attribution_state: Literal["exact", "unavailable"] | None = None
         if gate_diagram_type == "packet":
             # Packet ranges need a field-local proof.  A document-wide number multiset can
             # stay identical when two labels exchange their ranges, so it is not publication
@@ -5916,7 +5928,295 @@ class ReconstructionPipeline:
                             association_matches = False
                     venn_binding_state = "exact" if association_matches else "mismatch"
 
-            global_venn_numeric = numeric_consistency(references.numeric_tokens, code)
+            required_venn_metadata: list[tuple[str, str, str]] = []
+            if venn_plan is not None and typed_ir is not None:
+                # Native Venn exposes only its visible ``title`` directive. The
+                # portable Flowchart terminal instead exposes the resolved
+                # accTitle/accDescr pair, so hidden legacy fields and unsupported
+                # native accessibility fields are not publication requirements.
+                terminal_type = _canonical_runtime_type(runtime.diagram_type)
+                if terminal_type == "venn":
+                    if venn_plan.semantic_title is not None:
+                        required_venn_metadata.append(
+                            ("title", _normalized_label(venn_plan.semantic_title), "title")
+                        )
+                        venn_title_attribution_state = "unavailable"
+                elif terminal_type == "flowchart":
+                    structure_only_ir = {
+                        key: value
+                        for key, value in typed_ir.items()
+                        if key not in {"title", "description", "acc_title", "acc_description"}
+                    }
+                    derived_accessibility = resolve_accessibility(
+                        structure_only_ir,
+                        "venn",
+                        experimental=self.config.mode != Mode.STRICT,
+                    )
+                    resolved_accessibility = resolve_accessibility(
+                        typed_ir,
+                        "venn",
+                        experimental=self.config.mode != Mode.STRICT,
+                    )
+                    resolved_title = _normalized_label(resolved_accessibility.title)
+                    if resolved_title and resolved_title != _normalized_label(
+                        derived_accessibility.title
+                    ):
+                        required_venn_metadata.append(("title", resolved_title, "title"))
+                        venn_title_attribution_state = "unavailable"
+
+                    resolved_description = resolved_accessibility.description
+                    derived_description = derived_accessibility.description
+                    if self.config.mode != Mode.STRICT:
+                        resolved_description = resolved_description.removesuffix(
+                            f" {EXPERIMENTAL_NOTICE}"
+                        ).removesuffix(EXPERIMENTAL_NOTICE)
+                        derived_description = derived_description.removesuffix(
+                            f" {EXPERIMENTAL_NOTICE}"
+                        ).removesuffix(EXPERIMENTAL_NOTICE)
+                    normalized_description = _normalized_label(resolved_description)
+                    if normalized_description != _normalized_label(derived_description):
+                        if normalized_description:
+                            required_venn_metadata.append(
+                                ("description", normalized_description, "description")
+                            )
+                        # In experimental modes, a notice-only override appends no owner
+                        # after the pipeline-owned suffix is removed, so it fails closed.
+                        venn_description_attribution_state = "unavailable"
+
+            venn_metadata_spatial_safe = venn_spatial_safe
+            proven_venn_metadata: set[str] = set()
+            proven_venn_metadata_numeric_tokens: Counter[str] = Counter()
+            if required_venn_metadata and venn_metadata_spatial_safe:
+                required_metadata_texts = {
+                    text for _owner_id, text, _kind in required_venn_metadata
+                }
+                record_evidence_ids = set(venn_evidence_id_owners)
+                record_observations = set(venn_observation_owners)
+                metadata_texts_by_bbox: dict[tuple[float, float, float, float], set[str]] = {}
+                for item in evidence:
+                    if (
+                        not item.text
+                        or item.bbox is None
+                        or not isinstance(item.bbox, (list, tuple))
+                        or len(item.bbox) != 4
+                        or (
+                            item.kind not in {"ocr_token", "vector_text"}
+                            and not (
+                                item.kind == "user_edit"
+                                and item.id in approved_user_edit_evidence_ids
+                            )
+                        )
+                    ):
+                        continue
+                    try:
+                        candidate_bbox = tuple(float(value) for value in item.bbox)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    normalized_text = _normalized_label(item.text)
+                    if normalized_text and all(math.isfinite(value) for value in candidate_bbox):
+                        metadata_texts_by_bbox.setdefault(candidate_bbox, set()).add(
+                            normalized_text
+                        )
+                metadata_candidates: list[
+                    tuple[
+                        str,
+                        str,
+                        tuple[float, float, float, float] | None,
+                        str,
+                        Counter[str],
+                        bool,
+                    ]
+                ] = []
+                for item in evidence:
+                    if item.id in record_evidence_ids or not item.text:
+                        continue
+                    normalized_text = _normalized_label(item.text)
+                    if normalized_text not in required_metadata_texts:
+                        continue
+                    candidate_bbox: tuple[float, float, float, float] | None
+                    if item.kind == "user_edit":
+                        if item.id not in approved_user_edit_evidence_ids:
+                            continue
+                        if item.bbox is None:
+                            metadata_candidates.append(
+                                (item.id, normalized_text, None, item.text, Counter(), False)
+                            )
+                            continue
+                        if not isinstance(item.bbox, (list, tuple)) or len(item.bbox) != 4:
+                            venn_metadata_spatial_safe = False
+                            break
+                        try:
+                            candidate_bbox = tuple(float(value) for value in item.bbox)
+                        except (TypeError, ValueError, OverflowError):
+                            venn_metadata_spatial_safe = False
+                            break
+                    elif item.kind in {"ocr_token", "vector_text"}:
+                        if item.bbox is None or not isinstance(item.bbox, (list, tuple)):
+                            venn_metadata_spatial_safe = False
+                            break
+                        if len(item.bbox) != 4:
+                            venn_metadata_spatial_safe = False
+                            break
+                        try:
+                            candidate_bbox = tuple(float(value) for value in item.bbox)
+                        except (TypeError, ValueError, OverflowError):
+                            venn_metadata_spatial_safe = False
+                            break
+                        observation_key = (normalized_text, candidate_bbox)
+                        if observation_key in record_observations:
+                            continue
+                    else:
+                        continue
+
+                    if len(metadata_texts_by_bbox.get(candidate_bbox, set())) != 1:
+                        venn_metadata_spatial_safe = False
+                        break
+
+                    x1, y1, x2, y2 = candidate_bbox
+                    if (
+                        not all(math.isfinite(value) for value in candidate_bbox)
+                        or x2 <= x1
+                        or y2 <= y1
+                        or x1 < 0
+                        or y1 < 0
+                        or x2 > image_width
+                        or y2 > image_height
+                    ):
+                        venn_metadata_spatial_safe = False
+                        break
+                    overlaps_area = False
+                    for area_bbox in venn_record_boxes.values():
+                        venn_spatial_comparisons += 1
+                        if venn_spatial_comparisons > _MAX_VENN_RECORD_COMPARISONS:
+                            venn_metadata_spatial_safe = False
+                            break
+                        if (
+                            candidate_bbox[0] < area_bbox[2]
+                            and candidate_bbox[2] > area_bbox[0]
+                            and candidate_bbox[1] < area_bbox[3]
+                            and candidate_bbox[3] > area_bbox[1]
+                        ):
+                            overlaps_area = True
+                            break
+                    if not venn_metadata_spatial_safe:
+                        break
+                    if overlaps_area:
+                        venn_metadata_spatial_safe = False
+                        break
+                    metadata_candidates.append(
+                        (
+                            item.id,
+                            normalized_text,
+                            candidate_bbox,
+                            item.text,
+                            (
+                                numeric_token_multiset((item.text,))
+                                if item.kind in {"ocr_token", "vector_text"}
+                                else Counter()
+                            ),
+                            item.kind in {"ocr_token", "vector_text"},
+                        )
+                    )
+
+                combined_metadata_texts = [item[3] for item in metadata_candidates] + [
+                    text for _owner_id, text, _kind in required_venn_metadata
+                ]
+                if (
+                    venn_metadata_spatial_safe
+                    and bounded_ocr_token_multiset(
+                        [
+                            *venn_association_texts,
+                            *venn_expected_texts,
+                            *combined_metadata_texts,
+                        ],
+                        max_texts=_MAX_OCR_REFERENCE_TEXTS,
+                        max_chars=_MAX_OCR_REFERENCE_CHARS,
+                        max_tokens=_MAX_OCR_REFERENCE_TOKENS,
+                    )
+                    is None
+                ):
+                    venn_metadata_spatial_safe = False
+
+                used_metadata_ids: set[str] = set()
+                used_metadata_observations: set[tuple[str, tuple[float, float, float, float]]] = (
+                    set()
+                )
+                if venn_metadata_spatial_safe:
+                    # Prefer an exact source observation over an approved edit so
+                    # metadata-number accounting cannot depend on evidence ID order.
+                    ordered_metadata_candidates = sorted(
+                        metadata_candidates,
+                        key=lambda item: (
+                            not item[5],
+                            item[2] is None,
+                            item[2] or (0.0, 0.0, 0.0, 0.0),
+                            item[0],
+                        ),
+                    )
+                    for owner_id, required_text, _owner_kind in required_venn_metadata:
+                        for (
+                            evidence_id,
+                            candidate_text,
+                            candidate_bbox,
+                            _candidate_source_text,
+                            candidate_numeric_tokens,
+                            _candidate_is_source_observation,
+                        ) in ordered_metadata_candidates:
+                            venn_spatial_comparisons += 1
+                            if venn_spatial_comparisons > _MAX_VENN_RECORD_COMPARISONS:
+                                venn_metadata_spatial_safe = False
+                                break
+                            observation_key = (
+                                (candidate_text, candidate_bbox)
+                                if candidate_bbox is not None
+                                else None
+                            )
+                            if (
+                                evidence_id in used_metadata_ids
+                                or candidate_text != required_text
+                                or (
+                                    observation_key is not None
+                                    and observation_key in used_metadata_observations
+                                )
+                            ):
+                                continue
+                            if venn_reference_count >= _MAX_VENN_ASSOCIATION_REFERENCES:
+                                venn_metadata_spatial_safe = False
+                                break
+                            venn_reference_count += 1
+                            used_metadata_ids.add(evidence_id)
+                            if observation_key is not None:
+                                used_metadata_observations.add(observation_key)
+                            proven_venn_metadata.add(owner_id)
+                            proven_venn_metadata_numeric_tokens.update(candidate_numeric_tokens)
+                            break
+                        if not venn_metadata_spatial_safe:
+                            break
+
+                required_title_owners = {
+                    owner_id for owner_id, _text, kind in required_venn_metadata if kind == "title"
+                }
+                required_description_owners = {
+                    owner_id
+                    for owner_id, _text, kind in required_venn_metadata
+                    if kind == "description"
+                }
+                if (
+                    venn_metadata_spatial_safe
+                    and required_title_owners
+                    and required_title_owners <= proven_venn_metadata
+                ):
+                    venn_title_attribution_state = "exact"
+                if (
+                    venn_metadata_spatial_safe
+                    and required_description_owners
+                    and required_description_owners <= proven_venn_metadata
+                ):
+                    venn_description_attribution_state = "exact"
+
+            venn_numeric_references = references.numeric_tokens.copy()
+            venn_numeric_references.subtract(proven_venn_metadata_numeric_tokens)
+            global_venn_numeric = numeric_consistency(+venn_numeric_references, code)
             if venn_binding_state == "exact" and global_venn_numeric != 1.0:
                 venn_binding_state = (
                     "mismatch" if global_venn_numeric is not None else "unavailable"
@@ -6479,6 +6779,12 @@ class ReconstructionPipeline:
         ):
             aggregate = None
             warnings.append(_TREEMAP_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING)
+        if gate_diagram_type == "venn" and venn_title_attribution_state == "unavailable":
+            aggregate = None
+            warnings.append(_VENN_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING)
+        if gate_diagram_type == "venn" and venn_description_attribution_state == "unavailable":
+            aggregate = None
+            warnings.append(_VENN_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING)
         if gate_diagram_type == "xychart" and xy_title_attribution_state == "unavailable":
             aggregate = None
             warnings.append(_XY_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING)

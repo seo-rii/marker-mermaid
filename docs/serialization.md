@@ -695,6 +695,24 @@ intersection-pair scan, contour 비교와 text containment는 하나의 100,000 
 exactness는 native, runtime Flowchart fallback과 semantic repair에 동일하게 적용됩니다. Runtime fallback의
 repair는 같은 Flowchart terminal로 canonical 재직렬화하며 direct/untyped Venn은 자동 게시하지 않습니다.
 
+Explicit metadata는 serializer input의 존재가 아니라 actual emitted terminal을 기준으로 검증합니다. Native
+Venn은 visible explicit `title`만 source proof 대상으로 삼으며 unsupported `description`/`acc_title`/
+`acc_description`은 code에 없으므로 면제합니다. `acc_title`도 native visible title을 shadow하지 않습니다.
+Intrinsic/runtime Flowchart는 실제 resolved accessibility title/description만 평가하고 effective `acc_*`에 가려진
+legacy field는 면제합니다. 네 metadata field를 모두 제거한 structure-only baseline과 같은 deterministic output,
+pipeline-added experimental notice suffix는 별도 proof 없이 허용하지만 notice-only explicit description은
+experimental mode에서 structural description을 지우므로 unavailable입니다. `strict` mode의 명시적 동일 문구는
+pipeline이 추가한 suffix가 아니므로 일반 source description으로 증명합니다.
+
+각 effective role은 모든 set/intersection bbox 밖의 candidate-authorized spatial OCR/vector exact text 또는
+reconstruction 초기 approved exact `user_edit`를 독립적으로 요구합니다. Data contour/text owner와 metadata
+role 사이의 evidence ID·normalized text+bbox 재사용, same-bbox contradiction, area overlap, engine-created edit와
+공유 reference/text/character/token/spatial budget 초과는 fail closed입니다. Title과 description text가 같아도
+두 역할은 한 proof를 공유하지 않습니다. 선택된 OCR/vector metadata proof의 numeric occurrence만 global Venn
+data reference에서 빼며 `user_edit`는 bbox 유무와 관계없이 빼지 않습니다. 같은 exact observation에 두 channel이
+있으면 OCR/vector를 먼저 선택해 evidence ID가 numeric score를 바꾸지 않게 합니다. Runtime/intrinsic fallback과
+repair는 같은 terminal-effective gate를 재실행합니다.
+
 Native `venn-beta`는 모든 set/intersection size가 관측되고 positive normal binary64로 exact round-trip되며,
 Python `int` 입력의 safe-integer range와 `largest set / smallest positive area <= 200` visibility gate를 만족할 때만 선택합니다.
 Intersection이 member set 또는 더 작은 explicit intersection과 같은 exact-containment, zero·subnormal·

@@ -383,6 +383,25 @@ budget을 소비합니다. 이 membership geometry와 각 cited observation의 o
 same-slot Flowchart fallback과 semantic repair는 같은 gate를 다시 실행하며 runtime fallback의 repair는 그
 Flowchart terminal로 canonical 재직렬화합니다. Typed owner plan이 없는 direct Venn은 review-only입니다.
 
+Venn explicit metadata도 실제 terminal output만 귀속합니다. Native `venn-beta`에서는 canvas-visible explicit
+`title`만 증명하며 `acc_title`이 있어도 이 visible title을 shadow하지 않습니다. Native grammar가 방출하지 않는
+`description`/`acc_title`/`acc_description`과 derived accessibility는 면제합니다. Intrinsic 또는 runtime
+Flowchart fallback은 visible native title 대신 실제 resolved `accTitle`/`accDescr`만 평가합니다. Effective
+`acc_*`가 legacy `title`/`description`을 shadow하면 숨은 field는 면제하고, structure-only baseline과 같은
+deterministic default 및 pipeline이 덧붙인 experimental notice suffix도 면제합니다. Notice-only explicit
+description override는 experimental mode에서 structural description을 지우므로 fail closed입니다. `strict`
+mode에서 사용자가 같은 notice 문구를 명시했다면 pipeline suffix가 아니므로 일반 source text처럼 증명합니다.
+
+각 required title/description 역할은 모든 set/intersection bbox 밖의 candidate-authorized OCR/vector exact
+observation 또는 reconstruction 초기 입력의 approved exact `user_edit`를 독립적으로 요구합니다. Data contour와
+text owner가 이미 쓴 ID/normalized text+bbox, same-bbox ambiguity, area와의 positive overlap, engine-created
+`user_edit`, 역할 사이 재사용과 data association이 공유하는 reference/text/character/token/spatial budget 소진은
+review입니다. 같은 text를 fallback title과 description에 썼어도 두 SVG 역할은 별도 proof가 필요합니다. 선택한
+OCR/vector metadata proof의 numeric occurrence만 global Venn data reference에서 제거하며 bbox 유무와 무관하게
+`user_edit` 숫자는 제거하지 않습니다. 동일한 exact observation을 OCR/vector와 승인 edit가 함께 증명하면 source
+observation을 우선해 evidence ID 정렬이 numeric 결과를 바꾸지 않게 합니다. Native/fallback과 semantic repair가
+모두 이 gate를 다시 계산합니다.
+
 Native `venn-beta`는 모든 set/intersection value가 positive normal binary64로 원문과 round-trip되고,
 Python `int` 입력이 JavaScript safe 범위를 넘지 않으며, 최대 set과 최소 positive area의 비가 `200:1` 이하일 때만
 선택합니다. Intersection이 member set 또는 더 작은 explicit intersection과 정확히 같은 크기인
