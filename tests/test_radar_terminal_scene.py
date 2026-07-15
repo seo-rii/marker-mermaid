@@ -41,24 +41,35 @@ NATIVE_RADAR_IR = {
         {
             "id": "accuracy",
             "label": "Accuracy",
-            "bbox": [1, 2, 11, 12],
+            "bbox": [40, 0, 60, 10],
             "evidence_ids": ["ocr-accuracy"],
         },
-        {"id": "speed", "label": "Speed", "evidence_ids": ["ocr-speed"]},
-        {"id": "safety", "label": "Safety", "evidence_ids": ["ocr-safety"]},
+        {
+            "id": "speed",
+            "label": "Speed",
+            "bbox": [75, 50, 95, 65],
+            "evidence_ids": ["ocr-speed"],
+        },
+        {
+            "id": "safety",
+            "label": "Safety",
+            "bbox": [5, 50, 25, 65],
+            "evidence_ids": ["ocr-safety"],
+        },
     ],
     "series": [
         {
             "id": "model-a",
             "label": "Model A",
             "values": [0, 5, 10],
-            "bbox": [20, 20, 40, 40],
+            "bbox": [5, 75, 45, 90],
             "evidence_ids": ["curve-a"],
         },
         {
             "id": "model-b",
             "label": "Model B",
             "values": [10, 7.5, 2.5],
+            "bbox": [55, 75, 95, 90],
             "evidence_ids": ["curve-b"],
         },
     ],
@@ -109,7 +120,7 @@ def test_native_radar_scene_and_semantic_texts_match_terminal_contract() -> None
         "series",
     ]
     assert scene.elements[0].bbox == pytest.approx((0.5, 0, 0.5, 0))
-    assert scene.elements[0].bbox != (1, 2, 11, 12)
+    assert scene.elements[0].bbox != (40, 0, 60, 10)
     assert scene.elements[0].evidence_ids == ["ocr-accuracy"]
     assert scene.elements[3].bbox == pytest.approx(
         (0.5 - math.sqrt(3) / 4, 0.5, 0.5 + math.sqrt(3) / 8, 0.75)
@@ -177,6 +188,7 @@ def test_native_radar_provenance_scores_emitted_axes_and_series_not_derived_poin
 def test_radar_flowchart_scene_and_semantic_texts_match_terminal_contract() -> None:
     ir = _fallback_ir()
     result = serialize_radar(ir)
+    plan = plan_radar_records(ir)
     scene = typed_ir_to_scene("radar", ir, emitted_diagram_type=result.emitted_type)
 
     assert result.emitted_type == "flowchart"
@@ -184,11 +196,15 @@ def test_radar_flowchart_scene_and_semantic_texts_match_terminal_contract() -> N
     assert scene.reading_direction == "TB"
     assert scene.coordinate_space == "pixels"
     assert scene.relations == []
+    assert scene.elements[0].id == plan.fallback_title_id
+    assert scene.elements[0].role == "title"
+    assert scene.elements[0].text == "Model comparison"
+    assert scene.elements[0].evidence_ids == []
     assert [(group.id, group.label, group.member_ids) for group in scene.groups] == [
         ("model-a", "Model A", ["model-a_1", "model-a_2", "model-a_3"]),
         ("model-b", "Model B", ["model-b_1", "model-b_2", "model-b_3"]),
     ]
-    assert [element.text for element in scene.elements] == [
+    assert [element.text for element in scene.elements[1:]] == [
         "Accuracy: -2.5",
         "Speed: 0",
         "Safety: 4",
@@ -197,10 +213,11 @@ def test_radar_flowchart_scene_and_semantic_texts_match_terminal_contract() -> N
         "Safety: 2.5",
     ]
     assert all(element.bbox == (0, 0, 0, 0) for element in scene.elements)
-    assert scene.elements[0].evidence_ids == ["ocr-accuracy", "curve-a"]
+    assert scene.elements[1].evidence_ids == ["ocr-accuracy", "curve-a"]
     assert list(
         typed_ir_semantic_texts("radar", ir, scene, emitted_diagram_type=result.emitted_type)
     ) == [
+        "Model comparison",
         "Model A",
         "Accuracy: -2.5",
         "Speed: 0",
@@ -343,7 +360,58 @@ def test_radar_runtime_rejection_uses_exact_same_slot_fallback() -> None:
     assert result.emitted_type == "flowchart"
     assert result.fallback_chain == ("radar", "flowchart")
     assert result.warnings and "same candidate slot" in result.warnings[0]
+    assert 'radar_title["Model comparison"]' in result.code
     assert 'model-a_1["Accuracy: 0"]' in result.code
+
+
+def test_radar_runtime_fallback_preserves_title_without_exposing_hidden_legend() -> None:
+    ir = deepcopy(NATIVE_RADAR_IR)
+    ir["show_legend"] = False
+
+    plan = plan_radar_records(ir)
+    result = serialize_radar(ir, native_runtime_valid=False)
+    scene = typed_ir_to_scene("radar", ir, emitted_diagram_type=result.emitted_type)
+
+    assert plan.fallback_title_id == "radar_title"
+    assert plan.fallback_source_title == "Model comparison"
+    assert plan.fallback_canvas_title == "Model comparison"
+    assert f'{plan.fallback_title_id}["{plan.fallback_source_title}"]' in result.code
+    assert 'subgraph model-a["\u200b"]' in result.code
+    assert 'subgraph model-b["\u200b"]' in result.code
+    assert 'subgraph model-a["Model A"]' not in result.code
+    assert 'subgraph model-b["Model B"]' not in result.code
+    assert scene is not None
+    assert [(element.id, element.role, element.text) for element in scene.elements[:1]] == [
+        ("radar_title", "title", "Model comparison")
+    ]
+    assert scene.elements[0].evidence_ids == []
+    assert [group.label for group in scene.groups] == [None, None]
+    assert list(typed_ir_semantic_texts("radar", ir, scene, emitted_diagram_type="flowchart")) == [
+        "Model comparison",
+        "Accuracy: 0",
+        "Speed: 5",
+        "Safety: 10",
+        "Accuracy: 10",
+        "Speed: 7.5",
+        "Safety: 2.5",
+    ]
+
+
+def test_radar_fallback_title_id_is_collision_safe_across_terminal_namespace() -> None:
+    ir = deepcopy(NATIVE_RADAR_IR)
+    ir["dimensions"][0]["id"] = "radar_title"
+
+    plan = plan_radar_records(ir)
+    result = serialize_radar(ir, native_runtime_valid=False)
+    scene = typed_ir_to_scene("radar", ir, emitted_diagram_type="flowchart")
+
+    assert plan.dimensions[0].emitted_id == "radar_title"
+    assert plan.fallback_title_id is not None
+    assert plan.fallback_title_id != plan.dimensions[0].emitted_id
+    assert f'    {plan.fallback_title_id}["Model comparison"]' in result.code
+    assert scene is not None
+    assert len({element.id for element in scene.elements}) == len(scene.elements)
+    assert scene.elements[0].id == plan.fallback_title_id
 
 
 def test_radar_terminal_resource_limits_are_applied_before_runtime(
@@ -396,6 +464,37 @@ def test_radar_source_line_budget_is_preflighted_before_runtime(
         serialize_radar(NATIVE_RADAR_IR)
 
 
+def test_radar_flowchart_line_budget_accounts_for_visible_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    untitled = deepcopy(NATIVE_RADAR_IR)
+    untitled.pop("title")
+    monkeypatch.setattr(chart_flow_module, "MAX_RADAR_OUTPUT_LINES", 14)
+
+    assert serialize_radar(untitled, native_runtime_valid=False).emitted_type == "flowchart"
+    with pytest.raises(SerializationError, match="source-line"):
+        serialize_radar(NATIVE_RADAR_IR, native_runtime_valid=False)
+
+
+def test_radar_source_budget_uses_mermaid_utf16_code_units(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ir = deepcopy(NATIVE_RADAR_IR)
+    ir["dimensions"][0]["label"] = "Accuracy \U0001f600\U0001f600\U0001f600"
+    result = serialize_radar(ir)
+    python_characters = len(result.code)
+    utf16_units = len(result.code.encode("utf-16-le")) // 2
+    assert python_characters < utf16_units
+    monkeypatch.setattr(
+        chart_flow_module,
+        "MAX_RADAR_OUTPUT_CHARS",
+        (python_characters + utf16_units) // 2,
+    )
+
+    with pytest.raises(SerializationError, match="UTF-16 source-character"):
+        serialize_radar(ir)
+
+
 def test_radar_compatibility_text_is_shared_with_scene_and_disclosed() -> None:
     label = ' A "quoted" \\ value\u00a0&quot; <#> '
     ir = {
@@ -439,6 +538,7 @@ def test_mermaid_11_16_radar_native_fallback_and_canvas_contract() -> None:
     no_legend_ir = deepcopy(NATIVE_RADAR_IR)
     no_legend_ir["show_legend"] = False
     no_legend = serialize_radar(no_legend_ir)
+    no_legend_fallback = serialize_radar(no_legend_ir, native_runtime_valid=False)
     fallback = serialize_radar(_fallback_ir())
     reserved = serialize_radar(
         {
@@ -455,6 +555,7 @@ def test_mermaid_11_16_radar_native_fallback_and_canvas_contract() -> None:
     try:
         native_runtime = runtime.validate_and_render(native.code, 20)
         no_legend_runtime = runtime.validate_and_render(no_legend.code, 20)
+        no_legend_fallback_runtime = runtime.validate_and_render(no_legend_fallback.code, 20)
         fallback_runtime = runtime.validate_and_render(fallback.code, 20)
         reserved_runtime = runtime.validate_and_render(reserved.code, 20)
     finally:
@@ -462,15 +563,18 @@ def test_mermaid_11_16_radar_native_fallback_and_canvas_contract() -> None:
 
     assert native_runtime.syntax_valid and native_runtime.render_valid
     assert no_legend_runtime.syntax_valid and no_legend_runtime.render_valid
+    assert no_legend_fallback_runtime.syntax_valid and no_legend_fallback_runtime.render_valid
     assert fallback_runtime.syntax_valid and fallback_runtime.render_valid
     assert reserved_runtime.syntax_valid and reserved_runtime.render_valid
     assert native_runtime.diagram_type == "radar"
     assert fallback_runtime.diagram_type == "flowchart-v2"
     assert native_runtime.svg is not None
     assert no_legend_runtime.svg is not None
+    assert no_legend_fallback_runtime.svg is not None
     assert fallback_runtime.svg is not None
     native_root = ET.fromstring(native_runtime.svg)
     no_legend_root = ET.fromstring(no_legend_runtime.svg)
+    no_legend_fallback_root = ET.fromstring(no_legend_fallback_runtime.svg)
     fallback_root = ET.fromstring(fallback_runtime.svg)
     assert native_root.get("viewBox") == "0 0 700 700"
     native_text = Counter(
@@ -486,6 +590,25 @@ def test_mermaid_11_16_radar_native_fallback_and_canvas_contract() -> None:
         for element in no_legend_root.iter()
         if element.tag.rsplit("}", 1)[-1] == "text"
     }
+    no_legend_fallback_text = Counter(
+        "".join(element.itertext()).replace("\u200b", "")
+        for element in no_legend_fallback_root.iter()
+        if element.tag.rsplit("}", 1)[-1] == "text"
+        and "".join(element.itertext()).replace("\u200b", "")
+    )
+    assert no_legend_fallback_text == Counter(
+        [
+            "Model comparison",
+            "Accuracy: 0",
+            "Speed: 5",
+            "Safety: 10",
+            "Accuracy: 10",
+            "Speed: 7.5",
+            "Safety: 2.5",
+        ]
+    )
+    assert "Model A" not in no_legend_fallback_text
+    assert "Model B" not in no_legend_fallback_text
     assert sum("radarCurve-" in element.get("class", "") for element in native_root.iter()) == 2
     assert sum(element.get("class") == "radarGraticule" for element in native_root.iter()) == 5
     assert not any(
@@ -552,11 +675,48 @@ def test_native_radar_direct_component_provenance_can_pass_publication_gate() ->
         prediction=DiagramTypePrediction(candidates=["radar"], scores=[1]),
         typed_candidates=[TypedIRCandidate(diagram_type="radar", ir=NATIVE_RADAR_IR)],
         evidence=[
-            VisualEvidence(id="ocr-accuracy", kind="ocr_token", text="Accuracy 0"),
-            VisualEvidence(id="ocr-speed", kind="ocr_token", text="Speed 5"),
-            VisualEvidence(id="ocr-safety", kind="ocr_token", text="Safety 10"),
-            VisualEvidence(id="curve-a", kind="vlm_observation", text="Model A"),
-            VisualEvidence(id="curve-b", kind="vlm_observation", text="Model B"),
+            VisualEvidence(
+                id="ocr-title",
+                kind="ocr_token",
+                text="Model comparison",
+                bbox=(30, 12, 70, 20),
+            ),
+            VisualEvidence(
+                id="ocr-description",
+                kind="vector_text",
+                text="Two models across three dimensions.",
+                bbox=(15, 25, 85, 40),
+            ),
+            VisualEvidence(
+                id="ocr-accuracy",
+                kind="ocr_token",
+                text="Accuracy",
+                bbox=(42, 2, 58, 8),
+            ),
+            VisualEvidence(
+                id="ocr-speed",
+                kind="ocr_token",
+                text="Speed",
+                bbox=(78, 53, 92, 62),
+            ),
+            VisualEvidence(
+                id="ocr-safety",
+                kind="ocr_token",
+                text="Safety",
+                bbox=(8, 53, 22, 62),
+            ),
+            VisualEvidence(
+                id="curve-a",
+                kind="vector_text",
+                text="Model A 0 5 10",
+                bbox=(8, 78, 42, 87),
+            ),
+            VisualEvidence(
+                id="curve-b",
+                kind="vector_text",
+                text="Model B 10 7.5 2.5",
+                bbox=(58, 78, 92, 87),
+            ),
         ],
     )
     config = MermaidConfig(candidate_count=1)
@@ -570,8 +730,7 @@ def test_native_radar_direct_component_provenance_can_pass_publication_gate() ->
         "source.png",
         Image.new("RGB", (100, 100), "white"),
         ocr_texts=[
-            "Model comparison Accuracy Speed Safety Model A Model B "
-            "0 5 10 10 7.5 2.5 5 10 0"
+            "Model comparison Accuracy Speed Safety Model A Model B 0 5 10 10 7.5 2.5 5 10 0"
         ],
     )
 
@@ -586,11 +745,48 @@ def test_native_radar_rejection_retries_flowchart_in_same_candidate_slot() -> No
         prediction=DiagramTypePrediction(candidates=["radar"], scores=[1]),
         typed_candidates=[TypedIRCandidate(diagram_type="radar", ir=NATIVE_RADAR_IR)],
         evidence=[
-            VisualEvidence(id="ocr-accuracy", kind="ocr_token", text="Accuracy 0"),
-            VisualEvidence(id="ocr-speed", kind="ocr_token", text="Speed 5"),
-            VisualEvidence(id="ocr-safety", kind="ocr_token", text="Safety 10"),
-            VisualEvidence(id="curve-a", kind="vlm_observation", text="Model A"),
-            VisualEvidence(id="curve-b", kind="vlm_observation", text="Model B"),
+            VisualEvidence(
+                id="ocr-title",
+                kind="ocr_token",
+                text="Model comparison",
+                bbox=(30, 12, 70, 20),
+            ),
+            VisualEvidence(
+                id="ocr-description",
+                kind="vector_text",
+                text="Two models across three dimensions.",
+                bbox=(15, 25, 85, 40),
+            ),
+            VisualEvidence(
+                id="ocr-accuracy",
+                kind="ocr_token",
+                text="Accuracy",
+                bbox=(42, 2, 58, 8),
+            ),
+            VisualEvidence(
+                id="ocr-speed",
+                kind="ocr_token",
+                text="Speed",
+                bbox=(78, 53, 92, 62),
+            ),
+            VisualEvidence(
+                id="ocr-safety",
+                kind="ocr_token",
+                text="Safety",
+                bbox=(8, 53, 22, 62),
+            ),
+            VisualEvidence(
+                id="curve-a",
+                kind="vector_text",
+                text="Model A 0 5 10",
+                bbox=(8, 78, 42, 87),
+            ),
+            VisualEvidence(
+                id="curve-b",
+                kind="vector_text",
+                text="Model B 10 7.5 2.5",
+                bbox=(58, 78, 92, 87),
+            ),
         ],
     )
     runtime = _RadarRejectingRuntime()

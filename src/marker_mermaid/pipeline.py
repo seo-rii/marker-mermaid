@@ -112,6 +112,7 @@ from marker_mermaid.serializers_charts_core import (
     plan_xychart_records,
     validate_quadrant_explicit_metadata,
 )
+from marker_mermaid.serializers_charts_flow import plan_radar_records
 from marker_mermaid.serializers_special import plan_packet_fields
 from marker_mermaid.style_recovery import (
     TrustedEdgeStyleEvidence,
@@ -165,6 +166,8 @@ _MAX_PIE_SLICE_OVERLAP_COMPARISONS = 100_000
 _MAX_XY_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
 _MAX_QUADRANT_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
 _MAX_QUADRANT_OVERLAP_COMPARISONS = 100_000
+_MAX_RADAR_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
+_MAX_RADAR_RECORD_OVERLAP_COMPARISONS = 100_000
 _MAX_XY_RECORD_OVERLAP_COMPARISONS = 100_000
 _PIL_IMAGING_CORE_TYPE = type(Image.new("RGB", (1, 1)).im)
 _PIL_IMAGE_DICT_DESCRIPTOR = Image.Image.__dict__["__dict__"]
@@ -448,6 +451,22 @@ _QUADRANT_METADATA_ROLE_LIMITATION_WARNING = (
     "Quadrant explicit metadata uses content-existence attribution; immutable source roles "
     "for title, description, accTitle, and accDescr are unavailable."
 )
+_RADAR_RECORD_ASSOCIATION_UNAVAILABLE_WARNING = (
+    "Radar dimension/series association lacks candidate-authorized spatial OCR/vector "
+    "evidence; review is required"
+)
+_RADAR_RECORD_ASSOCIATION_MISMATCH_WARNING = (
+    "Radar dimension/series association conflicts with source labels or ordered values; "
+    "review is required"
+)
+_RADAR_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING = (
+    "Radar title/accTitle lacks independent candidate-authorized spatial OCR/vector or "
+    "user-edit evidence; review is required"
+)
+_RADAR_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING = (
+    "Radar explicit description/accDescr lacks independent candidate-authorized spatial "
+    "OCR/vector or user-edit evidence; review is required"
+)
 
 _EVALUATION_WARNING_TEXT = frozenset(
     {
@@ -471,6 +490,10 @@ _EVALUATION_WARNING_TEXT = frozenset(
         _QUADRANT_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING,
         _QUADRANT_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING,
         _QUADRANT_METADATA_ROLE_LIMITATION_WARNING,
+        _RADAR_RECORD_ASSOCIATION_UNAVAILABLE_WARNING,
+        _RADAR_RECORD_ASSOCIATION_MISMATCH_WARNING,
+        _RADAR_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING,
+        _RADAR_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING,
         "numeric consistency is below the automatic publication threshold",
         "numeric diagram lacks OCR/vector numeric evidence and cannot auto-publish",
         "unlabeled scene-only candidates require OCR/VLM fusion before publishing",
@@ -506,10 +529,8 @@ def _generated_node_provenance_score(
     if generated_scene is None or not generated_scene.elements:
         return None
     generated_elements = generated_scene.elements
-    if (
-        generated_scene.diagram_type_candidates == ["radar"]
-        and generated_scene.reading_direction == "radial"
-    ):
+    radar_scene = generated_scene.diagram_type_candidates == ["radar"]
+    if radar_scene and generated_scene.reading_direction == "radial":
         # Native Radar renders data points as derived curve geometry rather than
         # independently attributable nodes.  Axis and series evidence supports
         # the emitted chart components while numeric consistency separately
@@ -545,8 +566,20 @@ def _generated_node_provenance_score(
         if not traceable_elements:
             return None
         supported = sum(
-            bool(known.intersection(element.evidence_ids))
-            for element in traceable_elements
+            bool(known.intersection(element.evidence_ids)) for element in traceable_elements
+        )
+        return supported / len(traceable_elements)
+    if radar_scene and generated_scene.coordinate_space == "pixels":
+        # The exact-value Flowchart emits one cell per dimension/series pair.
+        # Those cells intentionally share both source records; the Radar-local
+        # association gate validates the two owners and their ordered values.
+        traceable_elements = [
+            element for element in generated_elements if element.role == "data_point"
+        ]
+        if not traceable_elements:
+            return None
+        supported = sum(
+            bool(known.intersection(element.evidence_ids)) for element in traceable_elements
         )
         return supported / len(traceable_elements)
     if xy_scene and generated_scene.coordinate_space == "pixels":
@@ -2760,6 +2793,9 @@ class ReconstructionPipeline:
         quadrant_slot_attribution_state: Literal["exact", "unavailable"] | None = None
         quadrant_title_attribution_state: Literal["exact", "unavailable"] | None = None
         quadrant_description_attribution_state: Literal["exact", "unavailable"] | None = None
+        radar_binding_state: Literal["exact", "mismatch", "unavailable"] | None = None
+        radar_title_attribution_state: Literal["exact", "unavailable"] | None = None
+        radar_description_attribution_state: Literal["exact", "unavailable"] | None = None
         if gate_diagram_type == "packet":
             # Packet ranges need a field-local proof.  A document-wide number multiset can
             # stay identical when two labels exchange their ranges, so it is not publication
@@ -3124,15 +3160,11 @@ class ReconstructionPipeline:
                             dict.fromkeys(raw_evidence_ids)
                         )
 
-                observation_texts: dict[
-                    tuple[str, tuple[float, float, float, float]], str
-                ] = {}
+                observation_texts: dict[tuple[str, tuple[float, float, float, float]], str] = {}
                 slice_observations: dict[
                     str, set[tuple[str, tuple[float, float, float, float]]]
                 ] = {slice_plan.scene_id: set() for slice_plan in pie_slices}
-                observation_owners: dict[
-                    tuple[str, tuple[float, float, float, float]], str
-                ] = {}
+                observation_owners: dict[tuple[str, tuple[float, float, float, float]], str] = {}
                 evidence_id_owners: dict[str, str] = {}
                 if spatial_evidence_safe:
                     for slice_plan in pie_slices:
@@ -3214,9 +3246,7 @@ class ReconstructionPipeline:
                             tokens = ocr_token_multiset((text_value,))
                             token_count += tokens.total()
                             observation_tokens[observation_key] = tokens
-                        if token_count <= _MAX_OCR_REFERENCE_TOKENS and all(
-                            label_tokens.values()
-                        ):
+                        if token_count <= _MAX_OCR_REFERENCE_TOKENS and all(label_tokens.values()):
                             association_available = True
                             association_matches = True
                             for slice_plan in pie_slices:
@@ -3277,14 +3307,10 @@ class ReconstructionPipeline:
                                 if observed_numbers != expected_numbers:
                                     association_matches = False
                             if association_available:
-                                pie_binding_state = (
-                                    "exact" if association_matches else "mismatch"
-                                )
+                                pie_binding_state = "exact" if association_matches else "mismatch"
             global_pie_numeric = numeric_consistency(references.numeric_tokens, code)
             if pie_binding_state == "exact" and global_pie_numeric != 1.0:
-                pie_binding_state = (
-                    "mismatch" if global_pie_numeric is not None else "unavailable"
-                )
+                pie_binding_state = "mismatch" if global_pie_numeric is not None else "unavailable"
             if pie_plan is not None and typed_ir is not None:
                 accessibility_base_ir = {
                     key: value
@@ -3300,11 +3326,9 @@ class ReconstructionPipeline:
                 if pie_plan.semantic_title is not None:
                     required_title_texts.add(_normalized_label(pie_plan.semantic_title))
                 accessibility_title = typed_ir.get("acc_title")
-                if (
-                    isinstance(accessibility_title, str)
-                    and _normalized_label(accessibility_title)
-                    != _normalized_label(derived_accessibility.title)
-                ):
+                if isinstance(accessibility_title, str) and _normalized_label(
+                    accessibility_title
+                ) != _normalized_label(derived_accessibility.title):
                     required_title_texts.add(_normalized_label(accessibility_title))
                 required_description_texts: set[str] = set()
                 explicit_description = typed_ir.get("description")
@@ -3312,20 +3336,18 @@ class ReconstructionPipeline:
                     required_description_texts.add(_normalized_label(explicit_description))
                 accessibility_description = typed_ir.get("acc_description")
                 accessibility_description_text = (
-                    accessibility_description.removesuffix(
-                        f" {EXPERIMENTAL_NOTICE}"
-                    ).removesuffix(EXPERIMENTAL_NOTICE)
+                    accessibility_description.removesuffix(f" {EXPERIMENTAL_NOTICE}").removesuffix(
+                        EXPERIMENTAL_NOTICE
+                    )
                     if isinstance(accessibility_description, str)
                     else None
                 )
                 derived_description_text = derived_accessibility.description.removesuffix(
                     f" {EXPERIMENTAL_NOTICE}"
                 ).removesuffix(EXPERIMENTAL_NOTICE)
-                if (
+                if accessibility_description_text and _normalized_label(
                     accessibility_description_text
-                    and _normalized_label(accessibility_description_text)
-                    != _normalized_label(derived_description_text)
-                ):
+                ) != _normalized_label(derived_description_text):
                     required_description_texts.add(
                         _normalized_label(accessibility_description_text)
                     )
@@ -3338,9 +3360,7 @@ class ReconstructionPipeline:
                     for slice_plan in pie_plan.slices
                     for evidence_id in slice_plan.evidence_ids
                 }
-                slice_owned_observations: set[
-                    tuple[str, tuple[float, float, float, float]]
-                ] = set()
+                slice_owned_observations: set[tuple[str, tuple[float, float, float, float]]] = set()
                 for item in evidence:
                     if (
                         item.id not in slice_evidence_ids
@@ -3362,9 +3382,7 @@ class ReconstructionPipeline:
                     slice_bbox = tuple(float(value) for value in raw_bbox)
                     if all(math.isfinite(value) for value in slice_bbox):
                         title_exclusion_boxes.append(slice_bbox)
-                accessibility_texts_by_bbox: dict[
-                    tuple[float, float, float, float], set[str]
-                ] = {}
+                accessibility_texts_by_bbox: dict[tuple[float, float, float, float], set[str]] = {}
                 for item in evidence:
                     if (
                         item.kind not in {"ocr_token", "vector_text"}
@@ -3382,10 +3400,7 @@ class ReconstructionPipeline:
                 proven_description_texts: set[str] = set()
                 image_width, image_height = image.size
                 for item in evidence:
-                    if (
-                        item.id in slice_evidence_ids
-                        or not item.text
-                    ):
+                    if item.id in slice_evidence_ids or not item.text:
                         continue
                     normalized_text = _normalized_label(item.text)
                     if item.kind == "user_edit":
@@ -3449,9 +3464,7 @@ class ReconstructionPipeline:
                 except SerializationError:
                     quadrant_plan = None
 
-            record_specs: list[
-                tuple[str, object, tuple[str, ...], set[str]]
-            ] = []
+            record_specs: list[tuple[str, object, tuple[str, ...], set[str]]] = []
             quadrant_x_axis_owner_id: str | None = None
             quadrant_y_axis_owner_id: str | None = None
             if quadrant_plan is not None:
@@ -3478,12 +3491,8 @@ class ReconstructionPipeline:
                             point.source_record,
                             point.evidence_ids,
                             {
-                                _normalized_label(
-                                    f"{point.label} {point.x_text} {point.y_text}"
-                                ),
-                                _normalized_label(
-                                    f"{point.label}: {point.x_text} {point.y_text}"
-                                ),
+                                _normalized_label(f"{point.label} {point.x_text} {point.y_text}"),
+                                _normalized_label(f"{point.label}: {point.x_text} {point.y_text}"),
                                 _normalized_label(
                                     f"{point.label}: [{point.x_text}, {point.y_text}]"
                                 ),
@@ -3500,9 +3509,7 @@ class ReconstructionPipeline:
             image_width, image_height = image.size
             record_boxes: dict[str, tuple[float, float, float, float]] = {}
             spatial_evidence_safe = bool(record_specs)
-            quadrant_comparison_budget = max(
-                0, _MAX_QUADRANT_OVERLAP_COMPARISONS
-            )
+            quadrant_comparison_budget = max(0, _MAX_QUADRANT_OVERLAP_COMPARISONS)
             for owner_id, source_record, _evidence_ids, _allowed in record_specs:
                 if not isinstance(source_record, dict):
                     spatial_evidence_safe = False
@@ -3573,9 +3580,7 @@ class ReconstructionPipeline:
                         break
 
             evidence_by_id: dict[str, VisualEvidence] = {}
-            authorized_texts_by_bbox: dict[
-                tuple[float, float, float, float], set[str]
-            ] = {}
+            authorized_texts_by_bbox: dict[tuple[float, float, float, float], set[str]] = {}
             if spatial_evidence_safe:
                 for item in evidence:
                     if item.id in evidence_by_id:
@@ -3590,17 +3595,13 @@ class ReconstructionPipeline:
                         bbox = tuple(float(value) for value in item.bbox)
                         normalized_text = _normalized_label(item.text)
                         if normalized_text:
-                            authorized_texts_by_bbox.setdefault(bbox, set()).add(
-                                normalized_text
-                            )
+                            authorized_texts_by_bbox.setdefault(bbox, set()).add(normalized_text)
 
             record_observations: dict[
                 str, list[tuple[str, tuple[float, float, float, float], str]]
             ] = {owner_id: [] for owner_id, *_rest in record_specs}
             evidence_id_owners: dict[str, str] = {}
-            observation_owners: dict[
-                tuple[str, tuple[float, float, float, float]], str
-            ] = {}
+            observation_owners: dict[tuple[str, tuple[float, float, float, float]], str] = {}
             record_evidence_ids: set[str] = set()
             reference_count = 0
             if spatial_evidence_safe:
@@ -3703,14 +3704,10 @@ class ReconstructionPipeline:
                                     item[0],
                                 ),
                             )
-                        observation_text = _normalized_label(
-                            " ".join(item[2] for item in ordered)
-                        )
+                        observation_text = _normalized_label(" ".join(item[2] for item in ordered))
                         if observation_text not in allowed:
                             association_matches = False
-                    quadrant_binding_state = (
-                        "exact" if association_matches else "mismatch"
-                    )
+                    quadrant_binding_state = "exact" if association_matches else "mismatch"
 
             global_quadrant_numeric = numeric_consistency(references.numeric_tokens, code)
             if quadrant_binding_state == "exact" and global_quadrant_numeric != 1.0:
@@ -3731,15 +3728,11 @@ class ReconstructionPipeline:
                 )
                 required_title_texts: set[str] = set()
                 if quadrant_plan.semantic_title is not None:
-                    required_title_texts.add(
-                        _normalized_label(quadrant_plan.semantic_title)
-                    )
+                    required_title_texts.add(_normalized_label(quadrant_plan.semantic_title))
                 accessibility_title = typed_ir.get("acc_title")
-                if (
-                    isinstance(accessibility_title, str)
-                    and _normalized_label(accessibility_title)
-                    != _normalized_label(derived_accessibility.title)
-                ):
+                if isinstance(accessibility_title, str) and _normalized_label(
+                    accessibility_title
+                ) != _normalized_label(derived_accessibility.title):
                     required_title_texts.add(_normalized_label(accessibility_title))
                 required_description_texts: set[str] = set()
                 explicit_description = typed_ir.get("description")
@@ -3747,27 +3740,23 @@ class ReconstructionPipeline:
                     required_description_texts.add(_normalized_label(explicit_description))
                 accessibility_description = typed_ir.get("acc_description")
                 accessibility_description_text = (
-                    accessibility_description.removesuffix(
-                        f" {EXPERIMENTAL_NOTICE}"
-                    ).removesuffix(EXPERIMENTAL_NOTICE)
+                    accessibility_description.removesuffix(f" {EXPERIMENTAL_NOTICE}").removesuffix(
+                        EXPERIMENTAL_NOTICE
+                    )
                     if isinstance(accessibility_description, str)
                     else None
                 )
                 derived_description_text = derived_accessibility.description.removesuffix(
                     f" {EXPERIMENTAL_NOTICE}"
                 ).removesuffix(EXPERIMENTAL_NOTICE)
-                if (
+                if accessibility_description_text and _normalized_label(
                     accessibility_description_text
-                    and _normalized_label(accessibility_description_text)
-                    != _normalized_label(derived_description_text)
-                ):
+                ) != _normalized_label(derived_description_text):
                     required_description_texts.add(
                         _normalized_label(accessibility_description_text)
                     )
 
-                required_independent: list[
-                    tuple[str, str, Literal[1, 2, 3, 4] | None, str]
-                ] = [
+                required_independent: list[tuple[str, str, Literal[1, 2, 3, 4] | None, str]] = [
                     (
                         f"slot-{slot.slot}",
                         _normalized_label(slot.label),
@@ -3783,9 +3772,7 @@ class ReconstructionPipeline:
                 )
                 required_independent.extend(
                     (f"description-{index}", text, None, "description")
-                    for index, text in enumerate(
-                        sorted(required_description_texts), start=1
-                    )
+                    for index, text in enumerate(sorted(required_description_texts), start=1)
                 )
                 if any(slot.label for slot in quadrant_plan.quadrants):
                     quadrant_slot_attribution_state = "unavailable"
@@ -3817,17 +3804,11 @@ class ReconstructionPipeline:
                                 )
                                 continue
                             candidate_bbox = tuple(float(value) for value in item.bbox)
-                        elif (
-                            item.kind in {"ocr_token", "vector_text"}
-                            and item.bbox is not None
-                        ):
+                        elif item.kind in {"ocr_token", "vector_text"} and item.bbox is not None:
                             candidate_bbox = tuple(float(value) for value in item.bbox)
                             observation_key = (normalized_text, candidate_bbox)
                             if (
-                                len(
-                                    authorized_texts_by_bbox.get(candidate_bbox, set())
-                                )
-                                != 1
+                                len(authorized_texts_by_bbox.get(candidate_bbox, set())) != 1
                                 or observation_key in observation_owners
                             ):
                                 continue
@@ -3893,9 +3874,7 @@ class ReconstructionPipeline:
                             item[0],
                         ),
                     )
-                    for owner_id, required_text, required_slot, _owner_kind in (
-                        required_independent
-                    ):
+                    for owner_id, required_text, required_slot, _owner_kind in required_independent:
                         for (
                             evidence_id,
                             candidate_text,
@@ -3914,10 +3893,7 @@ class ReconstructionPipeline:
                             if (
                                 evidence_id in used_independent_ids
                                 or candidate_text != required_text
-                                or (
-                                    required_slot is not None
-                                    and candidate_slot != required_slot
-                                )
+                                or (required_slot is not None and candidate_slot != required_slot)
                                 or (
                                     observation_key is not None
                                     and observation_key in used_independent_observations
@@ -3971,6 +3947,515 @@ class ReconstructionPipeline:
                 if quadrant_binding_state == "exact"
                 else 0.0
                 if quadrant_binding_state == "mismatch"
+                else None
+            )
+        elif gate_diagram_type == "radar":
+            # Radar labels and values are meaningful only when each dimension and
+            # each ordered series row remains bound to its own source region. A
+            # document-wide numeric multiset cannot detect exchanged curves or
+            # permuted dimension values.
+            radar_binding_state = "unavailable"
+            radar_plan = None
+            if typed_ir is not None:
+                try:
+                    radar_plan = plan_radar_records(typed_ir)
+                except SerializationError:
+                    radar_plan = None
+
+            radar_record_specs: list[tuple[str, object, tuple[str, ...], set[str]]] = []
+            radar_dimension_owner_ids: list[str] = []
+            if radar_plan is not None:
+                for dimension in radar_plan.dimensions:
+                    dimension_owner_id = f"dimension:{dimension.source_id}"
+                    radar_dimension_owner_ids.append(dimension_owner_id)
+                    radar_record_specs.append(
+                        (
+                            dimension_owner_id,
+                            dimension.source_record,
+                            dimension.evidence_ids,
+                            {_normalized_label(dimension.label)},
+                        )
+                    )
+                for series in radar_plan.series:
+                    values = [point.value_text for point in series.points]
+                    value_sequence = " ".join(values)
+                    comma_sequence = ", ".join(values)
+                    radar_record_specs.append(
+                        (
+                            f"series:{series.source_id}",
+                            series.source_record,
+                            series.evidence_ids,
+                            {
+                                _normalized_label(f"{series.label} {value_sequence}"),
+                                _normalized_label(f"{series.label}: {value_sequence}"),
+                                _normalized_label(f"{series.label}: [{comma_sequence}]"),
+                                _normalized_label(f"{series.label} [{comma_sequence}]"),
+                                _normalized_label(f"{series.label}: ({comma_sequence})"),
+                            },
+                        )
+                    )
+
+            image_width, image_height = image.size
+            radar_record_boxes: dict[str, tuple[float, float, float, float]] = {}
+            radar_spatial_safe = bool(radar_record_specs)
+            radar_spatial_budget = max(0, _MAX_RADAR_RECORD_OVERLAP_COMPARISONS)
+            for owner_id, source_record, _evidence_ids, _allowed in radar_record_specs:
+                if not isinstance(source_record, dict):
+                    radar_spatial_safe = False
+                    break
+                raw_bbox = source_record.get("bbox")
+                if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+                    radar_spatial_safe = False
+                    break
+                try:
+                    bbox = tuple(float(value) for value in raw_bbox)
+                except (TypeError, ValueError, OverflowError):
+                    radar_spatial_safe = False
+                    break
+                x1, y1, x2, y2 = bbox
+                if (
+                    not all(math.isfinite(value) for value in bbox)
+                    or x2 <= x1
+                    or y2 <= y1
+                    or x1 < 0
+                    or y1 < 0
+                    or x2 > image_width
+                    or y2 > image_height
+                ):
+                    radar_spatial_safe = False
+                    break
+                radar_record_boxes[owner_id] = bbox
+
+            if radar_spatial_safe:
+                dimension_angles: list[float] = []
+                dimension_centers = [
+                    (
+                        (radar_record_boxes[owner_id][0] + radar_record_boxes[owner_id][2]) / 2,
+                        (radar_record_boxes[owner_id][1] + radar_record_boxes[owner_id][3]) / 2,
+                    )
+                    for owner_id in radar_dimension_owner_ids
+                ]
+                radar_center_x = sum(center[0] for center in dimension_centers) / len(
+                    dimension_centers
+                )
+                radar_center_y = sum(center[1] for center in dimension_centers) / len(
+                    dimension_centers
+                )
+                first_dimension_offset: tuple[float, float] | None = None
+                for center_x, center_y in dimension_centers:
+                    offset_x = center_x - radar_center_x
+                    offset_y = center_y - radar_center_y
+                    if math.hypot(offset_x, offset_y) <= 1e-9:
+                        radar_spatial_safe = False
+                        break
+                    if first_dimension_offset is None:
+                        first_dimension_offset = (offset_x, offset_y)
+                    dimension_angles.append(
+                        (math.atan2(offset_y, offset_x) + math.pi / 2) % (2 * math.pi)
+                    )
+                if radar_spatial_safe:
+                    if (
+                        first_dimension_offset is None
+                        or first_dimension_offset[1] >= 0
+                        or abs(first_dimension_offset[1]) <= abs(first_dimension_offset[0])
+                    ):
+                        radar_spatial_safe = False
+                    else:
+                        anchor_angle = dimension_angles[0]
+                        dimension_angles = [
+                            (angle - anchor_angle) % (2 * math.pi) for angle in dimension_angles
+                        ]
+                        for index, angle in enumerate(dimension_angles[1:], start=1):
+                            if radar_spatial_budget <= 0:
+                                radar_spatial_safe = False
+                                break
+                            radar_spatial_budget -= 1
+                            if angle - dimension_angles[index - 1] <= 1e-6:
+                                radar_spatial_safe = False
+                                break
+                        if radar_spatial_safe:
+                            if radar_spatial_budget <= 0:
+                                radar_spatial_safe = False
+                            else:
+                                radar_spatial_budget -= 1
+                                if 2 * math.pi - dimension_angles[-1] + dimension_angles[0] <= 1e-6:
+                                    radar_spatial_safe = False
+
+            ordered_radar_boxes = sorted(radar_record_boxes.items())
+            if radar_spatial_safe:
+                for index, (_owner_id, bbox) in enumerate(ordered_radar_boxes):
+                    for _other_id, other_bbox in ordered_radar_boxes[index + 1 :]:
+                        if radar_spatial_budget <= 0:
+                            radar_spatial_safe = False
+                            break
+                        radar_spatial_budget -= 1
+                        if (
+                            bbox[0] < other_bbox[2]
+                            and bbox[2] > other_bbox[0]
+                            and bbox[1] < other_bbox[3]
+                            and bbox[3] > other_bbox[1]
+                        ):
+                            radar_spatial_safe = False
+                            break
+                    if not radar_spatial_safe:
+                        break
+
+            radar_evidence_by_id: dict[str, VisualEvidence] = {}
+            radar_texts_by_bbox: dict[tuple[float, float, float, float], set[str]] = {}
+            radar_authorized_text_count = 0
+            radar_authorized_char_count = 0
+            radar_authorized_token_count = 0
+            if radar_spatial_safe:
+                for item in evidence:
+                    if item.id in radar_evidence_by_id:
+                        radar_spatial_safe = False
+                        break
+                    radar_evidence_by_id[item.id] = item
+                    if item.kind in {"ocr_token", "vector_text"} and item.text:
+                        radar_authorized_text_count += 1
+                        radar_authorized_char_count += len(item.text)
+                        if (
+                            radar_authorized_text_count > _MAX_OCR_REFERENCE_TEXTS
+                            or radar_authorized_char_count > _MAX_OCR_REFERENCE_CHARS
+                        ):
+                            radar_spatial_safe = False
+                            break
+                        radar_authorized_token_count += ocr_token_multiset((item.text,)).total()
+                        if radar_authorized_token_count > _MAX_OCR_REFERENCE_TOKENS:
+                            radar_spatial_safe = False
+                            break
+
+            if radar_spatial_safe:
+                for item in evidence:
+                    if (
+                        item.kind not in {"ocr_token", "vector_text"}
+                        or not item.text
+                        or item.bbox is None
+                    ):
+                        continue
+                    try:
+                        evidence_bbox = tuple(float(value) for value in item.bbox)
+                    except (TypeError, ValueError, OverflowError):
+                        radar_spatial_safe = False
+                        break
+                    if not all(math.isfinite(value) for value in evidence_bbox):
+                        radar_spatial_safe = False
+                        break
+                    normalized_text = _normalized_label(item.text)
+                    if normalized_text:
+                        radar_texts_by_bbox.setdefault(evidence_bbox, set()).add(normalized_text)
+
+            radar_record_observations: dict[
+                str, list[tuple[str, tuple[float, float, float, float], str]]
+            ] = {owner_id: [] for owner_id, *_rest in radar_record_specs}
+            radar_evidence_owners: dict[str, str] = {}
+            radar_observation_owners: dict[tuple[str, tuple[float, float, float, float]], str] = {}
+            radar_record_evidence_ids: set[str] = set()
+            radar_reference_count = 0
+            if radar_spatial_safe:
+                for owner_id, _source_record, evidence_ids, _allowed in radar_record_specs:
+                    radar_reference_count += len(evidence_ids)
+                    if radar_reference_count > _MAX_RADAR_ASSOCIATION_REFERENCES:
+                        radar_spatial_safe = False
+                        break
+                    owner_bbox = radar_record_boxes[owner_id]
+                    for evidence_id in evidence_ids:
+                        item = radar_evidence_by_id.get(evidence_id)
+                        if item is None:
+                            radar_spatial_safe = False
+                            break
+                        previous_id_owner = radar_evidence_owners.get(evidence_id)
+                        if previous_id_owner is not None and previous_id_owner != owner_id:
+                            radar_spatial_safe = False
+                            break
+                        radar_evidence_owners[evidence_id] = owner_id
+                        radar_record_evidence_ids.add(evidence_id)
+                        if (
+                            item.kind not in {"ocr_token", "vector_text"}
+                            or not item.text
+                            or item.bbox is None
+                        ):
+                            radar_spatial_safe = False
+                            break
+                        try:
+                            evidence_bbox = tuple(float(value) for value in item.bbox)
+                        except (TypeError, ValueError, OverflowError):
+                            radar_spatial_safe = False
+                            break
+                        ex1, ey1, ex2, ey2 = evidence_bbox
+                        if (
+                            not all(math.isfinite(value) for value in evidence_bbox)
+                            or ex2 <= ex1
+                            or ey2 <= ey1
+                            or ex1 < owner_bbox[0]
+                            or ey1 < owner_bbox[1]
+                            or ex2 > owner_bbox[2]
+                            or ey2 > owner_bbox[3]
+                            or len(radar_texts_by_bbox.get(evidence_bbox, set())) != 1
+                        ):
+                            radar_spatial_safe = False
+                            break
+                        normalized_text = _normalized_label(item.text)
+                        if not normalized_text:
+                            radar_spatial_safe = False
+                            break
+                        observation_key = (normalized_text, evidence_bbox)
+                        previous_owner = radar_observation_owners.get(observation_key)
+                        if previous_owner is not None:
+                            if previous_owner != owner_id:
+                                radar_spatial_safe = False
+                                break
+                            continue
+                        radar_observation_owners[observation_key] = owner_id
+                        radar_record_observations[owner_id].append(
+                            (normalized_text, evidence_bbox, item.text)
+                        )
+                    if not radar_spatial_safe:
+                        break
+
+            if radar_spatial_safe and all(radar_record_observations.values()):
+                expected_text_count = sum(
+                    len(allowed)
+                    for _owner_id, _source_record, _evidence_ids, allowed in (radar_record_specs)
+                )
+                expected_char_count = sum(
+                    len(value)
+                    for _owner_id, _source_record, _evidence_ids, allowed in (radar_record_specs)
+                    for value in allowed
+                )
+                expected_token_count = sum(
+                    ocr_token_multiset((value,)).total()
+                    for _owner_id, _source_record, _evidence_ids, allowed in (radar_record_specs)
+                    for value in allowed
+                )
+                if (
+                    radar_authorized_text_count + expected_text_count <= _MAX_OCR_REFERENCE_TEXTS
+                    and radar_authorized_char_count + expected_char_count
+                    <= _MAX_OCR_REFERENCE_CHARS
+                    and radar_authorized_token_count + expected_token_count
+                    <= _MAX_OCR_REFERENCE_TOKENS
+                ):
+                    association_matches = True
+                    for owner_id, _source_record, _evidence_ids, allowed in radar_record_specs:
+                        ordered = sorted(
+                            radar_record_observations[owner_id],
+                            key=lambda item: (
+                                item[1][0],
+                                item[1][1],
+                                item[1][2],
+                                item[1][3],
+                                item[0],
+                            ),
+                        )
+                        observation_text = _normalized_label(" ".join(item[2] for item in ordered))
+                        if observation_text not in allowed:
+                            association_matches = False
+                    radar_binding_state = "exact" if association_matches else "mismatch"
+
+            if radar_plan is not None and typed_ir is not None:
+                accessibility_base_ir = {
+                    key: value
+                    for key, value in typed_ir.items()
+                    if key not in {"acc_title", "acc_description"}
+                }
+                derived_accessibility = resolve_accessibility(
+                    accessibility_base_ir,
+                    "radar",
+                    experimental=self.config.mode != Mode.STRICT,
+                )
+                required_radar_title_texts: set[str] = set()
+                if radar_plan.semantic_title is not None:
+                    required_radar_title_texts.add(_normalized_label(radar_plan.semantic_title))
+                accessibility_title = typed_ir.get("acc_title")
+                if isinstance(accessibility_title, str) and _normalized_label(
+                    accessibility_title
+                ) != _normalized_label(derived_accessibility.title):
+                    required_radar_title_texts.add(_normalized_label(accessibility_title))
+
+                required_radar_description_texts: set[str] = set()
+                explicit_description = typed_ir.get("description")
+                if isinstance(explicit_description, str) and explicit_description:
+                    required_radar_description_texts.add(_normalized_label(explicit_description))
+                accessibility_description = typed_ir.get("acc_description")
+                accessibility_description_text = (
+                    accessibility_description.removesuffix(f" {EXPERIMENTAL_NOTICE}").removesuffix(
+                        EXPERIMENTAL_NOTICE
+                    )
+                    if isinstance(accessibility_description, str)
+                    else None
+                )
+                derived_description_text = derived_accessibility.description.removesuffix(
+                    f" {EXPERIMENTAL_NOTICE}"
+                ).removesuffix(EXPERIMENTAL_NOTICE)
+                if accessibility_description_text and _normalized_label(
+                    accessibility_description_text
+                ) != _normalized_label(derived_description_text):
+                    required_radar_description_texts.add(
+                        _normalized_label(accessibility_description_text)
+                    )
+
+                required_radar_metadata: list[tuple[str, str, str]] = []
+                required_radar_metadata.extend(
+                    (f"title-{index}", text, "title")
+                    for index, text in enumerate(sorted(required_radar_title_texts), start=1)
+                )
+                required_radar_metadata.extend(
+                    (f"description-{index}", text, "description")
+                    for index, text in enumerate(sorted(required_radar_description_texts), start=1)
+                )
+                if required_radar_title_texts:
+                    radar_title_attribution_state = "unavailable"
+                if required_radar_description_texts:
+                    radar_description_attribution_state = "unavailable"
+
+                radar_metadata_candidates: list[
+                    tuple[
+                        str,
+                        str,
+                        tuple[float, float, float, float] | None,
+                    ]
+                ] = []
+                radar_metadata_spatial_safe = radar_spatial_safe
+                if required_radar_metadata and radar_metadata_spatial_safe:
+                    for item in evidence:
+                        if item.id in radar_record_evidence_ids or not item.text:
+                            continue
+                        normalized_text = _normalized_label(item.text)
+                        if item.kind == "user_edit":
+                            if item.id not in approved_user_edit_evidence_ids:
+                                continue
+                            if item.bbox is None:
+                                radar_metadata_candidates.append((item.id, normalized_text, None))
+                                continue
+                            try:
+                                candidate_bbox = tuple(float(value) for value in item.bbox)
+                            except (TypeError, ValueError, OverflowError):
+                                radar_metadata_spatial_safe = False
+                                break
+                        elif item.kind in {"ocr_token", "vector_text"} and item.bbox is not None:
+                            try:
+                                candidate_bbox = tuple(float(value) for value in item.bbox)
+                            except (TypeError, ValueError, OverflowError):
+                                radar_metadata_spatial_safe = False
+                                break
+                            observation_key = (normalized_text, candidate_bbox)
+                            if (
+                                len(radar_texts_by_bbox.get(candidate_bbox, set())) != 1
+                                or observation_key in radar_observation_owners
+                            ):
+                                continue
+                        else:
+                            continue
+
+                        x1, y1, x2, y2 = candidate_bbox
+                        if (
+                            not all(math.isfinite(value) for value in candidate_bbox)
+                            or x2 <= x1
+                            or y2 <= y1
+                            or x1 < 0
+                            or y1 < 0
+                            or x2 > image_width
+                            or y2 > image_height
+                        ):
+                            radar_metadata_spatial_safe = False
+                            break
+                        overlaps_record = False
+                        for record_bbox in radar_record_boxes.values():
+                            if radar_spatial_budget <= 0:
+                                radar_metadata_spatial_safe = False
+                                break
+                            radar_spatial_budget -= 1
+                            if (
+                                candidate_bbox[0] < record_bbox[2]
+                                and candidate_bbox[2] > record_bbox[0]
+                                and candidate_bbox[1] < record_bbox[3]
+                                and candidate_bbox[3] > record_bbox[1]
+                            ):
+                                overlaps_record = True
+                                break
+                        if not radar_metadata_spatial_safe:
+                            break
+                        if overlaps_record:
+                            continue
+                        radar_metadata_candidates.append((item.id, normalized_text, candidate_bbox))
+
+                proven_radar_metadata: set[str] = set()
+                used_radar_metadata_ids: set[str] = set()
+                used_radar_metadata_observations: set[
+                    tuple[str, tuple[float, float, float, float]]
+                ] = set()
+                if required_radar_metadata and radar_metadata_spatial_safe:
+                    ordered_metadata_candidates = sorted(
+                        radar_metadata_candidates,
+                        key=lambda item: (
+                            item[2] is None,
+                            item[2] or (0.0, 0.0, 0.0, 0.0),
+                            item[0],
+                        ),
+                    )
+                    for owner_id, required_text, _owner_kind in required_radar_metadata:
+                        for (
+                            evidence_id,
+                            candidate_text,
+                            candidate_bbox,
+                        ) in ordered_metadata_candidates:
+                            if radar_spatial_budget <= 0:
+                                radar_metadata_spatial_safe = False
+                                break
+                            radar_spatial_budget -= 1
+                            observation_key = (
+                                (candidate_text, candidate_bbox)
+                                if candidate_bbox is not None
+                                else None
+                            )
+                            if (
+                                evidence_id in used_radar_metadata_ids
+                                or candidate_text != required_text
+                                or (
+                                    observation_key is not None
+                                    and observation_key in used_radar_metadata_observations
+                                )
+                            ):
+                                continue
+                            used_radar_metadata_ids.add(evidence_id)
+                            if observation_key is not None:
+                                used_radar_metadata_observations.add(observation_key)
+                            proven_radar_metadata.add(owner_id)
+                            break
+                        if not radar_metadata_spatial_safe:
+                            break
+
+                required_radar_title_owners = {
+                    owner_id for owner_id, _text, kind in required_radar_metadata if kind == "title"
+                }
+                required_radar_description_owners = {
+                    owner_id
+                    for owner_id, _text, kind in required_radar_metadata
+                    if kind == "description"
+                }
+                if (
+                    radar_metadata_spatial_safe
+                    and required_radar_title_owners
+                    and required_radar_title_owners <= proven_radar_metadata
+                ):
+                    radar_title_attribution_state = "exact"
+                if (
+                    radar_metadata_spatial_safe
+                    and required_radar_description_owners
+                    and required_radar_description_owners <= proven_radar_metadata
+                ):
+                    radar_description_attribution_state = "exact"
+
+            global_radar_numeric = numeric_consistency(references.numeric_tokens, code)
+            if radar_binding_state == "exact" and global_radar_numeric != 1.0:
+                radar_binding_state = (
+                    "mismatch" if global_radar_numeric is not None else "unavailable"
+                )
+            numeric = (
+                1.0
+                if radar_binding_state == "exact"
+                else 0.0
+                if radar_binding_state == "mismatch"
                 else None
             )
         elif gate_diagram_type == "xychart":
@@ -4228,10 +4713,7 @@ class ReconstructionPipeline:
                     xy_binding_state = "exact" if association_matches else "mismatch"
 
             numeric_projection_code = code
-            if (
-                xy_plan is not None
-                and _canonical_runtime_type(runtime.diagram_type) == "xychart"
-            ):
+            if xy_plan is not None and _canonical_runtime_type(runtime.diagram_type) == "xychart":
                 explicit_x_values = [
                     point.x_text
                     for series in xy_plan.series
@@ -4242,9 +4724,7 @@ class ReconstructionPipeline:
                     # Mermaid emits explicit, uniform x coordinates only as derived
                     # geometry.  Add them to the scoring projection (not the validated
                     # source) so occurrence-preserving numeric recall still covers x.
-                    numeric_projection_code += (
-                        "    line [" + ", ".join(explicit_x_values) + "]\n"
-                    )
+                    numeric_projection_code += "    line [" + ", ".join(explicit_x_values) + "]\n"
             global_xy_numeric = numeric_consistency(
                 references.numeric_tokens,
                 numeric_projection_code,
@@ -4442,15 +4922,18 @@ class ReconstructionPipeline:
         elif gate_diagram_type == "pie" and pie_binding_state == "mismatch":
             aggregate = None
             warnings.append(_PIE_NUMERIC_ASSOCIATION_MISMATCH_WARNING)
-        elif (
-            gate_diagram_type == "quadrant"
-            and quadrant_binding_state == "unavailable"
-        ):
+        elif gate_diagram_type == "quadrant" and quadrant_binding_state == "unavailable":
             aggregate = None
             warnings.append(_QUADRANT_RECORD_ASSOCIATION_UNAVAILABLE_WARNING)
         elif gate_diagram_type == "quadrant" and quadrant_binding_state == "mismatch":
             aggregate = None
             warnings.append(_QUADRANT_RECORD_ASSOCIATION_MISMATCH_WARNING)
+        elif gate_diagram_type == "radar" and radar_binding_state == "unavailable":
+            aggregate = None
+            warnings.append(_RADAR_RECORD_ASSOCIATION_UNAVAILABLE_WARNING)
+        elif gate_diagram_type == "radar" and radar_binding_state == "mismatch":
+            aggregate = None
+            warnings.append(_RADAR_RECORD_ASSOCIATION_MISMATCH_WARNING)
         elif gate_diagram_type == "xychart" and xy_binding_state == "unavailable":
             aggregate = None
             warnings.append(_XY_RECORD_ASSOCIATION_UNAVAILABLE_WARNING)
@@ -4475,16 +4958,10 @@ class ReconstructionPipeline:
         if gate_diagram_type == "pie" and pie_description_attribution_state == "unavailable":
             aggregate = None
             warnings.append(_PIE_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING)
-        if (
-            gate_diagram_type == "quadrant"
-            and quadrant_slot_attribution_state == "unavailable"
-        ):
+        if gate_diagram_type == "quadrant" and quadrant_slot_attribution_state == "unavailable":
             aggregate = None
             warnings.append(_QUADRANT_SLOT_ATTRIBUTION_UNAVAILABLE_WARNING)
-        if (
-            gate_diagram_type == "quadrant"
-            and quadrant_title_attribution_state == "unavailable"
-        ):
+        if gate_diagram_type == "quadrant" and quadrant_title_attribution_state == "unavailable":
             aggregate = None
             warnings.append(_QUADRANT_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING)
         if (
@@ -4497,6 +4974,12 @@ class ReconstructionPipeline:
             warnings.append(_QUADRANT_METADATA_ROLE_LIMITATION_WARNING)
             if self.config.publish_policy == PublishPolicy.STRICT_VALIDATED:
                 aggregate = None
+        if gate_diagram_type == "radar" and radar_title_attribution_state == "unavailable":
+            aggregate = None
+            warnings.append(_RADAR_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING)
+        if gate_diagram_type == "radar" and radar_description_attribution_state == "unavailable":
+            aggregate = None
+            warnings.append(_RADAR_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING)
         if gate_diagram_type == "xychart" and xy_title_attribution_state == "unavailable":
             aggregate = None
             warnings.append(_XY_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING)
@@ -4764,10 +5247,7 @@ class ReconstructionPipeline:
             repair_quadrant_metadata_role_limited = (
                 _QUADRANT_METADATA_ROLE_LIMITATION_WARNING in current.warnings
             )
-            if (
-                gate_diagram_type == "quadrant"
-                and not repair_quadrant_metadata_role_limited
-            ):
+            if gate_diagram_type == "quadrant" and not repair_quadrant_metadata_role_limited:
                 accessibility_base_ir = {
                     key: value
                     for key, value in validated_ir.items()

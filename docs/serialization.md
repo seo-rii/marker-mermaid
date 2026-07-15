@@ -541,17 +541,25 @@ malformed evidence list는 그 record에서만 빈 tuple로 격리합니다.
 Native point는 independently emitted node가 아니라 curve에서 파생된 geometry이므로 generated-node
 provenance gate는 axis/series만 injective하게 평가하고 point value는 numeric consistency에 맡깁니다.
 
-Fallback은 최대 256 point의 edge 없는 `flowchart TB`입니다. Series마다 zero-geometry group을 만들고 각
-dimension/value를 zero-geometry rectangle `dimension: exact-value` cell로 보존하며 relation은 없습니다.
-Bounds, ticks, legend, graticule, native radial geometry와 native-only canvas title은 typed IR/review metadata에만
-남고 fallback OCR에는 group/cell visible text만 들어갑니다. Native runtime rejection은 새 candidate budget을
+Fallback은 최대 256 point의 edge 없는 `flowchart TB`입니다. Visible native title은 isolated zero-geometry title
+node로 보존하고, series별 zero-geometry group을 만들되 `showLegend=true`일 때만 label을 표시하며 각
+dimension/value를 rectangle `dimension: exact-value` cell로 보존합니다. Relation은 없습니다. Bounds, ticks,
+graticule과 native radial geometry는
+typed IR/review metadata에만 남고 fallback OCR에는 실제 title·conditional group·cell visible text만 들어갑니다.
+Native runtime rejection은 새 candidate budget을
 쓰지 않고 같은 slot에서 이 fallback을 한 번 strict scan·parse·render·SVG·terminal-type 재검증합니다.
-Fallback budget을 넘으면 partial projection을 만들지 않습니다. 두 terminal은 50,000자·5,000줄 source
+Fallback budget을 넘으면 partial projection을 만들지 않습니다. 두 terminal은 50,000 UTF-16 code-unit·5,000줄 source
 preflight와 terminal 전체의 collision-safe reserved-word ID namespace를 공유합니다. Visible compatibility
 glyph은 Scene/OCR에도 동일하게 사용하고 warning에 공개합니다. CandidateValidator는 SVG geometry attribute의
 `NaN`/`Infinity`를 render failure로 취급합니다.
-Fallback cell은 실제 emitted node이므로 provenance 분모에 남고, 반복된 dimension/series evidence claim은
-일반 injective collision 규칙대로 자동 게시 권한을 얻지 못합니다.
+Fallback cell은 실제 emitted node이지만 하나의 dimension과 series record를 결합한 projection이므로, 각 cell에
+evidence를 독점시키는 대신 모든 source record를 candidate-authorized spatial OCR/vector observation에 먼저
+injective하게 결합합니다. Dimension은 exact label, series는 label과 원래 순서의 모든 fixed-decimal value를
+증명해야 하며 local binding과 전역 numeric occurrence가 모두 exact일 때만 native/fallback 공통 numeric score가
+`1.0`입니다. 겹치거나 image 밖인 record, owner 밖 evidence, evidence/observation 재사용, 같은 bbox의 상충 text,
+missing typed plan 또는 association budget 초과는 source-wide multiset이나 runtime fallback으로 우회하지 않고
+review로 닫습니다. Visible title과 non-derived explicit accessibility text는 record 밖의 독립 spatial evidence 또는
+승인된 초기 user edit를 추가로 요구합니다. Semantic repair도 proposal의 새 IR로 같은 gate를 다시 계산합니다.
 
 Treemap serializer, generated Scene, semantic OCR은 `plan_treemap_records()`의 같은 bounded DFS
 preorder plan을 소비합니다. Plan은 source record·parent/child, unique bounded source ID 또는

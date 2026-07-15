@@ -125,16 +125,16 @@ Mermaid의 radial scale에 맞춘 `[0,1]` normalized 위치에 놓고, series el
 marker/label 없는 `series_curve` association을 만듭니다. Series bbox는 point들의 normalized curve envelope이고
 source bbox나 임의 원점이 아닙니다. Direction은 `radial`, group은 비어 있으며 source
 bbox를 generated position으로 복사하지 않습니다. Series text는 `showLegend=true`일 때만 visible합니다.
-Fallback terminal은 실제 `flowchart TB`처럼 series별 zero-geometry group과 rectangle
-`dimension: exact-value` cell만 만들고 relation은 추가하지 않습니다. Dimension/series evidence는 각 axis와
+Fallback terminal은 실제 `flowchart TB`처럼 visible title을 isolated zero-geometry node로 보존하고,
+series별 zero-geometry group을 만들되 `showLegend=true`일 때만 label을 표시하며 rectangle
+`dimension: exact-value` cell과 빈 relation list를 사용합니다. Dimension/series evidence는 각 axis와
 series에, bounded union은 point/cell에, series evidence는 native curve relation에 연결합니다. Malformed
 evidence list는 그 record에서만 전부 비우며 terminal-visible compatibility glyph과 warning을 Scene/OCR에서도
 공유합니다.
 Native data point는 독립 Mermaid node가 아니라 series curve에서 파생된 geometry이므로 generated-node
-provenance 분모에서는 제외하고, 직접 귀속 가능한 axis와 series만 injective하게 평가합니다. Point value는
-numeric consistency가 별도로 검증합니다. Flowchart fallback의 cell은 실제 node이므로 분모에서 제외하지
-않으며, dimension/series evidence를 여러 cell이 반복 주장하면 기존 collision 규칙대로 지원되지 않은 node로
-처리합니다.
+provenance 분모에서는 제외하고, 직접 귀속 가능한 axis와 series만 injective하게 평가합니다. Flowchart cell은
+두 source record의 terminal projection이므로 record-local association을 통과한 dimension/series evidence를
+공유할 수 있지만, 알려진 evidence가 전혀 없는 cell은 provenance credit을 받지 못합니다.
 Treemap Scene은 serializer·semantic OCR과 같은 DFS preorder `TreemapPlan`을 소비합니다.
 Native terminal은 source에서 고유하고 bounded한 ID 또는 collision-safe
 `treemap_node_N[_suffix]`를 section/leaf identity로 쓰고 parent/child를 arrow가 없는 logical
@@ -254,8 +254,9 @@ generated Scene attribution에서 제외합니다.
   terminal은 node label과 renderer가 표시하는 `max(incoming, outgoing)` 합계를 세되 개별 flow weight는 세지 않고, Flowchart terminal은
   node label과 exact edge-weight label을 셉니다. 두 Sankey 경로 모두 title/description을 canvas text로 세지
   않습니다. Radar native terminal은 visible title·axis와 `showLegend=true`인 series legend만 세고, value,
-  bounds, ticks, graticule과 `accTitle`/`accDescr`는 geometry/metadata이므로 제외합니다. Radar Flowchart는 series
-  subgraph label과 각 `dimension: exact-value` cell만 세며 native-only canvas title과 hidden option은 제외합니다.
+  bounds, ticks, graticule과 `accTitle`/`accDescr`는 geometry/metadata이므로 제외합니다. Radar Flowchart는 visible
+  title, `showLegend=true`인 series subgraph label과 각 `dimension: exact-value` cell을 세며 hidden option은
+  제외합니다.
   Treemap native terminal은 visible `title`, 각 section/leaf label, d3-hierarchy의
   reverse-order binary64 합산을 d3 `format(",")`으로 표시한 값을 세고, Flowchart terminal은
   preorder node의 exact value-suffix label만 셉니다. `accTitle`/`accDescr`는 SVG metadata일 뿐 content
@@ -270,7 +271,7 @@ generated Scene attribution에서 제외합니다.
   direct-code fallback으로 바꾸지 않습니다. 예외를 candidate warning으로 격리하고 aggregate를
   unavailable로 유지하여 다른 candidate 선택과 문서 변환은 계속합니다.
 - 일반 numeric consistency는 source/generated 숫자 occurrence multiset의 precision·recall F1입니다. Pie·XY·
-  Quadrant와 Packet의 record-local 결합 검증은 아래 예외를 사용합니다. Bounded
+  Quadrant·Radar와 Packet의 record-local 결합 검증은 아래 예외를 사용합니다. Bounded
   evidence 안의 동일 normalized text+bbox는 한 관측으로 합치고, OCR context와 evidence 채널의 numeric
   Counter는 token별 최대 occurrence로 병합합니다. 따라서 위치가 다른 반복값은 보존하면서 채널 간 중복
   보고는 다시 세지 않습니다. 생성한 숫자가 source에 없거나 occurrence 수가 다르면 precision/recall을
@@ -306,9 +307,23 @@ generated Scene attribution에서 제외합니다.
   point 및 closed marker-less curve relation을 평가합니다. Flowchart는 최대 256 point의 zero-geometry `TB`
   group/cell과 빈 relation list를 사용하므로 radial layout이나 edge를 가장하지 않습니다. Native runtime
   rejection은 같은 candidate slot의 fallback을 한 번 재검증하며 fallback budget을 넘으면 partial Scene 대신
-  unavailable입니다. Native provenance gate는 derived point 대신 axis/series를 평가하고 Flowchart는 실제 cell을
-  계속 injective하게 평가합니다. 두 terminal은 reserved-safe ID namespace와 50,000자·5,000줄 source preflight를
-  공유합니다.
+  unavailable입니다. Native provenance gate는 derived point 대신 axis/series를 평가합니다. Flowchart의 실제
+  cell은 dimension과 series evidence를 공유하므로 Radar-local owner binding으로 추적하고, 알려진 record evidence가
+  없는 cell은 provenance credit을 받지 못합니다. 두 terminal은 reserved-safe ID namespace와
+  50,000 UTF-16 code-unit·5,000줄 source preflight를 공유합니다.
+- Radar numeric consistency는 dimension별 exact label record와 series별 `label + ordered values` record를
+  candidate-authorized OCR/vector evidence에 결합한 뒤 전역 숫자 occurrence exactness를 추가로 요구합니다. 모든
+  owner bbox는 source image 안의 양의 면적이고 서로 겹치지 않아야 하며, cited evidence bbox는 owner 안에 완전히
+  포함되어야 합니다. Evidence ID와 normalized text+bbox는 owner 사이에서 재사용할 수 없고, 같은 bbox의 uncited
+  contradictory text도 cherry-pick할 수 없습니다. Missing typed plan, invalid geometry/authority, 비어 있는 owner
+  observation, reference/text/token 또는 100,000회 spatial comparison budget 소진은 metric 전체를 unavailable로
+  두며, 결합된 label/value 순서가 다르면 `0.0`입니다. Native와 same-slot Flowchart, semantic repair proposal은
+  모두 새 typed IR과 같은 scoped evidence로 이 gate를 다시 계산합니다.
+- Radar visible title과 non-derived explicit accessibility title/description은 record-owned observation과 겹치지
+  않는 candidate-authorized spatial OCR/vector exact text 또는 reconstruction 초기 입력의 approved exact
+  `user_edit`를 별도로 요구합니다. 같은 evidence/normalized text+bbox를 metadata owner 사이에서 재사용하거나,
+  engine-emitted edit로 스스로 승인하거나, bounded metadata-to-record/matching comparison을 초과하면 native와
+  fallback 모두 review입니다. 구조에서 결정적으로 파생한 기본 accessibility와 experimental notice는 제외합니다.
 - Treemap 구조 metric은 공용 preorder plan이 고정한 terminal을 따릅니다. Native는 section/leaf
   identity와 arrow 없는 logical containment, `unknown` direction을 쓰고, Flowchart는 `N1..Nn`,
   `TB`, rectangle, end-arrow를 씁니다. Internal explicit value·binary64/renderer 표시 비호환은
@@ -353,7 +368,8 @@ generated Scene attribution에서 제외합니다.
   budget을 확인할 수 없으면 일부 field만 평가하지 않고 Packet metric 전체를 unavailable로 두어 review를
   요구합니다. Candidate authority 안의 같은 bbox에 서로 다른 normalized OCR/vector text가 있으면 field가
   유리한 관측 하나만 인용했더라도 상충 관측을 숨길 수 없도록 unavailable로 처리합니다. Packet binding은
-  전역 multiset을 대체하고, Pie binding은 전역 exactness에 추가됩니다. 다른 numeric type 계산은 바뀌지 않습니다.
+  전역 multiset을 대체하고, Pie·XY·Quadrant·Radar binding은 전역 exactness에 추가됩니다. 다른 numeric type
+  계산은 바뀌지 않습니다.
 - visual entailment precision은 생성된 node를 source node ID, collision-free portable ID alias 또는
   유일한 정규화 label로 정렬한 collision-free evidence coverage proxy입니다. Node 근거로
   인정하는 kind는 `ocr_token`, `vector_text`, `contour`, `vlm_observation`, `user_edit`로

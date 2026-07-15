@@ -676,7 +676,21 @@ def typed_ir_to_scene(
         if radar_uses_flowchart:
             if not radar_plan.flowchart_supported:
                 return None
-            elements = [
+            elements: list[SceneElement] = []
+            if radar_plan.fallback_title_id is not None:
+                assert radar_plan.fallback_canvas_title is not None
+                elements.append(
+                    SceneElement(
+                        id=radar_plan.fallback_title_id,
+                        role="title",
+                        text=radar_plan.fallback_canvas_title,
+                        bbox=(0.0, 0.0, 0.0, 0.0),
+                        shape="rectangle",
+                        confidence=1.0,
+                        evidence_ids=[],
+                    )
+                )
+            elements.extend(
                 SceneElement(
                     id=point.scene_id,
                     role="data_point",
@@ -688,12 +702,12 @@ def typed_ir_to_scene(
                 )
                 for series in radar_plan.series
                 for point in series.points
-            ]
+            )
             groups = [
                 SceneGroup(
                     id=series.emitted_id,
                     role="series",
-                    label=series.fallback_canvas_label,
+                    label=(series.fallback_canvas_label if radar_plan.show_legend else None),
                     bbox=(0.0, 0.0, 0.0, 0.0),
                     member_ids=[point.scene_id for point in series.points],
                 )
@@ -2110,8 +2124,11 @@ def typed_ir_semantic_texts(
                 raise SerializationError(
                     "Radar Flowchart projection exceeds the runtime point limit"
                 )
+            if plan.fallback_canvas_title is not None:
+                yield plan.fallback_canvas_title
             for series in plan.series:
-                yield series.fallback_canvas_label
+                if plan.show_legend:
+                    yield series.fallback_canvas_label
                 for point in series.points:
                     yield point.fallback_canvas_label
         else:

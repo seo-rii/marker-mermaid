@@ -457,7 +457,7 @@ internal value가 있는 Treemap, 일부 size가 없는 Venn은 구조 오류가
 선택할 수 있으므로 extraction model에서 금지하지 않습니다.
 
 Radar의 serializer-owned 의미 검사는 dimension 3~256개, aligned series, 전체 Scene/point 예산,
-native 12-series, fallback 256-point, 50,000자·5,000줄 source 경계를 함께 적용합니다. Native value와 explicit
+native 12-series, fallback 256-point, 50,000 UTF-16 code-unit·5,000줄 source 경계를 함께 적용합니다. Native value와 explicit
 bound는 zero 또는 normal binary64 exact round-trip, positive finite effective span과 finite renderer radius를
 만족해야 하며 음수·subnormal·overflow·precision loss·zero/non-finite span은 exact-value Flowchart를 선택합니다.
 Radar grammar 예약어를 포함한 dimension/series ID는 native axis/curve와 fallback group/cell 전체 namespace에서
@@ -466,12 +466,18 @@ reserved-safe collision suffix를 배정합니다. Native runtime rejection도 �
 
 Sankey·Radar·Treemap·Venn record의 ID와 evidence는 generated Scene attribution에 사용됩니다. Radar native
 Scene은 source bbox 대신 normalized radial axis/data-point와 point-derived series envelope, closed curve
-relation을, fallback은 zero-geometry
-`TB` series group/value cell과 빈 relation list를 사용합니다. Dimension/series evidence는 point에서 bounded
+relation을, fallback은 zero-geometry `TB` visible-title node, 조건부 label의 series group, value cell과 빈
+relation list를 사용합니다. Dimension/series evidence는 point에서 bounded
 deduplicated union으로 결합하고 series evidence는 native curve relation에도 연결합니다.
 Native point는 independently emitted node가 아니라 curve에서 파생되므로 generated-node provenance 분모는
-axis/series만 사용하고 value는 numeric consistency로 검증합니다. Flowchart value cell은 실제 emitted node라서
-분모에 유지되며, 여러 cell이 같은 record evidence만 재사용하면 injective attribution으로 인정하지 않습니다.
+axis/series만 사용합니다. Flowchart value cell은 dimension과 series를 결합한 projection이므로 각 cell에 source
+evidence를 독점시키지 않고, 모든 dimension/series record를 별도의 owner-local gate에서 검증합니다. Dimension
+label과 그 공간 순서, series label과 ordered value sequence가 candidate-authorized bbox-contained OCR/vector
+observation에 정확히 결합되고 전역 숫자 occurrence도 일치해야 `numeric_consistency=1.0`입니다. Cross-owner
+evidence/normalized-observation 재사용, 같은 bbox의 uncited contradiction, overlapping/invalid geometry, missing
+typed plan 또는 bounded reference/text/token/spatial work 초과는 native·Flowchart·repair 모두 review로 닫습니다.
+Visible title과 non-derived explicit accessibility metadata는 data record가 소유하지 않은 candidate-authorized
+spatial OCR/vector exact observation 또는 approved initial user edit로 별도 attribution되어야 합니다.
 Treemap은 누락·중복·잘못된 source ID를 reserved-safe preorder slot으로 격리합니다. Venn은 canonical unique
 set ID를 요구한 뒤 set portable ID를 먼저 예약하고, intersection explicit ID가 정규화 충돌하면
 deterministic `intersection_N[_suffix]` Scene slot을 배정합니다. Set/intersection의 source bbox는

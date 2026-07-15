@@ -207,7 +207,7 @@ terminal별 source/canvas label, point별 dimension+series evidence를 한 번 �
 Flowchart group/cell ID까지 하나의 namespace에서 collision-safe suffix로 분리합니다. Malformed evidence list는
 해당 record에서만 원자적으로 비우고, point provenance의 bounded 합집합을 만들 수 없으면 그 point evidence
 전체를 비웁니다. Dimension은 최대 256개, 전체 point와 Scene element는 공용 Scene budget을 지키며 native와
-fallback source 모두 50,000자·5,000줄 preflight를 통과합니다.
+fallback source 모두 50,000 UTF-16 code-unit·5,000줄 preflight를 통과합니다.
 
 Native `radar-beta`는 value와 explicit bound가 zero 또는 normal binary64로 원문과 round-trip되고,
 effective minimum과 maximum의 binary64 span이 positive finite이며, pinned 300px renderer radius 계산이
@@ -222,17 +222,19 @@ point들의 normalized envelope라서 logical series를 원점에 놓아 layout 
 
 Native를 쓸 수 없거나 CandidateValidator가 native를 거부하면 같은 candidate slot에서 최대 256 point의
 `flowchart TB`를 한 번 재검증합니다. 각 series는 subgraph, 각 point는 zero-geometry rectangle
-`dimension: exact-value` cell이며 edge는 만들지 않습니다. Fallback Scene/OCR도 이 group/cell만 투영하고
-native title과 bounds/ticks/legend/graticule을 canvas content로 가장하지 않습니다. 256-point fallback을 만들 수
-없는 valid native candidate가 runtime에서 거부되면 partial code/Scene 대신 unavailable입니다. Strict scanner용
+`dimension: exact-value` cell이며 edge는 만들지 않습니다. Visible title은 isolated title node로 보존하고,
+series subgraph의 visible label은 `showLegend=true`일 때만 방출합니다. Fallback Scene/OCR도 이
+title·conditional group label·cell을 그대로 투영하며 bounds/ticks/graticule은 canvas content로 가장하지
+않습니다. 256-point fallback을 만들 수 없는
+valid native candidate가 runtime에서 거부되면 partial code/Scene 대신 unavailable입니다. Strict scanner용
 source separator와 angle/hash, fallback quote/backslash 등의 visible compatibility glyph을 분리하고, visible
 치환은 native/fallback warning에 공개합니다. CandidateValidator의 SVG inspection은 Mermaid가 render 성공을
 보고해도 geometry attribute에 `NaN`/`Infinity`가 있으면 render-invalid로 닫습니다.
 
 Native generated-node provenance gate는 실제로 직접 귀속할 수 있는 axis와 series를 평가하고, series에서
-파생된 data point는 분모에서 제외합니다. Point value는 별도의 numeric consistency가 검증합니다. 반대로
-Flowchart fallback의 point cell은 실제 Mermaid node이므로 injective provenance 분모에 남습니다. 여러 cell이
-같은 dimension/series evidence만 반복 주장하면 자동 게시 권한으로 세지 않고 review로 보냅니다.
+파생된 data point는 분모에서 제외합니다. Flowchart fallback의 point cell은 dimension과 series record를 함께
+참조하므로 node 단위로 evidence를 독점시키지 않고 아래 Radar-local association으로 두 owner를 검증합니다.
+어느 cell도 알려진 record evidence가 없으면 별도의 generated-node provenance gate도 통과하지 못합니다.
 
 Treemap serializer·Scene·semantic OCR도 `plan_treemap_records()`의 같은 DFS preorder plan을
 공유합니다. Plan은 source record, logical Scene ID, Flowchart에 실제 방출할 `N1..Nn`,
@@ -365,7 +367,25 @@ label과 bit range를 결합하며 source-wide `ocr_texts`는 binding에 사용�
 한 번을 요구합니다. 동일 normalized text+bbox의 OCR/vector 중복은 한 번만 세고 공간적으로 다른 반복은
 유지합니다. 겹치는 field, broad/shared/같은 위치의 모호한 관측, 누락되거나 잘못된 authority·bbox·image
 bounds, association budget 소진은 unavailable/review이며 전역 multiset이나 게시 threshold로 우회하지
-않습니다. Pie와 Packet을 제외한 numeric type의 multiset 계산은 그대로입니다.
+않습니다.
+
+Radar도 전역 숫자 multiset에 더해 dimension/series-local association을 요구합니다. 모든 dimension과 series
+record는 source image 안의 양의 면적이며 서로 겹치지 않는 bbox를 가져야 하고, candidate publication authority의
+`ocr_token`/`vector_text` evidence를 직접 인용해야 합니다. Dimension 관측은 exact label, series 관측은 exact
+label과 원래 순서의 모든 fixed-decimal value를 한 record로 결합해야 합니다. Evidence bbox는 owner bbox 안에
+완전히 포함되어야 하며 bbox reading order로 합친 text만 허용된 bounded 표기와 비교합니다. 같은 evidence ID나
+normalized text+bbox를 여러 owner가 재사용하거나, 인용하지 않은 상충 text가 같은 bbox에 있거나, record가
+겹치거나, geometry/reference/text/token/comparison budget을 확인할 수 없으면 전체 binding을
+unavailable/review로 닫습니다. 결합된 label 또는 value 순서가 다르면 `0.0`, local binding과 전역 occurrence가
+모두 exact일 때만 `1.0`입니다. 이 검사는 native, same-slot Flowchart, semantic repair에 공통이며 typed Radar
+plan이 없는 direct candidate는 자동 게시하지 않습니다. Pie·XY·Quadrant·Radar와 Packet을 제외한 numeric
+type의 multiset 계산은 그대로입니다.
+
+Radar의 visible `title`과 non-derived explicit `acc_title`/`description`/`acc_description`도 data record와
+독립된 근거가 필요합니다. Candidate-authorized OCR/vector observation은 모든 dimension/series bbox 밖의 유효한
+source 위치에 있어야 하고, reconstruction 초기 입력에서 승인된 exact `user_edit`도 사용할 수 있습니다. Record가
+이미 소유한 evidence, 같은 text+bbox 재사용, engine이 새로 만든 user edit, 모호하거나 budget을 넘긴 비교는
+metadata를 승인하지 않습니다. 구조에서 파생한 기본 접근성 문구와 experimental notice는 대상이 아닙니다.
 
 Generated numeric projection은 Mermaid `%%` comment를 제외하고, detected grammar가 지원할 때만 native
 `title ...`, colon `title: ...`, `accTitle: ...`, 한 줄 `accDescr: ...`, block `accDescr { ... }`를

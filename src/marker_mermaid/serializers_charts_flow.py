@@ -217,6 +217,9 @@ class RadarPlan:
     semantic_title: str | None
     native_source_title: str | None
     native_canvas_title: str | None
+    fallback_title_id: str | None
+    fallback_source_title: str | None
+    fallback_canvas_title: str | None
     native_compatibility_substitutions: bool
     fallback_compatibility_substitutions: bool
 
@@ -612,9 +615,13 @@ def _preflight_radar_code(code: str) -> str:
         raise SerializationError(
             f"Radar output exceeds source-line limit of {MAX_RADAR_OUTPUT_LINES}"
         )
-    if len(code) > MAX_RADAR_OUTPUT_CHARS:
+    try:
+        utf16_code_units = len(code.encode("utf-16-le")) // 2
+    except UnicodeEncodeError as exc:
+        raise SerializationError("Radar output is not valid UTF-16") from exc
+    if utf16_code_units > MAX_RADAR_OUTPUT_CHARS:
         raise SerializationError(
-            f"Radar output exceeds source-character limit of {MAX_RADAR_OUTPUT_CHARS}"
+            f"Radar output exceeds UTF-16 source-character limit of {MAX_RADAR_OUTPUT_CHARS}"
         )
     return code
 
@@ -737,8 +744,7 @@ def plan_radar_records(ir: Mapping[str, Any]) -> RadarPlan:
         if source_id != source_id.strip() or len(source_id) > MAX_ID_CHARS:
             raise SerializationError("Radar series requires a bounded canonical id")
         if any(
-            unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"}
-            for character in source_id
+            unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"} for character in source_id
         ):
             raise SerializationError("Radar series id contains unsupported text")
         try:
@@ -999,6 +1005,9 @@ def plan_radar_records(ir: Mapping[str, Any]) -> RadarPlan:
     semantic_title: str | None = None
     native_source_title: str | None = None
     native_canvas_title: str | None = None
+    fallback_title_id: str | None = None
+    fallback_source_title: str | None = None
+    fallback_canvas_title: str | None = None
     raw_title = ir.get("title")
     if raw_title is not None and raw_title != "":
         if type(raw_title) is not str:
@@ -1019,9 +1028,23 @@ def plan_radar_records(ir: Mapping[str, Any]) -> RadarPlan:
             str.maketrans({"<": "＜", ">": "＞", "#": "＃", ";": "；"})
         )
         native_source_title = _plain_text(native_canvas_title)
+        fallback_canvas_title = native_canvas_title.replace('"', "″").replace("\\", "∖")
+        fallback_source_title = _flow_text(fallback_canvas_title)
         native_compatibility_substitutions |= native_canvas_title != raw_title
+        fallback_compatibility_substitutions |= fallback_canvas_title != raw_title
 
-    flowchart_line_count = 3 + 2 * len(series) + point_count
+        fallback_title_base = "radar_title"
+        fallback_title_id = fallback_title_base
+        suffix = 2
+        while fallback_title_id in used_terminal_ids:
+            suffix_text = f"_{suffix}"
+            fallback_title_id = (
+                f"{fallback_title_base[: MAX_ID_CHARS - len(suffix_text)]}{suffix_text}"
+            )
+            suffix += 1
+        used_terminal_ids.add(fallback_title_id)
+
+    flowchart_line_count = 3 + int(fallback_title_id is not None) + 2 * len(series) + point_count
     return RadarPlan(
         dimensions=tuple(dimensions),
         series=tuple(series),
@@ -1042,6 +1065,9 @@ def plan_radar_records(ir: Mapping[str, Any]) -> RadarPlan:
         semantic_title=semantic_title,
         native_source_title=native_source_title,
         native_canvas_title=native_canvas_title,
+        fallback_title_id=fallback_title_id,
+        fallback_source_title=fallback_source_title,
+        fallback_canvas_title=fallback_canvas_title,
         native_compatibility_substitutions=native_compatibility_substitutions,
         fallback_compatibility_substitutions=fallback_compatibility_substitutions,
     )
@@ -1054,8 +1080,14 @@ def _radar_flowchart(
     experimental: bool,
 ) -> str:
     if not plan.flowchart_supported:
+        point_count = sum(len(series.points) for series in plan.series)
+        if point_count > MAX_RADAR_FLOWCHART_POINTS:
+            raise SerializationError(
+                "Radar Flowchart fallback exceeds the "
+                f"{MAX_RADAR_FLOWCHART_POINTS}-point runtime limit"
+            )
         raise SerializationError(
-            f"Radar Flowchart fallback exceeds the {MAX_RADAR_FLOWCHART_POINTS}-point runtime limit"
+            f"Radar Flowchart fallback exceeds source-line limit of {MAX_RADAR_OUTPUT_LINES}"
         )
     lines = ["flowchart TB"]
     accessibility = resolve_accessibility(ir, "radar", experimental=experimental)
@@ -1063,8 +1095,12 @@ def _radar_flowchart(
     suffix = "This radar reconstruction uses a tabular flowchart fallback."
     description = f"{accessibility.description} {suffix}"
     lines.append(f"    accDescr: {_plain_text(description)}")
+    if plan.fallback_title_id is not None:
+        assert plan.fallback_source_title is not None
+        lines.append(f'    {plan.fallback_title_id}["{plan.fallback_source_title}"]')
     for series in plan.series:
-        lines.append(f'    subgraph {series.emitted_id}["{series.fallback_source_label}"]')
+        series_label = series.fallback_source_label if plan.show_legend else _ZERO_WIDTH_SPACE
+        lines.append(f'    subgraph {series.emitted_id}["{series_label}"]')
         for point in series.points:
             lines.append(f'        {point.scene_id}["{point.fallback_source_label}"]')
         lines.append("    end")

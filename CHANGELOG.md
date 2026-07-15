@@ -96,10 +96,20 @@
   span, and finite curve radii; unsupported data and native runtime rejection use the same candidate slot's
   exact-value `flowchart TB` fallback, capped at 256 points. Native Scenes expose normalized radial
   axes/data points, per-series curve envelopes, and closed marker-less curve relations, while fallback
-  Scenes expose zero-geometry series groups and value cells without invented edges. Both paths preflight 50,000 characters / 5,000
-  lines, disclose terminal-visible compatibility substitutions, and keep hidden options/accessibility
+  Scenes expose zero-geometry series groups and value cells without invented edges. Both paths preflight
+  50,000 UTF-16 source units / 5,000 lines, disclose terminal-visible compatibility substitutions, and keep hidden options/accessibility
   metadata out of canvas OCR. Native generated-node provenance scores directly attributable axes and
-  series rather than derived curve points; exact Flowchart cells remain injectively gated as real nodes.
+  series rather than derived curve points. The Flowchart terminal now preserves the visible native title
+  and emits series group labels only when the source requested a legend, with Scene/OCR projections following
+  the same terminal plan. Its dimension/series-derived cells use record-scoped provenance rather than claiming
+  exclusive evidence per cell. Publication requires every dimension label and angular slot plus every series
+  label and ordered value row to bind to non-overlapping, candidate-authorized, bbox-contained OCR/vector
+  records, followed by exact global numeric occurrence coverage. Cross-owner evidence/observation reuse,
+  uncited same-bbox contradictions, dimension or series permutations, invalid geometry, direct candidates
+  without a typed plan, and bounded reference/text/token/spatial work exhaustion remain review-only across
+  native output, same-slot Flowchart fallback, and semantic repair. Visible title and non-derived explicit
+  accessibility text also require independent candidate-authorized spatial OCR/vector evidence or an approved
+  initial user edit; record-owned observations and engine-emitted edits cannot self-authorize metadata.
   Render validation now rejects non-finite SVG geometry attributes such as `NaN` or `Infinity` even when
   Mermaid reports parse/render success.
 - Numeric multiset precision/recall scoring and no-evidence publication guard.
