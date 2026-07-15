@@ -298,6 +298,20 @@ generated Scene attribution에서 제외합니다.
   unavailable 또는 mismatch로 두어 review합니다. Native, same-slot Flowchart와 semantic repair는 새 typed
   IR/scoped evidence로 같은 gate를 다시 계산하며 direct 또는 untyped Sankey는 owner binding이 없어
   review-only입니다.
+- Sankey accessibility attribution은 terminal을 따릅니다. Native terminal은 title/description을 방출하지 않아
+  metadata association에서 면제됩니다. Same-slot Flowchart는 resolved accessibility title/description을 SVG
+  metadata로 방출하므로 실제 방출되는 non-derived title과 description 두 역할에 각각 candidate-authorized
+  non-data-record spatial OCR/vector exact text 또는 reconstruction 초기 입력의 approved exact `user_edit`가
+  필요합니다.
+  `acc_title`/`acc_description`이 대응하는 legacy field를 output에서 shadow하면 숨겨진 legacy text는 면제합니다.
+  이 metadata는 content OCR label에는 포함하지 않습니다. Deterministic default와 experimental notice는
+  면제하지만, node/flow record가 소유한 evidence ID 또는 normalized text+bbox, metadata role 사이의 재사용,
+  same-bbox ambiguity, metadata bbox와 node/flow record bbox의 overlap, 필요한 data-record bbox의 missing/invalid
+  geometry, reference/text/token/spatial budget 소진, engine-emitted `user_edit` self-authorization은 전체 metadata
+  association을 unavailable로 두어 review합니다.
+  선택된 OCR/vector metadata proof의 numeric token만 flow-weight reference multiset에서 제외하고, 귀속되지 않은
+  source 숫자는 계속 extra occurrence로 판정합니다. Semantic repair proposal도 새 typed IR과 scoped evidence로
+  같은 terminal gate를 다시 계산합니다.
 - Pie 구조 metric은 `PiePlan`이 확정한 terminal을 따릅니다. Native는 최대 12 slice, zero-or-normal binary64
   round-trip value와 left-to-right finite positive total, positive slice별 1% visibility, finite normalized
   centroid, `showData`의 exact JavaScript string을 요구합니다. Positive slice는 normalized `sector`, zero slice는

@@ -110,6 +110,22 @@ class _SankeyWeightSwapRepair:
         )
 
 
+class _SankeyMetadataRepair:
+    name = "sankey_add_metadata"
+
+    def repair(self, context, candidate):
+        del context
+        typed_ir = deepcopy(candidate.typed_ir)
+        typed_ir["acc_title"] = "Fabricated summary"
+        typed_ir["acc_description"] = "Fabricated weighted flow description."
+        serialized = serialize_typed_ir_result("sankey", typed_ir, experimental=True)
+        return RepairProposal(
+            code=serialized.code,
+            operation=self.name,
+            typed_ir=typed_ir,
+        )
+
+
 class _PromptOmittingSankeyEngine(JsonFixtureEngine):
     name = "prompt_omitting_sankey_fixture"
     fusion_source = "vlm"
@@ -118,6 +134,24 @@ class _PromptOmittingSankeyEngine(JsonFixtureEngine):
         observation = super().observe(context)
         observation._set_prompt_supplied_prior_evidence_ids(
             {"ocr-source", "ocr-middle", "ocr-sink"}
+        )
+        return observation
+
+
+class _PromptOmittingSankeyMetadataEngine(JsonFixtureEngine):
+    name = "prompt_omitting_sankey_metadata_fixture"
+    fusion_source = "vlm"
+
+    def observe(self, context):
+        observation = super().observe(context)
+        observation._set_prompt_supplied_prior_evidence_ids(
+            {
+                "ocr-source",
+                "ocr-middle",
+                "ocr-sink",
+                "ocr-flow-1",
+                "ocr-flow-2",
+            }
         )
         return observation
 
@@ -161,6 +195,27 @@ def _sankey_evidence(
     ]
 
 
+def _sankey_metadata_evidence(
+    *,
+    title: str = "Flow summary",
+    description: str = "Two weighted stages.",
+) -> list[VisualEvidence]:
+    return [
+        VisualEvidence(
+            id="ocr-sankey-title",
+            kind="ocr_token",
+            text=title,
+            bbox=(5, 105, 75, 115),
+        ),
+        VisualEvidence(
+            id="ocr-sankey-description",
+            kind="vector_text",
+            text=description,
+            bbox=(80, 105, 195, 118),
+        ),
+    ]
+
+
 def _reconstruct_sankey(
     *,
     ir: dict[str, object] | None = None,
@@ -169,6 +224,7 @@ def _reconstruct_sankey(
     repair_engine: object | None = None,
     engine_type: type[JsonFixtureEngine] = JsonFixtureEngine,
     evidence_as_prior: bool = False,
+    initial_evidence: list[VisualEvidence] | None = None,
 ) -> tuple[object, _SankeyRuntime]:
     runtime = _SankeyRuntime(reject_native=reject_native)
     active_evidence = evidence if evidence is not None else _sankey_evidence()
@@ -178,6 +234,9 @@ def _reconstruct_sankey(
         evidence=[] if evidence_as_prior else active_evidence,
     )
     config = MermaidConfig(candidate_count=1, publish_min_score=0)
+    source_evidence = list(initial_evidence or ())
+    if evidence_as_prior:
+        source_evidence = [*active_evidence, *source_evidence]
     result = ReconstructionPipeline(
         config,
         [engine_type(observation)],
@@ -187,7 +246,7 @@ def _reconstruct_sankey(
         "sankey-source",
         "source.png",
         Image.new("RGB", (200, 120), "white"),
-        evidence=active_evidence if evidence_as_prior else None,
+        evidence=source_evidence or None,
     )
     return result, runtime
 
@@ -206,6 +265,442 @@ def test_sankey_flow_local_values_publish_native_and_same_slot_fallback(
     assert result.publish
     assert selected.emitted_diagram_type == ("flowchart" if reject_native else "sankey")
     assert len(runtime.calls) == (2 if reject_native else 1)
+
+
+@pytest.mark.parametrize("field", ["title", "description", "acc_title", "acc_description"])
+def test_sankey_fabricated_explicit_fallback_metadata_requires_review(field: str) -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir[field] = "Fabricated metadata"
+
+    result, _runtime = _reconstruct_sankey(ir=ir, reject_native=True)
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    expected = "title/accTitle lacks" if "title" in field else "description/accDescr lacks"
+    assert any(expected in warning for warning in result.selected.warnings)
+
+
+@pytest.mark.parametrize("field", ["title", "description", "acc_title", "acc_description"])
+def test_sankey_native_terminal_does_not_require_omitted_accessibility_metadata(
+    field: str,
+) -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir[field] = "Native-only metadata"
+
+    result, _runtime = _reconstruct_sankey(ir=ir)
+
+    assert result.selected is not None
+    assert result.selected.emitted_diagram_type == "sankey"
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+    assert not any("Sankey fallback" in warning for warning in result.selected.warnings)
+
+
+def test_sankey_independently_proven_plain_metadata_publishes_fallback() -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir["title"] = "Flow summary"
+    ir["description"] = "Two weighted stages."
+    evidence = [*_sankey_evidence(), *_sankey_metadata_evidence()]
+
+    result, runtime = _reconstruct_sankey(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+    assert "accTitle: Flow summary" in runtime.calls[-1]
+    assert "accDescr: Two weighted stages." in runtime.calls[-1]
+
+
+def test_sankey_accessibility_overrides_shadow_unemitted_plain_metadata() -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir.update(
+        {
+            "title": "Hidden plain title",
+            "description": "Hidden plain description.",
+            "acc_title": "Accessible flow summary",
+            "acc_description": "Accessible weighted flow description.",
+        }
+    )
+    evidence = [
+        *_sankey_evidence(),
+        *_sankey_metadata_evidence(
+            title="Accessible flow summary",
+            description="Accessible weighted flow description.",
+        ),
+    ]
+
+    result, runtime = _reconstruct_sankey(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+    assert "accTitle: Accessible flow summary" in runtime.calls[-1]
+    assert "accDescr: Accessible weighted flow description." in runtime.calls[-1]
+    assert "Hidden plain" not in runtime.calls[-1]
+
+
+def test_sankey_derived_fallback_accessibility_defaults_are_exempt() -> None:
+    result, _runtime = _reconstruct_sankey(reject_native=True)
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+    assert not any("Sankey fallback" in warning for warning in result.selected.warnings)
+
+
+def test_sankey_initial_user_edits_can_authorize_fallback_metadata() -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir["title"] = "Flow summary"
+    ir["description"] = "Two weighted stages."
+    initial_evidence = [
+        VisualEvidence(id="user-title", kind="user_edit", text="Flow summary"),
+        VisualEvidence(
+            id="user-description",
+            kind="user_edit",
+            text="Two weighted stages.",
+        ),
+    ]
+
+    result, _runtime = _reconstruct_sankey(
+        ir=ir,
+        reject_native=True,
+        initial_evidence=initial_evidence,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+
+
+def test_sankey_engine_user_edits_cannot_self_authorize_fallback_metadata() -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir["title"] = "Flow summary"
+    ir["description"] = "Two weighted stages."
+    evidence = _sankey_evidence()
+    evidence.extend(
+        [
+            VisualEvidence(id="engine-title", kind="user_edit", text="Flow summary"),
+            VisualEvidence(
+                id="engine-description",
+                kind="user_edit",
+                text="Two weighted stages.",
+            ),
+        ]
+    )
+
+    result, _runtime = _reconstruct_sankey(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+
+
+def test_sankey_flow_owned_evidence_cannot_authorize_fallback_title() -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir["acc_title"] = "20"
+
+    result, _runtime = _reconstruct_sankey(ir=ir, reject_native=True)
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("title/accTitle lacks" in warning for warning in result.selected.warnings)
+
+
+def test_sankey_flow_owned_observation_cannot_authorize_fallback_title() -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir["acc_title"] = "20"
+    evidence = _sankey_evidence()
+    evidence.append(
+        VisualEvidence(
+            id="ocr-title-copy",
+            kind="vector_text",
+            text="20",
+            bbox=(55, 25, 75, 35),
+        )
+    )
+
+    result, _runtime = _reconstruct_sankey(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("title/accTitle lacks" in warning for warning in result.selected.warnings)
+
+
+def test_sankey_metadata_same_bbox_contradiction_fails_closed() -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir["title"] = "Flow summary"
+    evidence = _sankey_evidence()
+    evidence.extend(
+        [
+            VisualEvidence(
+                id="ocr-sankey-title",
+                kind="ocr_token",
+                text="Flow summary",
+                bbox=(5, 105, 75, 115),
+            ),
+            VisualEvidence(
+                id="vector-sankey-title-conflict",
+                kind="vector_text",
+                text="Different summary",
+                bbox=(5, 105, 75, 115),
+            ),
+        ]
+    )
+
+    result, _runtime = _reconstruct_sankey(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("title/accTitle lacks" in warning for warning in result.selected.warnings)
+
+
+def test_sankey_metadata_overlapping_a_flow_record_fails_closed() -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir["title"] = "Flow summary"
+    evidence = _sankey_evidence()
+    evidence.append(
+        VisualEvidence(
+            id="ocr-sankey-title",
+            kind="ocr_token",
+            text="Flow summary",
+            bbox=(48, 21, 82, 39),
+        )
+    )
+
+    result, _runtime = _reconstruct_sankey(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("title/accTitle lacks" in warning for warning in result.selected.warnings)
+
+
+def test_sankey_title_and_description_cannot_reuse_one_evidence_id() -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir["title"] = "Shared summary"
+    ir["description"] = "Shared summary"
+    evidence = _sankey_evidence()
+    evidence.append(
+        VisualEvidence(
+            id="ocr-shared-metadata",
+            kind="ocr_token",
+            text="Shared summary",
+            bbox=(5, 105, 75, 115),
+        )
+    )
+
+    result, _runtime = _reconstruct_sankey(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("description/accDescr lacks" in warning for warning in result.selected.warnings)
+
+
+def test_sankey_title_and_description_cannot_reuse_one_spatial_observation() -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir["title"] = "Shared summary"
+    ir["description"] = "Shared summary"
+    evidence = _sankey_evidence()
+    evidence.extend(
+        [
+            VisualEvidence(
+                id="ocr-shared-metadata",
+                kind="ocr_token",
+                text="Shared summary",
+                bbox=(5, 105, 75, 115),
+            ),
+            VisualEvidence(
+                id="vector-shared-metadata",
+                kind="vector_text",
+                text="Shared summary",
+                bbox=(5, 105, 75, 115),
+            ),
+        ]
+    )
+
+    result, _runtime = _reconstruct_sankey(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("description/accDescr lacks" in warning for warning in result.selected.warnings)
+
+
+def test_sankey_same_metadata_text_with_distinct_observations_publishes() -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir["title"] = "Shared summary"
+    ir["description"] = "Shared summary"
+    evidence = _sankey_evidence()
+    evidence.extend(
+        [
+            VisualEvidence(
+                id="ocr-shared-title",
+                kind="ocr_token",
+                text="Shared summary",
+                bbox=(5, 105, 75, 115),
+            ),
+            VisualEvidence(
+                id="vector-shared-description",
+                kind="vector_text",
+                text="Shared summary",
+                bbox=(80, 105, 195, 118),
+            ),
+        ]
+    )
+
+    result, _runtime = _reconstruct_sankey(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+
+
+def test_sankey_metadata_must_be_inside_candidate_evidence_authority() -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir["title"] = "Flow summary"
+    ir["description"] = "Two weighted stages."
+    evidence = [*_sankey_evidence(), *_sankey_metadata_evidence()]
+
+    result, _runtime = _reconstruct_sankey(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+        engine_type=_PromptOmittingSankeyMetadataEngine,
+        evidence_as_prior=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.scores["numeric_consistency"] == 1
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("Sankey fallback" in warning for warning in result.selected.warnings)
+
+
+def test_sankey_node_owned_evidence_cannot_authorize_fallback_title() -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir["acc_title"] = "Source"
+
+    result, _runtime = _reconstruct_sankey(ir=ir, reject_native=True)
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("title/accTitle lacks" in warning for warning in result.selected.warnings)
+
+
+def test_sankey_metadata_overlapping_a_node_record_fails_closed() -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir["title"] = "Flow summary"
+    evidence = _sankey_evidence()
+    evidence.append(
+        VisualEvidence(
+            id="ocr-sankey-title",
+            kind="ocr_token",
+            text="Flow summary",
+            bbox=(6, 11, 34, 29),
+        )
+    )
+
+    result, _runtime = _reconstruct_sankey(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("title/accTitle lacks" in warning for warning in result.selected.warnings)
+
+
+@pytest.mark.parametrize("unsafe_bbox", [None, [5, 10, 5, 30], [5, 10, 205, 30]])
+def test_sankey_missing_or_malformed_node_bbox_blocks_fallback_metadata_attribution(
+    unsafe_bbox: list[int] | None,
+) -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir["title"] = "Flow summary"
+    if unsafe_bbox is None:
+        del ir["nodes"][0]["bbox"]
+    else:
+        ir["nodes"][0]["bbox"] = unsafe_bbox
+    evidence = [*_sankey_evidence(), _sankey_metadata_evidence()[0]]
+
+    result, _runtime = _reconstruct_sankey(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("title/accTitle lacks" in warning for warning in result.selected.warnings)
+
+
+def test_sankey_proven_numeric_metadata_is_excluded_from_flow_weight_scoring() -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir["title"] = "Flow summary 2025"
+    evidence = _sankey_evidence()
+    evidence.append(
+        VisualEvidence(
+            id="ocr-sankey-title",
+            kind="ocr_token",
+            text="Flow summary 2025",
+            bbox=(5, 105, 75, 115),
+        )
+    )
+
+    result, _runtime = _reconstruct_sankey(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.scores["numeric_consistency"] == 1
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
 
 
 @pytest.mark.parametrize("reject_native", [False, True])
@@ -477,6 +972,70 @@ def test_sankey_aggregate_association_budget_plus_one_fails_closed(
     assert not result.publish
 
 
+@pytest.mark.parametrize(
+    ("constant_name", "exact_limit"),
+    [
+        ("_MAX_SANKEY_ASSOCIATION_REFERENCES", 4),
+        ("_MAX_SANKEY_FLOW_OVERLAP_COMPARISONS", 14),
+        ("_MAX_OCR_REFERENCE_TEXTS", 11),
+        ("_MAX_OCR_REFERENCE_CHARS", 88),
+        ("_MAX_OCR_REFERENCE_TOKENS", 17),
+    ],
+)
+def test_sankey_fallback_metadata_shares_exact_association_budgets(
+    monkeypatch,
+    constant_name: str,
+    exact_limit: int,
+) -> None:
+    monkeypatch.setattr(pipeline_module, constant_name, exact_limit)
+    ir = deepcopy(SANKEY_IR)
+    ir["title"] = "Flow summary"
+    ir["description"] = "Two weighted stages."
+    evidence = [*_sankey_evidence(), *_sankey_metadata_evidence()]
+
+    result, _runtime = _reconstruct_sankey(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+
+
+@pytest.mark.parametrize(
+    ("constant_name", "over_limit"),
+    [
+        ("_MAX_SANKEY_ASSOCIATION_REFERENCES", 3),
+        ("_MAX_SANKEY_FLOW_OVERLAP_COMPARISONS", 13),
+        ("_MAX_OCR_REFERENCE_TEXTS", 10),
+        ("_MAX_OCR_REFERENCE_CHARS", 87),
+        ("_MAX_OCR_REFERENCE_TOKENS", 16),
+    ],
+)
+def test_sankey_fallback_metadata_budget_plus_one_fails_closed(
+    monkeypatch,
+    constant_name: str,
+    over_limit: int,
+) -> None:
+    monkeypatch.setattr(pipeline_module, constant_name, over_limit)
+    ir = deepcopy(SANKEY_IR)
+    ir["title"] = "Flow summary"
+    ir["description"] = "Two weighted stages."
+    evidence = [*_sankey_evidence(), *_sankey_metadata_evidence()]
+
+    result, _runtime = _reconstruct_sankey(
+        ir=ir,
+        evidence=evidence,
+        reject_native=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+
+
 def test_sankey_semantic_repair_cannot_bypass_flow_local_binding() -> None:
     result, _runtime = _reconstruct_sankey(repair_engine=_SankeyWeightSwapRepair())
 
@@ -485,6 +1044,25 @@ def test_sankey_semantic_repair_cannot_bypass_flow_local_binding() -> None:
     assert result.selected.scores["numeric_consistency"] == 1
     assert result.selected.repair_history
     assert not result.selected.repair_history[-1].accepted
+
+
+def test_sankey_semantic_repair_cannot_add_unproven_fallback_metadata() -> None:
+    ir = deepcopy(SANKEY_IR)
+    ir["flows"][1]["target"] = "source"
+
+    result, _runtime = _reconstruct_sankey(
+        ir=ir,
+        repair_engine=_SankeyMetadataRepair(),
+    )
+
+    assert result.selected is not None
+    assert result.selected.emitted_diagram_type == "flowchart"
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+    assert result.selected.typed_ir["acc_title"] != "Fabricated summary"
+    assert result.selected.repair_history
+    assert not result.selected.repair_history[-1].accepted
+    assert result.selected.repair_history[-1].after_score is None
 
 
 def test_direct_sankey_candidate_remains_review_only_without_typed_plan() -> None:

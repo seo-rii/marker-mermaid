@@ -223,6 +223,15 @@
   exactness. Cross-flow evidence or normalized-observation reuse, same-bbox ambiguity, swapped weights, invalid
   geometry, and bounded association-budget exhaustion force review. Native Sankey, its same-slot Flowchart
   fallback, and semantic repair all rerun this gate; direct or otherwise untyped Sankey remains review-only.
+- Sankey accessibility attribution is now terminal-specific. Native Sankey emits no title or description and is
+  therefore exempt. Its same-slot Flowchart fallback emits the resolved accessibility title and description as SVG
+  metadata; each non-derived resolved output role requires independent, candidate-authorized non-data-record spatial
+  OCR/vector evidence or an approved exact `user_edit` from the initial reconstruction input. When `acc_title` or
+  `acc_description` shadows its legacy counterpart, the hidden legacy text is exempt. Deterministic defaults and the
+  experimental notice remain exempt. Node/flow-record-owned, reused, ambiguous, overlapping, or over-budget
+  evidence, missing or invalid data-record geometry, and engine-emitted `user_edit` self-authorization force
+  review, and semantic repair reruns the same gate. Numeric tokens from the selected OCR/vector metadata proof are
+  removed only from the flow-weight reference multiset so valid metadata digits do not masquerade as extra flows.
 - Treemap serialization, generated Scene attribution, and semantic OCR projection now share one bounded DFS
   preorder plan. It freezes source or collision-safe `treemap_node_N[_suffix]` Scene identities, Flowchart
   `N1..Nn` identities, parent/child slots, exact value tokens, and record-local provenance. Source image/bbox

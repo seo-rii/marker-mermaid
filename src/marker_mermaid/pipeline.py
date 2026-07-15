@@ -476,6 +476,14 @@ _SANKEY_FLOW_ASSOCIATION_UNAVAILABLE_WARNING = (
 _SANKEY_FLOW_ASSOCIATION_MISMATCH_WARNING = (
     "Sankey flow/value association conflicts with exact source weights; review is required"
 )
+_SANKEY_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING = (
+    "Sankey fallback title/accTitle lacks independent candidate-authorized spatial OCR/vector "
+    "or user-edit evidence; review is required"
+)
+_SANKEY_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING = (
+    "Sankey fallback description/accDescr lacks independent candidate-authorized spatial "
+    "OCR/vector or user-edit evidence; review is required"
+)
 
 _EVALUATION_WARNING_TEXT = frozenset(
     {
@@ -505,6 +513,8 @@ _EVALUATION_WARNING_TEXT = frozenset(
         _RADAR_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING,
         _SANKEY_FLOW_ASSOCIATION_UNAVAILABLE_WARNING,
         _SANKEY_FLOW_ASSOCIATION_MISMATCH_WARNING,
+        _SANKEY_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING,
+        _SANKEY_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING,
         "numeric consistency is below the automatic publication threshold",
         "numeric diagram lacks OCR/vector numeric evidence and cannot auto-publish",
         "unlabeled scene-only candidates require OCR/VLM fusion before publishing",
@@ -2808,6 +2818,8 @@ class ReconstructionPipeline:
         radar_title_attribution_state: Literal["exact", "unavailable"] | None = None
         radar_description_attribution_state: Literal["exact", "unavailable"] | None = None
         sankey_binding_state: Literal["exact", "mismatch", "unavailable"] | None = None
+        sankey_title_attribution_state: Literal["exact", "unavailable"] | None = None
+        sankey_description_attribution_state: Literal["exact", "unavailable"] | None = None
         if gate_diagram_type == "packet":
             # Packet ranges need a field-local proof.  A document-wide number multiset can
             # stay identical when two labels exchange their ranges, so it is not publication
@@ -4484,6 +4496,57 @@ class ReconstructionPipeline:
                 except SerializationError:
                     sankey_plan = None
 
+            required_sankey_metadata: list[tuple[str, str, str]] = []
+            if (
+                sankey_plan is not None
+                and typed_ir is not None
+                and _canonical_runtime_type(runtime.diagram_type) == "flowchart"
+            ):
+                # Sankey's native grammar emits no accessibility directives.  The
+                # same-slot Flowchart fallback does, so only its effective resolved
+                # values need source attribution.  Removing the enriched acc_* fields
+                # recovers the deterministic baseline and distinguishes an engine
+                # override from pipeline-derived defaults.
+                accessibility_base_ir = {
+                    key: value
+                    for key, value in typed_ir.items()
+                    if key not in {"acc_title", "acc_description"}
+                }
+                base_accessibility = resolve_accessibility(
+                    accessibility_base_ir,
+                    "sankey",
+                    experimental=self.config.mode != Mode.STRICT,
+                )
+                emitted_accessibility = resolve_accessibility(
+                    typed_ir,
+                    "sankey",
+                    experimental=self.config.mode != Mode.STRICT,
+                )
+
+                emitted_title = _normalized_label(emitted_accessibility.title)
+                if emitted_title and (
+                    bool(accessibility_base_ir.get("title"))
+                    or emitted_title != _normalized_label(base_accessibility.title)
+                ):
+                    required_sankey_metadata.append(("title", emitted_title, "title"))
+                    sankey_title_attribution_state = "unavailable"
+
+                emitted_description = emitted_accessibility.description.removesuffix(
+                    f" {EXPERIMENTAL_NOTICE}"
+                ).removesuffix(EXPERIMENTAL_NOTICE)
+                base_description = base_accessibility.description.removesuffix(
+                    f" {EXPERIMENTAL_NOTICE}"
+                ).removesuffix(EXPERIMENTAL_NOTICE)
+                normalized_emitted_description = _normalized_label(emitted_description)
+                if normalized_emitted_description and (
+                    bool(accessibility_base_ir.get("description"))
+                    or normalized_emitted_description != _normalized_label(base_description)
+                ):
+                    required_sankey_metadata.append(
+                        ("description", normalized_emitted_description, "description")
+                    )
+                    sankey_description_attribution_state = "unavailable"
+
             sankey_flow_specs: list[tuple[str, object, tuple[str, ...], str]] = []
             if sankey_plan is not None:
                 sankey_flow_specs.extend(
@@ -4666,14 +4729,17 @@ class ReconstructionPipeline:
                         break
 
             if sankey_spatial_safe and all(sankey_flow_observations.values()):
-                expected_text_count = len(sankey_flow_specs)
+                expected_text_count = len(sankey_flow_specs) + len(required_sankey_metadata)
                 expected_char_count = sum(
                     len(value_text)
                     for _owner_id, _source_record, _evidence_ids, value_text in sankey_flow_specs
-                )
+                ) + sum(len(text) for _owner_id, text, _kind in required_sankey_metadata)
                 expected_token_count = sum(
                     ocr_token_multiset((value_text,)).total()
                     for _owner_id, _source_record, _evidence_ids, value_text in sankey_flow_specs
+                ) + sum(
+                    ocr_token_multiset((text,)).total()
+                    for _owner_id, text, _kind in required_sankey_metadata
                 )
                 if (
                     sankey_authorized_text_count + expected_text_count <= _MAX_OCR_REFERENCE_TEXTS
@@ -4701,7 +4767,232 @@ class ReconstructionPipeline:
                             association_matches = False
                     sankey_binding_state = "exact" if association_matches else "mismatch"
 
-            global_sankey_numeric = numeric_consistency(references.numeric_tokens, code)
+            sankey_metadata_spatial_safe = sankey_spatial_safe
+            proven_sankey_metadata: set[str] = set()
+            proven_sankey_metadata_numeric_tokens: Counter[str] = Counter()
+            if required_sankey_metadata and sankey_metadata_spatial_safe:
+                required_metadata_texts = {
+                    text for _owner_id, text, _kind in required_sankey_metadata
+                }
+                record_evidence_ids = {
+                    evidence_id
+                    for _owner_id, _source_record, evidence_ids, _value_text in sankey_flow_specs
+                    for evidence_id in evidence_ids
+                }
+                record_observations = set(sankey_observation_owners)
+                metadata_record_boxes = list(sankey_flow_boxes.values())
+                for node in sankey_plan.nodes if sankey_plan is not None else ():
+                    record_evidence_ids.update(node.evidence_ids)
+                    raw_bbox = node.source_record.get("bbox")
+                    if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+                        sankey_metadata_spatial_safe = False
+                        break
+                    try:
+                        node_bbox = tuple(float(value) for value in raw_bbox)
+                    except (TypeError, ValueError, OverflowError):
+                        sankey_metadata_spatial_safe = False
+                        break
+                    x1, y1, x2, y2 = node_bbox
+                    if (
+                        not all(math.isfinite(value) for value in node_bbox)
+                        or x2 <= x1
+                        or y2 <= y1
+                        or x1 < 0
+                        or y1 < 0
+                        or x2 > image_width
+                        or y2 > image_height
+                    ):
+                        sankey_metadata_spatial_safe = False
+                        break
+                    metadata_record_boxes.append(node_bbox)
+                    for evidence_id in node.evidence_ids:
+                        item = sankey_evidence_by_id.get(evidence_id)
+                        if (
+                            item is None
+                            or item.kind not in {"ocr_token", "vector_text"}
+                            or not item.text
+                            or item.bbox is None
+                            or not isinstance(item.bbox, (list, tuple))
+                            or len(item.bbox) != 4
+                        ):
+                            continue
+                        try:
+                            evidence_bbox = tuple(float(value) for value in item.bbox)
+                        except (TypeError, ValueError, OverflowError):
+                            continue
+                        normalized_text = _normalized_label(item.text)
+                        if normalized_text and all(math.isfinite(value) for value in evidence_bbox):
+                            record_observations.add((normalized_text, evidence_bbox))
+                metadata_candidates: list[
+                    tuple[
+                        str,
+                        str,
+                        tuple[float, float, float, float] | None,
+                        Counter[str],
+                    ]
+                ] = []
+                for item in evidence if sankey_metadata_spatial_safe else ():
+                    if item.id in record_evidence_ids or not item.text:
+                        continue
+                    normalized_text = _normalized_label(item.text)
+                    if normalized_text not in required_metadata_texts:
+                        continue
+                    candidate_bbox: tuple[float, float, float, float] | None
+                    if item.kind == "user_edit":
+                        if item.id not in approved_user_edit_evidence_ids:
+                            continue
+                        if item.bbox is None:
+                            metadata_candidates.append((item.id, normalized_text, None, Counter()))
+                            continue
+                        if not isinstance(item.bbox, (list, tuple)) or len(item.bbox) != 4:
+                            sankey_metadata_spatial_safe = False
+                            break
+                        try:
+                            candidate_bbox = tuple(float(value) for value in item.bbox)
+                        except (TypeError, ValueError, OverflowError):
+                            sankey_metadata_spatial_safe = False
+                            break
+                    elif item.kind in {"ocr_token", "vector_text"}:
+                        if item.bbox is None or not isinstance(item.bbox, (list, tuple)):
+                            continue
+                        if len(item.bbox) != 4:
+                            sankey_metadata_spatial_safe = False
+                            break
+                        try:
+                            candidate_bbox = tuple(float(value) for value in item.bbox)
+                        except (TypeError, ValueError, OverflowError):
+                            sankey_metadata_spatial_safe = False
+                            break
+                        observation_key = (normalized_text, candidate_bbox)
+                        if len(sankey_texts_by_bbox.get(candidate_bbox, set())) != 1:
+                            sankey_metadata_spatial_safe = False
+                            break
+                        if observation_key in record_observations:
+                            continue
+                    else:
+                        continue
+
+                    x1, y1, x2, y2 = candidate_bbox
+                    if (
+                        not all(math.isfinite(value) for value in candidate_bbox)
+                        or x2 <= x1
+                        or y2 <= y1
+                        or x1 < 0
+                        or y1 < 0
+                        or x2 > image_width
+                        or y2 > image_height
+                    ):
+                        sankey_metadata_spatial_safe = False
+                        break
+                    overlaps_record = False
+                    for record_bbox in metadata_record_boxes:
+                        if sankey_spatial_comparison_budget <= 0:
+                            sankey_metadata_spatial_safe = False
+                            break
+                        sankey_spatial_comparison_budget -= 1
+                        if (
+                            candidate_bbox[0] < record_bbox[2]
+                            and candidate_bbox[2] > record_bbox[0]
+                            and candidate_bbox[1] < record_bbox[3]
+                            and candidate_bbox[3] > record_bbox[1]
+                        ):
+                            overlaps_record = True
+                            break
+                    if not sankey_metadata_spatial_safe:
+                        break
+                    if overlaps_record:
+                        sankey_metadata_spatial_safe = False
+                        break
+                    metadata_candidates.append(
+                        (
+                            item.id,
+                            normalized_text,
+                            candidate_bbox,
+                            (
+                                numeric_token_multiset((item.text,))
+                                if item.kind in {"ocr_token", "vector_text"}
+                                else Counter()
+                            ),
+                        )
+                    )
+
+                used_metadata_ids: set[str] = set()
+                used_metadata_observations: set[tuple[str, tuple[float, float, float, float]]] = (
+                    set()
+                )
+                if sankey_metadata_spatial_safe:
+                    ordered_metadata_candidates = sorted(
+                        metadata_candidates,
+                        key=lambda item: (
+                            item[2] is None,
+                            item[2] or (0.0, 0.0, 0.0, 0.0),
+                            item[0],
+                        ),
+                    )
+                    for owner_id, required_text, _owner_kind in required_sankey_metadata:
+                        for (
+                            evidence_id,
+                            candidate_text,
+                            candidate_bbox,
+                            candidate_numeric_tokens,
+                        ) in ordered_metadata_candidates:
+                            if sankey_spatial_comparison_budget <= 0:
+                                sankey_metadata_spatial_safe = False
+                                break
+                            sankey_spatial_comparison_budget -= 1
+                            observation_key = (
+                                (candidate_text, candidate_bbox)
+                                if candidate_bbox is not None
+                                else None
+                            )
+                            if (
+                                evidence_id in used_metadata_ids
+                                or candidate_text != required_text
+                                or (
+                                    observation_key is not None
+                                    and observation_key in used_metadata_observations
+                                )
+                            ):
+                                continue
+                            if sankey_reference_count >= _MAX_SANKEY_ASSOCIATION_REFERENCES:
+                                sankey_metadata_spatial_safe = False
+                                break
+                            sankey_reference_count += 1
+                            used_metadata_ids.add(evidence_id)
+                            if observation_key is not None:
+                                used_metadata_observations.add(observation_key)
+                            proven_sankey_metadata.add(owner_id)
+                            proven_sankey_metadata_numeric_tokens.update(candidate_numeric_tokens)
+                            break
+                        if not sankey_metadata_spatial_safe:
+                            break
+
+                required_title_owners = {
+                    owner_id
+                    for owner_id, _text, kind in required_sankey_metadata
+                    if kind == "title"
+                }
+                required_description_owners = {
+                    owner_id
+                    for owner_id, _text, kind in required_sankey_metadata
+                    if kind == "description"
+                }
+                if (
+                    sankey_metadata_spatial_safe
+                    and required_title_owners
+                    and required_title_owners <= proven_sankey_metadata
+                ):
+                    sankey_title_attribution_state = "exact"
+                if (
+                    sankey_metadata_spatial_safe
+                    and required_description_owners
+                    and required_description_owners <= proven_sankey_metadata
+                ):
+                    sankey_description_attribution_state = "exact"
+
+            sankey_numeric_references = references.numeric_tokens.copy()
+            sankey_numeric_references.subtract(proven_sankey_metadata_numeric_tokens)
+            global_sankey_numeric = numeric_consistency(+sankey_numeric_references, code)
             if sankey_binding_state == "exact" and global_sankey_numeric != 1.0:
                 sankey_binding_state = (
                     "mismatch" if global_sankey_numeric is not None else "unavailable"
@@ -5237,6 +5528,12 @@ class ReconstructionPipeline:
         if gate_diagram_type == "radar" and radar_description_attribution_state == "unavailable":
             aggregate = None
             warnings.append(_RADAR_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING)
+        if gate_diagram_type == "sankey" and sankey_title_attribution_state == "unavailable":
+            aggregate = None
+            warnings.append(_SANKEY_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING)
+        if gate_diagram_type == "sankey" and sankey_description_attribution_state == "unavailable":
+            aggregate = None
+            warnings.append(_SANKEY_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING)
         if gate_diagram_type == "xychart" and xy_title_attribution_state == "unavailable":
             aggregate = None
             warnings.append(_XY_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING)

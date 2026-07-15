@@ -485,6 +485,18 @@ occurrence도 exact할 때만 허용합니다. Evidence ID나 normalized text+bb
 invalid geometry와 bounded association work 초과는 native·same-slot Flowchart·semantic repair를 모두
 review로 닫습니다. Direct 또는 typed flow plan이 없는 Sankey도 flow-local owner binding을 만들 수 없어
 review-only입니다.
+Sankey의 explicit accessibility metadata는 terminal별로 판정합니다. Native Sankey는 title/description을
+방출하지 않으므로 이 귀속 검사를 요구하지 않습니다. Same-slot Flowchart fallback은 resolved title과
+description을 SVG metadata로 방출하며 content OCR label로 세지 않습니다. `acc_title`이 `title`을,
+`acc_description`이 `description`을 output에서 shadow하면 숨겨진 legacy text는 면제합니다. 실제 방출되는
+non-derived resolved title과 description 두 역할은 서로 독립적으로, 어떤 node/flow data record도 소유하지 않고
+그 record bbox와 겹치지 않는 candidate-authorized spatial OCR/vector exact observation 또는 reconstruction 초기
+입력의 approved exact `user_edit`로 증명되어야 합니다. Derived default와 experimental notice는 예외입니다.
+Node/flow record evidence ID 또는 normalized text+bbox 재사용, same-bbox ambiguity, metadata bbox와 node/flow
+record bbox overlap, 필요한 data-record bbox의 missing/invalid geometry, bounded reference/text/token/spatial work
+소진과 engine-emitted `user_edit` self-authorization은 review이며 semantic repair는 새 typed IR/scoped evidence로
+같은 terminal gate를 다시 실행합니다.
+
 Treemap은 누락·중복·잘못된 source ID를 reserved-safe preorder slot으로 격리합니다. Venn은 canonical unique
 set ID를 요구한 뒤 set portable ID를 먼저 예약하고, intersection explicit ID가 정규화 충돌하면
 deterministic `intersection_N[_suffix]` Scene slot을 배정합니다. Set/intersection의 source bbox는

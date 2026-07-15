@@ -533,6 +533,20 @@ invalid geometry와 bounded association budget 초과는 fail closed입니다. N
 repair는 같은 typed plan/scoped evidence로 이 검사를 다시 수행하고, direct/untyped Sankey는 flow-local
 소유권을 만들 수 없어 review에 남습니다.
 
+Sankey accessibility gate도 terminal 결과에 맞춰 적용합니다. Native Sankey는 title/description을 방출하지
+않으므로 exempt입니다. Same-slot Flowchart fallback은 resolved accessibility title과 description을 SVG
+`<title>`/`<desc>` metadata로 직렬화하며 canvas node로 만들지 않습니다. `acc_title`이 `title`을,
+`acc_description`이 `description`을 output에서 shadow하면 방출되지 않는 legacy text는 검사하지 않습니다.
+실제로 직렬화되는 non-derived title과 description 두 역할은 서로 독립적으로, 모든 node/flow record evidence와
+분리되고 그 record bbox와 겹치지 않는 candidate-authorized spatial OCR/vector exact observation 또는
+reconstruction 초기 입력의 approved exact `user_edit`로 증명되어야 합니다.
+결정적으로 파생한 default와 experimental notice만 별도 source attribution 없이 허용합니다.
+Node/flow-record-owned 또는 재사용한 evidence/text+bbox, same-bbox ambiguity, node/flow-record overlap, 필요한
+data-record bbox의 missing/invalid geometry, bounded reference/text/token/spatial work 초과와 engine-emitted
+`user_edit` self-authorization은 review로 닫습니다. 선택된 OCR/vector metadata proof의 numeric token만
+flow-weight reference multiset에서 제외해 metadata 숫자를 flow로 오인하지 않으며, Runtime fallback과 semantic
+repair는 최종 terminal, 새 typed plan, scoped evidence를 기준으로 이 검사를 다시 수행합니다.
+
 Radar는 `plan_radar_records()`에서 dimension/series와 exact fixed-decimal value, reserved-safe emitted
 axis/series/cell ID, terminal별 visible text, record-local evidence를 한 번 고정합니다. Native는 12 series
 이하이고 value 및 explicit bound가 zero 또는 normal binary64로 exact round-trip되며, effective scale의

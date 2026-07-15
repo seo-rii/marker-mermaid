@@ -210,6 +210,20 @@ geometry와 bounded association budget 초과는 부분 점수 없이 review입�
 semantic repair는 같은 typed plan과 scoped evidence로 이 gate를 다시 계산하며 direct/untyped Sankey는
 flow owner를 증명할 수 없어 review-only입니다.
 
+접근성 귀속은 terminal별로 다릅니다. Native Sankey는 title/description을 방출하지 않으므로 이 metadata
+gate의 대상이 아닙니다. Same-slot Flowchart fallback은 resolved accessibility title과 description을 SVG
+metadata로 방출하며 content OCR label로 세지 않습니다. 이때 `acc_title`이 `title`을, `acc_description`이
+`description`을 output에서 shadow하면 방출되지 않는 legacy text는 면제합니다. 실제 방출되는 non-derived
+resolved title과 description 두 역할은 서로 독립적으로, 어떤 node/flow data record도 소유하지 않고 그 record
+bbox와 겹치지 않는 candidate-authorized spatial `ocr_token`/`vector_text` exact observation 또는 reconstruction
+초기 입력에서 승인된 exact `user_edit`로 증명되어야 합니다. 구조에서 결정적으로 파생한 기본 문구와
+experimental notice는 예외입니다. Node나 flow record가 인용한 evidence ID 또는 normalized text+bbox의 재사용,
+same-bbox ambiguity, metadata bbox와 node/flow bbox의 overlap, 필요한 data-record bbox의 missing/invalid geometry,
+공유 reference/text/token/spatial budget 초과, engine-emitted `user_edit`의 자기 승인은 review로 닫습니다.
+근거로 실제 선택된 OCR/vector metadata의 numeric token만 flow-weight 전역 reference에서 제외하며, 귀속되지
+않은 추가 숫자는 계속 mismatch입니다. Semantic repair도 새 typed IR과 scoped evidence로 이 terminal gate를
+다시 계산합니다.
+
 Radar serializer·Scene·semantic OCR은 `plan_radar_records()`의 같은 bounded plan을 공유합니다. Plan은
 dimension/series source record, terminal 전체에서 충돌하지 않는 emitted ID, exact fixed-decimal value,
 terminal별 source/canvas label, point별 dimension+series evidence를 한 번 고정합니다. Radar grammar 예약어와
