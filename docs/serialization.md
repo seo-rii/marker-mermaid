@@ -644,6 +644,21 @@ generated Scene에는 계속 복사하지 않습니다. Native의 `native_total_
 output이지 explicit source value가 아니므로 owner citation에 포함하지 않습니다. Source OCR/vector가 internal
 total을 별도 숫자로 관측하면 현재 global occurrence gate는 review로 닫습니다.
 
+Explicit metadata는 serializer input의 존재가 아니라 실제 emitted terminal을 기준으로 검증합니다. Native
+Treemap은 visible explicit `title`과 non-derived resolved accessibility title/description을, Flowchart fallback은
+실제로 방출하는 resolved accessibility title/description만 요구합니다. `acc_*` override가 legacy text를 가려
+terminal에 나오지 않으면 그 legacy field는 면제되고, deterministic derived text와 experimental notice도 source
+proof를 요구하지 않습니다. 단, notice-only explicit description override는 structural description을 지우므로
+unavailable입니다. 동일한 native visible/accessibility title은 한 title owner로 합치지만 title과
+description 역할은 text가 같아도 분리합니다.
+
+각 역할은 모든 node bbox 밖의 candidate-authorized spatial OCR/vector exact text 또는 reconstruction 초기의
+approved exact `user_edit`로만 증명합니다. Node-owned evidence/observation, same-bbox ambiguity, node overlap,
+cross-owner reuse, engine-emitted edit, invalid geometry와 shared bounded work exhaustion은 unavailable입니다.
+선택된 OCR/vector proof에 숫자가 있으면 그 occurrence만 global Treemap data reference에서 제외하고 나머지
+node/value 숫자는 exact해야 합니다. Runtime fallback과 semantic repair는 새 terminal/IR/scoped evidence로 이
+검사를 다시 실행합니다.
+
 Treemap은 semantic 원문을 typed IR에 남기고, source scanner에 걸리는 token은 emitted source에만
 zero-width separator를 넣어 비활성화합니다. Scene/OCR은 separator를 제거한 terminal-visible
 text를 씁니다. Node quote는 `″`로 표시하고, Flowchart label의 ASCII angle bracket/backslash는

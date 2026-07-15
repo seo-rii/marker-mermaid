@@ -529,6 +529,20 @@ unavailable로 두므로 source-wide OCR이나 typed
 value만으로 자동 게시 권한을 만들 수 없습니다. Native runtime fallback과 semantic repair도 같은 record
 결합을 다시 계산하며 generated Scene의 bbox는 계속 zero입니다.
 
+Treemap root의 `title`/`description`/`acc_title`/`acc_description`은 extraction field가 존재한다는 사실만으로
+게시 권한을 얻지 않습니다. Accessibility enrichment 뒤에도 네 metadata field를 모두 제거한 deterministic
+structural baseline과 실제 resolved output을 비교해 non-derived text만 찾습니다. Native는 visible title과 accessibility title/description,
+Flowchart는 실제 accessibility title/description만 평가하며 override에 가려진 legacy field, derived default와
+pipeline-added experimental notice suffix는 면제합니다. Notice-only explicit description override는 structural
+description을 지우므로 fail closed입니다. 같은 visible/accessibility title text는 한 title proof로 합치되 title과
+description 역할은 분리합니다.
+
+각 effective metadata owner는 node record와 분리된 candidate-authorized spatial OCR/vector exact observation
+또는 reconstruction 초기 approved exact `user_edit`를 요구합니다. Node-owned/overlapping/ambiguous/reused
+observation, engine-created edit와 shared budget 소진은 review입니다. 선택한 OCR/vector proof의 numeric token은
+Treemap data reference에서 occurrence 단위로 제외해 독립적으로 관측된 metadata 숫자가 value hallucination으로
+오인되지 않게 하며 fallback과 repair에서도 같은 provenance 경계를 유지합니다.
+
 Venn native 선택은 extraction model보다 좁습니다. 모든 area가 관측된 positive normal binary64-safe
 fixed-decimal이고, 최대 set/최소 positive area 비가 `200:1` 이하이며, exact-containment가 없고, 3개 이상
 set의 union마다 모든 pairwise intersection이 explicit해야 합니다. Zero·unsafe·누락 value 또는 누락 pair는

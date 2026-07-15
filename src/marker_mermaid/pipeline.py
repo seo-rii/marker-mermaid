@@ -499,6 +499,14 @@ _TREEMAP_RECORD_ASSOCIATION_MISMATCH_WARNING = (
     "Treemap node/value association conflicts with exact source labels or values; "
     "review is required"
 )
+_TREEMAP_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING = (
+    "Treemap terminal title/accTitle lacks independent candidate-authorized spatial "
+    "OCR/vector or user-edit evidence; review is required"
+)
+_TREEMAP_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING = (
+    "Treemap terminal description/accDescr lacks independent candidate-authorized spatial "
+    "OCR/vector or user-edit evidence; review is required"
+)
 
 _EVALUATION_WARNING_TEXT = frozenset(
     {
@@ -532,6 +540,8 @@ _EVALUATION_WARNING_TEXT = frozenset(
         _SANKEY_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING,
         _TREEMAP_RECORD_ASSOCIATION_UNAVAILABLE_WARNING,
         _TREEMAP_RECORD_ASSOCIATION_MISMATCH_WARNING,
+        _TREEMAP_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING,
+        _TREEMAP_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING,
         "numeric consistency is below the automatic publication threshold",
         "numeric diagram lacks OCR/vector numeric evidence and cannot auto-publish",
         "unlabeled scene-only candidates require OCR/VLM fusion before publishing",
@@ -2843,6 +2853,8 @@ class ReconstructionPipeline:
         sankey_title_attribution_state: Literal["exact", "unavailable"] | None = None
         sankey_description_attribution_state: Literal["exact", "unavailable"] | None = None
         treemap_binding_state: Literal["exact", "mismatch", "unavailable"] | None = None
+        treemap_title_attribution_state: Literal["exact", "unavailable"] | None = None
+        treemap_description_attribution_state: Literal["exact", "unavailable"] | None = None
         if gate_diagram_type == "packet":
             # Packet ranges need a field-local proof.  A document-wide number multiset can
             # stay identical when two labels exchange their ranges, so it is not publication
@@ -5232,6 +5244,8 @@ class ReconstructionPipeline:
                     if not treemap_spatial_safe:
                         break
 
+            treemap_association_texts: list[str] = []
+            treemap_expected_texts: list[str] = []
             if (
                 treemap_plan is not None
                 and treemap_spatial_safe
@@ -5254,16 +5268,16 @@ class ReconstructionPipeline:
                         _normalized_label(value) for value in raw_allowed
                     }
 
-                association_texts = [
+                treemap_association_texts = [
                     item[2]
                     for observations in treemap_node_observations.values()
                     for item in observations
                 ]
-                expected_texts = [
+                treemap_expected_texts = [
                     value for allowed in allowed_observations.values() for value in allowed
                 ]
                 bounded_tokens = bounded_ocr_token_multiset(
-                    [*association_texts, *expected_texts],
+                    [*treemap_association_texts, *treemap_expected_texts],
                     max_texts=_MAX_OCR_REFERENCE_TEXTS,
                     max_chars=_MAX_OCR_REFERENCE_CHARS,
                     max_tokens=_MAX_OCR_REFERENCE_TOKENS,
@@ -5287,7 +5301,273 @@ class ReconstructionPipeline:
                             association_matches = False
                     treemap_binding_state = "exact" if association_matches else "mismatch"
 
-            global_treemap_numeric = numeric_consistency(references.numeric_tokens, code)
+            required_treemap_metadata: list[tuple[str, str, str]] = []
+            if treemap_plan is not None and typed_ir is not None:
+                # The terminal grammar determines which metadata is observable. Native
+                # Treemap emits a visible ``title`` in addition to accTitle/accDescr,
+                # while the Flowchart fallback emits only the resolved accessibility
+                # pair. Recover the structure-only baseline by removing every metadata
+                # input from the accessibility-enriched IR.
+                structure_only_ir = {
+                    key: value
+                    for key, value in typed_ir.items()
+                    if key not in {"title", "description", "acc_title", "acc_description"}
+                }
+                derived_accessibility = resolve_accessibility(
+                    structure_only_ir,
+                    "treemap",
+                    experimental=self.config.mode != Mode.STRICT,
+                )
+                resolved_accessibility = resolve_accessibility(
+                    typed_ir,
+                    "treemap",
+                    experimental=self.config.mode != Mode.STRICT,
+                )
+                required_title_texts: set[str] = set()
+                terminal_type = _canonical_runtime_type(runtime.diagram_type)
+                if terminal_type == "treemap" and treemap_plan.semantic_title is not None:
+                    required_title_texts.add(_normalized_label(treemap_plan.semantic_title))
+                resolved_title = _normalized_label(resolved_accessibility.title)
+                if resolved_title and resolved_title != _normalized_label(
+                    derived_accessibility.title
+                ):
+                    required_title_texts.add(resolved_title)
+
+                resolved_description = resolved_accessibility.description.removesuffix(
+                    f" {EXPERIMENTAL_NOTICE}"
+                ).removesuffix(EXPERIMENTAL_NOTICE)
+                derived_description = derived_accessibility.description.removesuffix(
+                    f" {EXPERIMENTAL_NOTICE}"
+                ).removesuffix(EXPERIMENTAL_NOTICE)
+                required_description_texts: set[str] = set()
+                normalized_description = _normalized_label(resolved_description)
+                if normalized_description != _normalized_label(derived_description):
+                    if normalized_description:
+                        required_description_texts.add(normalized_description)
+                    else:
+                        # A notice-only explicit override is not a derived default. Once
+                        # the pipeline-owned experimental suffix is removed there is no
+                        # source text left to prove, so it must fail closed rather than
+                        # silently becoming an exempt empty requirement.
+                        treemap_description_attribution_state = "unavailable"
+
+                required_treemap_metadata.extend(
+                    (f"title-{index}", text, "title")
+                    for index, text in enumerate(sorted(required_title_texts), start=1)
+                )
+                required_treemap_metadata.extend(
+                    (f"description-{index}", text, "description")
+                    for index, text in enumerate(sorted(required_description_texts), start=1)
+                )
+                if required_title_texts:
+                    treemap_title_attribution_state = "unavailable"
+                if required_description_texts:
+                    treemap_description_attribution_state = "unavailable"
+
+            treemap_metadata_spatial_safe = treemap_spatial_safe
+            proven_treemap_metadata: set[str] = set()
+            proven_treemap_metadata_numeric_tokens: Counter[str] = Counter()
+            if required_treemap_metadata and treemap_metadata_spatial_safe:
+                required_metadata_texts = {
+                    text for _owner_id, text, _kind in required_treemap_metadata
+                }
+                record_evidence_ids = set(treemap_evidence_id_owners)
+                record_observations = set(treemap_observation_owners)
+                metadata_candidates: list[
+                    tuple[
+                        str,
+                        str,
+                        tuple[float, float, float, float] | None,
+                        str,
+                        Counter[str],
+                    ]
+                ] = []
+                for item in evidence:
+                    if item.id in record_evidence_ids or not item.text:
+                        continue
+                    normalized_text = _normalized_label(item.text)
+                    if normalized_text not in required_metadata_texts:
+                        continue
+                    candidate_bbox: tuple[float, float, float, float] | None
+                    if item.kind == "user_edit":
+                        if item.id not in approved_user_edit_evidence_ids:
+                            continue
+                        if item.bbox is None:
+                            metadata_candidates.append(
+                                (item.id, normalized_text, None, item.text, Counter())
+                            )
+                            continue
+                        if not isinstance(item.bbox, (list, tuple)) or len(item.bbox) != 4:
+                            treemap_metadata_spatial_safe = False
+                            break
+                        try:
+                            candidate_bbox = tuple(float(value) for value in item.bbox)
+                        except (TypeError, ValueError, OverflowError):
+                            treemap_metadata_spatial_safe = False
+                            break
+                    elif item.kind in {"ocr_token", "vector_text"}:
+                        if item.bbox is None or not isinstance(item.bbox, (list, tuple)):
+                            treemap_metadata_spatial_safe = False
+                            break
+                        if len(item.bbox) != 4:
+                            treemap_metadata_spatial_safe = False
+                            break
+                        try:
+                            candidate_bbox = tuple(float(value) for value in item.bbox)
+                        except (TypeError, ValueError, OverflowError):
+                            treemap_metadata_spatial_safe = False
+                            break
+                        observation_key = (normalized_text, candidate_bbox)
+                        if len(treemap_texts_by_bbox.get(candidate_bbox, set())) != 1:
+                            treemap_metadata_spatial_safe = False
+                            break
+                        if observation_key in record_observations:
+                            continue
+                    else:
+                        continue
+
+                    x1, y1, x2, y2 = candidate_bbox
+                    if (
+                        not all(math.isfinite(value) for value in candidate_bbox)
+                        or x2 <= x1
+                        or y2 <= y1
+                        or x1 < 0
+                        or y1 < 0
+                        or x2 > image_width
+                        or y2 > image_height
+                    ):
+                        treemap_metadata_spatial_safe = False
+                        break
+                    overlaps_node = False
+                    for node_bbox in treemap_node_boxes.values():
+                        if treemap_comparison_budget <= 0:
+                            treemap_metadata_spatial_safe = False
+                            break
+                        treemap_comparison_budget -= 1
+                        if (
+                            candidate_bbox[0] < node_bbox[2]
+                            and candidate_bbox[2] > node_bbox[0]
+                            and candidate_bbox[1] < node_bbox[3]
+                            and candidate_bbox[3] > node_bbox[1]
+                        ):
+                            overlaps_node = True
+                            break
+                    if not treemap_metadata_spatial_safe:
+                        break
+                    if overlaps_node:
+                        treemap_metadata_spatial_safe = False
+                        break
+                    metadata_candidates.append(
+                        (
+                            item.id,
+                            normalized_text,
+                            candidate_bbox,
+                            item.text,
+                            (
+                                numeric_token_multiset((item.text,))
+                                if item.kind in {"ocr_token", "vector_text"}
+                                else Counter()
+                            ),
+                        )
+                    )
+
+                combined_metadata_texts = [item[3] for item in metadata_candidates] + [
+                    text for _owner_id, text, _kind in required_treemap_metadata
+                ]
+                if (
+                    treemap_metadata_spatial_safe
+                    and bounded_ocr_token_multiset(
+                        [
+                            *treemap_association_texts,
+                            *treemap_expected_texts,
+                            *combined_metadata_texts,
+                        ],
+                        max_texts=_MAX_OCR_REFERENCE_TEXTS,
+                        max_chars=_MAX_OCR_REFERENCE_CHARS,
+                        max_tokens=_MAX_OCR_REFERENCE_TOKENS,
+                    )
+                    is None
+                ):
+                    treemap_metadata_spatial_safe = False
+
+                used_metadata_ids: set[str] = set()
+                used_metadata_observations: set[tuple[str, tuple[float, float, float, float]]] = (
+                    set()
+                )
+                if treemap_metadata_spatial_safe:
+                    ordered_metadata_candidates = sorted(
+                        metadata_candidates,
+                        key=lambda item: (
+                            item[2] is None,
+                            item[2] or (0.0, 0.0, 0.0, 0.0),
+                            item[0],
+                        ),
+                    )
+                    for owner_id, required_text, _owner_kind in required_treemap_metadata:
+                        for (
+                            evidence_id,
+                            candidate_text,
+                            candidate_bbox,
+                            _candidate_source_text,
+                            candidate_numeric_tokens,
+                        ) in ordered_metadata_candidates:
+                            if treemap_comparison_budget <= 0:
+                                treemap_metadata_spatial_safe = False
+                                break
+                            treemap_comparison_budget -= 1
+                            observation_key = (
+                                (candidate_text, candidate_bbox)
+                                if candidate_bbox is not None
+                                else None
+                            )
+                            if (
+                                evidence_id in used_metadata_ids
+                                or candidate_text != required_text
+                                or (
+                                    observation_key is not None
+                                    and observation_key in used_metadata_observations
+                                )
+                            ):
+                                continue
+                            if treemap_reference_count >= _MAX_TREEMAP_ASSOCIATION_REFERENCES:
+                                treemap_metadata_spatial_safe = False
+                                break
+                            treemap_reference_count += 1
+                            used_metadata_ids.add(evidence_id)
+                            if observation_key is not None:
+                                used_metadata_observations.add(observation_key)
+                            proven_treemap_metadata.add(owner_id)
+                            proven_treemap_metadata_numeric_tokens.update(candidate_numeric_tokens)
+                            break
+                        if not treemap_metadata_spatial_safe:
+                            break
+
+                required_title_owners = {
+                    owner_id
+                    for owner_id, _text, kind in required_treemap_metadata
+                    if kind == "title"
+                }
+                required_description_owners = {
+                    owner_id
+                    for owner_id, _text, kind in required_treemap_metadata
+                    if kind == "description"
+                }
+                if (
+                    treemap_metadata_spatial_safe
+                    and required_title_owners
+                    and required_title_owners <= proven_treemap_metadata
+                ):
+                    treemap_title_attribution_state = "exact"
+                if (
+                    treemap_metadata_spatial_safe
+                    and required_description_owners
+                    and required_description_owners <= proven_treemap_metadata
+                ):
+                    treemap_description_attribution_state = "exact"
+
+            treemap_numeric_references = references.numeric_tokens.copy()
+            treemap_numeric_references.subtract(proven_treemap_metadata_numeric_tokens)
+            global_treemap_numeric = numeric_consistency(+treemap_numeric_references, code)
             if treemap_binding_state == "exact" and global_treemap_numeric != 1.0:
                 treemap_binding_state = (
                     "mismatch" if global_treemap_numeric is not None else "unavailable"
@@ -5835,6 +6115,15 @@ class ReconstructionPipeline:
         if gate_diagram_type == "sankey" and sankey_description_attribution_state == "unavailable":
             aggregate = None
             warnings.append(_SANKEY_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING)
+        if gate_diagram_type == "treemap" and treemap_title_attribution_state == "unavailable":
+            aggregate = None
+            warnings.append(_TREEMAP_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING)
+        if (
+            gate_diagram_type == "treemap"
+            and treemap_description_attribution_state == "unavailable"
+        ):
+            aggregate = None
+            warnings.append(_TREEMAP_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING)
         if gate_diagram_type == "xychart" and xy_title_attribution_state == "unavailable":
             aggregate = None
             warnings.append(_XY_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING)

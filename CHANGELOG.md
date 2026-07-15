@@ -267,6 +267,16 @@
   occurrence completeness. Native Treemap, its same-slot Flowchart fallback, and semantic repair all rerun the
   gate; direct or otherwise untyped Treemap remains review-only while generated Scenes continue to use zero
   geometry.
+- Treemap explicit metadata attribution is terminal-effective. Native output independently grounds its visible
+  title and any non-derived resolved accessibility title/description, while an intrinsic or runtime Flowchart
+  fallback grounds only the resolved accessibility metadata it actually emits; shadowed legacy text and
+  deterministic defaults remain exempt. The pipeline-added experimental suffix is exempt, but a notice-only
+  explicit description override fails closed because it erases the structural description. Proof requires
+  candidate-authorized OCR/vector text outside every data
+  node bbox or an approved exact initial `user_edit`. Node-owned, overlapping, ambiguous, reused, engine-created,
+  or over-budget evidence forces review, and semantic repair reruns the same gate. Numeric tokens from selected
+  OCR/vector metadata proofs are removed from the Treemap data-number reference multiset so independently proven
+  titles such as `Portfolio 2026` do not look like fabricated hierarchy values.
 - Venn serialization, generated Scene attribution, and semantic OCR projection now share one bounded terminal
   plan. It freezes portable set identities, collision-safe explicit or `intersection_N[_suffix]` area identities,
   canonical membership relations, fixed-decimal non-exponent value tokens, and record-local provenance. Native

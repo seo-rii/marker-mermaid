@@ -103,6 +103,17 @@ class _TreemapValueSwapRepair:
         return RepairProposal(code=serialized.code, operation=self.name, typed_ir=typed_ir)
 
 
+class _TreemapMetadataRepair:
+    name = "treemap_metadata_injection"
+
+    def repair(self, context, candidate):
+        del context
+        typed_ir = deepcopy(candidate.typed_ir)
+        typed_ir["title"] = "Fabricated 2026 review"
+        serialized = serialize_typed_ir_result("treemap", typed_ir, experimental=True)
+        return RepairProposal(code=serialized.code, operation=self.name, typed_ir=typed_ir)
+
+
 class _PromptOmittingTreemapEngine(JsonFixtureEngine):
     name = "prompt_omitting_treemap_fixture"
     fusion_source = "vlm"
@@ -111,6 +122,18 @@ class _PromptOmittingTreemapEngine(JsonFixtureEngine):
         observation = super().observe(context)
         observation._set_prompt_supplied_prior_evidence_ids(
             {"ocr-portfolio", "ocr-core", "ocr-api", "ocr-database"}
+        )
+        return observation
+
+
+class _MetadataPromptOmittingTreemapEngine(JsonFixtureEngine):
+    name = "metadata_prompt_omitting_treemap_fixture"
+    fusion_source = "vlm"
+
+    def observe(self, context):
+        observation = super().observe(context)
+        observation._set_prompt_supplied_prior_evidence_ids(
+            {"ocr-portfolio", "ocr-core", "ocr-api", "ocr-database", "ocr-edge"}
         )
         return observation
 
@@ -153,6 +176,25 @@ def _treemap_evidence(
             bbox=(130, 65, 185, 75),
         ),
     ]
+
+
+def _metadata_evidence(
+    evidence_id: str,
+    text: str,
+    *,
+    bbox: tuple[float, float, float, float] | None = (5, 0, 100, 4),
+    kind: str = "ocr_token",
+) -> VisualEvidence:
+    return VisualEvidence(id=evidence_id, kind=kind, text=text, bbox=bbox)
+
+
+def _intrinsic_fallback_ir(**metadata: str) -> tuple[dict[str, object], list[VisualEvidence]]:
+    ir = deepcopy(TREEMAP_IR)
+    ir["root"]["value"] = 90
+    ir.update(metadata)
+    evidence = _treemap_evidence()
+    evidence[0].text = "Portfolio 90"
+    return ir, evidence
 
 
 def _reconstruct_treemap(
@@ -505,12 +547,417 @@ def test_treemap_candidate_authority_omission_requires_review() -> None:
     assert any("Treemap node/value association lacks" in w for w in result.selected.warnings)
 
 
+@pytest.mark.parametrize("field", ["title", "description", "acc_title", "acc_description"])
+@pytest.mark.parametrize("terminal", ["native", "forced-fallback", "intrinsic-fallback"])
+def test_treemap_fabricated_terminal_metadata_requires_review(
+    field: str,
+    terminal: str,
+) -> None:
+    value = f"Fabricated {field} 2026"
+    if terminal == "intrinsic-fallback":
+        ir, evidence = _intrinsic_fallback_ir(**{field: value})
+        reject_native = False
+    else:
+        ir = {**deepcopy(TREEMAP_IR), field: value}
+        evidence = _treemap_evidence()
+        reject_native = terminal == "forced-fallback"
+
+    result, _runtime = _reconstruct_treemap(
+        ir=ir,
+        evidence=evidence,
+        reject_native=reject_native,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    warning_role = "title/accTitle" if field in {"title", "acc_title"} else "description/accDescr"
+    assert any(warning_role in warning for warning in result.selected.warnings)
+
+
+def test_native_treemap_requires_independent_effective_metadata_proofs() -> None:
+    ir = {
+        **deepcopy(TREEMAP_IR),
+        "title": "Legacy 2024 title",
+        "acc_title": "Accessible 2025 title",
+        "description": "Legacy summary",
+        "acc_description": "Accessible 2026 summary",
+    }
+    evidence = [
+        *_treemap_evidence(),
+        _metadata_evidence("meta-visible", "Legacy 2024 title", bbox=(5, 0, 55, 4)),
+        _metadata_evidence("meta-acc-title", "Accessible 2025 title", bbox=(60, 0, 115, 4)),
+        _metadata_evidence(
+            "meta-acc-description",
+            "Accessible 2026 summary",
+            bbox=(5, 156, 150, 159),
+            kind="vector_text",
+        ),
+    ]
+
+    result, _runtime = _reconstruct_treemap(ir=ir, evidence=evidence)
+
+    assert result.selected is not None
+    assert result.selected.emitted_diagram_type == "treemap"
+    assert result.selected.scores["numeric_consistency"] == 1
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+
+
+@pytest.mark.parametrize("terminal", ["forced-fallback", "intrinsic-fallback"])
+def test_treemap_fallback_exempts_shadowed_legacy_metadata(terminal: str) -> None:
+    metadata = {
+        "title": "Shadowed title",
+        "acc_title": "Effective 2025 title",
+        "description": "Shadowed description",
+        "acc_description": "Effective 2026 description",
+    }
+    if terminal == "intrinsic-fallback":
+        ir, evidence = _intrinsic_fallback_ir(**metadata)
+        reject_native = False
+    else:
+        ir = {**deepcopy(TREEMAP_IR), **metadata}
+        evidence = _treemap_evidence()
+        reject_native = True
+    evidence.extend(
+        [
+            _metadata_evidence("meta-title", "Effective 2025 title", bbox=(5, 0, 100, 4)),
+            _metadata_evidence(
+                "meta-description",
+                "Effective 2026 description",
+                bbox=(5, 156, 180, 159),
+            ),
+        ]
+    )
+
+    result, _runtime = _reconstruct_treemap(
+        ir=ir,
+        evidence=evidence,
+        reject_native=reject_native,
+    )
+
+    assert result.selected is not None
+    assert result.selected.emitted_diagram_type == "flowchart"
+    assert result.selected.scores["numeric_consistency"] == 1
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+
+
+def test_treemap_derived_accessibility_defaults_need_no_metadata_proof() -> None:
+    result, _runtime = _reconstruct_treemap()
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert not any("terminal title/accTitle" in w for w in result.selected.warnings)
+    assert not any("terminal description/accDescr" in w for w in result.selected.warnings)
+    assert result.publish
+
+
+def test_native_treemap_collapses_identical_visible_and_accessible_title_role() -> None:
+    ir = {**deepcopy(TREEMAP_IR), "title": "Portfolio 2026"}
+    evidence = [
+        *_treemap_evidence(),
+        _metadata_evidence("meta-title", "Portfolio 2026"),
+    ]
+
+    result, _runtime = _reconstruct_treemap(ir=ir, evidence=evidence)
+
+    assert result.selected is not None
+    assert result.selected.scores["numeric_consistency"] == 1
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+
+
+def test_treemap_approved_initial_user_edit_can_prove_metadata() -> None:
+    ir = {**deepcopy(TREEMAP_IR), "title": "Confirmed review"}
+    evidence = [
+        *_treemap_evidence(),
+        _metadata_evidence("user-title", "Confirmed review", bbox=None, kind="user_edit"),
+    ]
+
+    result, _runtime = _reconstruct_treemap(
+        ir=ir,
+        evidence=evidence,
+        evidence_as_prior=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+
+
+@pytest.mark.parametrize("user_edit_bbox", [None, (5, 0, 100, 4)])
+def test_treemap_user_edit_metadata_cannot_subtract_unrelated_ocr_number(
+    user_edit_bbox: tuple[float, float, float, float] | None,
+) -> None:
+    ir = {**deepcopy(TREEMAP_IR), "title": "Confirmed 50 review"}
+    evidence = [
+        *_treemap_evidence(),
+        _metadata_evidence(
+            "ocr-unrelated-number",
+            "50",
+            bbox=(130, 120, 150, 130),
+        ),
+        _metadata_evidence(
+            "user-title",
+            "Confirmed 50 review",
+            bbox=user_edit_bbox,
+            kind="user_edit",
+        ),
+    ]
+
+    result, _runtime = _reconstruct_treemap(
+        ir=ir,
+        evidence=evidence,
+        evidence_as_prior=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.scores["numeric_consistency"] < 1
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any(
+        "Treemap node/value association conflicts" in warning
+        for warning in result.selected.warnings
+    )
+    assert not any("terminal title/accTitle" in warning for warning in result.selected.warnings)
+
+
+def test_treemap_engine_user_edit_cannot_self_authorize_metadata() -> None:
+    ir = {**deepcopy(TREEMAP_IR), "title": "Engine review"}
+    evidence = [
+        *_treemap_evidence(),
+        _metadata_evidence("engine-title", "Engine review", bbox=None, kind="user_edit"),
+    ]
+
+    result, _runtime = _reconstruct_treemap(ir=ir, evidence=evidence)
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("terminal title/accTitle" in w for w in result.selected.warnings)
+
+
+def test_treemap_node_owned_evidence_cannot_prove_metadata() -> None:
+    ir = {**deepcopy(TREEMAP_IR), "title": "Portfolio"}
+
+    result, _runtime = _reconstruct_treemap(ir=ir)
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("terminal title/accTitle" in w for w in result.selected.warnings)
+
+
+def test_treemap_metadata_must_not_overlap_any_node_bbox() -> None:
+    ir = {**deepcopy(TREEMAP_IR), "title": "Observed title"}
+    evidence = [
+        *_treemap_evidence(),
+        _metadata_evidence("meta-title", "Observed title", bbox=(20, 10, 100, 20)),
+    ]
+
+    result, _runtime = _reconstruct_treemap(ir=ir, evidence=evidence)
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("terminal title/accTitle" in w for w in result.selected.warnings)
+
+
+@pytest.mark.parametrize("unsafe", ["missing", "nonfinite", "zero-area"])
+def test_treemap_ocr_metadata_requires_valid_geometry(unsafe: str) -> None:
+    ir = {**deepcopy(TREEMAP_IR), "title": "Observed title"}
+    metadata = _metadata_evidence("meta-title", "Observed title")
+    if unsafe == "missing":
+        metadata.bbox = None
+    elif unsafe == "nonfinite":
+        metadata.bbox = (5, 0, float("nan"), 4)
+    else:
+        metadata.bbox = (5, 0, 5, 4)
+    evidence = [
+        *_treemap_evidence(),
+        metadata,
+    ]
+
+    result, _runtime = _reconstruct_treemap(ir=ir, evidence=evidence)
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+
+
+@pytest.mark.parametrize("field", ["description", "acc_description"])
+@pytest.mark.parametrize("reject_native", [False, True])
+def test_treemap_notice_only_description_override_fails_closed(
+    field: str,
+    reject_native: bool,
+) -> None:
+    ir = {**deepcopy(TREEMAP_IR), field: pipeline_module.EXPERIMENTAL_NOTICE}
+
+    result, _runtime = _reconstruct_treemap(ir=ir, reject_native=reject_native)
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("terminal description/accDescr" in w for w in result.selected.warnings)
+
+
+def test_treemap_same_bbox_metadata_contradiction_requires_review() -> None:
+    ir = {**deepcopy(TREEMAP_IR), "title": "Observed title"}
+    bbox = (5, 0, 100, 4)
+    evidence = [
+        *_treemap_evidence(),
+        _metadata_evidence("meta-title", "Observed title", bbox=bbox),
+        _metadata_evidence("meta-conflict", "Different title", bbox=bbox, kind="vector_text"),
+    ]
+
+    result, _runtime = _reconstruct_treemap(ir=ir, evidence=evidence)
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+
+
+def test_treemap_title_and_description_roles_require_distinct_proofs() -> None:
+    ir = {
+        **deepcopy(TREEMAP_IR),
+        "title": "Shared 2026 metadata",
+        "description": "Shared 2026 metadata",
+    }
+    one_proof = [
+        *_treemap_evidence(),
+        _metadata_evidence("meta-shared", "Shared 2026 metadata"),
+    ]
+
+    rejected, _runtime = _reconstruct_treemap(ir=ir, evidence=one_proof)
+
+    assert rejected.selected is not None
+    assert rejected.selected.aggregate_score is None
+    assert not rejected.publish
+
+    two_proofs = [
+        *one_proof,
+        _metadata_evidence(
+            "meta-shared-description",
+            "Shared 2026 metadata",
+            bbox=(5, 156, 150, 159),
+            kind="vector_text",
+        ),
+    ]
+    accepted, _runtime = _reconstruct_treemap(ir=ir, evidence=two_proofs)
+
+    assert accepted.selected is not None
+    assert accepted.selected.scores["numeric_consistency"] == 1
+    assert accepted.selected.aggregate_score is not None, accepted.selected.warnings
+    assert accepted.publish
+
+
+def test_treemap_duplicate_metadata_observation_cannot_prove_two_roles() -> None:
+    ir = {
+        **deepcopy(TREEMAP_IR),
+        "title": "Shared metadata",
+        "description": "Shared metadata",
+    }
+    bbox = (5, 0, 100, 4)
+    evidence = [
+        *_treemap_evidence(),
+        _metadata_evidence("meta-ocr", "Shared metadata", bbox=bbox),
+        _metadata_evidence("meta-vector", "Shared metadata", bbox=bbox, kind="vector_text"),
+    ]
+
+    result, _runtime = _reconstruct_treemap(ir=ir, evidence=evidence)
+
+    assert result.selected is not None
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+
+
+def test_treemap_metadata_candidate_authority_omission_requires_review() -> None:
+    ir = {**deepcopy(TREEMAP_IR), "title": "Authorized title"}
+    evidence = [
+        *_treemap_evidence(),
+        _metadata_evidence("meta-title", "Authorized title"),
+    ]
+
+    result, _runtime = _reconstruct_treemap(
+        ir=ir,
+        evidence=evidence,
+        engine_type=_MetadataPromptOmittingTreemapEngine,
+        evidence_as_prior=True,
+    )
+
+    assert result.selected is not None
+    assert result.selected.scores["numeric_consistency"] == 1
+    assert result.selected.aggregate_score is None
+    assert not result.publish
+    assert any("terminal title/accTitle" in w for w in result.selected.warnings)
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "exact_limit"),
+    [
+        ("_MAX_TREEMAP_ASSOCIATION_REFERENCES", 7),
+        ("_MAX_TREEMAP_NODE_OVERLAP_COMPARISONS", 23),
+        ("_MAX_OCR_REFERENCE_TEXTS", 23),
+        ("_MAX_OCR_REFERENCE_CHARS", 256),
+        ("_MAX_OCR_REFERENCE_TOKENS", 49),
+    ],
+)
+def test_treemap_combined_record_and_metadata_budget_exact_and_plus_one(
+    monkeypatch: pytest.MonkeyPatch,
+    limit_name: str,
+    exact_limit: int,
+) -> None:
+    ir = {
+        **deepcopy(TREEMAP_IR),
+        "title": "Title 2025",
+        "description": "Description 2026",
+    }
+    evidence = [
+        *_treemap_evidence(),
+        _metadata_evidence("meta-title", "Title 2025"),
+        _metadata_evidence(
+            "meta-description",
+            "Description 2026",
+            bbox=(5, 156, 150, 159),
+        ),
+    ]
+    monkeypatch.setattr(pipeline_module, limit_name, exact_limit)
+
+    exact_result, _runtime = _reconstruct_treemap(ir=ir, evidence=evidence)
+
+    assert exact_result.selected is not None
+    assert exact_result.selected.aggregate_score is not None, exact_result.selected.warnings
+    assert exact_result.publish
+
+    monkeypatch.setattr(pipeline_module, limit_name, exact_limit - 1)
+    over_result, _runtime = _reconstruct_treemap(ir=ir, evidence=evidence)
+
+    assert over_result.selected is not None
+    assert over_result.selected.aggregate_score is None
+    assert not over_result.publish
+    assert any(
+        "terminal title/accTitle" in warning or "terminal description/accDescr" in warning
+        for warning in over_result.selected.warnings
+    )
+
+
 def test_treemap_semantic_repair_cannot_bypass_node_local_binding() -> None:
     result, _runtime = _reconstruct_treemap(repair_engine=_TreemapValueSwapRepair())
 
     assert result.selected is not None
     api = result.selected.typed_ir["root"]["children"][0]["children"][0]
     assert api["value"] == 20
+    assert result.selected.repair_history
+    assert not result.selected.repair_history[-1].accepted
+    assert result.selected.repair_history[-1].after_score is None
+
+
+def test_treemap_semantic_repair_cannot_inject_unproven_metadata() -> None:
+    result, _runtime = _reconstruct_treemap(repair_engine=_TreemapMetadataRepair())
+
+    assert result.selected is not None
+    assert "title" not in result.selected.typed_ir
     assert result.selected.repair_history
     assert not result.selected.repair_history[-1].accepted
     assert result.selected.repair_history[-1].after_score is None

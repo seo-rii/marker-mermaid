@@ -368,6 +368,16 @@ generated Scene attribution에서 제외합니다.
   검증용이며 generated Scene의 zero bbox나 작은 native cell의 `display:none` 위험을 해결한 것으로 보지
   않습니다. Native가 계산한 internal total은 source-explicit record로 간주하지 않으므로 OCR/vector가 그
   숫자를 별도로 관측한 경우 현재 전역 occurrence gate는 보수적으로 review를 요구합니다.
+- Treemap metadata gate는 terminal이 실제 내보내는 역할만 평가합니다. Native visible title과 non-derived
+  resolved accessibility title/description, Flowchart의 non-derived resolved accessibility title/description은
+  data node와 겹치지 않는 candidate-authorized OCR/vector exact observation 또는 승인된 초기 `user_edit`로
+  증명합니다. 동일한 native visible/accessibility title text는 한 title proof로 합치지만 title과 description은
+  같은 text여도 별도 owner입니다. Shadowed legacy metadata, deterministic defaults와 experimental notice는
+  면제하되 notice-only explicit description override는 structural description을 지우므로 fail closed입니다.
+  Node-owned/reused/ambiguous/overlapping evidence, engine-emitted edit와 node association이 공유하는
+  reference/text/character/token/spatial budget 소진은 aggregate를 unavailable로 둡니다. 선택된 OCR/vector
+  metadata proof의 numeric occurrence는 global Treemap data reference에서 제외한 뒤 local node binding과 함께
+  exactness를 판정합니다.
 - Venn 구조 metric도 공용 plan이 고정한 terminal을 따릅니다. Native는 positive normal
   binary64-safe area, `200:1` visibility gate, exact-containment 제외, higher-order union별 complete explicit
   pair를 요구하고 누락 area/pair를 합성하지 않습니다. Native Scene은 marker-less logical membership과
@@ -496,3 +506,6 @@ Treemap도 typed plan의 모든 node가 nested source geometry와 exact label/ex
 exclusivity, injective evidence/observation ownership과 전역 numeric completeness 중 하나라도 확인할 수 없으면
 설정된 threshold로 우회하지 않습니다. Native runtime fallback과 semantic repair는 semantic type을 Treemap으로
 유지해 같은 gate를 다시 실행하며 direct Mermaid-only Treemap은 owner 결합을 스스로 만들 수 없습니다.
+Terminal-effective explicit metadata proof가 unavailable이면 node/value와 전역 숫자가 exact여도 같은 방식으로
+aggregate를 `None`으로 둡니다. Repair가 metadata를 추가·변경하면 새 resolved output 역할과 scoped evidence로
+다시 계산합니다.

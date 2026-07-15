@@ -339,6 +339,23 @@ Flowchart, semantic repair에서 동일하게 다시 실행되고 typed plan이 
 않습니다. Source bbox는 이 검증과 review provenance에만 쓰며 generated Scene의 zero geometry 계약은 바뀌지
 않습니다.
 
+Treemap의 explicit metadata도 실제 terminal별 output을 기준으로 독립 귀속합니다. Native는 canvas에 표시하는
+explicit `title`과 non-derived resolved `accTitle`/`accDescr`를 요구합니다. Visible title과 accessibility title이
+같은 text면 title 역할의 한 source observation으로 합치지만, 서로 다르면 각각 증명합니다. Flowchart fallback은
+visible native title을 만들지 않으므로 실제 resolved `accTitle`/`accDescr`만 증명하고, `acc_title` 또는
+`acc_description`에 가려져 output에 나오지 않는 legacy `title`/`description`은 면제합니다. 구조에서 파생한
+기본 accessibility text와 pipeline이 덧붙인 experimental notice suffix도 면제합니다. 반면 notice만 explicit
+description override로 제공해 structural description을 지우는 경우에는 증명할 source text가 남지 않으므로
+fail closed로 review합니다.
+
+근거는 모든 Treemap node bbox 밖에 있는 candidate-authorized spatial OCR/vector exact observation 또는
+reconstruction 초기 입력의 approved exact `user_edit`여야 합니다. Node-owned ID/observation, node bbox와의
+positive overlap, same-bbox contradiction, metadata owner 사이의 ID·normalized text+bbox 재사용, engine이 새로
+만든 `user_edit`, invalid geometry와 node association이 공유하는 bounded work 소진은 review입니다. 같은 text를
+title과 description 두 역할에 쓴 경우에는 서로 다른 근거가 필요합니다. 선택된 OCR/vector metadata 근거의
+numeric token은 data numeric reference에서 그 occurrence만 제거하므로 `Portfolio 2026`처럼 독립 증명된 제목의
+숫자가 hierarchy value로 오인되지 않습니다. Native/fallback과 semantic repair가 모두 이 gate를 다시 계산합니다.
+
 Venn serializer·Scene·semantic OCR은 `plan_venn_records()`의 같은 bounded plan을 사용합니다. Plan은
 set의 source/portable ID, collision-safe intersection Scene ID, canonical membership 순서, exact
 fixed-decimal value token, terminal별 label과 record-local evidence를 한 번 고정합니다. 지수 표기는
