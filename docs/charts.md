@@ -356,6 +356,16 @@ title과 description 두 역할에 쓴 경우에는 서로 다른 근거가 필�
 numeric token은 data numeric reference에서 그 occurrence만 제거하므로 `Portfolio 2026`처럼 독립 증명된 제목의
 숫자가 hierarchy value로 오인되지 않습니다. Native/fallback과 semantic repair가 모두 이 gate를 다시 계산합니다.
 
+이 attribution 전에 네 raw field(`title`, `description`, `acc_title`, `acc_description`)를 검증합니다. Pipeline
+typed candidate와 public typed/runtime-fallback serializer는 accessibility enrichment 전에, typed direct
+`serialize_treemap()`은 planning 전에 원본 값을 검사합니다. `None`/absent와 omitted-compatible exact `""` 외에는
+exact built-in `str`, normalization 전 `MAX_TEXT_CHARS` 이하, raw `Cc`/`Cf`/`Zl`/`Zp` 부재, normalization 후
+non-empty·bounded와 valid UTF-8을 모두 요구합니다. 따라서 container/number/string subclass, whitespace-only,
+huge-whitespace, newline/tab, zero-width format과 lone surrogate는 native/fallback runtime 전에 거절됩니다.
+Semantic repair는 exact-empty field를 제거한 동일 snapshot을 직렬화·평가·저장에 사용합니다. Typed metadata
+field가 없는 Raw Direct Mermaid 후보는 이 gate 대신 security·parse·render 검사와 typed-plan 부재 시
+review-only 정책을 따릅니다.
+
 Venn serializer·Scene·semantic OCR은 `plan_venn_records()`의 같은 bounded plan을 사용합니다. Plan은
 set의 source/portable ID, collision-safe intersection Scene ID, canonical membership 순서, exact
 fixed-decimal value token, terminal별 label과 record-local evidence를 한 번 고정합니다. 지수 표기는

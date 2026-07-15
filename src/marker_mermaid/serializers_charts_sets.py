@@ -430,8 +430,74 @@ def _preflight_treemap_code(code: str) -> str:
     return code
 
 
-def _accessibility(ir: dict[str, Any], *, experimental: bool) -> list[str]:
-    resolved = resolve_accessibility(ir, "treemap", experimental=experimental)
+_CHART_SET_METADATA_FIELDS = ("title", "description", "acc_title", "acc_description")
+
+
+def _validate_chart_set_explicit_metadata(
+    ir: Mapping[str, Any],
+    *,
+    diagram_type: str,
+) -> None:
+    """Reject malformed chart-set metadata before accessibility enrichment.
+
+    Accessibility enrichment stringifies explicit values and normalizes line
+    breaks. Validating the raw fields first keeps non-text values,
+    whitespace-only text, and control/format characters from being laundered
+    into terminal metadata. Exact empty strings retain legacy omitted semantics.
+    """
+
+    for field in _CHART_SET_METADATA_FIELDS:
+        value = ir.get(field)
+        if value is None:
+            continue
+        if type(value) is not str:
+            raise SerializationError(f"{diagram_type} {field} must be text when provided")
+        if value == "":
+            continue
+        if len(value) > MAX_TEXT_CHARS:
+            raise SerializationError(f"{diagram_type} {field} must be bounded non-empty text")
+        if any(unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"} for character in value):
+            raise SerializationError(f"{diagram_type} {field} contains unsupported text")
+        normalized = " ".join(value.split())
+        if not normalized or len(normalized) > MAX_TEXT_CHARS:
+            raise SerializationError(f"{diagram_type} {field} must be bounded non-empty text")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise SerializationError(f"{diagram_type} {field} is not valid UTF-8") from exc
+
+
+def _validated_chart_set_accessibility_ir(
+    ir: Mapping[str, Any],
+    *,
+    diagram_type: str,
+) -> dict[str, Any]:
+    _validate_chart_set_explicit_metadata(ir, diagram_type=diagram_type)
+    return {
+        key: value
+        for key, value in ir.items()
+        if key not in _CHART_SET_METADATA_FIELDS or value != ""
+    }
+
+
+def validate_treemap_explicit_metadata(ir: Mapping[str, Any]) -> None:
+    """Reject malformed Treemap metadata before accessibility enrichment."""
+
+    _validate_chart_set_explicit_metadata(ir, diagram_type="treemap")
+
+
+def validated_treemap_accessibility_ir(ir: Mapping[str, Any]) -> dict[str, Any]:
+    """Return validated Treemap input with exact-empty metadata treated as omitted."""
+
+    return _validated_chart_set_accessibility_ir(ir, diagram_type="treemap")
+
+
+def _accessibility(ir: Mapping[str, Any], *, experimental: bool) -> list[str]:
+    resolved = resolve_accessibility(
+        validated_treemap_accessibility_ir(ir),
+        "treemap",
+        experimental=experimental,
+    )
     _, title_source, _ = _treemap_directive_text(resolved.title, context="treemap accessible title")
     _, description_source, _ = _treemap_directive_text(
         resolved.description, context="treemap accessible description"
@@ -445,6 +511,7 @@ def _accessibility(ir: dict[str, Any], *, experimental: bool) -> list[str]:
 def plan_treemap_records(ir: Mapping[str, Any]) -> TreemapPlan:
     """Validate Treemap evidence and freeze native/fallback terminal semantics."""
 
+    ir = validated_treemap_accessibility_ir(ir)
     root = ir.get("root")
     if not isinstance(root, dict):
         raise SerializationError("treemap IR requires a root object")
@@ -657,7 +724,11 @@ def plan_treemap_records(ir: Mapping[str, Any]) -> TreemapPlan:
         fallback_compatibility_substitutions = fallback_compatibility_substitutions or (
             semantic_title != native_canvas_title
         )
-    resolved_accessibility = resolve_accessibility(dict(ir), "treemap", experimental=False)
+    resolved_accessibility = resolve_accessibility(
+        ir,
+        "treemap",
+        experimental=False,
+    )
     for value, context in (
         (resolved_accessibility.title, "treemap accessible title"),
         (resolved_accessibility.description, "treemap accessible description"),
@@ -699,7 +770,11 @@ def _treemap_flowchart_fallback(
         )
     if plan.fallback_compatibility_substitutions:
         reason = f"{reason}; {TREEMAP_FALLBACK_TEXT_COMPATIBILITY_WARNING}"
-    accessibility = resolve_accessibility(dict(ir), "treemap", experimental=experimental)
+    accessibility = resolve_accessibility(
+        validated_treemap_accessibility_ir(ir),
+        "treemap",
+        experimental=experimental,
+    )
     _, acc_title_source, _ = _treemap_directive_text(
         accessibility.title, context="treemap accessible title"
     )
@@ -741,10 +816,11 @@ def serialize_treemap(
 
     if not isinstance(native_runtime_valid, bool):
         raise SerializationError("native_runtime_valid must be a boolean")
-    plan = plan_treemap_records(ir)
+    accessibility_ir = validated_treemap_accessibility_ir(ir)
+    plan = plan_treemap_records(accessibility_ir)
     if not native_runtime_valid:
         return _treemap_flowchart_fallback(
-            ir,
+            accessibility_ir,
             plan,
             experimental=experimental,
             reason=(
@@ -754,7 +830,7 @@ def serialize_treemap(
         )
     if not plan.native_supported:
         return _treemap_flowchart_fallback(
-            ir,
+            accessibility_ir,
             plan,
             experimental=experimental,
             reason=(
@@ -764,7 +840,7 @@ def serialize_treemap(
             ),
         )
 
-    lines = ["treemap-beta", *_accessibility(dict(ir), experimental=experimental)]
+    lines = ["treemap-beta", *_accessibility(accessibility_ir, experimental=experimental)]
     if plan.native_source_title is not None:
         lines.append(f"    title {plan.native_source_title}")
     for node in plan.nodes:
@@ -775,44 +851,15 @@ def serialize_treemap(
 
 
 def validate_venn_explicit_metadata(ir: Mapping[str, Any]) -> None:
-    """Reject malformed Venn metadata before accessibility enrichment.
+    """Reject malformed Venn metadata before accessibility enrichment."""
 
-    Accessibility enrichment stringifies explicit values and normalizes line
-    breaks. Validating the raw fields first keeps non-text values,
-    whitespace-only text, and control/format characters from being laundered
-    into terminal metadata. Exact empty strings retain legacy omitted semantics.
-    """
-
-    for field in ("title", "description", "acc_title", "acc_description"):
-        value = ir.get(field)
-        if value is None:
-            continue
-        if type(value) is not str:
-            raise SerializationError(f"venn {field} must be text when provided")
-        if value == "":
-            continue
-        if len(value) > MAX_TEXT_CHARS:
-            raise SerializationError(f"venn {field} must be bounded non-empty text")
-        if any(unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"} for character in value):
-            raise SerializationError(f"venn {field} contains unsupported text")
-        normalized = " ".join(value.split())
-        if not normalized or len(normalized) > MAX_TEXT_CHARS:
-            raise SerializationError(f"venn {field} must be bounded non-empty text")
-        try:
-            value.encode("utf-8")
-        except UnicodeEncodeError as exc:
-            raise SerializationError(f"venn {field} is not valid UTF-8") from exc
+    _validate_chart_set_explicit_metadata(ir, diagram_type="venn")
 
 
 def validated_venn_accessibility_ir(ir: Mapping[str, Any]) -> dict[str, Any]:
     """Return validated Venn input with exact-empty metadata treated as omitted."""
 
-    validate_venn_explicit_metadata(ir)
-    return {
-        key: value
-        for key, value in ir.items()
-        if key not in {"title", "description", "acc_title", "acc_description"} or value != ""
-    }
+    return _validated_chart_set_accessibility_ir(ir, diagram_type="venn")
 
 
 def plan_venn_records(ir: Mapping[str, Any]) -> VennPlan:

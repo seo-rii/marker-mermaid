@@ -120,6 +120,7 @@ from marker_mermaid.serializers_charts_flow import (
 from marker_mermaid.serializers_charts_sets import (
     plan_treemap_records,
     plan_venn_records,
+    validated_treemap_accessibility_ir,
     validated_venn_accessibility_ir,
 )
 from marker_mermaid.serializers_special import plan_packet_fields
@@ -2032,6 +2033,10 @@ class ReconstructionPipeline:
                             # metadata into ordinary strings. Validate the raw payload
                             # before either the native or portable terminal sees it.
                             validate_sankey_explicit_metadata(typed.ir)
+                        elif typed.diagram_type == "treemap":
+                            # Treemap title/accessibility directives share the raw
+                            # validation and exact-empty omitted boundary.
+                            accessibility_source_ir = validated_treemap_accessibility_ir(typed.ir)
                         elif typed.diagram_type == "venn":
                             # Venn accessibility enrichment has the same raw-input
                             # boundary even though its native grammar emits only title.
@@ -6948,9 +6953,11 @@ class ReconstructionPipeline:
                 validated_ir = canonical_typed_ir_snapshot(proposal_candidate.ir)
                 if validated_ir is None:  # pragma: no cover - model contract guard
                     raise TypeError("validated semantic repair typed IR must be an object")
-                if current.diagram_type == "venn":
+                if current.diagram_type == "treemap":
                     # Keep repair serialization, evaluation, and the stored IR on the
                     # same exact-empty-as-omitted snapshot used by initial candidates.
+                    validated_ir = validated_treemap_accessibility_ir(validated_ir)
+                elif current.diagram_type == "venn":
                     validated_ir = validated_venn_accessibility_ir(validated_ir)
                 if current.node_id_mappings:
                     proposed_nodes = validated_ir.get("nodes")

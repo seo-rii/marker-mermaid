@@ -543,6 +543,15 @@ observation, engine-created edit와 shared budget 소진은 review입니다. 선
 Treemap data reference에서 occurrence 단위로 제외해 독립적으로 관측된 metadata 숫자가 value hallucination으로
 오인되지 않게 하며 fallback과 repair에서도 같은 provenance 경계를 유지합니다.
 
+이 owner 계산보다 먼저 네 raw explicit metadata field를 검사합니다. Provider typed candidate의 raw snapshot은
+pipeline enrichment 전에, public typed/runtime fallback과 typed direct `serialize_treemap()` input은 각 public
+entry point에서 검증합니다. `None`/absent와 exact-empty omitted 호환 외에는 exact built-in `str`, raw/normalized
+`MAX_TEXT_CHARS`, normalized non-empty, valid UTF-8와 raw `Cc`/`Cf`/`Zl`/`Zp` 부재를 요구합니다. 이 순서로
+newline/tab laundering, overlong whitespace, zero-width format, string subclass, container/number와 lone surrogate를
+accessibility derivation 및 Mermaid runtime보다 먼저 격리합니다. Semantic repair도 같은 검사를 재실행하고
+exact-empty field를 제거한 canonical snapshot을 직렬화·평가·저장에 공통 사용합니다. Raw Direct Mermaid는
+typed metadata field가 없으므로 security·parse·render와 typed-plan 부재 시 review-only gate로 제한합니다.
+
 Venn native 선택은 extraction model보다 좁습니다. 모든 area가 관측된 positive normal binary64-safe
 fixed-decimal이고, 최대 set/최소 positive area 비가 `200:1` 이하이며, exact-containment가 없고, 3개 이상
 set의 union마다 모든 pairwise intersection이 explicit해야 합니다. Zero·unsafe·누락 value 또는 누락 pair는

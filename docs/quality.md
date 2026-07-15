@@ -378,6 +378,14 @@ generated Scene attribution에서 제외합니다.
   reference/text/character/token/spatial budget 소진은 aggregate를 unavailable로 둡니다. 선택된 OCR/vector
   metadata proof의 numeric occurrence는 global Treemap data reference에서 제외한 뒤 local node binding과 함께
   exactness를 판정합니다.
+- Treemap raw metadata gate는 attribution보다 먼저 실행됩니다. Pipeline typed candidate와 public typed/runtime
+  serializer는 enrichment 전에, typed direct `serialize_treemap()`은 planning 전에 네 explicit field를 검사합니다.
+  `None`/absent와 exact-empty omitted 호환 외에는 exact built-in string, raw/normalized length limit,
+  normalized non-empty, valid UTF-8와 raw `Cc`/`Cf`/`Zl`/`Zp` 부재를 요구합니다. Newline/tab normalization,
+  zero-width format, string subclass, non-text container/number, huge whitespace와 surrogate는 runtime 호출 전에
+  serialization failure로 격리됩니다. Repair는 exact-empty를 제거한 canonical IR을 직렬화·평가·저장에 공통
+  사용합니다. Raw Direct Mermaid는 typed metadata가 없어 security·parse·render와 typed-plan 부재 시
+  review-only gate를 유지합니다.
 - Venn 구조 metric도 공용 plan이 고정한 terminal을 따릅니다. Native는 positive normal
   binary64-safe area, `200:1` visibility gate, exact-containment 제외, higher-order union별 complete explicit
   pair를 요구하고 누락 area/pair를 합성하지 않습니다. Native Scene은 marker-less logical membership과

@@ -277,6 +277,14 @@
   or over-budget evidence forces review, and semantic repair reruns the same gate. Numeric tokens from selected
   OCR/vector metadata proofs are removed from the Treemap data-number reference multiset so independently proven
   titles such as `Portfolio 2026` do not look like fabricated hierarchy values.
+- Treemap raw explicit metadata now has one pre-enrichment boundary across reconstruction, public typed/runtime
+  serializers, and the typed direct `serialize_treemap()` API. Non-`None` `title`, `description`, `acc_title`, and
+  `acc_description` values must be exact built-in strings. Exact `""` is treated as omitted; every other value is
+  raw-length bounded before normalization, valid UTF-8, normalized non-empty and bounded, and free of raw
+  `Cc`/`Cf`/`Zl`/`Zp` characters. This rejects coercion hooks, containers, numbers, overlong whitespace,
+  newline/tab laundering, zero-width controls, and lone surrogates before Mermaid runtime. Repair serialization,
+  evaluation, and stored IR share the same exact-empty-removed snapshot. Raw Direct Mermaid retains its existing
+  security/parse/render and typed-plan-absent review-only gates.
 - Venn serialization, generated Scene attribution, and semantic OCR projection now share one bounded terminal
   plan. It freezes portable set identities, collision-safe explicit or `intersection_N[_suffix]` area identities,
   canonical membership relations, fixed-decimal non-exponent value tokens, and record-local provenance. Native

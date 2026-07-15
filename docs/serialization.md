@@ -659,6 +659,15 @@ cross-owner reuse, engine-emitted edit, invalid geometry와 shared bounded work 
 node/value 숫자는 exact해야 합니다. Runtime fallback과 semantic repair는 새 terminal/IR/scoped evidence로 이
 검사를 다시 실행합니다.
 
+Treemap serializer는 accessibility enrichment보다 먼저 raw explicit metadata를 검증합니다. Pipeline 후보와
+`serialize_typed_ir_result()`, `serialize_runtime_fallback_result()`, typed direct `serialize_treemap()`이
+`title`/`description`/`acc_title`/`acc_description` 원본에 같은 계약을 적용합니다. `None`과 부재 field, exact
+`""`은 omitted로 resolve합니다. 나머지는 exact built-in `str`, normalization 전 `MAX_TEXT_CHARS` 이하, raw
+`Cc`/`Cf`/`Zl`/`Zp` 부재, normalization 후 non-empty·bounded, valid UTF-8이어야 합니다. 실패는 native/fallback
+코드와 runtime validation 전에 `SerializationError`로 닫히며 semantic repair도 exact-empty를 제거한 한
+canonical snapshot을 직렬화·평가·선택 후보 저장에 사용합니다. Typed metadata field가 없는 Raw Direct Mermaid
+후보에는 이 gate를 적용하지 않고 기존 security·parse·render와 typed-plan 부재 시 review-only 정책을 적용합니다.
+
 Treemap은 semantic 원문을 typed IR에 남기고, source scanner에 걸리는 token은 emitted source에만
 zero-width separator를 넣어 비활성화합니다. Scene/OCR은 separator를 제거한 terminal-visible
 text를 씁니다. Node quote는 `″`로 표시하고, Flowchart label의 ASCII angle bracket/backslash는

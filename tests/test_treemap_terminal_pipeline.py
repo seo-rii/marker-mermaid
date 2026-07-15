@@ -17,7 +17,11 @@ from marker_mermaid.models import (
 )
 from marker_mermaid.pipeline import ReconstructionPipeline
 from marker_mermaid.protocols import RepairProposal, RuntimeResult
-from marker_mermaid.serializers import serialize_typed_ir_result
+from marker_mermaid.serializers import (
+    SerializationError,
+    serialize_runtime_fallback_result,
+    serialize_typed_ir_result,
+)
 from marker_mermaid.validation import CandidateValidator
 
 TREEMAP_IR = {
@@ -111,6 +115,49 @@ class _TreemapMetadataRepair:
         typed_ir = deepcopy(candidate.typed_ir)
         typed_ir["title"] = "Fabricated 2026 review"
         serialized = serialize_typed_ir_result("treemap", typed_ir, experimental=True)
+        return RepairProposal(code=serialized.code, operation=self.name, typed_ir=typed_ir)
+
+
+class _TreemapInvalidRawMetadataRepair:
+    name = "treemap_invalid_raw_metadata"
+
+    def repair(self, context, candidate):
+        del context
+        typed_ir = deepcopy(candidate.typed_ir)
+        typed_ir["acc_title"] = "Invalid\nmetadata"
+        return RepairProposal(
+            code=f"{candidate.mermaid_code.rstrip()}\n%% invalid raw metadata repair\n",
+            operation=self.name,
+            typed_ir=typed_ir,
+        )
+
+
+class _TreemapTerminalLabelRepair:
+    name = "treemap_terminal_label"
+
+    def repair(self, context, candidate):
+        del context
+        typed_ir = deepcopy(candidate.typed_ir)
+        api = typed_ir["root"]["children"][0]["children"][0]
+        api["label"] = "Verified API"
+        api["evidence_ids"] = ["ocr-api-correct", "ocr-api-value"]
+        typed_ir.update(
+            {
+                "title": "",
+                "description": "",
+                "acc_title": "",
+                "acc_description": "",
+            }
+        )
+        if candidate.emitted_diagram_type == "flowchart":
+            serialized = serialize_runtime_fallback_result(
+                "treemap",
+                typed_ir,
+                experimental=True,
+            )
+            assert serialized is not None
+        else:
+            serialized = serialize_typed_ir_result("treemap", typed_ir, experimental=True)
         return RepairProposal(code=serialized.code, operation=self.name, typed_ir=typed_ir)
 
 
@@ -226,6 +273,105 @@ def _reconstruct_treemap(
         evidence=active_evidence if evidence_as_prior else None,
     )
     return result, runtime
+
+
+@pytest.mark.parametrize("reject_native", [False, True])
+@pytest.mark.parametrize("field", ["title", "description", "acc_title", "acc_description"])
+@pytest.mark.parametrize(
+    "value",
+    [" ", "Visible\nmetadata"],
+    ids=["whitespace", "newline"],
+)
+def test_treemap_invalid_raw_metadata_never_reaches_either_runtime_terminal(
+    field: str,
+    reject_native: bool,
+    value: str,
+) -> None:
+    ir = deepcopy(TREEMAP_IR)
+    ir[field] = value
+
+    result, runtime = _reconstruct_treemap(ir=ir, reject_native=reject_native)
+
+    assert result.selected is None
+    assert not result.publish
+    assert runtime.calls == []
+    assert any(
+        failure.stage == "serialization" and failure.error_type == "SerializationError"
+        for failure in result.failures
+    )
+
+
+@pytest.mark.parametrize("terminal", ["native", "forced-fallback", "intrinsic-fallback"])
+def test_treemap_exact_empty_metadata_derives_defaults_for_every_terminal(
+    terminal: str,
+) -> None:
+    if terminal == "intrinsic-fallback":
+        ir, evidence = _intrinsic_fallback_ir()
+        reject_native = False
+    else:
+        ir = deepcopy(TREEMAP_IR)
+        evidence = _treemap_evidence()
+        reject_native = terminal == "forced-fallback"
+    ir.update(
+        {
+            "title": "",
+            "description": "",
+            "acc_title": "",
+            "acc_description": "",
+        }
+    )
+
+    result, runtime = _reconstruct_treemap(
+        ir=ir,
+        evidence=evidence,
+        reject_native=reject_native,
+    )
+
+    assert result.selected is not None
+    expected_type = "treemap" if terminal == "native" else "flowchart"
+    assert result.selected.emitted_diagram_type == expected_type
+    assert result.selected.aggregate_score is not None, result.selected.warnings
+    assert result.publish
+    assert "accTitle: Treemap reconstruction" in result.selected.mermaid_code
+    assert "Treemap reconstruction containing Portfolio, Core, Edge, API, Database." in (
+        result.selected.mermaid_code
+    )
+    assert "accDescr: This reconstruction is experimental" not in (result.selected.mermaid_code)
+    assert len(runtime.calls) == (2 if terminal == "forced-fallback" else 1)
+
+
+def test_treemap_pipeline_validates_raw_metadata_before_accessibility_enrichment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def reject_raw_metadata(ir: object) -> None:
+        del ir
+        calls.append("validate")
+        raise SerializationError("invalid raw Treemap metadata")
+
+    def unexpected_enrichment(*args: object, **kwargs: object) -> dict[str, object]:
+        del args, kwargs
+        calls.append("enrich")
+        raise AssertionError("accessibility enrichment ran before validation")
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "validated_treemap_accessibility_ir",
+        reject_raw_metadata,
+    )
+    monkeypatch.setattr(pipeline_module, "enrich_accessibility_ir", unexpected_enrichment)
+
+    result, runtime = _reconstruct_treemap()
+
+    assert result.selected is None
+    assert not result.publish
+    assert runtime.calls == []
+    assert calls == ["validate"]
+    assert any(
+        failure.stage == "serialization" and failure.error_type == "SerializationError"
+        for failure in result.failures
+    )
 
 
 @pytest.mark.parametrize("reject_native", [False, True])
@@ -961,6 +1107,85 @@ def test_treemap_semantic_repair_cannot_inject_unproven_metadata() -> None:
     assert result.selected.repair_history
     assert not result.selected.repair_history[-1].accepted
     assert result.selected.repair_history[-1].after_score is None
+
+
+@pytest.mark.parametrize("terminal", ["native", "forced-fallback", "intrinsic-fallback"])
+def test_treemap_semantic_repair_uses_sanitized_metadata_for_every_terminal(
+    terminal: str,
+) -> None:
+    if terminal == "intrinsic-fallback":
+        ir, evidence = _intrinsic_fallback_ir()
+        reject_native = False
+    else:
+        ir = deepcopy(TREEMAP_IR)
+        evidence = _treemap_evidence()
+        reject_native = terminal == "forced-fallback"
+    api = ir["root"]["children"][0]["children"][0]
+    api["label"] = "X"
+    api["evidence_ids"] = ["ocr-api-wrong", "ocr-api-value"]
+    evidence = [item for item in evidence if item.id != "ocr-api"]
+    evidence.extend(
+        [
+            VisualEvidence(
+                id="ocr-api-wrong",
+                kind="ocr_token",
+                text="X",
+                bbox=(20, 65, 30, 75),
+            ),
+            VisualEvidence(
+                id="ocr-api-correct",
+                kind="vector_text",
+                text="Verified API",
+                bbox=(32, 65, 58, 75),
+            ),
+            VisualEvidence(
+                id="ocr-api-value",
+                kind="ocr_token",
+                text="20",
+                bbox=(20, 78, 30, 86),
+            ),
+        ]
+    )
+
+    result, _runtime = _reconstruct_treemap(
+        ir=ir,
+        evidence=evidence,
+        reject_native=reject_native,
+        repair_engine=_TreemapTerminalLabelRepair(),
+    )
+
+    assert result.selected is not None
+    assert result.selected.candidate_id == "candidate-1-repair-1"
+    assert result.selected.repair_history[-1].accepted
+    assert result.selected.typed_ir["root"]["children"][0]["children"][0]["label"] == (
+        "Verified API"
+    )
+    assert not {"title", "description", "acc_title", "acc_description"} & (
+        result.selected.typed_ir.keys()
+    )
+    assert not any("code and typed IR diverged" in warning for warning in result.selected.warnings)
+
+
+@pytest.mark.parametrize("reject_native", [False, True])
+def test_treemap_semantic_repair_rejects_invalid_raw_metadata_before_runtime(
+    reject_native: bool,
+) -> None:
+    result, runtime = _reconstruct_treemap(
+        reject_native=reject_native,
+        repair_engine=_TreemapInvalidRawMetadataRepair(),
+    )
+
+    assert result.selected is not None
+    assert result.selected.typed_ir.get("acc_title") != "Invalid\nmetadata"
+    assert len(runtime.calls) == (2 if reject_native else 1)
+    assert result.selected.repair_history
+    assert result.selected.repair_history[-1].operation == "treemap_invalid_raw_metadata"
+    assert not result.selected.repair_history[-1].accepted
+    assert result.selected.repair_history[-1].after_score is None
+    assert any(
+        "semantic repair IR could not be serialized: SerializationError" in warning
+        for warning in result.selected.warnings
+    )
 
 
 def test_direct_treemap_candidate_remains_review_only_without_typed_plan() -> None:
