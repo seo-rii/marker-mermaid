@@ -69,6 +69,41 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | Data Lineage fallback | dataset, process, relation endpoint/label |
 | Railroad | rule과 terminal/nonterminal/special/sequence/choice/optional/repetition expression AST |
 
+### ER terminal record 계약
+
+ER의 provider prompt와 nested response model은 다음 canonical record를 공유합니다. Root의 `entities`는
+필수 list이고 `relationships`는 선택 list입니다.
+
+| Record | Prompt에 공개하고 형을 검사하는 field |
+| --- | --- |
+| `entities[]` | `id`, `label`, `bbox`, `evidence_ids`, `attributes` |
+| `entities[].attributes[]` | `type`, `name`, `keys`, `comment`, `bbox`, `evidence_ids` |
+| `relationships[]` | `id`, `source`, `target`, `source_cardinality`, `target_cardinality`, `identifying`, `label`, `bbox`, `evidence_ids` |
+
+`keys`는 `PK|FK|UK`의 list, cardinality는
+`one|only_one|zero_or_one|one_or_more|zero_or_more`, `identifying`은 boolean으로 coercion 없이 검사합니다.
+Partial reconstruction 호환을 위해 nested model의 개별 scalar는 optional일 수 있지만 serializer plan은 실제
+방출 전에 entity ID, attribute type/name/evidence, relationship endpoint/cardinality/identifying/label/evidence를
+요구합니다. Unknown endpoint나 누락 cardinality를 보완하거나 partial nodes-only ER로 축소하지 않습니다.
+
+Nested extraction 뒤 `plan_er_records()`가 source identity, collision-safe emitted identity, relation Scene slot,
+semantic/source/Mermaid 11.16 canvas text를 한 번 고정합니다. Relationship role은 공백 유무와 관계없이 quoted
+terminal 하나로 방출해 trailing word가 entity로 해석되지 않게 합니다. Entity alias, attribute
+type/name/comment와 role은 각 grammar 자리에 맞는 compatibility glyph와 source-only neutralization을 적용하며
+semantic 원문은 provider 결과와 typed/review IR에 남깁니다. `erDiagram`·style/control keyword·cardinality
+keyword·`__proto__` 또는 `iconify` substring과 충돌하는 source ID는 `mmx_er_id_N[_suffix]`로 mapping하고,
+serializer relationship endpoint와 generated Scene이 같은 emitted ID를 소비합니다. Entity/relationship
+evidence는 해당 Scene element/relation에 유지하고 attribute evidence는 실제 canvas field를 semantic OCR에
+추가할 때 사용합니다.
+
+Top-level `title`/`description`/`acc_title`/`acc_description`은 공통 root model을 통과한 뒤에도 ER 전용 raw
+gate에서 enrichment 전에 다시 검사합니다. `None`/absent와 exact-empty omitted 외에는 exact built-in string,
+raw/normalized bound, non-empty normalized text, valid UTF-8과 허용 Unicode category를 요구합니다. 별도
+accessibility plan은 explicit metadata를 우선하고 없을 때 현재 entity semantic label로 default를
+파생합니다. Pipeline은 initial/repair typed IR에 derived `acc_*`가 아닌 validated raw snapshot을 보존하므로
+accepted structural repair 뒤 stale description이 남지 않고, visible compatibility warning도 새 plan에 맞춰
+추가되거나 제거됩니다.
+
 ### Organization·Data Lineage fallback record 계약
 
 Organization은 `root: object`를, Data Lineage는 `datasets: list`와

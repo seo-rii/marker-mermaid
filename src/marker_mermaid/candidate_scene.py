@@ -63,7 +63,7 @@ from marker_mermaid.serializers_special import (
     plan_packet_fields,
     plan_treeview_hierarchy,
 )
-from marker_mermaid.serializers_uml import plan_state_records
+from marker_mermaid.serializers_uml import plan_er_records, plan_state_records
 
 
 def _ordered_records(
@@ -272,8 +272,35 @@ def typed_ir_to_scene(
         node_records = list(ir.get("classes") or [])
         edge_records = list(ir.get("relations") or [])
     elif diagram_type == "er":
-        node_records = list(ir.get("entities") or [])
-        edge_records = list(ir.get("relationships") or [])
+        try:
+            er_plan = plan_er_records(ir)
+        except SerializationError:
+            return None
+        node_records = [
+            {
+                **entity.source_record,
+                "id": entity.emitted_id,
+                "label": entity.canvas_label,
+                "role": "entity",
+            }
+            for entity in er_plan.entities
+        ]
+        edge_records = [
+            {
+                **relationship.source_record,
+                "id": relationship.scene_id,
+                "source": relationship.source_id,
+                "target": relationship.target_id,
+                "label": relationship.canvas_label,
+                "relation_type": "identifying"
+                if relationship.identifying
+                else "non_identifying",
+                "semantic_relation": "association",
+                "arrow_at_start": False,
+                "arrow_at_end": False,
+            }
+            for relationship in er_plan.relationships
+        ]
     elif diagram_type == "requirement":
         node_records = [*(ir.get("requirements") or []), *(ir.get("elements") or [])]
         edge_records = list(ir.get("relations") or [])
@@ -1906,31 +1933,17 @@ def typed_ir_semantic_texts(
                     yield str(value)
         return
     if diagram_type == "er":
-        for entity in ir.get("entities") or []:
-            if not isinstance(entity, dict):
-                continue
-            source_id = entity.get("id")
-            label = entity.get("label") or source_id
-            if label is not None and label != "":
-                yield str(label)
-            for attribute in entity.get("attributes") or []:
-                if not isinstance(attribute, dict):
-                    continue
-                for field in ("type", "name", "comment"):
-                    value = attribute.get(field)
-                    if value is not None and value != "":
-                        yield str(value)
-                keys = attribute.get("keys")
-                if isinstance(keys, list):
-                    for value in keys:
-                        if value is not None and value != "":
-                            yield str(value)
-        for relationship in ir.get("relationships") or []:
-            if not isinstance(relationship, dict):
-                continue
-            label = relationship.get("label")
-            if label is not None and label != "":
-                yield str(label)
+        plan = plan_er_records(ir)
+        for entity in plan.entities:
+            yield entity.canvas_label
+            for attribute in entity.attributes:
+                yield attribute.canvas_type
+                yield attribute.canvas_name
+                yield from attribute.keys
+                if attribute.canvas_comment is not None:
+                    yield attribute.canvas_comment
+        for relationship in plan.relationships:
+            yield relationship.canvas_label
         return
     if diagram_type == "gantt":
         plan = plan_gantt_records(ir)

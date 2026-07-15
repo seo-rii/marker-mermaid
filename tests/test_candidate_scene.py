@@ -832,18 +832,30 @@ def test_er_semantic_texts_include_rendered_attribute_fields():
             {
                 "id": "customer",
                 "label": "Customer Account",
+                "evidence_ids": ["ocr-customer"],
                 "attributes": [
                     {
                         "type": "uuid",
                         "name": "customer_id",
                         "keys": ["PK"],
                         "comment": "stable identifier",
+                        "evidence_ids": ["ocr-customer-id"],
                     }
                 ],
             },
-            {"id": "order", "label": "Order"},
+            {"id": "order", "label": "Order", "evidence_ids": ["ocr-order"]},
         ],
-        "relationships": [{"source": "customer", "target": "order", "label": "places"}],
+        "relationships": [
+                {
+                    "source": "customer",
+                    "target": "order",
+                    "source_cardinality": "one",
+                    "target_cardinality": "zero_or_more",
+                    "identifying": False,
+                    "label": "places",
+                    "evidence_ids": ["arrow-places"],
+                }
+        ],
     }
     scene = typed_ir_to_scene("er", ir)
 
@@ -861,7 +873,12 @@ def test_er_semantic_texts_include_rendered_attribute_fields():
 
 def test_serializer_aware_texts_exclude_hidden_generic_text_and_task_ids():
     class_ir = {"classes": [{"id": "A", "text": "Hidden class text"}], "relations": []}
-    er_ir = {"entities": [{"id": "B", "text": "Hidden entity text"}], "relationships": []}
+    er_ir = {
+        "entities": [
+            {"id": "B", "text": "Hidden entity text", "evidence_ids": ["shape-b"]}
+        ],
+        "relationships": [],
+    }
     gantt_ir = {
         "sections": [
             {
@@ -4038,8 +4055,21 @@ def test_phase2_sources_keep_requested_structure_even_when_code_falls_back():
     er = typed_ir_to_scene(
         "er",
         {
-            "entities": [{"id": "customer"}, {"id": "order"}],
-            "relationships": [{"source": "customer", "target": "order"}],
+            "entities": [
+                {"id": "customer", "evidence_ids": ["shape-customer"]},
+                {"id": "order", "evidence_ids": ["shape-order"]},
+            ],
+            "relationships": [
+                {
+                    "source": "customer",
+                    "target": "order",
+                    "source_cardinality": "one",
+                    "target_cardinality": "zero_or_more",
+                    "identifying": False,
+                    "label": "places",
+                    "evidence_ids": ["edge-places"],
+                }
+            ],
         },
     )
 

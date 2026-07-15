@@ -113,6 +113,43 @@ State source ID는 normalized identity를 유지하는 것이 기본이지만 Me
 record/evidence는 원본 identity를 유지하고 declaration, transition, generated Scene은 같은 emitted ID를
 사용합니다. 실제 Mermaid fixture는 이 mapping을 source/target 양쪽에 놓고 SVG transition 수까지 검사합니다.
 
+ER도 serializer, generated Scene, semantic OCR이 하나의 record plan을 소비합니다. Entity는 source ID와
+collision-safe emitted ID, semantic/source/canvas label, attribute plan을 함께 고정합니다. Relationship은
+emitted endpoint, explicit cardinality, identifying connector, semantic/source/canvas role과 collision-free Scene
+slot을 고정합니다. Explicit relationship ID가 있으면 normalized slot의 시작값으로 쓰고, 없으면
+`er_relationship_N`을 사용하며 entity/parallel-relation slot과 충돌하면 suffix로 분리합니다. Typed IR과 각
+record의 evidence는 source identity와 semantic 원문을 유지합니다.
+
+Relationship role은 길이나 공백 유무와 관계없이 `: "..."` terminal 하나로 방출합니다. Mermaid 11.16에서
+unquoted multiword role은 첫 단어만 edge label이 되고 나머지가 phantom entity로 해석될 수 있기 때문입니다.
+Entity alias, attribute type/name, attribute comment, relationship role은 서로 다른 ER grammar 자리이므로 같은
+문자열 escape를 일괄 적용하지 않습니다. Entity의 grammar-active quote·percent·backslash, attribute의 raw
+backtick과 active Markdown, comment/role의 quote·active Markdown/entity-like text는 해당 자리에서 실제 SVG에
+남는 `″`·`％`·`∖`·`｀`·fullwidth delimiter로 고정합니다. Attribute type/name은 plain ER word로 안전하지 않거나
+`PK`/`FK`/`UK` token과 충돌할 때 backtick terminal로 감쌉니다. Source scanner/lexer를 활성화하는 URL,
+callback, directive, style/control word에는 source-only zero-width separator를 넣고 normalized canvas,
+Scene/OCR에서는 제거합니다. Visible glyph가 달라졌을 때만 compatibility warning을 기록합니다.
+
+Entity label의 missing/`None` 또는 exact `""`은 source ID를 semantic fallback으로 사용합니다. Attribute
+comment exact-empty는 omitted이지만 entity/attribute/relationship의 whitespace-only, non-string,
+unsupported non-whitespace control/format/surrogate 또는 bounded text 한도 초과는 runtime 전에 전체 plan을
+거부합니다.
+Entity, attribute, relationship provenance와 explicit cardinality/identifying 값도 계속 필수이며 unknown endpoint를
+부분 graph로 축소하지 않습니다. Source ID가 `erDiagram`, `style`, `classDef`, `class`, `one`, `many`, `to`,
+`click`, `linkStyle`, `__proto__` 같은 ER lexer/security namespace와 충돌하거나 `iconify` substring을 포함하면
+위험 token이 없는 `mmx_er_id_N[_suffix]` alias를 사용합니다. Declaration, relationship endpoint와 generated
+Scene element는 같은 emitted ID를 공유하고 source ID는 typed/review IR에 남습니다.
+
+ER의 raw `title`/`description`/`acc_title`/`acc_description`은 generic enrichment 전에 검사합니다.
+Absent/`None`은 누락이고 exact `""`은 omitted으로 제거하지만, 그 외에는 exact built-in string,
+raw/normalized `MAX_TEXT_CHARS`, non-empty normalized text, valid UTF-8과 허용 Unicode category를 요구합니다.
+Record plan과 별도의 accessibility plan은 semantic entity label에서 default를 파생하고
+accessibility grammar 전용 source/canvas text를 만듭니다. Initial/repair candidate는 derived `acc_*`가 아닌 이
+validated raw snapshot을 저장하므로 accepted record repair 뒤에는 현재 semantic label로 default description을
+다시 만들 수 있습니다. Explicit metadata는 계속 우선하며 compatibility warning도 accepted record/accessibility
+plan에 맞춰 추가하거나 제거합니다. Accessibility canvas는 SVG `<title>`/`<desc>`로, entity/relationship과
+attribute canvas text는 각각 Scene/semantic OCR로 투영합니다.
+
 Gantt record plan은 title·section·task의 semantic/source/Mermaid 11.16 canvas text를 한 번 고정해 serializer,
 generated Scene, OCR projection에 공유합니다. Accessibility는 이 plan과 별도이며 section/task의 semantic
 label로 description을 파생한 뒤 접근성 grammar 전용 source/canvas plan을 적용합니다. 따라서 task의 `∶`/`％`

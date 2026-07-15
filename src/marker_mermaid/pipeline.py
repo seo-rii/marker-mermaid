@@ -128,8 +128,11 @@ from marker_mermaid.serializers_charts_sets import (
 )
 from marker_mermaid.serializers_special import plan_packet_fields
 from marker_mermaid.serializers_uml import (
+    ER_TEXT_COMPATIBILITY_WARNING,
     STATE_TEXT_COMPATIBILITY_WARNING,
+    enrich_er_accessibility_ir,
     enrich_state_accessibility_ir,
+    validated_er_accessibility_ir,
     validated_state_accessibility_ir,
 )
 from marker_mermaid.style_recovery import (
@@ -2058,6 +2061,8 @@ class ReconstructionPipeline:
                             validate_quadrant_explicit_metadata(typed.ir)
                         elif typed.diagram_type == "gantt":
                             accessibility_source_ir = validated_gantt_metadata_ir(typed.ir)
+                        elif typed.diagram_type == "er":
+                            accessibility_source_ir = validated_er_accessibility_ir(typed.ir)
                         elif typed.diagram_type == "state":
                             # Resolve State accessibility only after exact raw
                             # metadata types, bounds, and omitted-empty semantics
@@ -2065,6 +2070,11 @@ class ReconstructionPipeline:
                             accessibility_source_ir = validated_state_accessibility_ir(typed.ir)
                         if typed.diagram_type == "gantt":
                             enriched_ir = enrich_gantt_accessibility_ir(
+                                accessibility_source_ir,
+                                experimental=self.config.mode != Mode.STRICT,
+                            )
+                        elif typed.diagram_type == "er":
+                            enriched_ir = enrich_er_accessibility_ir(
                                 accessibility_source_ir,
                                 experimental=self.config.mode != Mode.STRICT,
                             )
@@ -2099,7 +2109,7 @@ class ReconstructionPipeline:
                         )
                         stored_typed_ir = (
                             accessibility_source_ir
-                            if typed.diagram_type in {"gantt", "state"}
+                            if typed.diagram_type in {"er", "gantt", "state"}
                             else enriched_ir
                         )
                         stored_typed_ir = canonical_typed_ir_snapshot(stored_typed_ir)
@@ -6995,6 +7005,8 @@ class ReconstructionPipeline:
                     validated_ir = validated_venn_accessibility_ir(validated_ir)
                 elif current.diagram_type == "gantt":
                     validated_ir = validated_gantt_metadata_ir(validated_ir)
+                elif current.diagram_type == "er":
+                    validated_ir = validated_er_accessibility_ir(validated_ir)
                 elif current.diagram_type == "state":
                     validated_ir = validated_state_accessibility_ir(validated_ir)
                 if current.node_id_mappings:
@@ -7223,6 +7235,14 @@ class ReconstructionPipeline:
                 ]
                 if GANTT_TEXT_COMPATIBILITY_WARNING in canonical.warnings:
                     canonical_compatibility_warnings.append(GANTT_TEXT_COMPATIBILITY_WARNING)
+            elif current.diagram_type == "er":
+                retained_warnings = [
+                    warning
+                    for warning in retained_warnings
+                    if warning != ER_TEXT_COMPATIBILITY_WARNING
+                ]
+                if ER_TEXT_COMPATIBILITY_WARNING in canonical.warnings:
+                    canonical_compatibility_warnings.append(ER_TEXT_COMPATIBILITY_WARNING)
             attempted.warnings = list(
                 dict.fromkeys(
                     [

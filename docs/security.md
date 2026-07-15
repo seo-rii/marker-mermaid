@@ -72,6 +72,35 @@ ID에 strict remote-icon rule의 `iconify` substring이 있으면 serializer가 
 전체를 먼저 예약하므로 사용자가 이미 같은 alias를 제공해도 다른 node를 덮어쓰지 않습니다. 이 mapping은
 strict scanner 우회가 아니라 비활성 identifier 치환이며 Scene endpoint와 Mermaid edge가 공유합니다.
 
+ER relationship role은 항상 double-quoted terminal 하나로 방출합니다. Unquoted multiword text가 짧은 role과
+추가 entity statement로 분리되는 Mermaid 11.16 해석을 허용하지 않으며, role 안의 세미콜론도 새 statement를
+열 수 없습니다. Entity alias, attribute type/name, comment와 role은 각각의 ER grammar 자리에서 exact
+built-in string, bounded normalized text, UTF-8, non-whitespace control/format/surrogate 제한을 통과합니다.
+Attribute key는
+`PK`/`FK`/`UK`만 허용하고 type/name이 key token 또는 plain word grammar와 충돌하면 backtick terminal로
+격리합니다.
+
+ER source ID가 `erDiagram`, `style`, `classDef`, `class`, `one`, `many`, `to`, `click`, `linkStyle`,
+`__proto__` 같은 lexer/security namespace와 충돌하거나 `iconify` substring을 포함하면 serializer는
+collision-safe `mmx_er_id_N[_suffix]`를 방출합니다. Source identity와 evidence는 typed IR에 남고 entity
+declaration, relationship endpoint, generated Scene이 같은 alias를 사용합니다. 이는 금지 statement를
+allowlist에 넣는 예외가 아니라 active token을 source identifier로 내보내지 않는 치환입니다.
+
+Mermaid 11.16이 literal canvas를 보존하지 못하는 ER terminal에는 자리별 visible compatibility glyph를
+사용합니다. Entity quote·percent·grammar-active backslash, attribute backtick, comment/role의 active
+Markdown/entity-like text와 accessibility numeric entity 치환은 warning으로 공개하고 semantic 원문은 typed
+IR에 보존합니다. URL, callback, directive, style/control word와 remote-icon pattern은 source-only zero-width
+separator로 lexer/scanner 동작만 비활성화합니다. Separator는 Scene/OCR canvas에서 제거되고 visible text를
+바꾸지 않으므로 그 자체로 compatibility warning을 만들지 않습니다. Raw source는 여전히 일반 strict source
+scan, Mermaid parse/render와 SVG 재검사를 모두 통과해야 합니다.
+
+ER의 raw `title`/`description`/`acc_title`/`acc_description`은 accessibility enrichment와 semantic repair
+직렬화 전에 exact built-in string, raw/normalized 길이, UTF-8과 Unicode category를 검사합니다.
+Absent/`None`과 exact-empty omitted만 허용하고 whitespace-only, subclass/hook, control/format/surrogate/
+line-separator text는 derived 접근성 문구로 세탁되기 전에 후보 단위로 격리합니다. Initial candidate와 repair는
+validated raw snapshot에서 각각 record/accessibility plan을 새로 만들며, accepted repair는 현재 plan에 맞춰
+derived text와 visible-substitution warning을 재조정합니다.
+
 Gantt의 raw `title`/`description`/`acc_title`/`acc_description`/`date_format`은 generic enrichment와 semantic
 repair 직렬화보다 먼저 exact built-in string, raw/normalized 길이, UTF-8, Unicode category를 검사합니다.
 Absent/`None`과 exact-empty omitted만 허용하고 whitespace-only, subclass/hook, control/format/surrogate/

@@ -246,6 +246,24 @@ generated Scene attribution에서 제외합니다.
   `mmx_state_id_…` emitted ID로 바꿉니다. Typed IR과 evidence는 source identity를 유지하고 Scene relation과 Mermaid
   transition은 같은 emitted endpoint를 사용하므로, parse 성공처럼 보이면서 `state` source edge가 사라지는
   silent renderer loss도 실제 SVG transition-count gate에서 검출합니다.
+  ER도 structural Scene과 semantic OCR이 serializer의 같은 record plan을 사용합니다. Structural Scene에는
+  emitted-ID entity element와 explicit relationship만 두고 attribute를 별도 node/edge로 만들지 않습니다.
+  Entity/relationship element와 endpoint, relationship Scene slot, identifying/non-identifying relation type,
+  direction, canvas label은 plan에서 가져오며 각각 원 record의 evidence ID를 유지합니다. Reserved ER ID나
+  `iconify` substring은 collision-safe `mmx_er_id_…` emitted identity로 바뀌지만 typed IR의 source ID와
+  provenance는 보존되고 Scene endpoint도 같은 alias를 사용합니다. Malformed record, unknown endpoint,
+  cardinality/identifying 누락 또는 plan resource 초과는 nodes-only partial Scene을 만들지 않고 candidate의
+  semantic metric을 unavailable로 둡니다.
+  ER semantic OCR은 entity canvas label과 각 attribute의 실제 canvas type/name/key/comment, quoted relationship
+  role을 record 순서대로 더합니다. Attribute key는 source가 제공한 `PK`/`FK`/`UK`만 포함하고 internal ID,
+  cardinality token, connector와 accessibility metadata는 content recall을 높이지 않습니다. Source-only
+  separator는 제거하고 quote·percent·backslash·backtick·active Markdown/entity text의 visible compatibility
+  glyph는 Mermaid 11.16 SVG와 같은 값으로 비교합니다. Accessibility title/description은 OCR content가 아니라
+  SVG `<title>`/`<desc>` metadata로 별도 검사합니다. Raw metadata는 enrichment 전 exact-string/bounds/
+  Unicode/UTF-8 gate와 exact-empty omitted 처리를 거치며 accepted repair는 현재 semantic plan에서 derived
+  accessibility를 재생성하고 compatibility warning을 재조정합니다. Pinned runtime fixture는 multiword role이
+  하나의 edge label로 남고 entity 수를 늘리지 않는지, plan의 canvas/accessibility text와 reserved emitted
+  identity가 실제 SVG에 일치하는지를 함께 확인합니다.
   Gantt record plan은 title·section·task의 semantic/source/canvas text를 고정합니다. 별도 accessibility plan은
   semantic section/task label로 derived description을 만들고 접근성 grammar의 canvas를 따르므로 task
   compatibility canvas를 재사용하지 않습니다. Explicit `description`/`acc_description`은 계속 authoritative하며,

@@ -6,9 +6,11 @@
 
 파생 description은 최대 다섯 개의 label을 나열합니다. 명시적 directed graph에 root와 terminal이
 각각 하나일 때만 시작·종료를 덧붙입니다. Chart의 증가·감소, 관계 의미, 누락 숫자를 추측하지
-않습니다. Experimental 후보에는 review가 필요하다는 문구를 한 번만 추가합니다. 생성된 값은 code뿐
-아니라 candidate의 `typed_ir`에도 저장되어 directive를 지원하지 않는 문법에서도 review metadata로
-남습니다.
+않습니다. Experimental 후보에는 review가 필요하다는 문구를 한 번만 추가합니다. 일반 후보의 생성된 값은
+code와 enriched `typed_ir`에 함께 저장되어 directive를 지원하지 않는 문법에서도 review metadata로 남습니다.
+State·Gantt·ER처럼 terminal별 source/canvas plan을 가진 유형은 예외입니다. 이 유형은 stale derived text를
+막기 위해 candidate `typed_ir`에 validated raw metadata snapshot을 유지하고, initial serialization과 accepted
+repair마다 현재 semantic record에서 접근성 값을 다시 계산합니다.
 
 ## Semantic type과 emitted grammar
 
@@ -35,6 +37,16 @@ Native Venn의 explicit `title`은 canvas content이므로 Scene/OCR에도 포�
 Venn이 same-slot Flowchart fallback으로 내려가면 resolved text를 SVG 접근성 metadata로 방출하지만 canvas OCR
 label로 세지 않으며 native-only title도 복사하지 않습니다. Grammar-unsafe visible text를 compatibility glyph로
 바꾼 경우 native candidate warning 또는 fallback reason에 공개합니다.
+
+Native ER은 pinned Mermaid 11.16의 `accTitle`/`accDescr`를 SVG `<title>`/`<desc>` metadata로 방출합니다.
+Record plan과 분리된 accessibility plan은 explicit `acc_title`/`acc_description`, 그 다음
+`title`/`description`을 우선하고, 없으면 현재 semantic entity label에서 기본 문구를 만듭니다. 네 raw metadata
+필드는 enrichment 전에 exact built-in string, bounds, UTF-8와 Unicode category를 검사하며 exact empty는
+omitted로 처리합니다. Entity/attribute/relationship의 canvas text와 달리 접근성 metadata는 semantic OCR
+content로 세지 않습니다. Numeric entity-like text처럼 directive canvas가 원문을 보존하지 못하는 경우에는
+visible compatibility glyph와 warning을 사용하고 semantic 원문은 validated raw typed/review IR에 유지합니다.
+Accepted repair는 raw snapshot에서 accessibility plan을 다시 만들어 derived description과 compatibility warning을
+현재 entity plan에 맞춥니다.
 
 Native Pie는 pinned Mermaid 11.16에서 `accTitle`/`accDescr`를 지원하므로 resolved text를 SVG
 `<title>`/`<desc>` metadata로 방출합니다. 별도의 explicit `title`은 Pie canvas content이므로 native semantic

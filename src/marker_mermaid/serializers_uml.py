@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from marker_mermaid.accessibility import resolve_accessibility
-from marker_mermaid.models import MAX_TEXT_CHARS
+from marker_mermaid.models import MAX_SCENE_ELEMENTS, MAX_SCENE_RELATIONS, MAX_TEXT_CHARS
 from marker_mermaid.serializers import SerializationError
 
 _ZERO_WIDTH_SPACE = "\u200b"
@@ -42,6 +42,12 @@ STATE_TEXT_COMPATIBILITY_WARNING = (
     "Mermaid 11.16 cannot preserve literally; semantic text remains in typed IR."
 )
 _STATE_METADATA_FIELDS = ("title", "description", "acc_title", "acc_description")
+ER_TEXT_COMPATIBILITY_WARNING = (
+    "ER canvas or accessibility text used visible compatibility glyphs for "
+    "grammar-active quote, percent, backslash, backtick, Markdown, or entity text "
+    "that Mermaid 11.16 cannot preserve literally; semantic text remains in typed IR."
+)
+_ER_METADATA_FIELDS = ("title", "description", "acc_title", "acc_description")
 _COMMONMARK_ESCAPABLE = frozenset(r"!\"#$%&'()*+,-./:;<=>?@[\]^_`{|}~")
 _STATE_RESERVED_IDENTIFIERS = frozenset(
     {
@@ -63,6 +69,23 @@ _STATE_RESERVED_IDENTIFIERS = frozenset(
         "style",
     }
 )
+_ER_RESERVED_IDENTIFIERS = frozenset(
+    {
+        "class",
+        "classdef",
+        "click",
+        "erdiagram",
+        "linkstyle",
+        "many",
+        "one",
+        "style",
+        "to",
+        "__proto__",
+    }
+)
+_ER_ATTRIBUTE_WORD = re.compile(r"[A-Za-z_*\u00C0-\uFFFF][A-Za-z0-9_.\-\[\](),*\u00C0-\uFFFF]*")
+_ER_ATTRIBUTE_KEYS = frozenset({"PK", "FK", "UK"})
+_FIGURE_SPACE = "\u2007"
 
 
 def _identifier(value: Any, *, context: str) -> str:
@@ -116,6 +139,40 @@ def validated_state_accessibility_ir(ir: Mapping[str, Any]) -> dict[str, Any]:
             raise SerializationError(f"state {field} is not valid UTF-8 text") from exc
     return {
         key: value for key, value in ir.items() if key not in _STATE_METADATA_FIELDS or value != ""
+    }
+
+
+def validated_er_accessibility_ir(ir: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate raw ER metadata and treat exact-empty fields as omitted.
+
+    Validation deliberately happens before accessibility enrichment.  Otherwise
+    ``resolve_accessibility`` would stringify non-text values or normalize
+    whitespace-only input before the serializer can reject it.
+    """
+
+    for field in _ER_METADATA_FIELDS:
+        value = ir.get(field)
+        if value is None:
+            continue
+        if type(value) is not str:
+            raise SerializationError(f"ER {field} must be text when provided")
+        if value == "":
+            continue
+        if len(value) > MAX_TEXT_CHARS:
+            raise SerializationError(f"ER {field} must be bounded non-empty text")
+        if any(
+            unicodedata.category(character) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for character in value
+        ):
+            raise SerializationError(f"ER {field} contains unsupported text")
+        normalized = " ".join(value.split())
+        if not normalized or len(normalized) > MAX_TEXT_CHARS:
+            raise SerializationError(f"ER {field} must be bounded non-empty text")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as exc:  # pragma: no cover - Cs is rejected above
+            raise SerializationError(f"ER {field} is not valid UTF-8 text") from exc
+    return {
+        key: value for key, value in ir.items() if key not in _ER_METADATA_FIELDS or value != ""
     }
 
 
@@ -356,6 +413,113 @@ def _state_terminal_text(
     source = source.replace("---", f"-{_ZERO_WIDTH_SPACE}--")
     terminal_canvas = source.replace(_ZERO_WIDTH_SPACE, "")
     return semantic, source, terminal_canvas, terminal_canvas != semantic
+
+
+def _er_semantic_text(value: Any, *, context: str) -> str:
+    """Return one bounded semantic text value without coercing typed IR."""
+
+    if type(value) is not str:
+        raise SerializationError(f"{context} must be text")
+    if len(value) > MAX_TEXT_CHARS:
+        raise SerializationError(f"{context} must be bounded non-empty text")
+    for character in value:
+        category = unicodedata.category(character)
+        if category in {"Cf", "Cs"} or (category == "Cc" and not character.isspace()):
+            raise SerializationError(f"{context} contains unsupported text")
+    semantic = " ".join(value.split())
+    if not semantic or len(semantic) > MAX_TEXT_CHARS:
+        raise SerializationError(f"{context} must be bounded non-empty text")
+    try:
+        semantic.encode("utf-8")
+    except UnicodeEncodeError as exc:  # pragma: no cover - Cs is rejected above
+        raise SerializationError(f"{context} is not valid UTF-8 text") from exc
+    return semantic
+
+
+def _er_entity_text(value: Any, *, context: str) -> tuple[str, str, str, bool]:
+    """Freeze an entity alias across typed IR, ER source, and SVG canvas.
+
+    Mermaid 11.16's quoted entity-name token cannot contain a literal percent,
+    backslash, or quote.  Those characters therefore use visible compatibility
+    glyphs.  Markdown-active text is handled by the same bounded linear passes
+    used by State labels.
+    """
+
+    semantic = _er_semantic_text(value, context=context)
+    grammar_safe = semantic.replace("%", "％").replace("\\", "∖")
+    _, source, canvas, _ = _state_terminal_text(
+        grammar_safe,
+        context=context,
+        quoted_node=True,
+        markdown_label=True,
+        accessibility_directive=False,
+    )
+    return semantic, source, canvas, canvas != semantic
+
+
+def _er_markdown_quoted_text(
+    value: Any,
+    *,
+    context: str,
+    protect_role_spaces: bool = False,
+) -> tuple[str, str, str, bool]:
+    """Freeze an ER quoted Markdown terminal such as a role or comment."""
+
+    semantic, source, canvas, substituted = _state_terminal_text(
+        value,
+        context=context,
+        quoted_node=True,
+        markdown_label=True,
+        accessibility_directive=False,
+    )
+    if protect_role_spaces and _ZERO_WIDTH_SPACE in source:
+        # Mermaid's fallback quoted-role token can absorb ASCII whitespace next
+        # to a neutralized lexer/control token.  Figure space stays inside the
+        # token and renders as one ordinary visible separator; the frozen canvas
+        # intentionally retains normalized ASCII spaces.
+        source = source.replace(" ", _FIGURE_SPACE)
+    return semantic, source, canvas, substituted
+
+
+def _er_attribute_text(value: Any, *, context: str) -> tuple[str, str, str, bool]:
+    """Freeze an attribute type/name and choose a lexer-safe source token."""
+
+    semantic = _er_semantic_text(value, context=context)
+    # Backtick is the ER block's only general-purpose terminal quote, so a raw
+    # terminal backtick has no lossless escape in Mermaid 11.16.
+    grammar_safe = semantic.replace("`", "｀")
+    _, inner_source, canvas, _ = _state_terminal_text(
+        grammar_safe,
+        context=context,
+        quoted_node=False,
+        markdown_label=True,
+        accessibility_directive=False,
+    )
+    requires_quote = (
+        _ER_ATTRIBUTE_WORD.fullmatch(inner_source) is None
+        or inner_source.upper() in _ER_ATTRIBUTE_KEYS
+        or _ZERO_WIDTH_SPACE in inner_source
+    )
+    source = f"`{inner_source}`" if requires_quote else inner_source
+    return semantic, source, canvas, canvas != semantic
+
+
+def _er_accessibility_text(value: Any, *, context: str) -> tuple[str, str, str, bool]:
+    """Freeze ER accessibility text without applying Markdown semantics."""
+
+    semantic = _er_semantic_text(value, context=context)
+    grammar_safe = _NUMERIC_ENTITY_LITERAL.sub(
+        lambda match: f"＆＃{match.group('body')[1:]};",
+        semantic,
+    )
+    _, source, canvas, _ = _state_terminal_text(
+        grammar_safe,
+        context=context,
+        quoted_node=False,
+        markdown_label=False,
+        accessibility_directive=False,
+    )
+    return semantic, source, canvas, canvas != semantic
 
 
 @dataclass(frozen=True, slots=True)
@@ -798,76 +962,352 @@ _TARGET_CARDINALITY = {
 }
 
 
-def _er_token(value: Any, *, context: str) -> str:
-    token = str(value or "").strip()
-    if not token:
-        raise SerializationError(f"{context} requires a value")
-    if re.fullmatch(r"[A-Za-z_*\u00C0-\uFFFF][A-Za-z0-9_.\-\[\](),*\u00C0-\uFFFF]*", token):
-        return token
-    if "`" in token or any(character in token for character in ("\r", "\n")):
-        raise SerializationError(f"{context} cannot be represented safely")
-    return f"`{token}`"
+def _er_id_map(items: list[dict[str, Any]]) -> dict[str, str]:
+    """Map source entity ids to collision-free ER lexer identifiers."""
+
+    normalized = _id_map(items, context="ER entity")
+    protected_ids = set(normalized.values())
+    result: dict[str, str] = {}
+    used_ids: set[str] = set()
+    for index, (source_id, rendered) in enumerate(normalized.items(), start=1):
+        emitted = rendered
+        source_folded = source_id.casefold()
+        rendered_folded = rendered.casefold()
+        if (
+            source_folded in _ER_RESERVED_IDENTIFIERS
+            or rendered_folded in _ER_RESERVED_IDENTIFIERS
+            or "iconify" in source_folded
+            or "iconify" in rendered_folded
+        ):
+            base = f"mmx_er_id_{index}"
+            emitted = base
+            suffix = 2
+            while emitted in protected_ids or emitted in used_ids:
+                emitted = f"{base}_{suffix}"
+                suffix += 1
+        result[source_id] = emitted
+        used_ids.add(emitted)
+    return result
+
+
+@dataclass(frozen=True, slots=True)
+class ERAttributePlan:
+    source_record: dict[str, Any]
+    semantic_type: str
+    source_type: str
+    canvas_type: str
+    semantic_name: str
+    source_name: str
+    canvas_name: str
+    semantic_comment: str | None
+    source_comment: str | None
+    canvas_comment: str | None
+    keys: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EREntityPlan:
+    source_record: dict[str, Any]
+    source_id: str
+    emitted_id: str
+    semantic_label: str
+    source_label: str
+    canvas_label: str
+    attributes: tuple[ERAttributePlan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ERRelationshipPlan:
+    source_record: dict[str, Any]
+    scene_id: str
+    source_id: str
+    target_id: str
+    source_cardinality: str
+    target_cardinality: str
+    identifying: bool
+    semantic_label: str
+    source_label: str
+    canvas_label: str
+
+
+@dataclass(frozen=True, slots=True)
+class ERPlan:
+    entities: tuple[EREntityPlan, ...]
+    relationships: tuple[ERRelationshipPlan, ...]
+    direction: str | None
+    compatibility_substitutions: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ERAccessibilityPlan:
+    title_semantic: str
+    title_source: str
+    title_canvas: str
+    description_semantic: str
+    description_source: str
+    description_canvas: str
+    compatibility_substitutions: bool
+
+
+def plan_er_records(ir: Mapping[str, Any]) -> ERPlan:
+    """Validate ER records and freeze source, semantic, and canvas identities."""
+
+    validated_ir = validated_er_accessibility_ir(ir)
+    entities = _objects(validated_ir.get("entities"), context="ER IR", required=True)
+    relationships = _objects(validated_ir.get("relationships", []), context="ER relationships")
+    if len(entities) > MAX_SCENE_ELEMENTS:
+        raise SerializationError("ER entity count exceeds the Scene element limit")
+    if len(relationships) > MAX_SCENE_RELATIONS:
+        raise SerializationError("ER relationship count exceeds the Scene relation limit")
+    id_map = _er_id_map(entities)
+    direction = validated_ir.get("direction")
+    if direction is not None and (
+        type(direction) is not str or direction not in {"TB", "BT", "LR", "RL"}
+    ):
+        raise SerializationError("ER direction must be TB, BT, LR, or RL")
+
+    planned_entities: list[EREntityPlan] = []
+    compatibility_substitutions = False
+    for index, entity in enumerate(entities, start=1):
+        source_id = str(entity["id"]).strip()
+        raw_label = entity.get("label")
+        label_value = (
+            source_id
+            if raw_label is None or (type(raw_label) is str and raw_label == "")
+            else raw_label
+        )
+        semantic_label, source_label, canvas_label, substituted = _er_entity_text(
+            label_value,
+            context=f"ER entity {index} label",
+        )
+        compatibility_substitutions |= substituted
+        attributes = _objects(entity.get("attributes", []), context=f"ER entity {index} attributes")
+        planned_attributes: list[ERAttributePlan] = []
+        for attribute_index, attribute in enumerate(attributes, start=1):
+            context = f"ER entity {index} attribute {attribute_index}"
+            _evidence(attribute, context=context)
+            semantic_type, source_type, canvas_type, type_substituted = _er_attribute_text(
+                attribute.get("type"), context=f"{context} type"
+            )
+            semantic_name, source_name, canvas_name, name_substituted = _er_attribute_text(
+                attribute.get("name"), context=f"{context} name"
+            )
+            keys = attribute.get("keys", [])
+            if not isinstance(keys, list) or any(
+                type(key) is not str or key not in _ER_ATTRIBUTE_KEYS for key in keys
+            ):
+                raise SerializationError(f"{context} keys must contain only PK, FK, or UK")
+            raw_comment = attribute.get("comment")
+            semantic_comment: str | None = None
+            source_comment: str | None = None
+            canvas_comment: str | None = None
+            comment_substituted = False
+            if raw_comment is not None and not (type(raw_comment) is str and raw_comment == ""):
+                (
+                    semantic_comment,
+                    source_comment,
+                    canvas_comment,
+                    comment_substituted,
+                ) = _er_markdown_quoted_text(raw_comment, context=f"{context} comment")
+            compatibility_substitutions |= (
+                type_substituted or name_substituted or comment_substituted
+            )
+            planned_attributes.append(
+                ERAttributePlan(
+                    source_record=attribute,
+                    semantic_type=semantic_type,
+                    source_type=source_type,
+                    canvas_type=canvas_type,
+                    semantic_name=semantic_name,
+                    source_name=source_name,
+                    canvas_name=canvas_name,
+                    semantic_comment=semantic_comment,
+                    source_comment=source_comment,
+                    canvas_comment=canvas_comment,
+                    keys=tuple(keys),
+                )
+            )
+        planned_entities.append(
+            EREntityPlan(
+                source_record=entity,
+                source_id=source_id,
+                emitted_id=id_map[source_id],
+                semantic_label=semantic_label,
+                source_label=source_label,
+                canvas_label=canvas_label,
+                attributes=tuple(planned_attributes),
+            )
+        )
+
+    used_scene_ids = {entity.emitted_id for entity in planned_entities}
+    planned_relationships: list[ERRelationshipPlan] = []
+    for index, relationship in enumerate(relationships, start=1):
+        context = f"ER relationship {index}"
+        _evidence(relationship, context=context)
+        source = id_map.get(str(relationship.get("source") or "").strip())
+        target = id_map.get(str(relationship.get("target") or "").strip())
+        if source is None or target is None:
+            raise SerializationError(f"{context} references an unknown endpoint")
+        source_cardinality = _SOURCE_CARDINALITY.get(relationship.get("source_cardinality"))
+        target_cardinality = _TARGET_CARDINALITY.get(relationship.get("target_cardinality"))
+        if source_cardinality is None or target_cardinality is None:
+            raise SerializationError(f"{context} requires explicit cardinalities")
+        identifying = relationship.get("identifying")
+        if not isinstance(identifying, bool):
+            raise SerializationError(f"{context} requires identifying=true or false")
+        semantic_label, source_label, canvas_label, substituted = _er_markdown_quoted_text(
+            relationship.get("label"),
+            context=f"{context} label",
+            protect_role_spaces=True,
+        )
+        compatibility_substitutions |= substituted
+
+        raw_scene_id = relationship.get("id")
+        if raw_scene_id is not None and type(raw_scene_id) is not str:
+            raise SerializationError(f"{context} id must be text when provided")
+        base_scene_id = (
+            _identifier(raw_scene_id, context=context)
+            if type(raw_scene_id) is str and raw_scene_id.strip()
+            else f"er_relationship_{index}"
+        )
+        scene_id = base_scene_id
+        suffix = 2
+        while scene_id in used_scene_ids:
+            scene_id = f"{base_scene_id}_{suffix}"
+            suffix += 1
+        used_scene_ids.add(scene_id)
+        planned_relationships.append(
+            ERRelationshipPlan(
+                source_record=relationship,
+                scene_id=scene_id,
+                source_id=source,
+                target_id=target,
+                source_cardinality=source_cardinality,
+                target_cardinality=target_cardinality,
+                identifying=identifying,
+                semantic_label=semantic_label,
+                source_label=source_label,
+                canvas_label=canvas_label,
+            )
+        )
+    return ERPlan(
+        entities=tuple(planned_entities),
+        relationships=tuple(planned_relationships),
+        direction=direction,
+        compatibility_substitutions=compatibility_substitutions,
+    )
+
+
+def plan_er_accessibility(
+    ir: Mapping[str, Any],
+    *,
+    experimental: bool,
+    er_plan: ERPlan | None = None,
+) -> ERAccessibilityPlan:
+    """Resolve ER accessibility metadata against the frozen record plan."""
+
+    validated_ir = validated_er_accessibility_ir(ir)
+    if er_plan is None:
+        er_plan = plan_er_records(validated_ir)
+    accessibility_ir = {
+        field: validated_ir[field] for field in _ER_METADATA_FIELDS if field in validated_ir
+    }
+    accessibility_ir["entities"] = [
+        {"id": entity.emitted_id, "label": entity.semantic_label} for entity in er_plan.entities
+    ]
+    accessibility_ir["relationships"] = [
+        {
+            "source": relationship.source_id,
+            "target": relationship.target_id,
+            "label": relationship.semantic_label,
+        }
+        for relationship in er_plan.relationships
+    ]
+    resolved = resolve_accessibility(accessibility_ir, "er", experimental=experimental)
+    _, title_source, title_canvas, title_substituted = _er_accessibility_text(
+        resolved.title, context="ER accessible title"
+    )
+    _, description_source, description_canvas, description_substituted = _er_accessibility_text(
+        resolved.description,
+        context="ER accessible description",
+    )
+    return ERAccessibilityPlan(
+        title_semantic=resolved.title,
+        title_source=title_source,
+        title_canvas=title_canvas,
+        description_semantic=resolved.description,
+        description_source=description_source,
+        description_canvas=description_canvas,
+        compatibility_substitutions=title_substituted or description_substituted,
+    )
+
+
+def enrich_er_accessibility_ir(
+    ir: Mapping[str, Any],
+    *,
+    experimental: bool,
+    er_plan: ERPlan | None = None,
+) -> dict[str, Any]:
+    """Return a validated ER snapshot with hook-free resolved metadata."""
+
+    validated_ir = validated_er_accessibility_ir(ir)
+    if er_plan is None:
+        er_plan = plan_er_records(validated_ir)
+    accessibility = plan_er_accessibility(
+        validated_ir,
+        experimental=experimental,
+        er_plan=er_plan,
+    )
+    return {
+        **validated_ir,
+        "acc_title": accessibility.title_semantic,
+        "acc_description": accessibility.description_semantic,
+    }
 
 
 def serialize_er(ir: dict[str, Any], *, experimental: bool = False) -> str:
-    """Serialize ER entities and only relationships with explicit cardinalities."""
+    """Serialize only the validated, terminal-aligned ER plan."""
 
-    entities = _objects(ir.get("entities"), context="ER IR", required=True)
-    relationships = _objects(ir.get("relationships", []), context="ER relationships")
-    id_map = _id_map(entities, context="ER entity")
-    lines = ["erDiagram", *_accessibility(ir, "er", experimental=experimental)]
-    direction = ir.get("direction")
-    if direction is not None:
-        if direction not in {"TB", "BT", "LR", "RL"}:
-            raise SerializationError("ER direction must be TB, BT, LR, or RL")
-        lines.append(f"    direction {direction}")
+    accessibility_ir = validated_er_accessibility_ir(ir)
+    plan = plan_er_records(accessibility_ir)
+    accessibility = plan_er_accessibility(
+        accessibility_ir,
+        experimental=experimental,
+        er_plan=plan,
+    )
+    lines = [
+        "erDiagram",
+        f"    accTitle: {accessibility.title_source}",
+        f"    accDescr: {accessibility.description_source}",
+    ]
+    if plan.direction is not None:
+        lines.append(f"    direction {plan.direction}")
 
-    for index, entity in enumerate(entities, start=1):
-        source_id = str(entity["id"]).strip()
-        entity_id = id_map[source_id]
-        label = _text(entity.get("label") or source_id)
-        attributes = _objects(entity.get("attributes", []), context=f"ER entity {index} attributes")
-        declaration = entity_id if label == entity_id else f'{entity_id}["{label}"]'
-        if attributes:
+    for entity in plan.entities:
+        declaration = (
+            entity.emitted_id
+            if entity.source_label == entity.emitted_id
+            else f'{entity.emitted_id}["{entity.source_label}"]'
+        )
+        if entity.attributes:
             lines.append(f"    {declaration} {{")
-            for attribute_index, attribute in enumerate(attributes, start=1):
-                context = f"ER entity {index} attribute {attribute_index}"
-                _evidence(attribute, context=context)
-                attribute_type = _er_token(attribute.get("type"), context=f"{context} type")
-                name = _er_token(attribute.get("name"), context=f"{context} name")
-                keys = attribute.get("keys", [])
-                if not isinstance(keys, list) or any(key not in {"PK", "FK", "UK"} for key in keys):
-                    raise SerializationError(f"{context} keys must contain only PK, FK, or UK")
-                fields = [attribute_type, name]
-                if keys:
-                    fields.append(",".join(keys))
-                comment = attribute.get("comment")
-                if comment not in {None, ""}:
-                    fields.append(f'"{_text(comment)}"')
+            for attribute in entity.attributes:
+                fields = [attribute.source_type, attribute.source_name]
+                if attribute.keys:
+                    fields.append(",".join(attribute.keys))
+                if attribute.source_comment is not None:
+                    fields.append(f'"{attribute.source_comment}"')
                 lines.append("        " + " ".join(fields))
             lines.append("    }")
         else:
             lines.append(f"    {declaration}")
 
-    for index, relationship in enumerate(relationships, start=1):
-        _evidence(relationship, context=f"ER relationship {index}")
-        source = id_map.get(str(relationship.get("source") or "").strip())
-        target = id_map.get(str(relationship.get("target") or "").strip())
-        if source is None or target is None:
-            raise SerializationError(f"ER relationship {index} references an unknown endpoint")
-        source_cardinality = _SOURCE_CARDINALITY.get(relationship.get("source_cardinality"))
-        target_cardinality = _TARGET_CARDINALITY.get(relationship.get("target_cardinality"))
-        if source_cardinality is None or target_cardinality is None:
-            raise SerializationError(f"ER relationship {index} requires explicit cardinalities")
-        identifying = relationship.get("identifying")
-        if not isinstance(identifying, bool):
-            raise SerializationError(f"ER relationship {index} requires identifying=true or false")
-        label = _relation_label(relationship.get("label") or "", context=f"ER relationship {index}")
-        if not label:
-            raise SerializationError(f"ER relationship {index} requires a label")
-        connector = "--" if identifying else ".."
+    for relationship in plan.relationships:
+        connector = "--" if relationship.identifying else ".."
         lines.append(
-            f"    {source} {source_cardinality}{connector}{target_cardinality} {target} : {label}"
+            f"    {relationship.source_id} "
+            f"{relationship.source_cardinality}{connector}{relationship.target_cardinality} "
+            f'{relationship.target_id} : "{relationship.source_label}"'
         )
     return "\n".join(lines) + "\n"
 

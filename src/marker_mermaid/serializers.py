@@ -1579,6 +1579,8 @@ def serialize_typed_ir_result(
     """Serialize typed IR while retaining native/fallback grammar metadata."""
 
     accessibility_source_ir = ir
+    er_record_compatibility_substitutions = False
+    er_plan = None
     state_record_compatibility_substitutions = False
     state_plan = None
     gantt_plan = None
@@ -1595,6 +1597,15 @@ def serialize_typed_ir_result(
     elif diagram_type == "gantt":
         accessibility_source_ir = validated_gantt_metadata_ir(ir)
         gantt_plan = plan_gantt_records(accessibility_source_ir)
+    elif diagram_type == "er":
+        from marker_mermaid.serializers_uml import (
+            plan_er_records,
+            validated_er_accessibility_ir,
+        )
+
+        accessibility_source_ir = validated_er_accessibility_ir(ir)
+        er_plan = plan_er_records(accessibility_source_ir)
+        er_record_compatibility_substitutions = er_plan.compatibility_substitutions
     elif diagram_type == "state":
         from marker_mermaid.serializers_uml import (
             plan_state_records,
@@ -1610,6 +1621,14 @@ def serialize_typed_ir_result(
             accessibility_source_ir,
             experimental=experimental,
             gantt_plan=gantt_plan,
+        )
+    elif diagram_type == "er":
+        from marker_mermaid.serializers_uml import enrich_er_accessibility_ir
+
+        enriched_ir = enrich_er_accessibility_ir(
+            accessibility_source_ir,
+            experimental=experimental,
+            er_plan=er_plan,
         )
     elif diagram_type == "state":
         from marker_mermaid.serializers_uml import enrich_state_accessibility_ir
@@ -1630,7 +1649,25 @@ def serialize_typed_ir_result(
         enriched_ir,
         experimental=experimental,
     )
-    if diagram_type == "state":
+    if diagram_type == "er":
+        from marker_mermaid.serializers_uml import (
+            ER_TEXT_COMPATIBILITY_WARNING,
+            plan_er_accessibility,
+        )
+
+        if (
+            er_record_compatibility_substitutions
+            or plan_er_accessibility(
+                enriched_ir,
+                experimental=experimental,
+                er_plan=er_plan,
+            ).compatibility_substitutions
+        ) and ER_TEXT_COMPATIBILITY_WARNING not in result.warnings:
+            result = replace(
+                result,
+                warnings=(*result.warnings, ER_TEXT_COMPATIBILITY_WARNING),
+            )
+    elif diagram_type == "state":
         from marker_mermaid.serializers_uml import (
             STATE_TEXT_COMPATIBILITY_WARNING,
             plan_state_accessibility,

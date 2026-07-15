@@ -143,8 +143,8 @@ def test_class_inheritance_uses_child_to_parent_input_semantics():
 def test_er_serializer_requires_and_preserves_cardinalities():
     code = serialize_er(ER_IR)
     assert 'customer["Customer Account"] {' in code
-    assert 'uuid customer_id PK "stable &quot;identifier&quot;"' in code
-    assert "customer ||..o{ order : places" in code
+    assert 'uuid customer_id PK "stable ″identifier″"' in code
+    assert 'customer ||..o{ order : "places"' in code
 
 
 @pytest.mark.parametrize(
