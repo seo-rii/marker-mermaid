@@ -524,6 +524,15 @@ candidate/type/repair budget을 소비하지 않으며, strict source scan과 pa
 fallback chain은 `sankey → flowchart`로 기록됩니다. Sankey title/description은 native canvas에 없고 fallback
 SVG에서는 accessibility metadata일 뿐이므로 어느 terminal에서도 content OCR label로 세지 않습니다.
 
+게시 gate는 terminal 표현과 별도로 각 planned flow의 exact `value_text`를 source record에 결합합니다. 각
+flow는 source image 안에서 서로 양의 면적으로 겹치지 않는 bbox와, 그 bbox 안에 완전히 포함된
+candidate-authorized `ocr_token`/`vector_text` observation을 직접 인용해야 하며 전역 numeric occurrence도
+exact해야 합니다. 다른
+flow와 evidence ID 또는 normalized text+bbox를 공유하거나 같은 bbox의 상충 text를 숨기는 입력, weight swap,
+invalid geometry와 bounded association budget 초과는 fail closed입니다. Native, same-slot Flowchart와 semantic
+repair는 같은 typed plan/scoped evidence로 이 검사를 다시 수행하고, direct/untyped Sankey는 flow-local
+소유권을 만들 수 없어 review에 남습니다.
+
 Radar는 `plan_radar_records()`에서 dimension/series와 exact fixed-decimal value, reserved-safe emitted
 axis/series/cell ID, terminal별 visible text, record-local evidence를 한 번 고정합니다. Native는 12 series
 이하이고 value 및 explicit bound가 zero 또는 normal binary64로 exact round-trip되며, effective scale의

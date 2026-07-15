@@ -217,6 +217,12 @@
   serialization above Mermaid's 500-edge Flowchart runtime limit, without restricting a valid native Sankey.
   A native runtime rejection retries that Flowchart once in the same candidate slot while retaining the Sankey
   semantic type, complete fallback metadata, record provenance, and numeric publication gate.
+- Sankey numeric publication now binds every planned flow's exact `value_text` to candidate-authorized OCR/vector
+  observations fully contained by a positive, in-image, mutually non-overlapping flow bbox, then also requires
+  global numeric occurrence
+  exactness. Cross-flow evidence or normalized-observation reuse, same-bbox ambiguity, swapped weights, invalid
+  geometry, and bounded association-budget exhaustion force review. Native Sankey, its same-slot Flowchart
+  fallback, and semantic repair all rerun this gate; direct or otherwise untyped Sankey remains review-only.
 - Treemap serialization, generated Scene attribution, and semantic OCR projection now share one bounded DFS
   preorder plan. It freezes source or collision-safe `treemap_node_N[_suffix]` Scene identities, Flowchart
   `N1..Nn` identities, parent/child slots, exact value tokens, and record-local provenance. Source image/bbox

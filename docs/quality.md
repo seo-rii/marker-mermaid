@@ -289,6 +289,15 @@ generated Scene attribution에서 제외합니다.
   Malformed/oversized evidence list는 문자 단위 ID로 coercion하지 않고 해당 record에서만 빈 provenance로
   격리하며, relation count와 relation ID도 Scene resource 경계 안에서 serializer와 함께 검증합니다.
   Flowchart projection이 pinned runtime의 500-edge cap을 넘으면 partial Scene을 만들지 않고 unavailable입니다.
+- Sankey numeric consistency는 plan의 각 flow가 가진 exact `value_text`를 candidate-authorized OCR/vector
+  observation에 flow-local로 결합하고, 전역 source/generated 숫자 occurrence exactness도 요구합니다. Flow와
+  evidence bbox는 source image 안의 양의 면적이고 flow끼리 양의 면적으로 겹치지 않아야 하며 cited evidence는
+  해당 flow bbox 안에 완전히 포함되어야 합니다. Evidence ID나 normalized text+bbox의 cross-flow 재사용,
+  같은 bbox의 상충 관측, weight swap,
+  invalid/missing geometry·authority와 bounded reference/text/token/spatial budget 초과는 metric 전체를
+  unavailable 또는 mismatch로 두어 review합니다. Native, same-slot Flowchart와 semantic repair는 새 typed
+  IR/scoped evidence로 같은 gate를 다시 계산하며 direct 또는 untyped Sankey는 owner binding이 없어
+  review-only입니다.
 - Pie 구조 metric은 `PiePlan`이 확정한 terminal을 따릅니다. Native는 최대 12 slice, zero-or-normal binary64
   round-trip value와 left-to-right finite positive total, positive slice별 1% visibility, finite normalized
   centroid, `showData`의 exact JavaScript string을 요구합니다. Positive slice는 normalized `sector`, zero slice는

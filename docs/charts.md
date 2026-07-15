@@ -201,6 +201,15 @@ role, shape, flow label/style/bidirectional/arrow hint 같은 미방출 metadata
 Native runtime이 parse/render gate에서 거부되면 새 후보를 만들지 않고 같은 candidate slot에서 이
 Flowchart를 한 번 재직렬화하고 전체 security/parse/render/SVG/type gate를 다시 통과시킵니다.
 
+자동 게시에는 flow-local numeric attribution도 필요합니다. 각 flow는 source image 안에서 서로 양의 면적으로
+겹치지 않는 bbox와 그 안에 완전히 포함된 candidate-authorized `ocr_token`/`vector_text`를 직접 인용해
+plan의 exact `value_text`를 증명해야 하고, 전체 source/generated 숫자 occurrence도 정확히 일치해야 합니다.
+Evidence ID나
+normalized text+bbox를 다른 flow가 재사용하거나 같은 bbox의 상충 관측을 숨기는 경우, weight swap, 잘못된
+geometry와 bounded association budget 초과는 부분 점수 없이 review입니다. Native와 same-slot Flowchart,
+semantic repair는 같은 typed plan과 scoped evidence로 이 gate를 다시 계산하며 direct/untyped Sankey는
+flow owner를 증명할 수 없어 review-only입니다.
+
 Radar serializer·Scene·semantic OCR은 `plan_radar_records()`의 같은 bounded plan을 공유합니다. Plan은
 dimension/series source record, terminal 전체에서 충돌하지 않는 emitted ID, exact fixed-decimal value,
 terminal별 source/canvas label, point별 dimension+series evidence를 한 번 고정합니다. Radar grammar 예약어와

@@ -478,6 +478,13 @@ evidence/normalized-observation 재사용, 같은 bbox의 uncited contradiction,
 typed plan 또는 bounded reference/text/token/spatial work 초과는 native·Flowchart·repair 모두 review로 닫습니다.
 Visible title과 non-derived explicit accessibility metadata는 data record가 소유하지 않은 candidate-authorized
 spatial OCR/vector exact observation 또는 approved initial user edit로 별도 attribution되어야 합니다.
+Sankey 자동 게시는 각 planned flow의 exact `value_text`가 source image 안에서 서로 양의 면적으로 겹치지 않는
+flow bbox에 완전히 포함된 candidate-authorized OCR/vector observation으로 증명되고 전역 numeric
+occurrence도 exact할 때만 허용합니다. Evidence ID나 normalized text+bbox의 cross-flow 재사용, 같은 bbox의
+상충 관측, weight swap,
+invalid geometry와 bounded association work 초과는 native·same-slot Flowchart·semantic repair를 모두
+review로 닫습니다. Direct 또는 typed flow plan이 없는 Sankey도 flow-local owner binding을 만들 수 없어
+review-only입니다.
 Treemap은 누락·중복·잘못된 source ID를 reserved-safe preorder slot으로 격리합니다. Venn은 canonical unique
 set ID를 요구한 뒤 set portable ID를 먼저 예약하고, intersection explicit ID가 정규화 충돌하면
 deterministic `intersection_N[_suffix]` Scene slot을 배정합니다. Set/intersection의 source bbox는

@@ -112,7 +112,7 @@ from marker_mermaid.serializers_charts_core import (
     plan_xychart_records,
     validate_quadrant_explicit_metadata,
 )
-from marker_mermaid.serializers_charts_flow import plan_radar_records
+from marker_mermaid.serializers_charts_flow import plan_radar_records, plan_sankey_records
 from marker_mermaid.serializers_special import plan_packet_fields
 from marker_mermaid.style_recovery import (
     TrustedEdgeStyleEvidence,
@@ -168,6 +168,8 @@ _MAX_QUADRANT_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
 _MAX_QUADRANT_OVERLAP_COMPARISONS = 100_000
 _MAX_RADAR_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
 _MAX_RADAR_RECORD_OVERLAP_COMPARISONS = 100_000
+_MAX_SANKEY_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
+_MAX_SANKEY_FLOW_OVERLAP_COMPARISONS = 100_000
 _MAX_XY_RECORD_OVERLAP_COMPARISONS = 100_000
 _PIL_IMAGING_CORE_TYPE = type(Image.new("RGB", (1, 1)).im)
 _PIL_IMAGE_DICT_DESCRIPTOR = Image.Image.__dict__["__dict__"]
@@ -467,6 +469,13 @@ _RADAR_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING = (
     "Radar explicit description/accDescr lacks independent candidate-authorized spatial "
     "OCR/vector or user-edit evidence; review is required"
 )
+_SANKEY_FLOW_ASSOCIATION_UNAVAILABLE_WARNING = (
+    "Sankey flow/value association lacks candidate-authorized spatial OCR/vector evidence; "
+    "numeric consistency alone cannot authorize publication and review is required"
+)
+_SANKEY_FLOW_ASSOCIATION_MISMATCH_WARNING = (
+    "Sankey flow/value association conflicts with exact source weights; review is required"
+)
 
 _EVALUATION_WARNING_TEXT = frozenset(
     {
@@ -494,6 +503,8 @@ _EVALUATION_WARNING_TEXT = frozenset(
         _RADAR_RECORD_ASSOCIATION_MISMATCH_WARNING,
         _RADAR_TITLE_ATTRIBUTION_UNAVAILABLE_WARNING,
         _RADAR_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING,
+        _SANKEY_FLOW_ASSOCIATION_UNAVAILABLE_WARNING,
+        _SANKEY_FLOW_ASSOCIATION_MISMATCH_WARNING,
         "numeric consistency is below the automatic publication threshold",
         "numeric diagram lacks OCR/vector numeric evidence and cannot auto-publish",
         "unlabeled scene-only candidates require OCR/VLM fusion before publishing",
@@ -2796,6 +2807,7 @@ class ReconstructionPipeline:
         radar_binding_state: Literal["exact", "mismatch", "unavailable"] | None = None
         radar_title_attribution_state: Literal["exact", "unavailable"] | None = None
         radar_description_attribution_state: Literal["exact", "unavailable"] | None = None
+        sankey_binding_state: Literal["exact", "mismatch", "unavailable"] | None = None
         if gate_diagram_type == "packet":
             # Packet ranges need a field-local proof.  A document-wide number multiset can
             # stay identical when two labels exchange their ranges, so it is not publication
@@ -4458,6 +4470,245 @@ class ReconstructionPipeline:
                 if radar_binding_state == "mismatch"
                 else None
             )
+        elif gate_diagram_type == "sankey":
+            # A document-wide numeric multiset cannot prove which weight belongs to
+            # which flow. Require every typed flow to own an exact OCR/vector weight
+            # observation inside its source region. Direct Sankey has no typed flow
+            # records and therefore remains review-only even when its global numbers
+            # happen to match.
+            sankey_binding_state = "unavailable"
+            sankey_plan = None
+            if typed_ir is not None:
+                try:
+                    sankey_plan = plan_sankey_records(typed_ir)
+                except SerializationError:
+                    sankey_plan = None
+
+            sankey_flow_specs: list[tuple[str, object, tuple[str, ...], str]] = []
+            if sankey_plan is not None:
+                sankey_flow_specs.extend(
+                    (
+                        flow.scene_id,
+                        flow.source_record,
+                        flow.evidence_ids,
+                        flow.value_text,
+                    )
+                    for flow in sankey_plan.flows
+                    if flow.value > 0
+                )
+
+            image_width, image_height = image.size
+            sankey_flow_boxes: dict[str, tuple[float, float, float, float]] = {}
+            sankey_spatial_safe = bool(
+                sankey_plan is not None and len(sankey_flow_specs) == len(sankey_plan.flows)
+            )
+            for owner_id, source_record, _evidence_ids, _value_text in sankey_flow_specs:
+                if not isinstance(source_record, dict):
+                    sankey_spatial_safe = False
+                    break
+                raw_bbox = source_record.get("bbox")
+                if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+                    sankey_spatial_safe = False
+                    break
+                try:
+                    bbox = tuple(float(value) for value in raw_bbox)
+                except (TypeError, ValueError, OverflowError):
+                    sankey_spatial_safe = False
+                    break
+                x1, y1, x2, y2 = bbox
+                if (
+                    not all(math.isfinite(value) for value in bbox)
+                    or x2 <= x1
+                    or y2 <= y1
+                    or x1 < 0
+                    or y1 < 0
+                    or x2 > image_width
+                    or y2 > image_height
+                ):
+                    sankey_spatial_safe = False
+                    break
+                sankey_flow_boxes[owner_id] = bbox
+
+            sankey_spatial_comparison_budget = max(0, _MAX_SANKEY_FLOW_OVERLAP_COMPARISONS)
+            ordered_sankey_flow_boxes = sorted(sankey_flow_boxes.items())
+            if sankey_spatial_safe:
+                for index, (_owner_id, bbox) in enumerate(ordered_sankey_flow_boxes):
+                    for _other_id, other_bbox in ordered_sankey_flow_boxes[index + 1 :]:
+                        if sankey_spatial_comparison_budget <= 0:
+                            sankey_spatial_safe = False
+                            break
+                        sankey_spatial_comparison_budget -= 1
+                        if (
+                            bbox[0] < other_bbox[2]
+                            and bbox[2] > other_bbox[0]
+                            and bbox[1] < other_bbox[3]
+                            and bbox[3] > other_bbox[1]
+                        ):
+                            sankey_spatial_safe = False
+                            break
+                    if not sankey_spatial_safe:
+                        break
+
+            sankey_evidence_by_id: dict[str, VisualEvidence] = {}
+            sankey_texts_by_bbox: dict[tuple[float, float, float, float], set[str]] = {}
+            sankey_authorized_text_count = 0
+            sankey_authorized_char_count = 0
+            sankey_authorized_token_count = 0
+            if sankey_spatial_safe:
+                for item in evidence:
+                    if item.id in sankey_evidence_by_id:
+                        sankey_spatial_safe = False
+                        break
+                    sankey_evidence_by_id[item.id] = item
+                    if item.kind in {"ocr_token", "vector_text"} and item.text:
+                        sankey_authorized_text_count += 1
+                        sankey_authorized_char_count += len(item.text)
+                        if (
+                            sankey_authorized_text_count > _MAX_OCR_REFERENCE_TEXTS
+                            or sankey_authorized_char_count > _MAX_OCR_REFERENCE_CHARS
+                        ):
+                            sankey_spatial_safe = False
+                            break
+                        sankey_authorized_token_count += ocr_token_multiset((item.text,)).total()
+                        if sankey_authorized_token_count > _MAX_OCR_REFERENCE_TOKENS:
+                            sankey_spatial_safe = False
+                            break
+
+            if sankey_spatial_safe:
+                for item in evidence:
+                    if (
+                        item.kind not in {"ocr_token", "vector_text"}
+                        or not item.text
+                        or item.bbox is None
+                        or not isinstance(item.bbox, (list, tuple))
+                        or len(item.bbox) != 4
+                    ):
+                        continue
+                    try:
+                        evidence_bbox = tuple(float(value) for value in item.bbox)
+                    except (TypeError, ValueError, OverflowError):
+                        sankey_spatial_safe = False
+                        break
+                    if not all(math.isfinite(value) for value in evidence_bbox):
+                        sankey_spatial_safe = False
+                        break
+                    normalized_text = _normalized_label(item.text)
+                    if normalized_text:
+                        sankey_texts_by_bbox.setdefault(evidence_bbox, set()).add(normalized_text)
+
+            sankey_flow_observations: dict[
+                str, list[tuple[str, tuple[float, float, float, float], str]]
+            ] = {owner_id: [] for owner_id, *_rest in sankey_flow_specs}
+            sankey_evidence_owners: dict[str, str] = {}
+            sankey_observation_owners: dict[tuple[str, tuple[float, float, float, float]], str] = {}
+            sankey_reference_count = 0
+            if sankey_spatial_safe:
+                for owner_id, _source_record, evidence_ids, _value_text in sankey_flow_specs:
+                    sankey_reference_count += len(evidence_ids)
+                    if sankey_reference_count > _MAX_SANKEY_ASSOCIATION_REFERENCES:
+                        sankey_spatial_safe = False
+                        break
+                    owner_bbox = sankey_flow_boxes[owner_id]
+                    for evidence_id in evidence_ids:
+                        item = sankey_evidence_by_id.get(evidence_id)
+                        if item is None:
+                            sankey_spatial_safe = False
+                            break
+                        previous_id_owner = sankey_evidence_owners.get(evidence_id)
+                        if previous_id_owner is not None and previous_id_owner != owner_id:
+                            sankey_spatial_safe = False
+                            break
+                        sankey_evidence_owners[evidence_id] = owner_id
+                        if item.kind not in {"ocr_token", "vector_text"}:
+                            continue
+                        if (
+                            not item.text
+                            or item.bbox is None
+                            or not isinstance(item.bbox, (list, tuple))
+                            or len(item.bbox) != 4
+                        ):
+                            sankey_spatial_safe = False
+                            break
+                        try:
+                            evidence_bbox = tuple(float(value) for value in item.bbox)
+                        except (TypeError, ValueError, OverflowError):
+                            sankey_spatial_safe = False
+                            break
+                        ex1, ey1, ex2, ey2 = evidence_bbox
+                        if (
+                            not all(math.isfinite(value) for value in evidence_bbox)
+                            or ex2 <= ex1
+                            or ey2 <= ey1
+                            or ex1 < owner_bbox[0]
+                            or ey1 < owner_bbox[1]
+                            or ex2 > owner_bbox[2]
+                            or ey2 > owner_bbox[3]
+                            or len(sankey_texts_by_bbox.get(evidence_bbox, set())) != 1
+                        ):
+                            sankey_spatial_safe = False
+                            break
+                        normalized_text = _normalized_label(item.text)
+                        if not normalized_text:
+                            sankey_spatial_safe = False
+                            break
+                        observation_key = (normalized_text, evidence_bbox)
+                        previous_observation_owner = sankey_observation_owners.get(observation_key)
+                        if previous_observation_owner is not None:
+                            if previous_observation_owner != owner_id:
+                                sankey_spatial_safe = False
+                                break
+                            continue
+                        sankey_observation_owners[observation_key] = owner_id
+                        sankey_flow_observations[owner_id].append(
+                            (normalized_text, evidence_bbox, item.text)
+                        )
+                    if not sankey_spatial_safe:
+                        break
+
+            if sankey_spatial_safe and all(sankey_flow_observations.values()):
+                expected_text_count = len(sankey_flow_specs)
+                expected_char_count = sum(
+                    len(value_text)
+                    for _owner_id, _source_record, _evidence_ids, value_text in sankey_flow_specs
+                )
+                expected_token_count = sum(
+                    ocr_token_multiset((value_text,)).total()
+                    for _owner_id, _source_record, _evidence_ids, value_text in sankey_flow_specs
+                )
+                if (
+                    sankey_authorized_text_count + expected_text_count <= _MAX_OCR_REFERENCE_TEXTS
+                    and sankey_authorized_char_count + expected_char_count
+                    <= _MAX_OCR_REFERENCE_CHARS
+                    and sankey_authorized_token_count + expected_token_count
+                    <= _MAX_OCR_REFERENCE_TOKENS
+                ):
+                    association_matches = True
+                    for owner_id, _source_record, _evidence_ids, value_text in sankey_flow_specs:
+                        ordered_observations = sorted(
+                            sankey_flow_observations[owner_id],
+                            key=lambda item: (
+                                item[1][0],
+                                item[1][1],
+                                item[1][2],
+                                item[1][3],
+                                item[0],
+                            ),
+                        )
+                        observed_text = _normalized_label(
+                            " ".join(item[2] for item in ordered_observations)
+                        )
+                        if observed_text != _normalized_label(value_text):
+                            association_matches = False
+                    sankey_binding_state = "exact" if association_matches else "mismatch"
+
+            global_sankey_numeric = numeric_consistency(references.numeric_tokens, code)
+            if sankey_binding_state == "exact" and global_sankey_numeric != 1.0:
+                sankey_binding_state = (
+                    "mismatch" if global_sankey_numeric is not None else "unavailable"
+                )
+            # Preserve the global score as a diagnostic for legacy callers. It is
+            # never publication authority without the exact flow-local state above.
+            numeric = global_sankey_numeric
         elif gate_diagram_type == "xychart":
             # XY publication authority is record-local.  A document-wide numeric
             # multiset cannot detect category, series, value, or explicit-x swaps.
@@ -4934,6 +5185,12 @@ class ReconstructionPipeline:
         elif gate_diagram_type == "radar" and radar_binding_state == "mismatch":
             aggregate = None
             warnings.append(_RADAR_RECORD_ASSOCIATION_MISMATCH_WARNING)
+        elif gate_diagram_type == "sankey" and sankey_binding_state == "unavailable":
+            aggregate = None
+            warnings.append(_SANKEY_FLOW_ASSOCIATION_UNAVAILABLE_WARNING)
+        elif gate_diagram_type == "sankey" and sankey_binding_state == "mismatch":
+            aggregate = None
+            warnings.append(_SANKEY_FLOW_ASSOCIATION_MISMATCH_WARNING)
         elif gate_diagram_type == "xychart" and xy_binding_state == "unavailable":
             aggregate = None
             warnings.append(_XY_RECORD_ASSOCIATION_UNAVAILABLE_WARNING)
