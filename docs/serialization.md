@@ -16,8 +16,9 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 
 | 요청 type | 실제 grammar | 비고 |
 | --- | --- | --- |
-| Flowchart, Mindmap, Timeline, Gantt | 동일 | Phase 1 native |
+| Flowchart, Mindmap, Gantt | 동일 | Phase 1 native |
 | Sequence | 동일 | shared terminal/emitted-ID plan을 쓰는 Phase 1 native |
+| Timeline | 동일 | shared title/period/event terminal plan을 쓰는 Phase 1 native |
 | Architecture | `architecture → flowchart` | `architecture-beta` 우선, runtime 거부 시 nested Flowchart |
 | State, Class, ER | 동일 | node/relation/member/attribute evidence 필수 |
 | Requirement | `requirement` | Mermaid `requirementDiagram` |
@@ -91,6 +92,23 @@ emitted endpoint, canvas label, order와 record-local evidence를 소비하고 r
 구조로 승격하지 않습니다. Initial/repair는 raw 접근성 snapshot을 보존하고 accepted repair마다 current
 participant plan에서 derived text와 조건부 warning을 다시 만듭니다. Source는 50,000 UTF-16 unit/5,000줄을
 preflight합니다.
+
+Timeline은 `plan_timeline_records()`에서 visible title, 각 period와 ordered event label을 한 번 canonicalize합니다.
+`time`/`period` 또는 single `label`/첫 `events[]`를 동시에 주면 normalized text가 같아야 하며, 빈 alias는
+omitted, 누락 event label은 `[unreadable]`입니다. Event container, nested label, source ID, alias conflict,
+duplicate ID, record/label/source budget 중 하나라도 잘못되면 일부 record만 방출하지 않고 전체 plan을
+거부합니다. Raw source ID는 typed/review provenance identity로 유지하고 source order의
+`timeline_event_N`을 generated Scene identity로 사용합니다.
+
+Mermaid 11.16 Timeline lexer는 user period의 `title`, `section`, `%`, `#`, `:`를 grammar token으로 소비하고
+renderer는 entity-like text의 주변 공백을 바꿀 수 있습니다. Plan은 각 normalized terminal에 generated
+zero-width sentinel을 붙인 뒤 ASCII code point를 numeric entity로 방출합니다. 이 source는 grammar/security
+token을 만들지 않으며 quote, backslash, colon, hash, semicolon, literal entity spelling과 whitespace를 exact
+SVG canvas text로 복원합니다. Sentinel은 source/DOM에 남을 수 있으나 Scene/OCR에서는 제거된 semantic canvas만
+사용합니다. Title/period/event serializer, Scene, OCR은 같은 plan과 record-local bbox/evidence를 소비하고 raw
+role/shape/direction/hidden text는 승격하지 않습니다. Raw accessibility snapshot은 initial/repair candidate에
+유지하지만 pinned runtime이 SVG metadata를 만들지 않으므로 directive는 방출하지 않습니다. Expanded source를
+50,000 UTF-16 unit/5,000줄에서 preflight합니다.
 
 State는 serializer와 generated Scene이 같은 emission plan을 소비합니다. 이 plan은 source state ID를
 Mermaid-safe ID로 한 번만 정규화하고 transition endpoint, 화면 label, pseudo-state kind와 deterministic

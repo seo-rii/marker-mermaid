@@ -105,11 +105,13 @@ from marker_mermaid.serializers import (
     SerializationError,
     enrich_gantt_accessibility_ir,
     enrich_sequence_accessibility_ir,
+    enrich_timeline_accessibility_ir,
     scene_to_flowchart,
     serialize_runtime_fallback_result,
     serialize_typed_ir_result,
     validated_gantt_metadata_ir,
     validated_sequence_accessibility_ir,
+    validated_timeline_accessibility_ir,
 )
 from marker_mermaid.serializers_charts_core import (
     QUADRANT_NATIVE_PAINT_COMPATIBILITY_WARNING,
@@ -2068,6 +2070,8 @@ class ReconstructionPipeline:
                             # Freeze exact raw metadata before derived accessibility
                             # can turn an empty or malformed directive into publishable text.
                             accessibility_source_ir = validated_sequence_accessibility_ir(typed.ir)
+                        elif typed.diagram_type == "timeline":
+                            accessibility_source_ir = validated_timeline_accessibility_ir(typed.ir)
                         elif typed.diagram_type == "er":
                             accessibility_source_ir = validated_er_accessibility_ir(typed.ir)
                         elif typed.diagram_type == "state":
@@ -2082,6 +2086,11 @@ class ReconstructionPipeline:
                             )
                         elif typed.diagram_type == "sequence":
                             enriched_ir = enrich_sequence_accessibility_ir(
+                                accessibility_source_ir,
+                                experimental=self.config.mode != Mode.STRICT,
+                            )
+                        elif typed.diagram_type == "timeline":
+                            enriched_ir = enrich_timeline_accessibility_ir(
                                 accessibility_source_ir,
                                 experimental=self.config.mode != Mode.STRICT,
                             )
@@ -2121,7 +2130,8 @@ class ReconstructionPipeline:
                         )
                         stored_typed_ir = (
                             accessibility_source_ir
-                            if typed.diagram_type in {"er", "gantt", "sequence", "state"}
+                            if typed.diagram_type
+                            in {"er", "gantt", "sequence", "state", "timeline"}
                             else enriched_ir
                         )
                         stored_typed_ir = canonical_typed_ir_snapshot(stored_typed_ir)
@@ -7019,6 +7029,8 @@ class ReconstructionPipeline:
                     validated_ir = validated_gantt_metadata_ir(validated_ir)
                 elif current.diagram_type == "sequence":
                     validated_ir = validated_sequence_accessibility_ir(validated_ir)
+                elif current.diagram_type == "timeline":
+                    validated_ir = validated_timeline_accessibility_ir(validated_ir)
                 elif current.diagram_type == "er":
                     validated_ir = validated_er_accessibility_ir(validated_ir)
                 elif current.diagram_type == "state":

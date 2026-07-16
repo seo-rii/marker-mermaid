@@ -37,7 +37,7 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | Swimlane / BPMN | lane, lane 안의 node, top-level edge |
 | Sequence | participant(`id`/`label`/evidence), message(`id`/`source`/`target`/`label`/closed `style`/evidence); terminal plan 후검증 |
 | Mindmap | 재귀 root/children hierarchy |
-| Timeline | event와 여러 label을 담는 `events: string[]` |
+| Timeline | event `id`, `time`/`period`, single `label`/ordered `events[]`, bbox/evidence; terminal plan 후검증 |
 | Gantt | section과 task ID/status/start/end/duration field; terminal plan이 semantic/source/canvas text와 schedule 의미를 후검증 |
 | Architecture | service, group, edge/port field |
 | State | state/kind와 transition endpoint/label |
@@ -96,6 +96,30 @@ Top-level `title`/`description`/`acc_title`/`acc_description`은 generic enrichm
 Absent/`None`과 exact-empty omitted만 허용하고 나머지는 exact bounded nonblank UTF-8 text여야 합니다.
 Pipeline은 derived `acc_*` 대신 validated raw snapshot을 initial/repair typed IR에 저장해 accepted repair 뒤
 현재 participant plan에서 description과 angle compatibility warning을 다시 만듭니다.
+
+### Timeline terminal record 계약
+
+Timeline root는 non-empty `events: list`를 요구합니다. 각 record는
+`{id, time, period, label, events, bbox, evidence_ids}` object입니다. `time`/`period`는 period alias이고,
+`label`은 single event alias, `events[]`는 ordered multi-event 표현입니다. 두 period alias가 모두 있으면
+normalized text가 같아야 하고, `label`과 non-empty `events[]`를 함께 주면 label이 첫 event와 같아야 합니다.
+Exact-empty alias는 omitted이며 label이 모두 없으면 `[unreadable]` 한 slot을 유지합니다. Whitespace-only,
+non-string, control/format/surrogate, overlong nested value와 malformed list는 coercion하거나 생략하지 않습니다.
+
+`plan_timeline_records()`는 raw/provenance source ID, source-order `timeline_event_N` Scene ID, title/period/event의
+semantic/source/Mermaid 11.16 canvas text와 source budget을 한 번 고정합니다. Duplicate source ID, alias conflict,
+visible-label/record/source budget 초과가 하나라도 있으면 partial Timeline 대신 전체 plan을 fail closed합니다.
+Generated Scene은 record마다 `role=event`, period canvas text, `reading_direction=timeline`과 그 record의
+bbox/evidence만 사용합니다. Title, period, 모든 ordered event canvas label은 OCR projection에 들어가지만 raw
+ID/role/shape/direction/hidden text, source sentinel/numeric entity와 accessibility metadata는 들어가지 않습니다.
+
+Timeline lexer가 period의 `title`/`section`/comment/delimiter를 grammar로 소비하지 못하도록 각 terminal source에
+generated zero-width sentinel을 붙이고 normalized text의 모든 ASCII code point를 numeric entity로 encode합니다.
+Mermaid 11.16은 이를 quote/backslash/colon/hash/semicolon/entity-like spelling/whitespace를 포함한 exact canvas
+text로 decode합니다. Expanded source는 50,000 UTF-16 unit/5,000줄에서 preflight합니다. Top-level
+`title`/`description`/`acc_title`/`acc_description`은 enrichment 전에 exact raw gate를 통과하고 candidate에는
+validated raw snapshot이 남습니다. Timeline SVG가 접근성 directive를 materialize하지 않으므로 resolved text는
+typed/review metadata와 limitation warning으로만 제공됩니다.
 
 ### ER terminal record 계약
 

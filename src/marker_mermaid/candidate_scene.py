@@ -28,6 +28,7 @@ from marker_mermaid.serializers import (
     plan_architecture_structure,
     plan_gantt_records,
     plan_sequence_records,
+    plan_timeline_records,
 )
 from marker_mermaid.serializers_charts_core import (
     plan_pie_records,
@@ -1065,7 +1066,21 @@ def typed_ir_to_scene(
             return None
         node_records, edge_records = _planned_hierarchy_records(ishikawa_plan)
     elif diagram_type == "timeline":
-        node_records = _ordered_records(ir.get("events"), prefix="event_")
+        try:
+            timeline_plan = plan_timeline_records(ir)
+        except SerializationError:
+            return None
+        node_records = [
+            {
+                "id": event.scene_id,
+                "label": event.period.canvas,
+                "role": "event",
+                "bbox": event.source_record.get("bbox"),
+                "evidence_ids": list(event.source_record.get("evidence_ids") or []),
+            }
+            for event in timeline_plan.events
+        ]
+        scene_direction_override = "timeline"
     elif diagram_type == "gantt":
         try:
             gantt_plan = plan_gantt_records(ir)
@@ -1877,18 +1892,13 @@ def typed_ir_semantic_texts(
     """
 
     if diagram_type == "timeline":
-        if ir.get("title"):
-            yield str(ir["title"])
-        for event in ir.get("events") or []:
-            if not isinstance(event, dict):
-                continue
-            period = event.get("time") or event.get("period") or "[unreadable time]"
-            yield str(period)
-            labels = event.get("events") or [event.get("label") or "[unreadable]"]
-            if isinstance(labels, list):
-                for label in labels:
-                    if label is not None and label != "":
-                        yield str(label)
+        plan = plan_timeline_records(ir)
+        if plan.title is not None:
+            yield plan.title.canvas
+        for event in plan.events:
+            yield event.period.canvas
+            for label in event.labels:
+                yield label.canvas
         return
 
     if diagram_type == "sequence":

@@ -8,7 +8,7 @@
 각각 하나일 때만 시작·종료를 덧붙입니다. Chart의 증가·감소, 관계 의미, 누락 숫자를 추측하지
 않습니다. Experimental 후보에는 review가 필요하다는 문구를 한 번만 추가합니다. 일반 후보의 생성된 값은
 code와 enriched `typed_ir`에 함께 저장되어 directive를 지원하지 않는 문법에서도 review metadata로 남습니다.
-State·Gantt·ER·Sequence처럼 terminal별 source/canvas plan을 가진 유형은 예외입니다. 이 유형은 stale derived text를
+State·Gantt·ER·Sequence·Timeline처럼 terminal별 source/canvas plan을 가진 유형은 예외입니다. 이 유형은 stale derived text를
 막기 위해 candidate `typed_ir`에 validated raw metadata snapshot을 유지하고, initial serialization과 accepted
 repair마다 현재 semantic record에서 접근성 값을 다시 계산합니다.
 
@@ -59,6 +59,14 @@ Participant/message의 `#`와 `;`는 native Sequence escape를 통해 canvas 원
 `<`/`>`는 Mermaid가 double-escape하므로 `〈`/`〉`로 표시하고 조건부 warning을 남깁니다. Source-only
 separator는 scanner/lexer 동작만 끄며 semantic 원문은 typed/review IR에 유지합니다. 이 metadata는
 participant/message Scene/OCR content가 아니므로 구조 label recall에는 포함하지 않습니다.
+
+Native Timeline은 `accTitle`/`accDescr`를 parse하지만 pinned Mermaid 11.16 SVG에 `<title>`/`<desc>`를
+만들지 않으므로 directive를 source에 넣지 않습니다. 대신 `acc_title > title`,
+`acc_description > description` resolution 결과를 typed/review metadata에 유지하고 limitation warning을
+기록합니다. 네 raw metadata 필드는 generic enrichment 전에 exact built-in string, raw/normalized bound,
+UTF-8/Unicode category와 exact-empty-as-omitted gate를 통과합니다. Initial candidate와 accepted repair는 파생
+`acc_*`가 아닌 validated raw snapshot을 저장해 event 수정 때 현재 semantic period/event plan에서 설명을 다시
+만듭니다. 이 metadata는 Timeline canvas OCR label이 아닙니다.
 
 Native Pie는 pinned Mermaid 11.16에서 `accTitle`/`accDescr`를 지원하므로 resolved text를 SVG
 `<title>`/`<desc>` metadata로 방출합니다. 별도의 explicit `title`은 Pie canvas content이므로 native semantic

@@ -215,7 +215,9 @@ generated Scene attribution에서 제외합니다.
   고비용 semantic scoring을 건너뛰고, typed Scene 변환 오류는 후보 단위 warning으로 격리합니다.
 - 구조 Scene은 topology를 위해 class member나 ER attribute를 node로 만들지 않습니다. 별도의 지연형
   typed semantic projection이 실제 serializer가 표시하는 Class field/method/parameter/cardinality,
-  ER attribute type/name/key/comment, Timeline period/title/모든 event label을 OCR 비교에 추가합니다.
+  ER attribute type/name/key/comment, Timeline plan의 canvas title/period/모든 event label을 OCR 비교에
+  추가합니다. Timeline raw ID/role/shape/direction/hidden text, generated source sentinel, numeric source entity와
+  accessibility metadata는 OCR credit에서 제외합니다.
   이 projection도 생성 label 예산 안에서 소비되므로 큰 typed IR이 제한을 우회하지 못합니다.
   Core Scene도 serializer-visible default를 그대로 사용합니다. Block은 collision-safe emitted ID와
   `[unreadable]` fallback을 공유하고, 일반 State는 serializer가 쓰는 label/ID만 세며 choice/fork/join은
@@ -227,7 +229,11 @@ generated Scene attribution에서 제외합니다.
   object participant evidence는 해당 element, message evidence는 해당 relation에만 연결합니다. String
   participant는 legacy 호환 입력이라 자체 record provenance가 없으며 일반 Extended provenance gate가 이를
   review로 보낼 수 있습니다. Unknown/null endpoint 하나라도 있으면 message를 버리지 않고 전체 Scene을 fail
-  closed합니다. Gantt 무라벨 task는 section-local `Task N`으로 투영하며 hidden task `text`/ID에 OCR credit을
+  closed합니다. Timeline은 각 source record를 collision-free `timeline_event_N` Scene slot 하나에 연결하고
+  period를 element text로, title/period/모든 event label을 terminal OCR projection으로 셉니다. 여러 event label은
+  같은 source record의 bbox/evidence authority를 공유하지만 raw event ID나 hidden alias를 별도 구조로 늘리지
+  않습니다. Alias 충돌, duplicate ID 또는 malformed nested label 하나라도 있으면 partial Scene을 만들지
+  않습니다. Gantt 무라벨 task는 section-local `Task N`으로 투영하며 hidden task `text`/ID에 OCR credit을
   주지 않습니다. State의 normalized ID와 transition endpoint는 serializer와
   Scene이 하나의 plan을 공유하고 malformed 또는 unknown endpoint transition은 전체 Scene을 fail closed합니다.
   `[*]` boundary marker는 structural relation으로 만들지 않지만 화면에 표시되는 transition label은 OCR

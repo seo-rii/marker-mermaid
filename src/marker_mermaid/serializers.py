@@ -422,7 +422,7 @@ def validated_sequence_accessibility_ir(ir: Mapping[str, Any]) -> dict[str, Any]
     }
 
 
-def _sequence_semantic_text(value: Any, *, context: str) -> str:
+def _semantic_terminal_text(value: Any, *, context: str) -> str:
     if type(value) is not str:
         raise SerializationError(f"{context} must be text")
     if len(value) > MAX_TEXT_CHARS:
@@ -488,7 +488,7 @@ def _sequence_source_escape(text: str) -> str:
     )
 
 
-def _sequence_utf16_units(text: str) -> int:
+def _mermaid_utf16_units(text: str) -> int:
     try:
         return len(text.encode("utf-16-le")) // 2
     except UnicodeEncodeError as exc:  # pragma: no cover - semantic text rejects surrogates
@@ -501,7 +501,7 @@ def _plan_sequence_text(
     context: str,
     accessibility: bool,
 ) -> SequenceTextPlan:
-    semantic = _sequence_semantic_text(value, context=context)
+    semantic = _semantic_terminal_text(value, context=context)
     canvas = semantic.replace("<", "〈").replace(">", "〉") if accessibility else semantic
     source = _neutralize_sequence_source(_sequence_source_escape(canvas))
     return SequenceTextPlan(
@@ -700,7 +700,7 @@ def plan_sequence_records(ir: Mapping[str, Any]) -> SequencePlan:
         raise SerializationError(
             f"sequence output exceeds source-line limit of {_SEQUENCE_MAX_OUTPUT_LINES}"
         )
-    if _sequence_utf16_units("\n".join(minimum_source_lines)) + 1 > _SEQUENCE_MAX_OUTPUT_CHARS:
+    if _mermaid_utf16_units("\n".join(minimum_source_lines)) + 1 > _SEQUENCE_MAX_OUTPUT_CHARS:
         raise SerializationError(
             f"sequence output exceeds UTF-16 source-character limit of {_SEQUENCE_MAX_OUTPUT_CHARS}"
         )
@@ -798,7 +798,7 @@ def serialize_sequence(ir: dict[str, Any], *, experimental: bool = False) -> str
             f"{message.target_emitted_id}: {message.source_label}"
         )
     code = "\n".join(lines) + "\n"
-    if _sequence_utf16_units(code) > _SEQUENCE_MAX_OUTPUT_CHARS:
+    if _mermaid_utf16_units(code) > _SEQUENCE_MAX_OUTPUT_CHARS:
         raise SerializationError(
             f"sequence output exceeds UTF-16 source-character limit of {_SEQUENCE_MAX_OUTPUT_CHARS}"
         )
@@ -828,18 +828,261 @@ def serialize_mindmap(ir: dict[str, Any], *, experimental: bool = False) -> str:
     return "\n".join(lines) + "\n"
 
 
+_TIMELINE_SOURCE_SENTINEL = "\u200b"
+_TIMELINE_METADATA_FIELDS = ("title", "description", "acc_title", "acc_description")
+_TIMELINE_MAX_OUTPUT_CHARS = 50_000
+_TIMELINE_MAX_OUTPUT_LINES = 5_000
+_TIMELINE_MAX_VISIBLE_LABELS = MAX_SCENE_RELATIONS
+
+
+@dataclass(frozen=True, slots=True)
+class TimelineTextPlan:
+    """One Timeline terminal across semantic IR, source, and SVG canvas text."""
+
+    semantic: str
+    source: str
+    canvas: str
+
+
+@dataclass(frozen=True, slots=True)
+class TimelineEventPlan:
+    """One ordered Timeline period and all of its visible event labels."""
+
+    source_record: dict[str, Any]
+    source_id: str
+    scene_id: str
+    period: TimelineTextPlan
+    labels: tuple[TimelineTextPlan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TimelinePlan:
+    """Canonical Timeline records shared by serializer, Scene, OCR, and repair."""
+
+    title: TimelineTextPlan | None
+    events: tuple[TimelineEventPlan, ...]
+
+
+def validated_timeline_accessibility_ir(ir: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate raw Timeline metadata and treat exact-empty fields as omitted."""
+
+    for field in _TIMELINE_METADATA_FIELDS:
+        value = ir.get(field)
+        if value is None:
+            continue
+        if type(value) is not str:
+            raise SerializationError(f"timeline {field} must be text when provided")
+        if value == "":
+            continue
+        if len(value) > MAX_TEXT_CHARS:
+            raise SerializationError(f"timeline {field} must be bounded non-empty text")
+        if any(
+            unicodedata.category(character) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for character in value
+        ):
+            raise SerializationError(f"timeline {field} contains unsupported text")
+        normalized = " ".join(value.split())
+        if not normalized or len(normalized) > MAX_TEXT_CHARS:
+            raise SerializationError(f"timeline {field} must be bounded non-empty text")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as exc:  # pragma: no cover - Cs is rejected above
+            raise SerializationError(f"timeline {field} is not valid UTF-8 text") from exc
+    return {
+        key: value
+        for key, value in ir.items()
+        if key not in _TIMELINE_METADATA_FIELDS or value != ""
+    }
+
+
+def _plan_timeline_text(value: Any, *, context: str) -> TimelineTextPlan:
+    semantic = _semantic_terminal_text(value, context=context)
+    # Timeline's lexer treats title/section/comment tokens and ':' as grammar,
+    # while its renderer decodes Mermaid's numeric entities in every terminal.
+    # A generated leading sentinel keeps an encoded first ASCII character out of
+    # the comment state. Encoding every ASCII code point also preserves spaces
+    # around entity-like literals, which the native renderer otherwise drops.
+    source = _TIMELINE_SOURCE_SENTINEL + "".join(
+        f"#{ord(character)};" if ord(character) < 128 else character for character in semantic
+    )
+    return TimelineTextPlan(semantic=semantic, source=source, canvas=semantic)
+
+
+def _timeline_alias_text(
+    record: Mapping[str, Any],
+    primary: str,
+    secondary: str,
+    *,
+    fallback: str,
+    context: str,
+) -> TimelineTextPlan:
+    planned: list[TimelineTextPlan] = []
+    for field in (primary, secondary):
+        value = record.get(field)
+        if value is None or (type(value) is str and value == ""):
+            continue
+        planned.append(_plan_timeline_text(value, context=f"{context}.{field}"))
+    if len(planned) == 2 and planned[0].semantic != planned[1].semantic:
+        raise SerializationError(f"{context} has conflicting {primary}/{secondary} text")
+    return planned[0] if planned else _plan_timeline_text(fallback, context=context)
+
+
+def plan_timeline_records(ir: Mapping[str, Any]) -> TimelinePlan:
+    """Freeze Timeline identities and terminal text before any consumer runs."""
+
+    validated_ir = validated_timeline_accessibility_ir(ir)
+    raw_events = validated_ir.get("events")
+    if not isinstance(raw_events, list) or not raw_events:
+        raise SerializationError("timeline IR requires a non-empty events list")
+    if len(raw_events) > MAX_SCENE_ELEMENTS:
+        raise SerializationError("timeline event count exceeds the Scene element limit")
+
+    raw_title = validated_ir.get("title")
+    title = (
+        _plan_timeline_text(raw_title, context="timeline title") if raw_title is not None else None
+    )
+    source_line_count = 1 + (1 if title is not None else 0) + len(raw_events)
+    if source_line_count + 1 > _TIMELINE_MAX_OUTPUT_LINES:
+        raise SerializationError(
+            f"timeline output exceeds source-line limit of {_TIMELINE_MAX_OUTPUT_LINES}"
+        )
+    source_units = _mermaid_utf16_units("timeline\n")
+    if title is not None:
+        source_units += _mermaid_utf16_units(f"    title {title.source}\n")
+        if source_units > _TIMELINE_MAX_OUTPUT_CHARS:
+            raise SerializationError(
+                "timeline output exceeds UTF-16 source-character limit of "
+                f"{_TIMELINE_MAX_OUTPUT_CHARS}"
+            )
+    planned_events: list[TimelineEventPlan] = []
+    source_ids: set[str] = set()
+    visible_label_count = 0
+    for index, event in enumerate(raw_events, start=1):
+        if type(event) is not dict:
+            raise SerializationError("timeline events must be objects")
+        source_id = _sequence_source_id(
+            event.get("id"),
+            fallback=f"event-{index}",
+            context=f"timeline event {index} id",
+        )
+        if source_id in source_ids:
+            raise SerializationError("timeline event ids must be unique")
+        source_ids.add(source_id)
+        period = _timeline_alias_text(
+            event,
+            "time",
+            "period",
+            fallback="[unreadable time]",
+            context=f"timeline event {index}",
+        )
+
+        raw_label = event.get("label")
+        label_alias = None
+        if raw_label is not None and not (type(raw_label) is str and raw_label == ""):
+            label_alias = _plan_timeline_text(
+                raw_label,
+                context=f"timeline event {index}.label",
+            )
+        raw_labels = event.get("events")
+        if raw_labels is not None and not isinstance(raw_labels, list):
+            raise SerializationError(f"timeline event {index}.events must be a list")
+        if raw_labels:
+            if visible_label_count + len(raw_labels) > _TIMELINE_MAX_VISIBLE_LABELS:
+                raise SerializationError("timeline visible event label count exceeds the limit")
+            labels = tuple(
+                _plan_timeline_text(
+                    "[unreadable]" if type(value) is str and value == "" else value,
+                    context=f"timeline event {index}.events[{label_index}]",
+                )
+                for label_index, value in enumerate(raw_labels, start=1)
+            )
+            if label_alias is not None and label_alias.semantic != labels[0].semantic:
+                raise SerializationError(
+                    f"timeline event {index} has conflicting label/events text"
+                )
+        else:
+            labels = (
+                label_alias
+                if label_alias is not None
+                else _plan_timeline_text(
+                    "[unreadable]",
+                    context=f"timeline event {index} label",
+                ),
+            )
+        visible_label_count += len(labels)
+        if visible_label_count > _TIMELINE_MAX_VISIBLE_LABELS:
+            raise SerializationError("timeline visible event label count exceeds the limit")
+        source_line = (
+            f"    {period.source} : " + " : ".join(label.source for label in labels) + "\n"
+        )
+        source_units += _mermaid_utf16_units(source_line)
+        if source_units > _TIMELINE_MAX_OUTPUT_CHARS:
+            raise SerializationError(
+                "timeline output exceeds UTF-16 source-character limit of "
+                f"{_TIMELINE_MAX_OUTPUT_CHARS}"
+            )
+        planned_events.append(
+            TimelineEventPlan(
+                source_record=event,
+                source_id=source_id,
+                scene_id=f"timeline_event_{index}",
+                period=period,
+                labels=labels,
+            )
+        )
+
+    return TimelinePlan(title=title, events=tuple(planned_events))
+
+
+def enrich_timeline_accessibility_ir(
+    ir: Mapping[str, Any],
+    *,
+    experimental: bool,
+    timeline_plan: TimelinePlan | None = None,
+) -> dict[str, Any]:
+    """Return raw Timeline metadata plus accessibility derived from planned semantics."""
+
+    validated_ir = validated_timeline_accessibility_ir(ir)
+    plan = timeline_plan or plan_timeline_records(validated_ir)
+    semantic_ir: dict[str, Any] = {
+        key: validated_ir[key] for key in _TIMELINE_METADATA_FIELDS if key in validated_ir
+    }
+    semantic_ir["events"] = [
+        {
+            "id": event.source_id,
+            "label": (
+                f"{event.period.semantic}: " + "; ".join(label.semantic for label in event.labels)
+            ),
+        }
+        for event in plan.events
+    ]
+    resolved = resolve_accessibility(semantic_ir, "timeline", experimental=experimental)
+    return {
+        **validated_ir,
+        "acc_title": resolved.title,
+        "acc_description": resolved.description,
+    }
+
+
 def serialize_timeline(ir: dict[str, Any], *, experimental: bool = False) -> str:
-    events = ir.get("events")
-    if not isinstance(events, list) or not events:
-        raise SerializationError("timeline IR requires events")
+    del experimental
+    plan = plan_timeline_records(ir)
     lines = ["timeline"]
-    if ir.get("title"):
-        lines.append(f"    title {_text(ir['title'])}")
-    for event in events:
-        period = _text(event.get("time") or event.get("period") or "[unreadable time]")
-        labels = event.get("events") or [event.get("label") or "[unreadable]"]
-        lines.append(f"    {period} : " + " : ".join(_text(label) for label in labels))
-    return "\n".join(lines) + "\n"
+    if plan.title is not None:
+        lines.append(f"    title {plan.title.source}")
+    lines.extend(
+        f"    {event.period.source} : " + " : ".join(label.source for label in event.labels)
+        for event in plan.events
+    )
+    code = "\n".join(lines) + "\n"
+    if _mermaid_utf16_units(code) > _TIMELINE_MAX_OUTPUT_CHARS:
+        raise SerializationError(
+            f"timeline output exceeds UTF-16 source-character limit of {_TIMELINE_MAX_OUTPUT_CHARS}"
+        )
+    if code.count("\n") + 1 > _TIMELINE_MAX_OUTPUT_LINES:
+        raise SerializationError(
+            f"timeline output exceeds source-line limit of {_TIMELINE_MAX_OUTPUT_LINES}"
+        )
+    return code
 
 
 _GANTT_ZERO_WIDTH_SPACE = "\u200b"
@@ -2069,6 +2312,7 @@ def serialize_typed_ir_result(
     state_plan = None
     gantt_plan = None
     sequence_plan = None
+    timeline_plan = None
     if diagram_type == "pie":
         _validate_pie_explicit_accessibility_fields(ir)
     elif diagram_type == "xychart":
@@ -2085,6 +2329,9 @@ def serialize_typed_ir_result(
     elif diagram_type == "sequence":
         accessibility_source_ir = validated_sequence_accessibility_ir(ir)
         sequence_plan = plan_sequence_records(accessibility_source_ir)
+    elif diagram_type == "timeline":
+        accessibility_source_ir = validated_timeline_accessibility_ir(ir)
+        timeline_plan = plan_timeline_records(accessibility_source_ir)
     elif diagram_type == "er":
         from marker_mermaid.serializers_uml import (
             plan_er_records,
@@ -2115,6 +2362,12 @@ def serialize_typed_ir_result(
             accessibility_source_ir,
             experimental=experimental,
             sequence_plan=sequence_plan,
+        )
+    elif diagram_type == "timeline":
+        enriched_ir = enrich_timeline_accessibility_ir(
+            accessibility_source_ir,
+            experimental=experimental,
+            timeline_plan=timeline_plan,
         )
     elif diagram_type == "er":
         from marker_mermaid.serializers_uml import enrich_er_accessibility_ir

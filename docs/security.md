@@ -165,6 +165,21 @@ backslash, colon, Markdown punctuation은 native Sequence canvas가 원문을 �
 candidate에는 validated raw snapshot을 저장하므로 malformed/empty directive가 다음 source line을 삼키거나
 derived text로 세탁되지 않습니다.
 
+Native Timeline은 period가 `title`/`section`으로 시작하거나 `%`, `#`, literal colon을 포함할 때 같은 줄을
+제목·섹션·주석·추가 event로 재해석하는 문법입니다. 또한 renderer가 entity-like spelling을 decode하면서 주변
+공백을 잃을 수 있습니다. 따라서 normalized title/period/event terminal 앞에는 생성 zero-width sentinel을
+하나 두고, 모든 ASCII code point를 Mermaid numeric entity로 방출합니다. Lexer와 strict scanner는 user text의
+directive, URL, callback, HTML, click/style, comment, delimiter를 active source로 보지 않지만 Mermaid 11.16
+renderer는 quote, backslash, colon, semicolon, `#`, literal entity spelling과 공백을 exact canvas text로
+복원합니다. Sentinel은 source/SVG DOM에 남을 수 있으나 visually inert이고 Scene/OCR canvas에는 포함하지
+않습니다. Unicode control/format/surrogate input은 semantic gate에서 거부합니다.
+
+Raw `title`/`description`/`acc_title`/`acc_description`은 enrichment와 repair 전에 exact-string/bounds/Unicode
+gate를 통과하고 exact `""`만 omitted입니다. Timeline runtime은 accessibility directive를 실제 SVG metadata로
+만들지 않으므로 자동 source에는 넣지 않으며 resolved 값은 typed/review metadata에만 보존합니다. Source
+encoding 확장을 포함한 최종 code를 50,000 UTF-16 unit/5,000줄에서 preflight해 numeric expansion으로 runtime
+budget을 우회할 수 없게 합니다.
+
 ZenUML Sequence fallback은 participant의 source ID를 예약어와 분리된
 `zenuml_participant_*` namespace로 방출하고 message에는 이 namespaced endpoint만 씁니다.
 Mermaid message에 ID 문법이 없으므로 `zenuml_message_*`는 Scene/provenance slot에만 부여합니다.

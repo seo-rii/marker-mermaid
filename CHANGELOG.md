@@ -257,6 +257,20 @@
   accessibility and reconcile the conditional angle-glyph warning. Output is preflighted at 50,000 UTF-16 units and
   5,000 lines. Pinned Mermaid 11.16 fixtures cover exact terminal/accessibility SVG text, injection resistance,
   generated endpoints, style markers, strict scanning, and runtime cleanup.
+- Timeline now freezes visible title, period, and every event label into a shared semantic/source/Mermaid 11.16
+  canvas plan. Each normalized terminal receives a generated zero-width source sentinel and numeric encoding for
+  every ASCII code point; this prevents `title`, `section`, comment, colon, directive, URL, callback, HTML, click,
+  style, and entity-like input from changing the grammar while preserving exact visible SVG text, including spaces
+  around literal entity spellings. Event `time`/`period` and `label`/`events` aliases must agree when both are
+  supplied, missing labels use `[unreadable]`, and malformed records, duplicate source IDs, or budget overflow fail
+  the whole plan. Raw event IDs remain review/provenance identities while serializer and generated Scene share
+  stable `timeline_event_N` slots. Scene/OCR uses only planned canvas title/period/event text, `timeline` direction,
+  and record-local bbox/evidence; raw role, shape, direction, and hidden text receive no credit. Raw accessibility
+  metadata passes an exact-string/Unicode/bounds/exact-empty-as-omitted gate before enrichment, and initial/repair
+  candidates retain that raw snapshot. Timeline still cannot produce SVG `<title>`/`<desc>` in pinned Mermaid, so
+  resolved accessibility remains typed/review metadata with the existing limitation warning. Output is preflighted
+  at 50,000 UTF-16 units and 5,000 lines. Pinned runtime fixtures cover exact hostile terminal text, grammar
+  isolation, strict scanning, raw metadata repair gates, source budgets, and runtime cleanup.
 - Gantt now freezes semantic, source, and Mermaid 11.16 canvas text for titles, sections, and tasks in one record
   plan. A separate accessibility plan derives metadata from semantic section/task labels and applies its own
   source/canvas rules; explicit accessibility fields remain authoritative. Exact-empty top-level metadata is omitted
