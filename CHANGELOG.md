@@ -21,6 +21,15 @@
 - Conservative topology, arrow, relative-layout, and path quality metrics.
 - Vector, detected-arrow, and color-cluster visual priors.
 - Native State, Class, ER, Requirement, and Block typed serializers.
+- Native Mindmap serialization, generated Scene, semantic OCR, and repair now share a bounded
+  preorder terminal plan. It separates duplicate logical IDs from deterministic `root`/`node_N`
+  identities, validates recursive aliases and raw accessibility metadata before enrichment,
+  preserves exact named-entity/angle/backslash text with source-only neutralization, and discloses
+  Mermaid 11.16 quote/Markdown/numeric-entity compatibility glyphs while retaining semantic text
+  in raw typed IR. Generated Scenes use radial root-circle/child-rectangle nodes and marker-less
+  containment with record-local provenance. Malformed hierarchies and 50,000 UTF-16 unit / 5,000
+  line overflows fail closed; strict parse/render and terminal canvas behavior have a real-runtime
+  fixture.
 - Strict-safe C4, Deployment, Component, and Use-case portable fallbacks.
 - Requested/emitted/runtime diagram type and fallback-chain metadata.
 - Evidence-strict Pie, XY, Quadrant, Sankey, Radar, Treemap, and Venn serializers.

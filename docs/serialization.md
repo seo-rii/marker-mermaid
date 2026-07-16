@@ -16,7 +16,8 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 
 | 요청 type | 실제 grammar | 비고 |
 | --- | --- | --- |
-| Flowchart, Mindmap, Gantt | 동일 | Phase 1 native |
+| Flowchart, Gantt | 동일 | Phase 1 native |
+| Mindmap | 동일 | recursive terminal/emitted-ID plan을 쓰는 Phase 1 native |
 | Sequence | 동일 | shared terminal/emitted-ID plan을 쓰는 Phase 1 native |
 | Timeline | 동일 | shared title/period/event terminal plan을 쓰는 Phase 1 native |
 | Architecture | `architecture → flowchart` | `architecture-beta` 우선, runtime 거부 시 nested Flowchart |
@@ -91,6 +92,23 @@ angle bracket이 `〈`/`〉` compatibility canvas를 사용합니다. Serializer
 emitted endpoint, canvas label, order와 record-local evidence를 소비하고 raw role/shape/direction/style hint를
 구조로 승격하지 않습니다. Initial/repair는 raw 접근성 snapshot을 보존하고 accepted repair마다 current
 participant plan에서 derived text와 조건부 warning을 다시 만듭니다. Source는 50,000 UTF-16 unit/5,000줄을
+preflight합니다.
+
+Mindmap은 `plan_mindmap_records()`에서 recursive root/children을 iterative preorder로 고정합니다. Raw logical
+ID는 typed/review provenance에 남기되 native source와 generated Scene은 source order의 `root`, `node_N`을
+사용하므로 duplicate logical ID가 node를 덮어쓰지 않습니다. `label`/`text` alias는 normalized 의미가 같을
+때만 함께 허용하고 exact-empty는 omitted, 누락 label은 `[unreadable]`입니다. Non-string·whitespace-only·
+control/format/surrogate text, malformed child container, depth/node/source budget 초과 중 하나라도 있으면 partial
+hierarchy를 만들지 않습니다.
+
+Root는 항상 quoted circle, descendant는 quoted rectangle source로 방출합니다. Mermaid 11.16 Mindmap의
+Markdown/shape lexer가 소비하는 backslash, underscore, link bracket와 active security token은 source-only
+zero-width separator로 비활성화합니다. Literal named entity와 angle bracket은 exact canvas로 복원합니다.
+Quote·asterisk·backtick·tilde 및 numeric entity-like literal처럼 runtime이 원문을 보존하지 못하는 경우에만
+`″`·`＊`·`ˋ`·`～`·`＆`/`＃` compatibility glyph를 쓰고 warning을 남깁니다. Serializer, radial generated Scene,
+semantic OCR은 동일한 canvas text/order와 child→containment provenance를 공유하며 native branch에는 arrow를
+만들지 않습니다. Raw accessibility snapshot은 initial/repair candidate에 유지하지만 pinned runtime이
+directive를 추가 root로 해석하므로 source에는 넣지 않습니다. Expanded source는 50,000 UTF-16 unit/5,000줄을
 preflight합니다.
 
 Timeline은 `plan_timeline_records()`에서 visible title, 각 period와 ordered event label을 한 번 canonicalize합니다.

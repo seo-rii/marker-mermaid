@@ -8,7 +8,7 @@
 각각 하나일 때만 시작·종료를 덧붙입니다. Chart의 증가·감소, 관계 의미, 누락 숫자를 추측하지
 않습니다. Experimental 후보에는 review가 필요하다는 문구를 한 번만 추가합니다. 일반 후보의 생성된 값은
 code와 enriched `typed_ir`에 함께 저장되어 directive를 지원하지 않는 문법에서도 review metadata로 남습니다.
-State·Gantt·ER·Sequence·Timeline처럼 terminal별 source/canvas plan을 가진 유형은 예외입니다. 이 유형은 stale derived text를
+State·Gantt·ER·Sequence·Mindmap·Timeline처럼 terminal별 source/canvas plan을 가진 유형은 예외입니다. 이 유형은 stale derived text를
 막기 위해 candidate `typed_ir`에 validated raw metadata snapshot을 유지하고, initial serialization과 accepted
 repair마다 현재 semantic record에서 접근성 값을 다시 계산합니다.
 
@@ -29,8 +29,10 @@ Pinned Mermaid 11.16에서 다음 native grammar에는 directive를 넣지 않�
 | Timeline/Journey | directive를 받아들이지만 SVG 접근성 element를 만들지 않음 |
 | Kanban | directive를 받아들이지만 SVG 접근성 element를 만들지 않음 |
 
-이 유형은 limitation warning과 enriched typed IR을 남깁니다. Portable flowchart fallback이 선택되면
-fallback grammar가 directive를 지원하므로 동일한 resolved text를 정상 출력합니다.
+이 유형은 limitation warning을 남깁니다. 일반 unsupported grammar는 enriched typed IR에도 resolved text를
+유지하지만, stale derived text를 막는 Mindmap/Timeline terminal은 예외로 candidate typed IR에 validated raw
+snapshot만 저장하고 serialization/review 시 현재 record plan에서 값을 다시 계산합니다. Portable flowchart
+fallback이 선택되면 fallback grammar가 directive를 지원하므로 동일한 resolved text를 정상 출력합니다.
 
 Native Venn의 explicit `title`은 canvas content이므로 Scene/OCR에도 포함합니다. 반면 resolved
 `accTitle`/`accDescr`는 native source에 넣지 않고 enriched typed IR과 limitation warning에만 남깁니다.
@@ -60,13 +62,22 @@ Participant/message의 `#`와 `;`는 native Sequence escape를 통해 canvas 원
 separator는 scanner/lexer 동작만 끄며 semantic 원문은 typed/review IR에 유지합니다. 이 metadata는
 participant/message Scene/OCR content가 아니므로 구조 label recall에는 포함하지 않습니다.
 
+Native Mindmap은 `accTitle`/`accDescr`를 node와 같은 추가 root로 해석하므로 directive를 source에 넣지
+않습니다. 대신 resolver는 raw `acc_title > title`, `acc_description > description`을 우선하고, 명시값이
+없으면 현재 preorder node plan의 semantic label에서 값을 결정적으로 파생합니다. 네 raw
+필드는 enrichment 전에 exact built-in string, raw/normalized bound, UTF-8와 Unicode category를 검사하고 exact
+`""`은 omitted으로 처리합니다. Initial candidate와 accepted repair는 파생 `acc_*`가 아닌 validated raw
+snapshot만 저장하므로 hierarchy label 수정 뒤 description과 조건부 compatibility warning을 다시 계산할 수
+있습니다. 파생 `acc_*` 자체는 candidate typed IR에 persist하지 않습니다. 이 값은 Mindmap canvas OCR content가
+아니며 limitation warning으로 source/SVG 미방출 사실을 공개합니다.
+
 Native Timeline은 `accTitle`/`accDescr`를 parse하지만 pinned Mermaid 11.16 SVG에 `<title>`/`<desc>`를
-만들지 않으므로 directive를 source에 넣지 않습니다. 대신 `acc_title > title`,
-`acc_description > description` resolution 결과를 typed/review metadata에 유지하고 limitation warning을
+만들지 않으므로 directive를 source에 넣지 않습니다. Resolver는 `acc_title > title`,
+`acc_description > description` 결과를 현재 raw snapshot에서 매번 계산하고 limitation warning을
 기록합니다. 네 raw metadata 필드는 generic enrichment 전에 exact built-in string, raw/normalized bound,
 UTF-8/Unicode category와 exact-empty-as-omitted gate를 통과합니다. Initial candidate와 accepted repair는 파생
 `acc_*`가 아닌 validated raw snapshot을 저장해 event 수정 때 현재 semantic period/event plan에서 설명을 다시
-만듭니다. 이 metadata는 Timeline canvas OCR label이 아닙니다.
+만들며 파생 field 자체는 persist하지 않습니다. 이 값은 Timeline canvas OCR label이 아닙니다.
 
 Native Pie는 pinned Mermaid 11.16에서 `accTitle`/`accDescr`를 지원하므로 resolved text를 SVG
 `<title>`/`<desc>` metadata로 방출합니다. 별도의 explicit `title`은 Pie canvas content이므로 native semantic

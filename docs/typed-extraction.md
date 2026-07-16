@@ -36,7 +36,7 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | Flowchart / Generic Network | node, edge, group과 member/evidence list |
 | Swimlane / BPMN | lane, lane 안의 node, top-level edge |
 | Sequence | participant(`id`/`label`/evidence), message(`id`/`source`/`target`/`label`/closed `style`/evidence); terminal plan 후검증 |
-| Mindmap | 재귀 root/children hierarchy |
+| Mindmap | 재귀 root/children hierarchy, bbox/evidence와 label/text alias; terminal plan 후검증 |
 | Timeline | event `id`, `time`/`period`, single `label`/ordered `events[]`, bbox/evidence; terminal plan 후검증 |
 | Gantt | section과 task ID/status/start/end/duration field; terminal plan이 semantic/source/canvas text와 schedule 의미를 후검증 |
 | Architecture | service, group, edge/port field |
@@ -97,6 +97,31 @@ Absent/`None`과 exact-empty omitted만 허용하고 나머지는 exact bounded 
 Pipeline은 derived `acc_*` 대신 validated raw snapshot을 initial/repair typed IR에 저장해 accepted repair 뒤
 현재 participant plan에서 description과 angle compatibility warning을 다시 만듭니다.
 
+### Mindmap terminal record 계약
+
+Mindmap root는 `{id, label, text, bbox, evidence_ids, children}` recursive object입니다. `label`과 `text`가 함께
+있으면 whitespace-normalized 의미가 같아야 하고, exact-empty alias는 omitted입니다. 둘 다 없으면 preorder
+slot을 버리지 않고 `[unreadable]`을 표시합니다. Logical ID는 exact bounded UTF-8 string이어야 하지만 중복은
+허용합니다. ID가 native grammar identity가 아니라 typed/review provenance이기 때문입니다.
+
+`plan_mindmap_records()`는 iterative preorder의 `root`/`node_N` emitted ID, parent slot, depth,
+semantic/source/Mermaid 11.16 canvas text와 source budget을 한 번 고정합니다. Malformed child container,
+object reuse를 포함한 depth/node 한도, invalid terminal 또는 50,000 UTF-16 unit/5,000줄을 넘는 source는 일부
+branch만 남기지 않고 전체 plan을 fail closed합니다. Root는 quoted circle, child는 quoted rectangle이고
+generated Scene도 각각 같은 role/shape를 사용합니다. Parent-child branch는 `containment`, marker 없음,
+`reading_direction=radial`이며 child evidence를 해당 element와 relation에 결합합니다. Raw role/shape/direction은
+native 구조로 승격하지 않습니다.
+
+Mindmap의 quoted terminal은 Markdown을 적용하므로 backslash/underscore/link/shape delimiter와
+directive·URL·callback·style/control word를 source-only zero-width separator로 비활성화합니다. Named entity
+spelling과 literal angle은 exact canvas로 유지합니다. Quote·asterisk·backtick·tilde·numeric entity-like
+spelling은 pinned runtime이 원문을 보존하지 못해 visible compatibility glyph를 쓰며, 이때만 warning을
+남깁니다. Scene과 semantic OCR은 separator가 없는 동일 canvas projection만 소비합니다. Top-level 네
+accessibility metadata field는 generic enrichment 전에 exact raw gate를 통과하고 initial/repair candidate에는
+derived `acc_*`가 아닌 raw snapshot을 저장합니다. Runtime이 directive를 추가 root로 해석하므로 resolved text는
+이 snapshot에서 serialization/review 시 다시 계산하며 candidate typed IR에는 persist하지 않습니다. Limitation
+warning은 source/SVG 미방출 사실을 별도로 공개합니다.
+
 ### Timeline terminal record 계약
 
 Timeline root는 non-empty `events: list`를 요구합니다. 각 record는
@@ -119,7 +144,8 @@ Mermaid 11.16은 이를 quote/backslash/colon/hash/semicolon/entity-like spellin
 text로 decode합니다. Expanded source는 50,000 UTF-16 unit/5,000줄에서 preflight합니다. Top-level
 `title`/`description`/`acc_title`/`acc_description`은 enrichment 전에 exact raw gate를 통과하고 candidate에는
 validated raw snapshot이 남습니다. Timeline SVG가 접근성 directive를 materialize하지 않으므로 resolved text는
-typed/review metadata와 limitation warning으로만 제공됩니다.
+이 snapshot에서 필요할 때 다시 계산하고 candidate typed IR에는 persist하지 않으며, limitation warning으로
+source/SVG 미방출 사실을 공개합니다.
 
 ### ER terminal record 계약
 

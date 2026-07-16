@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
@@ -186,16 +187,46 @@ def plan_mindmap_nodes(root: Any) -> tuple[MindmapNodePlacement, ...]:
     if not isinstance(root, dict):
         raise MindmapStructureError("mindmap IR requires a root object")
     placements: list[MindmapNodePlacement] = []
+    visited_node_objects: set[int] = set()
     pending: list[tuple[dict[str, Any], int, str | None]] = [(root, 1, None)]
     while pending:
         node, depth, parent_id = pending.pop()
+        node_object_id = id(node)
+        if node_object_id in visited_node_objects:
+            raise MindmapStructureError("mindmap node objects must not be reused")
+        visited_node_objects.add(node_object_id)
         if depth > MAX_IR_DEPTH:
             raise MindmapStructureError("mindmap hierarchy exceeds the nesting depth limit")
         node_number = len(placements) + 1
         if node_number > MAX_SCENE_ELEMENTS:
             raise MindmapStructureError("mindmap node count exceeds the Scene element limit")
         emitted_id = "root" if depth == 1 else f"node_{node_number}"
-        label = str(node.get("label") or node.get("text") or "[unreadable]")
+        raw_id = node.get("id")
+        if raw_id is not None and not (type(raw_id) is str and raw_id == ""):
+            if type(raw_id) is not str:
+                raise MindmapStructureError("mindmap node id must be a string")
+            if not raw_id.strip() or len(raw_id) > MAX_ID_CHARS:
+                raise MindmapStructureError("mindmap node id must be a bounded non-empty string")
+            if any(
+                unicodedata.category(character) in {"Cc", "Cf", "Cs", "Zl", "Zp"}
+                for character in raw_id
+            ):
+                raise MindmapStructureError("mindmap node id contains unsupported text")
+            try:
+                raw_id.encode("utf-8")
+            except UnicodeEncodeError as exc:  # pragma: no cover - Cs is rejected above
+                raise MindmapStructureError("mindmap node id is not valid UTF-8 text") from exc
+        aliases: list[tuple[str, str]] = []
+        for field in ("label", "text"):
+            value = node.get(field)
+            if value is None or (type(value) is str and value == ""):
+                continue
+            if type(value) is not str:
+                raise MindmapStructureError(f"mindmap node {field} must be text")
+            aliases.append((field, value))
+        if len(aliases) == 2 and " ".join(aliases[0][1].split()) != " ".join(aliases[1][1].split()):
+            raise MindmapStructureError("mindmap node has conflicting label/text")
+        label = aliases[0][1] if aliases else "[unreadable]"
         if len(label) > MAX_TEXT_CHARS:
             raise MindmapStructureError("mindmap node label exceeds the Scene text limit")
         placements.append(MindmapNodePlacement(node, emitted_id, label, depth, parent_id))

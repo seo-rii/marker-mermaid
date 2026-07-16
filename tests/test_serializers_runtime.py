@@ -305,9 +305,9 @@ def test_mindmap_uses_unique_serializer_ids_for_duplicate_logical_ids():
         }
     )
 
-    assert "root((Root))" in code
-    assert 'node_2["First"]' in code
-    assert 'node_3["Second"]' in code
+    assert 'root(("\u200bRoot"))' in code
+    assert 'node_2["\u200bFirst"]' in code
+    assert 'node_3["\u200bSecond"]' in code
 
 
 @pytest.mark.integration

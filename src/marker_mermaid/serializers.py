@@ -441,7 +441,7 @@ def _semantic_terminal_text(value: Any, *, context: str) -> str:
     return semantic
 
 
-def _neutralize_sequence_source(text: str) -> str:
+def _neutralize_active_terminal_source(text: str) -> str:
     source = _SEQUENCE_DIRECTIVE_OPEN.sub(
         lambda match: f"%{_SEQUENCE_ZERO_WIDTH_SPACE}%{match.group('gap')}{{",
         text,
@@ -503,7 +503,7 @@ def _plan_sequence_text(
 ) -> SequenceTextPlan:
     semantic = _semantic_terminal_text(value, context=context)
     canvas = semantic.replace("<", "〈").replace(">", "〉") if accessibility else semantic
-    source = _neutralize_sequence_source(_sequence_source_escape(canvas))
+    source = _neutralize_active_terminal_source(_sequence_source_escape(canvas))
     return SequenceTextPlan(
         semantic=semantic,
         source=source,
@@ -809,23 +809,221 @@ def serialize_sequence(ir: dict[str, Any], *, experimental: bool = False) -> str
     return code
 
 
-def serialize_mindmap(ir: dict[str, Any], *, experimental: bool = False) -> str:
-    root = ir.get("root")
+_MINDMAP_METADATA_FIELDS = ("title", "description", "acc_title", "acc_description")
+_MINDMAP_MAX_OUTPUT_CHARS = 50_000
+_MINDMAP_MAX_OUTPUT_LINES = 5_000
+_MINDMAP_ENTITY_LITERAL = re.compile(
+    r"&(?P<body>#[A-Za-z0-9][^;\s]*|[A-Za-z][A-Za-z0-9]*);"
+    r"|(?<!&)#(?P<standalone>[A-Za-z0-9][^;\s]*);"
+)
+_MINDMAP_NAMED_ENTITY_PREFIX = re.compile(r"&(?=[A-Za-z][A-Za-z0-9]*;)")
+
+MINDMAP_TEXT_COMPATIBILITY_WARNING = (
+    "Mindmap text uses visible compatibility glyphs for quotes, Markdown emphasis/code "
+    "delimiters, and numeric entity-like literals that Mermaid 11.16 cannot preserve "
+    "verbatim; semantic text remains in typed IR."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class MindmapTextPlan:
+    """One Mindmap terminal across semantic IR, source, and SVG canvas text."""
+
+    semantic: str
+    source: str
+    canvas: str
+    compatibility_substitutions: bool
+
+
+@dataclass(frozen=True, slots=True)
+class MindmapNodePlan:
+    """One preorder Mindmap node with isolated serializer and Scene identity."""
+
+    source_record: dict[str, Any]
+    source_id: str
+    emitted_id: str
+    depth: int
+    parent_id: str | None
+    text: MindmapTextPlan
+
+
+@dataclass(frozen=True, slots=True)
+class MindmapPlan:
+    """Canonical recursive Mindmap records shared by every terminal consumer."""
+
+    nodes: tuple[MindmapNodePlan, ...]
+    compatibility_substitutions: bool
+
+
+def validated_mindmap_accessibility_ir(ir: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate raw Mindmap metadata and treat exact-empty fields as omitted."""
+
+    for field in _MINDMAP_METADATA_FIELDS:
+        value = ir.get(field)
+        if value is None:
+            continue
+        if type(value) is not str:
+            raise SerializationError(f"mindmap {field} must be text when provided")
+        if value == "":
+            continue
+        if len(value) > MAX_TEXT_CHARS:
+            raise SerializationError(f"mindmap {field} must be bounded non-empty text")
+        if any(
+            unicodedata.category(character) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for character in value
+        ):
+            raise SerializationError(f"mindmap {field} contains unsupported text")
+        normalized = " ".join(value.split())
+        if not normalized or len(normalized) > MAX_TEXT_CHARS:
+            raise SerializationError(f"mindmap {field} must be bounded non-empty text")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as exc:  # pragma: no cover - Cs is rejected above
+            raise SerializationError(f"mindmap {field} is not valid UTF-8 text") from exc
+    return {
+        key: value
+        for key, value in ir.items()
+        if key not in _MINDMAP_METADATA_FIELDS or value != ""
+    }
+
+
+def _mindmap_canvas_text(semantic: str) -> str:
+    def replace_entity(match: re.Match[str]) -> str:
+        body = match.group("body")
+        if body is None:
+            return f"＃{match.group('standalone')};"
+        if body.startswith("#"):
+            return f"＆＃{body[1:]};"
+        return f"&{body};"
+
+    return (
+        _MINDMAP_ENTITY_LITERAL.sub(replace_entity, semantic)
+        .replace('"', "″")
+        .replace("*", "＊")
+        .replace("`", "ˋ")
+        .replace("~", "～")
+    )
+
+
+def _mindmap_source_text(canvas: str) -> str:
+    # Split source-authored named entities before adding XML entities for actual
+    # angle brackets. This distinction keeps literal ``&amp;`` visible as text while
+    # still allowing ``<`` and ``>`` to round-trip through Mermaid's SVG renderer.
+    source = _MINDMAP_NAMED_ENTITY_PREFIX.sub(
+        f"&{_SEQUENCE_ZERO_WIDTH_SPACE}",
+        canvas,
+    )
+    source = source.replace("<", "&lt;").replace(">", "&gt;")
+    source = _neutralize_active_terminal_source(source)
+    # Mermaid Mindmap applies Markdown inside quoted node shapes. Source-only
+    # sentinels stop escape, emphasis, link, and shape delimiters becoming syntax.
+    for character in ("\\", "_", "[", "]", "(", ")"):
+        source = source.replace(character, f"{character}{_SEQUENCE_ZERO_WIDTH_SPACE}")
+    # A lexer sentinel between two ordinary spaces prevents source-active words
+    # from joining in the SVG text layout. SVG whitespace normalization then
+    # restores the single semantic space on the visible canvas.
+    source = source.replace(
+        " ",
+        f" {_SEQUENCE_ZERO_WIDTH_SPACE} ",
+    )
+    return f"{_SEQUENCE_ZERO_WIDTH_SPACE}{source}"
+
+
+def _plan_mindmap_text(value: Any, *, context: str) -> MindmapTextPlan:
+    semantic = _semantic_terminal_text(value, context=context)
+    canvas = _mindmap_canvas_text(semantic)
+    return MindmapTextPlan(
+        semantic=semantic,
+        source=_mindmap_source_text(canvas),
+        canvas=canvas,
+        compatibility_substitutions=canvas != semantic,
+    )
+
+
+def _mindmap_source_line(node: MindmapNodePlan) -> str:
+    indentation = "    " * node.depth
+    if node.depth == 1:
+        return f'{indentation}{node.emitted_id}(("{node.text.source}"))\n'
+    return f'{indentation}{node.emitted_id}["{node.text.source}"]\n'
+
+
+def plan_mindmap_records(ir: Mapping[str, Any]) -> MindmapPlan:
+    """Freeze recursive identities and terminal text before any consumer runs."""
+
+    validated_ir = validated_mindmap_accessibility_ir(ir)
     try:
-        node_plan = plan_mindmap_nodes(root)
+        placements = plan_mindmap_nodes(validated_ir.get("root"))
     except MindmapStructureError as exc:
         raise SerializationError(str(exc)) from exc
+    if len(placements) + 2 > _MINDMAP_MAX_OUTPUT_LINES:
+        raise SerializationError(
+            f"mindmap output exceeds source-line limit of {_MINDMAP_MAX_OUTPUT_LINES}"
+        )
+    source_units = _mermaid_utf16_units("mindmap\n")
+    nodes: list[MindmapNodePlan] = []
+    compatibility_substitutions = False
+    for index, placement in enumerate(placements, start=1):
+        raw_source_id = placement.source.get("id")
+        source_id = (
+            raw_source_id
+            if type(raw_source_id) is str and raw_source_id != ""
+            else f"mindmap-node-{index}"
+        )
+        text = _plan_mindmap_text(
+            placement.label,
+            context=f"mindmap node {index} label",
+        )
+        node = MindmapNodePlan(
+            source_record=placement.source,
+            source_id=source_id,
+            emitted_id=placement.emitted_id,
+            depth=placement.depth,
+            parent_id=placement.parent_id,
+            text=text,
+        )
+        source_units += _mermaid_utf16_units(_mindmap_source_line(node))
+        if source_units > _MINDMAP_MAX_OUTPUT_CHARS:
+            raise SerializationError(
+                "mindmap output exceeds UTF-16 source-character limit of "
+                f"{_MINDMAP_MAX_OUTPUT_CHARS}"
+            )
+        compatibility_substitutions |= text.compatibility_substitutions
+        nodes.append(node)
+    return MindmapPlan(
+        nodes=tuple(nodes),
+        compatibility_substitutions=compatibility_substitutions,
+    )
+
+
+def enrich_mindmap_accessibility_ir(
+    ir: Mapping[str, Any],
+    *,
+    experimental: bool,
+    mindmap_plan: MindmapPlan | None = None,
+) -> dict[str, Any]:
+    """Return raw Mindmap metadata plus accessibility derived from planned semantics."""
+
+    validated_ir = validated_mindmap_accessibility_ir(ir)
+    plan = mindmap_plan or plan_mindmap_records(validated_ir)
+    semantic_ir: dict[str, Any] = {
+        key: validated_ir[key] for key in _MINDMAP_METADATA_FIELDS if key in validated_ir
+    }
+    semantic_ir["nodes"] = [
+        {"id": node.emitted_id, "label": node.text.semantic} for node in plan.nodes
+    ]
+    resolved = resolve_accessibility(semantic_ir, "mindmap", experimental=experimental)
+    return {
+        **validated_ir,
+        "acc_title": resolved.title,
+        "acc_description": resolved.description,
+    }
+
+
+def serialize_mindmap(ir: dict[str, Any], *, experimental: bool = False) -> str:
+    del experimental
+    plan = plan_mindmap_records(ir)
     # Mermaid 11.16 parses accTitle/accDescr as additional roots in mindmaps.
-    # Preserve the hard render gate and keep the requested text in typed IR until
-    # upstream supports accessible directives for this grammar.
-    lines = ["mindmap"]
-    for node in node_plan:
-        label = _text(node.label)
-        if node.depth == 1:
-            lines.append(f"{'    ' * node.depth}{node.emitted_id}(({label}))")
-        else:
-            lines.append(f'{"    " * node.depth}{node.emitted_id}["{label}"]')
-    return "\n".join(lines) + "\n"
+    # Preserve the hard render gate and keep resolved accessibility in typed IR.
+    return "mindmap\n" + "".join(_mindmap_source_line(node) for node in plan.nodes)
 
 
 _TIMELINE_SOURCE_SENTINEL = "\u200b"
@@ -2311,6 +2509,7 @@ def serialize_typed_ir_result(
     state_record_compatibility_substitutions = False
     state_plan = None
     gantt_plan = None
+    mindmap_plan = None
     sequence_plan = None
     timeline_plan = None
     if diagram_type == "pie":
@@ -2326,6 +2525,9 @@ def serialize_typed_ir_result(
     elif diagram_type == "gantt":
         accessibility_source_ir = validated_gantt_metadata_ir(ir)
         gantt_plan = plan_gantt_records(accessibility_source_ir)
+    elif diagram_type == "mindmap":
+        accessibility_source_ir = validated_mindmap_accessibility_ir(ir)
+        mindmap_plan = plan_mindmap_records(accessibility_source_ir)
     elif diagram_type == "sequence":
         accessibility_source_ir = validated_sequence_accessibility_ir(ir)
         sequence_plan = plan_sequence_records(accessibility_source_ir)
@@ -2356,6 +2558,12 @@ def serialize_typed_ir_result(
             accessibility_source_ir,
             experimental=experimental,
             gantt_plan=gantt_plan,
+        )
+    elif diagram_type == "mindmap":
+        enriched_ir = enrich_mindmap_accessibility_ir(
+            accessibility_source_ir,
+            experimental=experimental,
+            mindmap_plan=mindmap_plan,
         )
     elif diagram_type == "sequence":
         enriched_ir = enrich_sequence_accessibility_ir(
@@ -2457,6 +2665,12 @@ def serialize_typed_ir_result(
             result = replace(
                 result,
                 warnings=(*result.warnings, SEQUENCE_TEXT_COMPATIBILITY_WARNING),
+            )
+    elif diagram_type == "mindmap" and mindmap_plan.compatibility_substitutions:
+        if MINDMAP_TEXT_COMPATIBILITY_WARNING not in result.warnings:
+            result = replace(
+                result,
+                warnings=(*result.warnings, MINDMAP_TEXT_COMPATIBILITY_WARNING),
             )
     if supports_accessibility_directives(result.emitted_type):
         return result

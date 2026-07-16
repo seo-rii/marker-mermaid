@@ -165,6 +165,23 @@ backslash, colon, Markdown punctuation은 native Sequence canvas가 원문을 �
 candidate에는 validated raw snapshot을 저장하므로 malformed/empty directive가 다음 source line을 삼키거나
 derived text로 세탁되지 않습니다.
 
+Native Mindmap은 user logical ID를 source identifier로 방출하지 않고 preorder의 `root`/`node_N` namespace를
+사용합니다. 모든 root/child label은 quoted shape terminal 안에 두며 generated leading sentinel과 source-only
+zero-width separator로 directive opener, comment, URL/data/JavaScript scheme, callback, remote icon, config,
+click/style/control word를 비활성화합니다. Backslash·underscore·bracket·parenthesis separator는 Mindmap의
+Markdown escape/link와 shape delimiter 해석만 끄고 visible canvas에서는 제거됩니다. Source-authored named
+entity prefix도 분리한 뒤 실제 literal `<`/`>`만 XML entity로 encode하므로 `&amp;` spelling과 angle text를
+각각 구분해 복원합니다. 모든 ordinary space는 separator 양쪽에 배치해 neutralized token의 이웃 단어가 SVG
+text에서 붙지 않도록 합니다.
+
+Pinned Mermaid 11.16이 quote, active asterisk/backtick/tilde와 numeric entity-like spelling을 literal로 유지하지
+못하는 자리에는 visible `″`·`＊`·`ˋ`·`～`·`＆`/`＃` glyph를 사용하고 candidate warning에 공개합니다.
+Semantic 원문은 raw typed IR에 남습니다. Node label/ID와 top-level 접근성 metadata는 coercion 전에 bounded
+exact string, UTF-8, Unicode category gate를 통과하며 exact-empty alias/metadata만 omitted입니다. Initial과
+repair 모두 validated raw snapshot에서 plan을 다시 만들고 expanded source의 50,000 UTF-16 unit/5,000줄
+preflight 뒤 일반 strict scan, parse/render, SVG inspection을 그대로 적용합니다. Accessibility directive는
+추가 root가 되므로 native source에는 방출하지 않습니다.
+
 Native Timeline은 period가 `title`/`section`으로 시작하거나 `%`, `#`, literal colon을 포함할 때 같은 줄을
 제목·섹션·주석·추가 event로 재해석하는 문법입니다. 또한 renderer가 entity-like spelling을 decode하면서 주변
 공백을 잃을 수 있습니다. 따라서 normalized title/period/event terminal 앞에는 생성 zero-width sentinel을
@@ -176,7 +193,8 @@ renderer는 quote, backslash, colon, semicolon, `#`, literal entity spelling과 
 
 Raw `title`/`description`/`acc_title`/`acc_description`은 enrichment와 repair 전에 exact-string/bounds/Unicode
 gate를 통과하고 exact `""`만 omitted입니다. Timeline runtime은 accessibility directive를 실제 SVG metadata로
-만들지 않으므로 자동 source에는 넣지 않으며 resolved 값은 typed/review metadata에만 보존합니다. Source
+만들지 않으므로 자동 source에는 넣지 않습니다. Candidate에는 raw snapshot만 저장하고 resolved 값은 현재
+record plan에서 필요할 때 다시 계산합니다. Source
 encoding 확장을 포함한 최종 code를 50,000 UTF-16 unit/5,000줄에서 preflight해 numeric expansion으로 runtime
 budget을 우회할 수 없게 합니다.
 

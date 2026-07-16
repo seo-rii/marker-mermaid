@@ -23,6 +23,9 @@ Flowchart/Swimlane/BPMN/Architecture의 generated Scene 방향은 raw arrow hint
 방출하는 connector에서 파생합니다. Native Sequence는 style plan의 실제 operator를 사용합니다. `solid`와
 `dotted`는 arrowhead, `cross`는 crosshead를 가지지만 `open`과 `dotted_open`은 end marker가 없으므로
 일괄 `arrow_at_end=true`로 세지 않습니다.
+Native Mindmap은 shared preorder plan의 parent-child branch를 `containment` relation으로 복원하되 실제
+grammar처럼 양쪽 marker를 모두 끄고 `radial` 방향을 사용합니다. Raw logical ID, direction, role, shape를
+평가 Scene에 복사하지 않으며 root circle/child rectangle과 source-order `root`/`node_N` identity만 씁니다.
 
 typed IR은 serializer가 실제 방출하는 node/edge 구조로 다시 변환합니다. bbox가 IR에 명시되지 않으면
 layout을 추측하지 않습니다. Scene IR portable fallback은 deterministic serializer 보존 여부를 평가할 수
@@ -229,7 +232,12 @@ generated Scene attribution에서 제외합니다.
   object participant evidence는 해당 element, message evidence는 해당 relation에만 연결합니다. String
   participant는 legacy 호환 입력이라 자체 record provenance가 없으며 일반 Extended provenance gate가 이를
   review로 보낼 수 있습니다. Unknown/null endpoint 하나라도 있으면 message를 버리지 않고 전체 Scene을 fail
-  closed합니다. Timeline은 각 source record를 collision-free `timeline_event_N` Scene slot 하나에 연결하고
+  closed합니다. Mindmap은 preorder의 모든 terminal canvas label을 한 번씩 세며 `root`/`node_N`, root/child
+  shape, parent containment와 child record-local evidence를 serializer와 Scene에 공유합니다. Quote/Markdown/
+  numeric entity compatibility glyph는 실제 SVG text를 사용하고 raw semantic 원문, source-only separator,
+  raw ID/role/shape/direction과 접근성 metadata에는 OCR credit을 주지 않습니다. Alias conflict, malformed child,
+  object reuse/cycle, depth/node/source budget 오류가 하나라도 있으면 partial branch를 만들지 않습니다.
+  Timeline은 각 source record를 collision-free `timeline_event_N` Scene slot 하나에 연결하고
   period를 element text로, title/period/모든 event label을 terminal OCR projection으로 셉니다. 여러 event label은
   같은 source record의 bbox/evidence authority를 공유하지만 raw event ID나 hidden alias를 별도 구조로 늘리지
   않습니다. Alias 충돌, duplicate ID 또는 malformed nested label 하나라도 있으면 partial Scene을 만들지

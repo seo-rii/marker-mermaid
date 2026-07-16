@@ -17,9 +17,7 @@ from typing import Any
 from marker_mermaid.flowchart_structure import (
     FlowchartStructureError,
     FlowchartStructurePlan,
-    MindmapStructureError,
     plan_flowchart_structure,
-    plan_mindmap_nodes,
     prepare_swimlane_structure,
 )
 from marker_mermaid.models import DiagramSceneIR, SceneElement, SceneGroup, SceneRelation
@@ -27,6 +25,7 @@ from marker_mermaid.serializers import (
     SerializationError,
     plan_architecture_structure,
     plan_gantt_records,
+    plan_mindmap_records,
     plan_sequence_records,
     plan_timeline_records,
 )
@@ -948,22 +947,37 @@ def typed_ir_to_scene(
         scene_direction_override = "LR"
     elif diagram_type == "mindmap":
         try:
-            node_plan = plan_mindmap_nodes(ir.get("root"))
-        except MindmapStructureError:
+            mindmap_plan = plan_mindmap_records(ir)
+        except SerializationError:
             return None
         node_records = [
-            {**node.source, "id": node.emitted_id, "label": node.label} for node in node_plan
+            {
+                "id": node.emitted_id,
+                "label": node.text.canvas,
+                "role": "root" if node.depth == 1 else "node",
+                "shape": "circle" if node.depth == 1 else "rectangle",
+                "bbox": node.source_record.get("bbox"),
+                "evidence_ids": list(node.source_record.get("evidence_ids") or []),
+            }
+            for node in mindmap_plan.nodes
         ]
         edge_records = [
             {
+                "id": f"generated-relation-{index}",
                 "source": node.parent_id,
                 "target": node.emitted_id,
+                "relation_type": "containment",
                 "semantic_relation": "containment",
-                "evidence_ids": list(node.source.get("evidence_ids") or []),
+                "arrow_at_start": False,
+                "arrow_at_end": False,
+                "evidence_ids": list(node.source_record.get("evidence_ids") or []),
             }
-            for node in node_plan
-            if node.parent_id is not None
+            for index, node in enumerate(
+                (node for node in mindmap_plan.nodes if node.parent_id is not None),
+                start=1,
+            )
         ]
+        scene_direction_override = "radial"
     elif diagram_type == "treemap" and isinstance(ir.get("root"), dict):
         try:
             treemap_plan = plan_treemap_records(ir)
@@ -1890,6 +1904,12 @@ def typed_ir_semantic_texts(
     attributes. OCR scoring needs those rendered labels while topology and textual
     projection remain separate concerns.
     """
+
+    if diagram_type == "mindmap":
+        plan = plan_mindmap_records(ir)
+        for node in plan.nodes:
+            yield node.text.canvas
+        return
 
     if diagram_type == "timeline":
         plan = plan_timeline_records(ir)
