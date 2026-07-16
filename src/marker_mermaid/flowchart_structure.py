@@ -105,15 +105,25 @@ def plan_sequence_structure(participants: Any, messages: Any) -> SequenceStructu
         raise SequenceStructureError("sequence participant count exceeds the Scene element limit")
     placements: list[SequenceParticipantPlacement] = []
     source_ids: set[str] = set()
-    emitted_ids: set[str] = set()
-    next_suffix_by_base: dict[str, int] = {}
     for index, participant in enumerate(participants, start=1):
-        if isinstance(participant, str):
+        if type(participant) is str:
             source_id = participant
             label = participant
         elif isinstance(participant, dict):
-            source_id = str(participant.get("id") or f"P{index}")
-            label = str(participant.get("label") or source_id)
+            raw_source_id = participant.get("id")
+            if raw_source_id is None or (type(raw_source_id) is str and raw_source_id == ""):
+                source_id = f"P{index}"
+            elif type(raw_source_id) is str:
+                source_id = raw_source_id
+            else:
+                raise SequenceStructureError("sequence participant id must be a string")
+            raw_label = participant.get("label")
+            if raw_label is None or (type(raw_label) is str and raw_label == ""):
+                label = source_id
+            elif type(raw_label) is str:
+                label = raw_label
+            else:
+                raise SequenceStructureError("sequence participant label must be a string")
         else:
             raise SequenceStructureError("sequence participants must be strings or objects")
         if not source_id or len(source_id) > MAX_ID_CHARS:
@@ -124,19 +134,17 @@ def plan_sequence_structure(participants: Any, messages: Any) -> SequenceStructu
             raise SequenceStructureError("sequence participant label exceeds the Scene text limit")
         if source_id in source_ids:
             raise SequenceStructureError("sequence participant ids must be unique")
-        base = portable_identifier(source_id, f"P{index}")
-        emitted_id = base
-        suffix = next_suffix_by_base.get(base, 2)
-        while emitted_id in emitted_ids:
-            emitted_id = f"{base}_{suffix}"
-            suffix += 1
-        next_suffix_by_base[base] = suffix
+        # Sequence actor identifiers are consumed by several lexer states.  A
+        # source ID that is ordinary today can become grammar-active after a
+        # Mermaid upgrade, and INITIAL-state message endpoints do not share the
+        # participant declaration's permissive tokenization.  Keep source IDs in
+        # typed IR/provenance and expose only an order-stable token-free namespace.
+        emitted_id = f"mmx_sequence_participant_{index}"
         if len(emitted_id) > MAX_ID_CHARS:
             raise SequenceStructureError(
                 "sequence emitted participant id exceeds the Scene identifier limit"
             )
         source_ids.add(source_id)
-        emitted_ids.add(emitted_id)
         placements.append(SequenceParticipantPlacement(source_id, emitted_id, label))
     if not isinstance(messages, list):
         raise SequenceStructureError("sequence messages must be a list of objects")
@@ -146,7 +154,7 @@ def plan_sequence_structure(participants: Any, messages: Any) -> SequenceStructu
         participant.source_id: participant.emitted_id for participant in placements
     }
     message_placements: list[SequenceMessagePlacement] = []
-    for message in messages:
+    for index, message in enumerate(messages, start=1):
         if not isinstance(message, dict):
             raise SequenceStructureError("sequence messages must be objects")
         for field in ("id", "source", "target", "label", "style"):
@@ -162,7 +170,9 @@ def plan_sequence_structure(participants: Any, messages: Any) -> SequenceStructu
         source_id = emitted_by_source.get(message.get("source"))
         target_id = emitted_by_source.get(message.get("target"))
         if source_id is None or target_id is None:
-            continue
+            raise SequenceStructureError(
+                f"sequence message {index} references an unknown participant"
+            )
         emitted_id = f"generated-relation-{len(message_placements) + 1}"
         message_placements.append(
             SequenceMessagePlacement(message, emitted_id, source_id, target_id)

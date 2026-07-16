@@ -296,33 +296,517 @@ def serialize_swimlane(ir: dict[str, Any], *, experimental: bool = False) -> str
     return serialize_flowchart(flow_ir, experimental=experimental)
 
 
-def serialize_sequence(ir: dict[str, Any], *, experimental: bool = False) -> str:
-    participants = ir.get("participants")
-    messages = ir.get("messages", [])
+_SEQUENCE_ZERO_WIDTH_SPACE = "\u200b"
+_SEQUENCE_METADATA_FIELDS = ("title", "description", "acc_title", "acc_description")
+_SEQUENCE_MAX_OUTPUT_CHARS = 50_000
+_SEQUENCE_MAX_OUTPUT_LINES = 5_000
+_SEQUENCE_DIRECTIVE_OPEN = re.compile(r"%%(?P<gap>\s*)\{")
+_SEQUENCE_DANGEROUS_SCHEME = re.compile(r"(?:https?|ftp|file|data|javascript):", re.IGNORECASE)
+_SEQUENCE_REMOTE_ICON = re.compile(r"iconify|fa:|logos:", re.IGNORECASE)
+_SEQUENCE_CALLBACK = re.compile(r"\b(?:call|callback)\s*\(", re.IGNORECASE)
+_SEQUENCE_CSS_IMPORT = re.compile(r"@import\b", re.IGNORECASE)
+_SEQUENCE_CONFIG = re.compile(r"\bconfig\s*:", re.IGNORECASE)
+_SEQUENCE_CONTROL_WORD = re.compile(
+    r"\b(?:accDescr|accTitle|activate|actor|alt|and|autonumber|box|break|call|callback|"
+    r"classDef|click|create|critical|deactivate|destroy|details|else|end|href|links|"
+    r"linkStyle|loop|note|off|opt|option|over|par|par_over|participant|properties|"
+    r"rect|sequenceDiagram|style)\b",
+    re.IGNORECASE,
+)
+_SEQUENCE_STYLE_PLAN = {
+    "solid": ("->>", True, "solid"),
+    "dotted": ("-->>", True, "dotted"),
+    "open": ("->", False, "solid"),
+    "dotted_open": ("-->", False, "dotted"),
+    "cross": ("-x", True, "solid"),
+}
+
+SEQUENCE_TEXT_COMPATIBILITY_WARNING = (
+    "Sequence accessibility text uses visible angle glyphs (〈 and 〉) where Mermaid "
+    "11.16 cannot preserve literal less-than or greater-than text; semantic text remains "
+    "in typed IR."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SequenceTextPlan:
+    """One Sequence terminal across semantic IR, source, and SVG canvas text."""
+
+    semantic: str
+    source: str
+    canvas: str
+    compatibility_substitutions: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SequenceParticipantPlan:
+    """One participant with source identity and an isolated Mermaid identity."""
+
+    source_record: dict[str, Any] | None
+    source_id: str
+    emitted_id: str
+    semantic_label: str
+    source_label: str
+    canvas_label: str
+
+
+@dataclass(frozen=True, slots=True)
+class SequenceMessagePlan:
+    """One ordered message resolved to exact emitted participant endpoints."""
+
+    source_record: dict[str, Any]
+    scene_id: str
+    source_id: str
+    target_id: str
+    source_emitted_id: str
+    target_emitted_id: str
+    semantic_label: str
+    source_label: str
+    canvas_label: str
+    style: str
+    arrow_token: str
+    arrow_at_end: bool
+    line_style: str
+
+
+@dataclass(frozen=True, slots=True)
+class SequencePlan:
+    """Canonical Sequence records shared by serializer, Scene, OCR, and repair."""
+
+    participants: tuple[SequenceParticipantPlan, ...]
+    messages: tuple[SequenceMessagePlan, ...]
+    compatibility_substitutions: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SequenceAccessibilityPlan:
+    """Resolved Sequence accessibility terminals with exact canvas projections."""
+
+    title_semantic: str
+    title_source: str
+    title_canvas: str
+    description_semantic: str
+    description_source: str
+    description_canvas: str
+    compatibility_substitutions: bool
+
+
+def validated_sequence_accessibility_ir(ir: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate raw Sequence metadata and treat exact-empty fields as omitted."""
+
+    for field in _SEQUENCE_METADATA_FIELDS:
+        value = ir.get(field)
+        if value is None:
+            continue
+        if type(value) is not str:
+            raise SerializationError(f"sequence {field} must be text when provided")
+        if value == "":
+            continue
+        if len(value) > MAX_TEXT_CHARS:
+            raise SerializationError(f"sequence {field} must be bounded non-empty text")
+        if any(
+            unicodedata.category(character) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for character in value
+        ):
+            raise SerializationError(f"sequence {field} contains unsupported text")
+        normalized = " ".join(value.split())
+        if not normalized or len(normalized) > MAX_TEXT_CHARS:
+            raise SerializationError(f"sequence {field} must be bounded non-empty text")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as exc:  # pragma: no cover - Cs is rejected above
+            raise SerializationError(f"sequence {field} is not valid UTF-8 text") from exc
+    return {
+        key: value
+        for key, value in ir.items()
+        if key not in _SEQUENCE_METADATA_FIELDS or value != ""
+    }
+
+
+def _sequence_semantic_text(value: Any, *, context: str) -> str:
+    if type(value) is not str:
+        raise SerializationError(f"{context} must be text")
+    if len(value) > MAX_TEXT_CHARS:
+        raise SerializationError(f"{context} must be bounded non-empty text")
+    for character in value:
+        category = unicodedata.category(character)
+        if category in {"Cf", "Cs", "Zl", "Zp"} or (category == "Cc" and not character.isspace()):
+            raise SerializationError(f"{context} contains unsupported text")
+    semantic = " ".join(value.split())
+    if not semantic or len(semantic) > MAX_TEXT_CHARS:
+        raise SerializationError(f"{context} must be bounded non-empty text")
     try:
-        structure = plan_sequence_structure(participants, messages)
+        semantic.encode("utf-8")
+    except UnicodeEncodeError as exc:  # pragma: no cover - Cs is rejected above
+        raise SerializationError(f"{context} is not valid UTF-8 text") from exc
+    return semantic
+
+
+def _neutralize_sequence_source(text: str) -> str:
+    source = _SEQUENCE_DIRECTIVE_OPEN.sub(
+        lambda match: f"%{_SEQUENCE_ZERO_WIDTH_SPACE}%{match.group('gap')}{{",
+        text,
+    )
+    source = source.replace("//", f"/{_SEQUENCE_ZERO_WIDTH_SPACE}/")
+    source = source.replace("<", f"<{_SEQUENCE_ZERO_WIDTH_SPACE}")
+    source = _SEQUENCE_CSS_IMPORT.sub(
+        lambda match: f"{match.group(0)[:3]}{_SEQUENCE_ZERO_WIDTH_SPACE}{match.group(0)[3:]}",
+        source,
+    )
+    source = _SEQUENCE_DANGEROUS_SCHEME.sub(
+        lambda match: f"{match.group(0)[:-1]}{_SEQUENCE_ZERO_WIDTH_SPACE}:",
+        source,
+    )
+    source = _SEQUENCE_REMOTE_ICON.sub(
+        lambda match: (
+            f"{match.group(0)[:4]}{_SEQUENCE_ZERO_WIDTH_SPACE}{match.group(0)[4:]}"
+            if match.group(0).casefold() == "iconify"
+            else match.group(0).replace(":", f"{_SEQUENCE_ZERO_WIDTH_SPACE}:")
+        ),
+        source,
+    )
+    source = _SEQUENCE_CALLBACK.sub(
+        lambda match: match.group(0).replace("(", f"{_SEQUENCE_ZERO_WIDTH_SPACE}("),
+        source,
+    )
+    source = _SEQUENCE_CONTROL_WORD.sub(
+        lambda match: f"{match.group(0)[0]}{_SEQUENCE_ZERO_WIDTH_SPACE}{match.group(0)[1:]}",
+        source,
+    )
+    source = _SEQUENCE_CONFIG.sub(
+        lambda match: match.group(0).replace(":", f"{_SEQUENCE_ZERO_WIDTH_SPACE}:"),
+        source,
+    )
+    return source.replace("---", f"-{_SEQUENCE_ZERO_WIDTH_SPACE}--")
+
+
+def _sequence_source_escape(text: str) -> str:
+    """Encode statement delimiters without changing Mermaid 11.16 canvas text."""
+
+    return "".join(
+        "#35;" if character == "#" else "#59;" if character == ";" else character
+        for character in text
+    )
+
+
+def _sequence_utf16_units(text: str) -> int:
+    try:
+        return len(text.encode("utf-16-le")) // 2
+    except UnicodeEncodeError as exc:  # pragma: no cover - semantic text rejects surrogates
+        raise SerializationError("sequence output is not valid UTF-16") from exc
+
+
+def _plan_sequence_text(
+    value: Any,
+    *,
+    context: str,
+    accessibility: bool,
+) -> SequenceTextPlan:
+    semantic = _sequence_semantic_text(value, context=context)
+    canvas = semantic.replace("<", "〈").replace(">", "〉") if accessibility else semantic
+    source = _neutralize_sequence_source(_sequence_source_escape(canvas))
+    return SequenceTextPlan(
+        semantic=semantic,
+        source=source,
+        canvas=canvas,
+        compatibility_substitutions=canvas != semantic,
+    )
+
+
+def _sequence_source_id(value: Any, *, fallback: str, context: str) -> str:
+    if value is None or (type(value) is str and value == ""):
+        return fallback
+    if type(value) is not str:
+        raise SerializationError(f"{context} must be a string")
+    if len(value) > MAX_ID_CHARS:
+        raise SerializationError(f"{context} exceeds the Scene identifier limit")
+    if not value or not value.strip():
+        raise SerializationError(f"{context} must be a bounded non-empty identifier")
+    if any(
+        unicodedata.category(character) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for character in value
+    ):
+        raise SerializationError(f"{context} contains unsupported text")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:  # pragma: no cover - Cs is rejected above
+        raise SerializationError(f"{context} is not valid UTF-8 text") from exc
+    return value
+
+
+def plan_sequence_records(ir: Mapping[str, Any]) -> SequencePlan:
+    """Freeze Sequence identities, labels, endpoint semantics, and arrow styles."""
+
+    validated_ir = validated_sequence_accessibility_ir(ir)
+    participants = validated_ir.get("participants")
+    messages = validated_ir.get("messages", [])
+    if not isinstance(participants, list) or not participants:
+        raise SerializationError("sequence IR requires participants")
+    if len(participants) > MAX_SCENE_ELEMENTS:
+        raise SerializationError("sequence participant count exceeds the Scene element limit")
+    if not isinstance(messages, list):
+        raise SerializationError("sequence messages must be a list of objects")
+    if len(messages) > MAX_SCENE_RELATIONS:
+        raise SerializationError("sequence message count exceeds the Scene relation limit")
+
+    canonical_participants: list[dict[str, str]] = []
+    source_records: list[dict[str, Any] | None] = []
+    participant_texts: list[SequenceTextPlan] = []
+    for index, participant in enumerate(participants, start=1):
+        if type(participant) is str:
+            source_id = _sequence_source_id(
+                participant,
+                fallback=f"P{index}",
+                context=f"sequence participant {index} id",
+            )
+            raw_label: Any = participant
+            source_record = None
+        elif type(participant) is dict:
+            source_id = _sequence_source_id(
+                participant.get("id"),
+                fallback=f"P{index}",
+                context=f"sequence participant {index} id",
+            )
+            candidate_label = participant.get("label")
+            raw_label = (
+                source_id
+                if candidate_label is None
+                or (type(candidate_label) is str and candidate_label == "")
+                else candidate_label
+            )
+            source_record = participant
+        else:
+            raise SerializationError("sequence participants must be strings or objects")
+        if len(source_id) > MAX_ID_CHARS:
+            raise SerializationError("sequence participant id exceeds the Scene identifier limit")
+        if type(raw_label) is str and len(raw_label) > MAX_TEXT_CHARS:
+            raise SerializationError("sequence participant label exceeds the Scene text limit")
+        text_plan = _plan_sequence_text(
+            raw_label,
+            context=f"sequence participant {index} label",
+            accessibility=False,
+        )
+        canonical_participants.append({"id": source_id, "label": text_plan.semantic})
+        source_records.append(source_record)
+        participant_texts.append(text_plan)
+
+    canonical_messages: list[dict[str, str]] = []
+    message_records: list[dict[str, Any]] = []
+    message_texts: list[SequenceTextPlan] = []
+    message_styles: list[str] = []
+    for index, message in enumerate(messages, start=1):
+        if type(message) is not dict:
+            raise SerializationError("sequence messages must be objects")
+        raw_message_id = message.get("id")
+        if raw_message_id is not None:
+            if type(raw_message_id) is not str:
+                raise SerializationError("sequence message id must be a string")
+            if len(raw_message_id) > MAX_ID_CHARS:
+                raise SerializationError("sequence message id exceeds the Scene identifier limit")
+        source_id = message.get("source")
+        target_id = message.get("target")
+        if type(source_id) is not str or type(target_id) is not str:
+            raise SerializationError(f"sequence message {index} references an unknown participant")
+        raw_label = message.get("label")
+        if raw_label is None or (type(raw_label) is str and raw_label == ""):
+            raw_label = "[unreadable]"
+        text_plan = _plan_sequence_text(
+            raw_label,
+            context=f"sequence message {index} label",
+            accessibility=False,
+        )
+        raw_style = message.get("style")
+        if raw_style is None or (type(raw_style) is str and raw_style == ""):
+            style = "solid"
+        elif type(raw_style) is str and raw_style in _SEQUENCE_STYLE_PLAN:
+            style = raw_style
+        else:
+            raise SerializationError(f"sequence message {index} uses an unsupported style")
+        canonical_messages.append(
+            {
+                "source": source_id,
+                "target": target_id,
+                "label": text_plan.semantic,
+                "style": style,
+            }
+        )
+        message_records.append(message)
+        message_texts.append(text_plan)
+        message_styles.append(style)
+
+    try:
+        structure = plan_sequence_structure(canonical_participants, canonical_messages)
     except SequenceStructureError as exc:
         raise SerializationError(str(exc)) from exc
+
+    planned_participants = tuple(
+        SequenceParticipantPlan(
+            source_record=source_record,
+            source_id=placement.source_id,
+            emitted_id=placement.emitted_id,
+            semantic_label=text_plan.semantic,
+            source_label=text_plan.source,
+            canvas_label=text_plan.canvas,
+        )
+        for source_record, text_plan, placement in zip(
+            source_records,
+            participant_texts,
+            structure.participants,
+            strict=True,
+        )
+    )
+    source_id_by_emitted = {
+        participant.emitted_id: participant.source_id for participant in planned_participants
+    }
+    planned_messages: list[SequenceMessagePlan] = []
+    for record, text_plan, style, placement in zip(
+        message_records,
+        message_texts,
+        message_styles,
+        structure.messages,
+        strict=True,
+    ):
+        arrow_token, arrow_at_end, line_style = _SEQUENCE_STYLE_PLAN[style]
+        planned_messages.append(
+            SequenceMessagePlan(
+                source_record=record,
+                scene_id=placement.emitted_id,
+                source_id=source_id_by_emitted[placement.source_id],
+                target_id=source_id_by_emitted[placement.target_id],
+                source_emitted_id=placement.source_id,
+                target_emitted_id=placement.target_id,
+                semantic_label=text_plan.semantic,
+                source_label=text_plan.source,
+                canvas_label=text_plan.canvas,
+                style=style,
+                arrow_token=arrow_token,
+                arrow_at_end=arrow_at_end,
+                line_style=line_style,
+            )
+        )
+    minimum_source_lines = [
+        "sequenceDiagram",
+        "    accTitle: ",
+        "    accDescr: ",
+        *(
+            f"    participant {participant.emitted_id} as {participant.source_label}"
+            for participant in planned_participants
+        ),
+        *(
+            f"    {message.source_emitted_id}{message.arrow_token}"
+            f"{message.target_emitted_id}: {message.source_label}"
+            for message in planned_messages
+        ),
+    ]
+    if len(minimum_source_lines) + 1 > _SEQUENCE_MAX_OUTPUT_LINES:
+        raise SerializationError(
+            f"sequence output exceeds source-line limit of {_SEQUENCE_MAX_OUTPUT_LINES}"
+        )
+    if _sequence_utf16_units("\n".join(minimum_source_lines)) + 1 > _SEQUENCE_MAX_OUTPUT_CHARS:
+        raise SerializationError(
+            f"sequence output exceeds UTF-16 source-character limit of {_SEQUENCE_MAX_OUTPUT_CHARS}"
+        )
+    return SequencePlan(
+        participants=planned_participants,
+        messages=tuple(planned_messages),
+        compatibility_substitutions=any(
+            text.compatibility_substitutions for text in (*participant_texts, *message_texts)
+        ),
+    )
+
+
+def plan_sequence_accessibility(
+    ir: Mapping[str, Any],
+    *,
+    experimental: bool,
+    sequence_plan: SequencePlan | None = None,
+) -> SequenceAccessibilityPlan:
+    """Resolve accessibility only from validated metadata and planned semantics."""
+
+    validated_ir = validated_sequence_accessibility_ir(ir)
+    plan = sequence_plan or plan_sequence_records(validated_ir)
+    semantic_ir: dict[str, Any] = {
+        key: validated_ir[key] for key in _SEQUENCE_METADATA_FIELDS if key in validated_ir
+    }
+    semantic_ir["participants"] = [
+        {"id": participant.source_id, "label": participant.semantic_label}
+        for participant in plan.participants
+    ]
+    semantic_ir["messages"] = [
+        {"source": message.source_id, "target": message.target_id} for message in plan.messages
+    ]
+    resolved = resolve_accessibility(semantic_ir, "sequence", experimental=experimental)
+    title = _plan_sequence_text(
+        resolved.title,
+        context="sequence accessible title",
+        accessibility=True,
+    )
+    description = _plan_sequence_text(
+        resolved.description,
+        context="sequence accessible description",
+        accessibility=True,
+    )
+    return SequenceAccessibilityPlan(
+        title_semantic=title.semantic,
+        title_source=title.source,
+        title_canvas=title.canvas,
+        description_semantic=description.semantic,
+        description_source=description.source,
+        description_canvas=description.canvas,
+        compatibility_substitutions=(
+            title.compatibility_substitutions or description.compatibility_substitutions
+        ),
+    )
+
+
+def enrich_sequence_accessibility_ir(
+    ir: Mapping[str, Any],
+    *,
+    experimental: bool,
+    sequence_plan: SequencePlan | None = None,
+) -> dict[str, Any]:
+    """Return a copy with current semantic Sequence accessibility text."""
+
+    validated_ir = validated_sequence_accessibility_ir(ir)
+    accessibility = plan_sequence_accessibility(
+        validated_ir,
+        experimental=experimental,
+        sequence_plan=sequence_plan,
+    )
+    return {
+        **validated_ir,
+        "acc_title": accessibility.title_semantic,
+        "acc_description": accessibility.description_semantic,
+    }
+
+
+def serialize_sequence(ir: dict[str, Any], *, experimental: bool = False) -> str:
+    sequence_plan = plan_sequence_records(ir)
+    accessibility = plan_sequence_accessibility(
+        ir,
+        experimental=experimental,
+        sequence_plan=sequence_plan,
+    )
     lines = [
         "sequenceDiagram",
-        *_accessibility(ir, experimental, diagram_type="sequence"),
+        f"    accTitle: {accessibility.title_source}",
+        f"    accDescr: {accessibility.description_source}",
     ]
-    for participant in structure.participants:
-        lines.append(f"    participant {participant.emitted_id} as {_text(participant.label)}")
-    arrows = {
-        "solid": "->>",
-        "dotted": "-->>",
-        "open": "->",
-        "dotted_open": "-->",
-        "cross": "-x",
-    }
-    for message in structure.messages:
-        arrow = arrows.get(message.source.get("style"), "->>")
+    for participant in sequence_plan.participants:
+        lines.append(f"    participant {participant.emitted_id} as {participant.source_label}")
+    for message in sequence_plan.messages:
         lines.append(
-            f"    {message.source_id}{arrow}{message.target_id}: "
-            f"{_text(message.source.get('label') or '[unreadable]')}"
+            f"    {message.source_emitted_id}{message.arrow_token}"
+            f"{message.target_emitted_id}: {message.source_label}"
         )
-    return "\n".join(lines) + "\n"
+    code = "\n".join(lines) + "\n"
+    if _sequence_utf16_units(code) > _SEQUENCE_MAX_OUTPUT_CHARS:
+        raise SerializationError(
+            f"sequence output exceeds UTF-16 source-character limit of {_SEQUENCE_MAX_OUTPUT_CHARS}"
+        )
+    if code.count("\n") + 1 > _SEQUENCE_MAX_OUTPUT_LINES:
+        raise SerializationError(
+            f"sequence output exceeds source-line limit of {_SEQUENCE_MAX_OUTPUT_LINES}"
+        )
+    return code
 
 
 def serialize_mindmap(ir: dict[str, Any], *, experimental: bool = False) -> str:
@@ -1584,6 +2068,7 @@ def serialize_typed_ir_result(
     state_record_compatibility_substitutions = False
     state_plan = None
     gantt_plan = None
+    sequence_plan = None
     if diagram_type == "pie":
         _validate_pie_explicit_accessibility_fields(ir)
     elif diagram_type == "xychart":
@@ -1597,6 +2082,9 @@ def serialize_typed_ir_result(
     elif diagram_type == "gantt":
         accessibility_source_ir = validated_gantt_metadata_ir(ir)
         gantt_plan = plan_gantt_records(accessibility_source_ir)
+    elif diagram_type == "sequence":
+        accessibility_source_ir = validated_sequence_accessibility_ir(ir)
+        sequence_plan = plan_sequence_records(accessibility_source_ir)
     elif diagram_type == "er":
         from marker_mermaid.serializers_uml import (
             plan_er_records,
@@ -1621,6 +2109,12 @@ def serialize_typed_ir_result(
             accessibility_source_ir,
             experimental=experimental,
             gantt_plan=gantt_plan,
+        )
+    elif diagram_type == "sequence":
+        enriched_ir = enrich_sequence_accessibility_ir(
+            accessibility_source_ir,
+            experimental=experimental,
+            sequence_plan=sequence_plan,
         )
     elif diagram_type == "er":
         from marker_mermaid.serializers_uml import enrich_er_accessibility_ir
@@ -1697,6 +2191,19 @@ def serialize_typed_ir_result(
             result = replace(
                 result,
                 warnings=(*result.warnings, GANTT_TEXT_COMPATIBILITY_WARNING),
+            )
+    elif diagram_type == "sequence" and (
+        sequence_plan.compatibility_substitutions
+        or plan_sequence_accessibility(
+            enriched_ir,
+            experimental=experimental,
+            sequence_plan=sequence_plan,
+        ).compatibility_substitutions
+    ):
+        if SEQUENCE_TEXT_COMPATIBILITY_WARNING not in result.warnings:
+            result = replace(
+                result,
+                warnings=(*result.warnings, SEQUENCE_TEXT_COMPATIBILITY_WARNING),
             )
     if supports_accessibility_directives(result.emitted_type):
         return result

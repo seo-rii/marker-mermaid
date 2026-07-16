@@ -101,12 +101,15 @@ from marker_mermaid.security import MermaidSecurityScanner
 from marker_mermaid.serialization import SerializationContractError, SerializationResult
 from marker_mermaid.serializers import (
     GANTT_TEXT_COMPATIBILITY_WARNING,
+    SEQUENCE_TEXT_COMPATIBILITY_WARNING,
     SerializationError,
     enrich_gantt_accessibility_ir,
+    enrich_sequence_accessibility_ir,
     scene_to_flowchart,
     serialize_runtime_fallback_result,
     serialize_typed_ir_result,
     validated_gantt_metadata_ir,
+    validated_sequence_accessibility_ir,
 )
 from marker_mermaid.serializers_charts_core import (
     QUADRANT_NATIVE_PAINT_COMPATIBILITY_WARNING,
@@ -2061,6 +2064,10 @@ class ReconstructionPipeline:
                             validate_quadrant_explicit_metadata(typed.ir)
                         elif typed.diagram_type == "gantt":
                             accessibility_source_ir = validated_gantt_metadata_ir(typed.ir)
+                        elif typed.diagram_type == "sequence":
+                            # Freeze exact raw metadata before derived accessibility
+                            # can turn an empty or malformed directive into publishable text.
+                            accessibility_source_ir = validated_sequence_accessibility_ir(typed.ir)
                         elif typed.diagram_type == "er":
                             accessibility_source_ir = validated_er_accessibility_ir(typed.ir)
                         elif typed.diagram_type == "state":
@@ -2070,6 +2077,11 @@ class ReconstructionPipeline:
                             accessibility_source_ir = validated_state_accessibility_ir(typed.ir)
                         if typed.diagram_type == "gantt":
                             enriched_ir = enrich_gantt_accessibility_ir(
+                                accessibility_source_ir,
+                                experimental=self.config.mode != Mode.STRICT,
+                            )
+                        elif typed.diagram_type == "sequence":
+                            enriched_ir = enrich_sequence_accessibility_ir(
                                 accessibility_source_ir,
                                 experimental=self.config.mode != Mode.STRICT,
                             )
@@ -2109,7 +2121,7 @@ class ReconstructionPipeline:
                         )
                         stored_typed_ir = (
                             accessibility_source_ir
-                            if typed.diagram_type in {"er", "gantt", "state"}
+                            if typed.diagram_type in {"er", "gantt", "sequence", "state"}
                             else enriched_ir
                         )
                         stored_typed_ir = canonical_typed_ir_snapshot(stored_typed_ir)
@@ -7005,6 +7017,8 @@ class ReconstructionPipeline:
                     validated_ir = validated_venn_accessibility_ir(validated_ir)
                 elif current.diagram_type == "gantt":
                     validated_ir = validated_gantt_metadata_ir(validated_ir)
+                elif current.diagram_type == "sequence":
+                    validated_ir = validated_sequence_accessibility_ir(validated_ir)
                 elif current.diagram_type == "er":
                     validated_ir = validated_er_accessibility_ir(validated_ir)
                 elif current.diagram_type == "state":
@@ -7243,6 +7257,16 @@ class ReconstructionPipeline:
                 ]
                 if ER_TEXT_COMPATIBILITY_WARNING in canonical.warnings:
                     canonical_compatibility_warnings.append(ER_TEXT_COMPATIBILITY_WARNING)
+            elif current.diagram_type == "sequence":
+                retained_warnings = [
+                    warning
+                    for warning in retained_warnings
+                    if warning != SEQUENCE_TEXT_COMPATIBILITY_WARNING
+                ]
+                if SEQUENCE_TEXT_COMPATIBILITY_WARNING in canonical.warnings:
+                    canonical_compatibility_warnings.append(
+                        SEQUENCE_TEXT_COMPATIBILITY_WARNING
+                    )
             attempted.warnings = list(
                 dict.fromkeys(
                     [

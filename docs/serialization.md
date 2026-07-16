@@ -16,7 +16,8 @@ warning이 필수입니다. cycle, 빈 code, 중복 chain, 잘못 보고한 resu
 
 | 요청 type | 실제 grammar | 비고 |
 | --- | --- | --- |
-| Flowchart, Sequence, Mindmap, Timeline, Gantt | 동일 | Phase 1 native |
+| Flowchart, Mindmap, Timeline, Gantt | 동일 | Phase 1 native |
+| Sequence | 동일 | shared terminal/emitted-ID plan을 쓰는 Phase 1 native |
 | Architecture | `architecture → flowchart` | `architecture-beta` 우선, runtime 거부 시 nested Flowchart |
 | State, Class, ER | 동일 | node/relation/member/attribute evidence 필수 |
 | Requirement | `requirement` | Mermaid `requirementDiagram` |
@@ -67,9 +68,29 @@ strict direction을 한 번만 결정합니다. Mermaid edge에 source relation 
 두 serializer는 source code 50,000자·5,000줄 예산을 반환 전에 검사하고, visible
 compatibility glyph 치환을 warning·OCR·Scene에 공유합니다.
 
-State/Class/ER serializer는 provenance 없는 구조를 문법적으로 만들 수 있어도 거부합니다. unknown
-endpoint, 추측 cardinality, ER의 identifying flag 누락도 `SerializationError`입니다. Requirement/Block과
+State/Class/ER serializer는 provenance 없는 구조를 문법적으로 만들 수 있어도 거부합니다. Sequence도
+message endpoint가 하나라도 unknown/null이면 전체 plan을 거부합니다. 추측 cardinality, ER의 identifying
+flag 누락도 `SerializationError`입니다. Requirement/Block과
 fallback serializer 역시 unknown relation endpoint를 임의 node로 만들지 않습니다.
+
+Sequence는 string/object participant와 object message를 `plan_sequence_records()`에서 한 번 canonicalize합니다.
+Missing/`None`/exact-empty participant label은 source ID, message label은 `[unreadable]`로 고정하고 그 밖의
+label은 coercion 없는 bounded UTF-8 text여야 합니다. Source ID는 endpoint/provenance identity로만 남기며
+source 순서의 `mmx_sequence_participant_N`을 declaration, message endpoint, generated Scene element에
+공유합니다. Mermaid message에는 별도 ID 문법이 없으므로 raw message ID는 typed/review metadata이고,
+`generated-relation-N`만 Scene/provenance slot으로 사용합니다. 하나라도 malformed record, duplicate
+participant, unknown/null endpoint, record/source budget 초과가 있으면 partial Sequence를 만들지 않습니다.
+
+Message style은 `solid`, `dotted`, `open`, `dotted_open`, `cross`의 닫힌 집합입니다. Plan은 각각
+`->>`, `-->>`, `->`, `-->`, `-x`와 solid/dotted line 및 실제 end marker 의미를 고정합니다. 따라서
+`open`/`dotted_open` Scene relation은 Mermaid 11.16 SVG와 동일하게 `arrow_at_end=false`입니다. Participant와
+message text의 `#`/`;`는 문자별 `#35;`/`#59;` source escape로 canvas 원문을 손실 없이 유지하고,
+directive/URL/callback/config/style token은 source-only separator로 비활성화합니다. 접근성에서만 literal
+angle bracket이 `〈`/`〉` compatibility canvas를 사용합니다. Serializer, Scene, semantic OCR은 같은
+emitted endpoint, canvas label, order와 record-local evidence를 소비하고 raw role/shape/direction/style hint를
+구조로 승격하지 않습니다. Initial/repair는 raw 접근성 snapshot을 보존하고 accepted repair마다 current
+participant plan에서 derived text와 조건부 warning을 다시 만듭니다. Source는 50,000 UTF-16 unit/5,000줄을
+preflight합니다.
 
 State는 serializer와 generated Scene이 같은 emission plan을 소비합니다. 이 plan은 source state ID를
 Mermaid-safe ID로 한 번만 정규화하고 transition endpoint, 화면 label, pseudo-state kind와 deterministic

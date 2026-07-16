@@ -241,6 +241,22 @@
   authoritative, and add or remove the compatibility warning from the accepted plan. Pinned Mermaid 11.16 fixtures
   cover quoted multiword roles without phantom entities, terminal/accessibility SVG text, reserved emitted IDs,
   strict scanning, and runtime cleanup.
+- Sequence now freezes participant, message, and accessibility semantic/source/Mermaid 11.16 canvas text in one
+  shared plan. Source participant IDs remain in typed IR and provenance, while every declaration, message endpoint,
+  and generated Scene uses an order-stable `mmx_sequence_participant_N` identity that cannot become a Mermaid lexer
+  or security token. Statement text encodes `#` and `;` character-by-character as native `#35;`/`#59;` escapes,
+  preserving exact SVG text while preventing semicolon statement injection; quote, backslash, colon, and literal
+  entity-like text remain exact. Directive, URL, callback, icon, config, and control words receive source-only
+  zero-width separators. The closed message style set now matches Mermaid 11.16 line/marker behavior, including
+  marker-less `open`/`dotted_open`, and unknown styles or unknown/null endpoints fail the whole plan rather than
+  silently dropping evidence. Scene/OCR consumes only planned canvas labels, emitted endpoints, `LR` direction, and
+  record-local participant/message provenance; raw roles, shapes, IDs, direction, and accessibility metadata do not
+  receive structural or OCR credit. Raw `title`/`description`/`acc_title`/`acc_description` passes an exact-string,
+  bounds, Unicode/UTF-8, and exact-empty-as-omitted gate before enrichment in public serialization, initial
+  candidates, and repair. Initial/repair typed IR keeps this raw snapshot, so accepted repairs regenerate derived
+  accessibility and reconcile the conditional angle-glyph warning. Output is preflighted at 50,000 UTF-16 units and
+  5,000 lines. Pinned Mermaid 11.16 fixtures cover exact terminal/accessibility SVG text, injection resistance,
+  generated endpoints, style markers, strict scanning, and runtime cleanup.
 - Gantt now freezes semantic, source, and Mermaid 11.16 canvas text for titles, sections, and tasks in one record
   plan. A separate accessibility plan derives metadata from semantic section/task labels and applies its own
   source/canvas rules; explicit accessibility fields remain authoritative. Exact-empty top-level metadata is omitted

@@ -35,7 +35,7 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | --- | --- |
 | Flowchart / Generic Network | node, edge, group과 member/evidence list |
 | Swimlane / BPMN | lane, lane 안의 node, top-level edge |
-| Sequence | string 또는 object participant, message |
+| Sequence | participant(`id`/`label`/evidence), message(`id`/`source`/`target`/`label`/closed `style`/evidence); terminal plan 후검증 |
 | Mindmap | 재귀 root/children hierarchy |
 | Timeline | event와 여러 label을 담는 `events: string[]` |
 | Gantt | section과 task ID/status/start/end/duration field; terminal plan이 semantic/source/canvas text와 schedule 의미를 후검증 |
@@ -68,6 +68,34 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | Organization fallback | 재귀 root/children reporting hierarchy |
 | Data Lineage fallback | dataset, process, relation endpoint/label |
 | Railroad | rule과 terminal/nonterminal/special/sequence/choice/optional/repetition expression AST |
+
+### Sequence terminal record 계약
+
+Sequence root는 `participants: list`와 `messages: list`를 요구합니다. Participant는 legacy string 또는
+`{id, label, bbox, evidence_ids}` object이고, message는
+`{id, source, target, label, style, bbox, evidence_ids}` object입니다. `style`은
+`solid|dotted|open|dotted_open|cross`만 coercion 없이 허용합니다. Extra metadata는 typed/review IR에
+보존할 수 있지만 participant `text`, raw role/shape/direction과 message arrow hint는 방출 구조나 OCR label로
+승격하지 않습니다.
+
+`plan_sequence_records()`는 source identity, source-order `mmx_sequence_participant_N` emitted identity,
+ordered `generated-relation-N` Scene slot, semantic/source/Mermaid 11.16 canvas text, endpoint, line/marker 의미를
+한 번 고정합니다. Raw message ID는 Mermaid source identity가 아니라 typed/review metadata입니다.
+Participant declaration, 모든 message endpoint와 generated Scene element가 같은 emitted mapping을 쓰고,
+participant/message evidence는 각각 해당 element/relation에만 유지합니다. String participant는 자체 object
+evidence를 제공할 수 없는 legacy 입력입니다.
+
+Duplicate participant, malformed record, unknown/null endpoint, unknown style, resource/source budget 초과 중
+하나라도 있으면 message를 생략하거나 partial Sequence로 축소하지 않고 전체 plan을 fail closed합니다.
+Missing/`None`/exact-empty participant label은 source ID, message label은 `[unreadable]`로 고정하지만,
+whitespace-only/non-string/control/format/surrogate/overlong label은 거부합니다. 문자별 `#35;`/`#59;` source
+escape는 literal `#`/`;`와 entity-like text를 exact canvas로 보존하고 source-only separator는 active token만
+비활성화합니다. Generated Scene은 `LR`이고 style별 실제 Mermaid marker 의미를 사용합니다.
+
+Top-level `title`/`description`/`acc_title`/`acc_description`은 generic enrichment 전에 raw gate를 통과합니다.
+Absent/`None`과 exact-empty omitted만 허용하고 나머지는 exact bounded nonblank UTF-8 text여야 합니다.
+Pipeline은 derived `acc_*` 대신 validated raw snapshot을 initial/repair typed IR에 저장해 accepted repair 뒤
+현재 participant plan에서 description과 angle compatibility warning을 다시 만듭니다.
 
 ### ER terminal record 계약
 
@@ -874,11 +902,13 @@ State record의 source ID가 Mermaid lexer/security 예약 토큰이거나 norma
 여부는 provenance gate가 결정합니다.
 
 평가 Scene은 serializer-visible fallback을 그대로 사용합니다. label이 없는 Flowchart/Generic Network,
-Swimlane/BPMN, Mindmap node는 내부 ID가 아니라 `[unreadable]`로 기록합니다. Sequence participant는 serializer와
-공유하는 planner가 portable ID 충돌에 suffix를 붙이고, 같은 logical ID가 중복되면 모호한 message mapping을
-거부합니다. 같은 planner가 message container/record 형태와 Scene relation 예산을 검사한 뒤 실제로 해석되는
-message만 serializer와 Scene에 함께 전달하고, raw message ID와 무관한 고유 emitted relation ID를 순서대로
-부여합니다. 따라서 Mermaid에서 합쳐진 actor나 생략된 message를 평가 Scene이 별도 구조로 세지 않습니다.
+Swimlane/BPMN, Mindmap node는 내부 ID가 아니라 `[unreadable]`로 기록합니다. Sequence participant는 source ID와
+분리된 source-order `mmx_sequence_participant_N`을 declaration, message endpoint와 Scene에 공유하고 같은 logical
+ID 중복을 거부합니다. Planner는 모든 message container/record, closed style, Scene relation 예산과 endpoint를
+검사하며 하나라도 unresolved이면 전체 plan을 fail closed합니다. 통과한 모든 message를 원래 순서대로
+serializer와 Scene에 전달하고 raw message ID와 무관한 `generated-relation-N` slot을 부여합니다. Scene/OCR은
+plan의 canvas label과 style별 line/marker 의미, record-local evidence만 사용하므로 Mermaid에서 합쳐진 actor나
+생략된 message를 별도 구조로 세거나 raw metadata에 OCR/provenance credit을 주지 않습니다.
 
 Event Modeling·ZenUML adapter도 requested type은 각각 `eventmodeling`·`zenuml`로
 유지하면서 실제 Flowchart·Sequence fallback plan의 identity와 topology를 Scene으로

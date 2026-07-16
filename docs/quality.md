@@ -19,9 +19,10 @@ NFKC/casefold label만 사용합니다. normalized ID collision은 alias로 강�
 label/evidence 같은 독립 근거가 있을 때만 정렬합니다. Geometry로 node를 맞추지 않으므로 layout metric이
 자신의 가정을 검증하는 순환을 피합니다. edge topology는 방향을
 무시하고 방향 오류는 arrow metric이 별도로 측정합니다.
-Flowchart/Swimlane/BPMN/Architecture와 Sequence 계열의 generated Scene 방향은 raw
-`arrow_at_start`/`arrow_at_end` hint가 아니라 serializer가 실제 방출하는 단방향 또는 `bidirectional`
-connector에서 파생합니다.
+Flowchart/Swimlane/BPMN/Architecture의 generated Scene 방향은 raw arrow hint가 아니라 serializer가 실제
+방출하는 connector에서 파생합니다. Native Sequence는 style plan의 실제 operator를 사용합니다. `solid`와
+`dotted`는 arrowhead, `cross`는 crosshead를 가지지만 `open`과 `dotted_open`은 end marker가 없으므로
+일괄 `arrow_at_end=true`로 세지 않습니다.
 
 typed IR은 serializer가 실제 방출하는 node/edge 구조로 다시 변환합니다. bbox가 IR에 명시되지 않으면
 layout을 추측하지 않습니다. Scene IR portable fallback은 deterministic serializer 보존 여부를 평가할 수
@@ -218,9 +219,16 @@ generated Scene attribution에서 제외합니다.
   이 projection도 생성 label 예산 안에서 소비되므로 큰 typed IR이 제한을 우회하지 못합니다.
   Core Scene도 serializer-visible default를 그대로 사용합니다. Block은 collision-safe emitted ID와
   `[unreadable]` fallback을 공유하고, 일반 State는 serializer가 쓰는 label/ID만 세며 choice/fork/join은
-  topology element를 유지하되 실제 canvas에 없는 source label을 OCR text로 세지 않습니다. Sequence
-  무라벨 message와 Gantt 무라벨 task는 각각 `[unreadable]`, section-local `Task N`으로 투영하며 hidden
-  `text`/task ID에 OCR credit을 주지 않습니다. State의 normalized ID와 transition endpoint는 serializer와
+  topology element를 유지하되 실제 canvas에 없는 source label을 OCR text로 세지 않습니다. Sequence는
+  shared plan의 participant/message canvas label만 source order로 투영하고 무라벨 message는 `[unreadable]`로
+  셉니다. Source-only separator, raw participant/message ID, hidden `text`, raw role/shape/direction과
+  accessibility `<title>/<desc>`에는 OCR credit을 주지 않습니다. 모든 participant는
+  `mmx_sequence_participant_N`, message는 ordered `generated-relation-N` slot을 serializer/Scene과 공유하고,
+  object participant evidence는 해당 element, message evidence는 해당 relation에만 연결합니다. String
+  participant는 legacy 호환 입력이라 자체 record provenance가 없으며 일반 Extended provenance gate가 이를
+  review로 보낼 수 있습니다. Unknown/null endpoint 하나라도 있으면 message를 버리지 않고 전체 Scene을 fail
+  closed합니다. Gantt 무라벨 task는 section-local `Task N`으로 투영하며 hidden task `text`/ID에 OCR credit을
+  주지 않습니다. State의 normalized ID와 transition endpoint는 serializer와
   Scene이 하나의 plan을 공유하고 malformed 또는 unknown endpoint transition은 전체 Scene을 fail closed합니다.
   `[*]` boundary marker는 structural relation으로 만들지 않지만 화면에 표시되는 transition label은 OCR
   projection에 유지합니다.

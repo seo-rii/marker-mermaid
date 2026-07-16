@@ -117,12 +117,12 @@ def test_sequence_scene_uses_collision_free_emitted_participant_ids() -> None:
 
     assert scene is not None
     assert [(element.id, element.text) for element in scene.elements] == [
-        ("A_B", "First"),
-        ("A_B_2", "Second"),
+        ("mmx_sequence_participant_1", "First"),
+        ("mmx_sequence_participant_2", "Second"),
     ]
     assert (scene.relations[0].source_id, scene.relations[0].target_id) == (
-        "A_B",
-        "A_B_2",
+        "mmx_sequence_participant_1",
+        "mmx_sequence_participant_2",
     )
 
 
@@ -165,7 +165,10 @@ def test_sequence_scene_and_semantic_texts_include_unreadable_message_fallback()
 
     assert scene is not None
     assert "Hidden message alias" not in code
-    assert "Client->>API: [unreadable]" in code
+    assert (
+        "mmx_sequence_participant_1->>mmx_sequence_participant_2: [unreadable]"
+        in code
+    )
     assert [relation.label for relation in scene.relations] == ["[unreadable]", "Reply"]
     assert list(typed_ir_semantic_texts("sequence", ir, scene)) == [
         "Client",

@@ -212,9 +212,11 @@ def test_sequence_participant_ids_are_collision_free_and_unambiguous():
         }
     )
 
-    assert "participant A_B as First" in code
-    assert "participant A_B_2 as Second" in code
-    assert "A_B->>A_B_2: Next" in code
+    assert "participant mmx_sequence_participant_1 as First" in code
+    assert "participant mmx_sequence_participant_2 as Second" in code
+    assert (
+        "mmx_sequence_participant_1->>mmx_sequence_participant_2: Next" in code
+    )
 
     with pytest.raises(SerializationError, match="participant ids must be unique"):
         serialize_sequence(
@@ -265,8 +267,28 @@ def test_sequence_raw_message_ids_do_not_change_rendered_messages():
         }
     )
 
-    assert code.count("A->>B") == 1
-    assert code.count("B->>A") == 1
+    assert code.count(
+        "mmx_sequence_participant_1->>mmx_sequence_participant_2"
+    ) == 1
+    assert code.count(
+        "mmx_sequence_participant_2->>mmx_sequence_participant_1"
+    ) == 1
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"source": "missing", "target": "B", "label": "Call"},
+        {"source": "A", "target": "missing", "label": "Call"},
+        {"source": None, "target": "B", "label": "Call"},
+        {"source": "A", "target": None, "label": "Call"},
+    ],
+)
+def test_sequence_rejects_unknown_message_endpoints_instead_of_dropping_them(
+    message: dict[str, object],
+) -> None:
+    with pytest.raises(SerializationError, match="unknown participant"):
+        serialize_sequence({"participants": ["A", "B"], "messages": [message]})
 
 
 def test_mindmap_uses_unique_serializer_ids_for_duplicate_logical_ids():

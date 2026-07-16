@@ -18,10 +18,8 @@ from marker_mermaid.flowchart_structure import (
     FlowchartStructureError,
     FlowchartStructurePlan,
     MindmapStructureError,
-    SequenceStructureError,
     plan_flowchart_structure,
     plan_mindmap_nodes,
-    plan_sequence_structure,
     prepare_swimlane_structure,
 )
 from marker_mermaid.models import DiagramSceneIR, SceneElement, SceneGroup, SceneRelation
@@ -29,6 +27,7 @@ from marker_mermaid.serializers import (
     SerializationError,
     plan_architecture_structure,
     plan_gantt_records,
+    plan_sequence_records,
 )
 from marker_mermaid.serializers_charts_core import (
     plan_pie_records,
@@ -909,35 +908,43 @@ def typed_ir_to_scene(
         scene_direction_override = "LR"
     elif diagram_type == "sequence":
         try:
-            structure = plan_sequence_structure(
-                ir.get("participants"),
-                ir.get("messages", []),
-            )
-        except SequenceStructureError:
+            sequence_plan = plan_sequence_records(ir)
+        except SerializationError:
             return None
-        source_participants = list(ir.get("participants") or [])
         node_records = [
             {
-                **(source if isinstance(source, dict) else {}),
+                **(
+                    {
+                        "bbox": participant.source_record.get("bbox"),
+                        "evidence_ids": list(
+                            participant.source_record.get("evidence_ids") or []
+                        ),
+                    }
+                    if participant.source_record is not None
+                    else {}
+                ),
                 "id": participant.emitted_id,
-                "label": participant.label,
+                "label": participant.canvas_label,
+                "role": "participant",
             }
-            for source, participant in zip(
-                source_participants,
-                structure.participants,
-                strict=True,
-            )
+            for participant in sequence_plan.participants
         ]
         edge_records = [
             {
-                **message.source,
-                "id": message.emitted_id,
-                "source": message.source_id,
-                "target": message.target_id,
-                "label": message.source.get("label") or "[unreadable]",
+                "id": message.scene_id,
+                "source": message.source_emitted_id,
+                "target": message.target_emitted_id,
+                "label": message.canvas_label,
+                "relation_type": "message",
+                "semantic_relation": "message",
+                "arrow_at_start": False,
+                "arrow_at_end": message.arrow_at_end,
+                "style": message.line_style,
+                "evidence_ids": list(message.source_record.get("evidence_ids") or []),
             }
-            for message in structure.messages
+            for message in sequence_plan.messages
         ]
+        scene_direction_override = "LR"
     elif diagram_type == "mindmap":
         try:
             node_plan = plan_mindmap_nodes(ir.get("root"))
@@ -1643,7 +1650,7 @@ def typed_ir_to_scene(
         }:
             arrow_at_start = bool(edge.get("bidirectional"))
             arrow_at_end = True
-        elif diagram_type in {"sequence", "zenuml"}:
+        elif diagram_type == "zenuml":
             arrow_at_start = False
             arrow_at_end = True
         else:
@@ -1882,6 +1889,14 @@ def typed_ir_semantic_texts(
                 for label in labels:
                     if label is not None and label != "":
                         yield str(label)
+        return
+
+    if diagram_type == "sequence":
+        plan = plan_sequence_records(ir)
+        for participant in plan.participants:
+            yield participant.canvas_label
+        for message in plan.messages:
+            yield message.canvas_label
         return
 
     if diagram_type == "state":

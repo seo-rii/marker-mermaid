@@ -150,6 +150,21 @@ TreeView, Ishikawa는 각 native grammar의 실제 SVG text 동작에 맞춘 enc
 typed IR/review metadata에만 유지하고 자동 SVG에는 generic 문구를 넣습니다. native/fallback label과
 SVG title/description은 pinned Mermaid integration test로 검사합니다.
 
+Native Sequence는 source participant ID를 Mermaid identifier로 직접 방출하지 않습니다. Source order의
+`mmx_sequence_participant_N` namespace를 declaration, 모든 message endpoint와 generated Scene에 공유해
+`participant`/`end`/`style` 같은 lexer·scanner token, `__proto__`, `iconify` substring, 향후 grammar 예약어와
+원천적으로 분리합니다. Source ID는 typed IR/provenance에 그대로 남습니다. Participant/message의 literal
+`;`는 strict scan과 parse/render를 통과한 채 새 statement를 삽입할 수 있으므로, 모든 `#`와 `;`를 문자별
+native `#35;`/`#59;`로 encode합니다. Compound entity-like literal도 이 순서로 정확한 SVG text를 유지합니다.
+
+Directive opener, comment, URL/data/JavaScript scheme, callback, remote icon, config, style/control word에는
+source-only zero-width separator를 넣고 raw/NFKC strict scan 뒤 pinned runtime에 전달합니다. Quote,
+backslash, colon, Markdown punctuation은 native Sequence canvas가 원문을 보존하므로 visible glyph로 바꾸지
+않습니다. 접근성 angle bracket만 Mermaid 11.16의 double-escape를 피해 `〈`/`〉`로 표시하며 warning을
+남깁니다. Raw 접근성 필드는 generic enrichment 및 repair 전에 exact-string/Unicode/bounds gate를 통과하고
+candidate에는 validated raw snapshot을 저장하므로 malformed/empty directive가 다음 source line을 삼키거나
+derived text로 세탁되지 않습니다.
+
 ZenUML Sequence fallback은 participant의 source ID를 예약어와 분리된
 `zenuml_participant_*` namespace로 방출하고 message에는 이 namespaced endpoint만 씁니다.
 Mermaid message에 ID 문법이 없으므로 `zenuml_message_*`는 Scene/provenance slot에만 부여합니다.

@@ -108,7 +108,7 @@ class _SequenceMessage(_TypedIRRecord):
     source: str | None = None
     target: str | None = None
     label: str | None = None
-    style: str | None = None
+    style: Literal["solid", "dotted", "open", "dotted_open", "cross"] | None = None
 
 
 class _SequenceIR(_TypedIRRoot):
@@ -1037,7 +1037,8 @@ TYPED_IR_CONTRACTS: dict[str, TypedIRContract] = {
         nested_model=_SequenceIR,
         prompt_records=(
             "participants[]: string|{id:string,label:string,bbox:number[4],evidence_ids:string[]}",
-            "messages[]: {id:string,source:string,target:string,label:string,style:string,"
+            "messages[]: {id:string,source:string,target:string,label:string,"
+            "style:solid|dotted|open|dotted_open|cross,"
             "bbox:number[4],evidence_ids:string[]}",
         ),
     ),
