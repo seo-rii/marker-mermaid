@@ -39,7 +39,7 @@ registry는 `ALL_TYPES`와 정확히 같은 key 집합이어야 하며 누락 �
 | Mindmap | 재귀 root/children hierarchy, bbox/evidence와 label/text alias; terminal plan 후검증 |
 | Timeline | event `id`, `time`/`period`, single `label`/ordered `events[]`, bbox/evidence; terminal plan 후검증 |
 | Gantt | section과 task ID/status/start/end/duration field; terminal plan이 semantic/source/canvas text와 schedule 의미를 후검증 |
-| Architecture | service, group, edge/port field |
+| Architecture | service, group, edge/port field; terminal plan이 label/source/canvas·endpoint·raw metadata를 후검증 |
 | State | state/kind와 transition endpoint/label |
 | Class | class/member와 relation/cardinality field |
 | ER | entity/attribute/key와 relationship/cardinality field |
@@ -330,6 +330,26 @@ string·integer·null이라는 scalar 형을 먼저 검사하고, serializer가 
 명시값이 `auto` 또는 양의 정수로 해석 가능한지 최종 판정합니다. 즉 extraction 계약의
 구조 검사와 serializer의 의미 검사를 혼동하지 않습니다.
 
+### Architecture terminal record 계약
+
+Architecture root는 non-empty `services: list`가 필수이고 `groups`·`edges`는 선택입니다. Nested model은
+service의 `id`·`label`·`name`·`icon`·`group`, group의 `id`·`label`·`icon`, edge의 `id`·`source`·`target`·
+`label`·`source_side`·`target_side`·`bidirectional`과 공통 bbox/evidence 형을 검사합니다. Serializer의
+공용 terminal plan은 그 뒤 exact source ID, unique/collision-safe emitted ID, flat group membership,
+non-empty endpoint와 closed port side를 확정합니다. 누락 endpoint를 `str(None)`으로 바꾸지 않으므로
+literal `"None"` ID와 alias되지 않습니다.
+
+Service visible text는 non-empty `label`, 다음 `name`, 마지막 source ID 순서이고 group은 explicit label
+또는 emitted group ID를 사용합니다. 선택된 값은 exact string, Unicode-normalized whitespace, bound,
+control/format/surrogate gate를 통과한 뒤 native와 Flowchart가 공유하는 semantic/source/canvas plan이 됩니다.
+Scene/OCR도 plan의 canvas text와 record evidence만 소비하며 raw `text` alias, relation label, accessibility
+metadata를 보이는 content로 간주하지 않습니다. Raw 접근성 네 필드는 generic enrichment 전 검증되고
+exact-empty-as-omitted snapshot으로 저장됩니다. Output source의 50,000 UTF-16 unit/5,000줄 한도는 nested
+schema의 item cap과 별개로 serializer가 최종 판정합니다. `bidirectional`은 생략 또는 exact built-in
+boolean만 허용하며, malformed·oversized·invalid-Unicode `evidence_ids`는 문자열 iteration이나 partial
+reference로 coercion하지 않고 해당 service/relation의 evidence tuple 전체를 비웁니다. 줄 수는 plan에서
+먼저 판정하고 UTF-16 unit은 source statement별로 누적합니다.
+
 ### C4 fallback record 계약
 
 C4 root는 `elements: list`가 필수이고 `boundaries`·`relations`·`level`은 선택입니다. Prompt는 다음
@@ -363,6 +383,11 @@ boundary notation은 typed IR/review metadata에는 보존되지만 자동 fallb
 geometry로 승격되지 않습니다. `serialize_c4_native`가 이 metadata를 표현할 수 있어도 해당 함수는 trusted
 diagnostic 전용이며 자동 publication 또는 품질 평가 경로가 아닙니다.
 
+Public serializer/Scene 경계도 nested model에만 의존하지 않습니다. 누락·숫자 relation endpoint를
+`str()`로 바꾸지 않고 exact non-empty string을 요구하며, `0`·`False` 같은 falsey non-text label은 element
+ID fallback으로 세탁하지 않습니다. Candidate typed IR에는 파생 `acc_*`가 아니라 validated raw metadata만
+저장하므로 accepted repair 뒤 requested C4 description을 현재 label로 다시 만듭니다.
+
 Nested model은 record/container/scalar와 닫힌 token만 검사합니다. 빈 elements list, ID 정규화와 collision,
 boundary membership/reference, relation endpoint, resource cap 같은 의미 조건은 자동 serializer와 generated
 Scene이 공유하는 bounded C4-to-Architecture plan이 계속 판정합니다. 각 record field와 `evidence_ids`는
@@ -387,7 +412,8 @@ canonical prompt에는 광고하지 않고 다음 record만 공개합니다.
 | Component | `dependencies[]` | `id`, `source`, `target`, `label`, `bidirectional`, `source_side`, `target_side`, `bbox`, `evidence_ids` |
 
 Node와 artifact 또는 component와 interface는 각 목록 내부 순서를 유지하면서 primary record 뒤에
-secondary record를 붙인 하나의 Architecture service 목록으로 평탄화됩니다. 각 record 자체는
+secondary record를 붙인 하나의 Architecture service 목록으로 평탄화됩니다. 이 projection은 serializer,
+generated Scene/OCR, provenance와 compatibility-warning 판정이 함께 소비합니다. 각 record 자체는
 collision-safe service ID와 `label` → `name` → source ID 순서의 표시
 label을 얻지만, artifact containment·stereotype 또는 provided/required interface notation은 canonical
 field가 아니며 원본 extra metadata에만 남습니다. Link/dependency의 `label`, raw relation ID와 bbox도
@@ -402,6 +428,11 @@ service `group`은 공용 Architecture structure plan에서 실제 membership으
 Architecture output은 service/group icon과 relation port side를 사용하지만 runtime이 이를 거부해 nested
 Flowchart로 재시도하면 같은 service/group ID·label·membership과 무라벨 endpoint/bidirectional topology만
 남고 icon·port side는 typed IR에 보존됩니다.
+
+Projection은 `label`/`name`의 `None`·exact empty만 source ID fallback으로 보고 다른 falsey 타입을 그대로
+terminal validator에 전달합니다. Relation source/target은 exact non-empty string만 resolve하며 candidate에는
+derived 접근성 field를 저장하지 않습니다. 따라서 accepted repair와 runtime fallback 모두 raw metadata와
+현재 service-like label에서 Deployment/Component 접근성 설명을 재생성합니다.
 
 Canonical relation collection이 root에 존재하면 비어 있어도 우선합니다. 따라서 Deployment `links`가
 있으면 legacy `edges`를 합치거나 되살리지 않고, Component `dependencies`가 있으면 `edges`를 사용하지

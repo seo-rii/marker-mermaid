@@ -30,6 +30,20 @@
   containment with record-local provenance. Malformed hierarchies and 50,000 UTF-16 unit / 5,000
   line overflows fail closed; strict parse/render and terminal canvas behavior have a real-runtime
   fixture.
+- Native Architecture and its same-slot Flowchart retry now share one service/group/relation
+  terminal plan. Quoted Markdown labels separate semantic, strict-safe source, and Mermaid 11.16
+  canvas text; compatibility substitutions are disclosed while Scene/OCR use the exact canvas
+  labels and validated record-local evidence. C4, Deployment, and Component reuse the same
+  projection for serialization, Scene, repair-warning reconciliation, and exact-boolean edge
+  direction; malformed evidence is omitted record-locally instead of being coerced, relation
+  endpoints are never stringified, and falsey malformed labels are not laundered into ID
+  fallbacks. The whole family stores validated raw accessibility metadata so accepted repairs
+  regenerate current descriptions. Architecture accessibility uses a grammar-scoped numeric
+  source codec that preserves quotes, backslashes, literal entities, angle text, active-looking
+  tokens, and Korean exactly in SVG `<title>`/`<desc>`. Raw accessibility metadata is validated
+  and stored before enrichment, accepted repairs regenerate derived text and warnings, missing
+  endpoints fail closed, and both terminals enforce 5,000 lines before generation while
+  accumulating the 50,000 UTF-16 source-unit budget statement by statement.
 - Strict-safe C4, Deployment, Component, and Use-case portable fallbacks.
 - Requested/emitted/runtime diagram type and fallback-chain metadata.
 - Evidence-strict Pie, XY, Quadrant, Sankey, Radar, Treemap, and Venn serializers.

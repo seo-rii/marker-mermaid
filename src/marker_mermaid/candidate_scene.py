@@ -23,11 +23,12 @@ from marker_mermaid.flowchart_structure import (
 from marker_mermaid.models import DiagramSceneIR, SceneElement, SceneGroup, SceneRelation
 from marker_mermaid.serializers import (
     SerializationError,
-    plan_architecture_structure,
+    plan_architecture_records,
     plan_gantt_records,
     plan_mindmap_records,
     plan_sequence_records,
     plan_timeline_records,
+    validate_architecture_terminal_plan,
 )
 from marker_mermaid.serializers_charts_core import (
     plan_pie_records,
@@ -49,7 +50,7 @@ from marker_mermaid.serializers_experimental import (
 )
 from marker_mermaid.serializers_phase2 import (
     REQUIREMENT_TYPE_TOKENS,
-    plan_c4_architecture_fallback,
+    plan_phase2_architecture_ir,
     plan_phase2_record_ids,
     plan_requirement_records,
     plan_usecase_fallback,
@@ -152,95 +153,57 @@ def typed_ir_to_scene(
         group_records = list(swimlane_structure.groups)
     elif diagram_type in {"architecture", "c4", "deployment", "component"}:
         architecture_ir = ir
-        if diagram_type == "c4":
+        if diagram_type != "architecture":
             try:
-                architecture_structure = plan_c4_architecture_fallback(ir).structure
+                architecture_ir = plan_phase2_architecture_ir(diagram_type, ir)
             except ValueError:
                 return None
-        else:
-            if diagram_type in {"deployment", "component"}:
-                if diagram_type == "deployment":
-                    source_records = [*(ir.get("nodes") or []), *(ir.get("artifacts") or [])]
-                    raw_edges = ir.get("links", ir.get("edges", []))
-                else:
-                    source_records = [*(ir.get("components") or []), *(ir.get("interfaces") or [])]
-                    raw_edges = ir.get("dependencies", ir.get("edges", []))
-                if not isinstance(raw_edges, list):
-                    return None
-                try:
-                    records, id_map = plan_phase2_record_ids(
-                        source_records,
-                        field=f"{diagram_type} IR",
-                        fallback_prefix="S",
-                    )
-                except ValueError:
-                    return None
-                services = [
-                    {
-                        **record,
-                        "id": output_id,
-                        "label": record.get("label") or record.get("name") or source_id,
-                    }
-                    for record, source_id, output_id in records
-                ]
-                architecture_edges = [
-                    {
-                        **edge,
-                        "source": id_map.get(str(edge.get("source"))),
-                        "target": id_map.get(str(edge.get("target"))),
-                    }
-                    for edge in raw_edges
-                    if isinstance(edge, dict)
-                ]
-                architecture_ir = {
-                    **ir,
-                    "services": services,
-                    "edges": architecture_edges,
-                }
-            try:
-                architecture_structure = plan_architecture_structure(architecture_ir)
-            except ValueError:
-                return None
+        try:
+            architecture_plan = plan_architecture_records(architecture_ir)
+        except ValueError:
+            return None
         node_records = [
             {
-                "id": placement.emitted_id,
-                "label": service.get("label") or service.get("name") or placement.source_id,
+                "id": service.emitted_id,
+                "label": service.text.canvas,
                 "role": "node",
                 "shape": None,
-                "bbox": service.get("bbox"),
-                "evidence_ids": list(service.get("evidence_ids") or []),
+                "bbox": service.source_record.get("bbox"),
+                "evidence_ids": list(service.evidence_ids),
             }
-            for service, placement in zip(
-                architecture_structure.services,
-                architecture_structure.nodes,
-                strict=True,
-            )
+            for service in architecture_plan.services
         ]
-        emitted_node_by_source = {
-            placement.source_id: placement.emitted_id for placement in architecture_structure.nodes
-        }
         edge_records = [
             {
-                "source": emitted_node_by_source[str(edge["source"])],
-                "target": emitted_node_by_source[str(edge["target"])],
-                "bidirectional": bool(edge.get("bidirectional")),
-                "evidence_ids": list(edge.get("evidence_ids") or []),
+                "source": relation.source_emitted_id,
+                "target": relation.target_emitted_id,
+                "bidirectional": relation.bidirectional,
+                "evidence_ids": list(relation.evidence_ids),
             }
-            for edge in architecture_structure.edges
+            for relation in architecture_plan.relations
         ]
         group_records = [
             {
-                "id": placement.emitted_id,
-                "label": placement.label,
-                "member_ids": list(placement.member_emitted_ids),
-                "bbox": group.get("bbox"),
+                "id": group.emitted_id,
+                "label": group.text.canvas,
+                "member_ids": list(group.member_emitted_ids),
+                "bbox": group.source_record.get("bbox"),
             }
-            for group, placement in zip(
-                architecture_structure.groups,
-                architecture_structure.group_placements,
-                strict=True,
-            )
+            for group in architecture_plan.groups
         ]
+        terminal_type = (emitted_diagram_type or "architecture").casefold()
+        try:
+            validate_architecture_terminal_plan(
+                architecture_plan,
+                emitted_type=terminal_type,
+            )
+        except SerializationError:
+            return None
+        scene_direction_override = (
+            architecture_plan.fallback_direction
+            if terminal_type.startswith("flowchart")
+            else "unknown"
+        )
     elif diagram_type == "state":
         try:
             state_plan = plan_state_records(ir)
@@ -291,9 +254,7 @@ def typed_ir_to_scene(
                 "source": relationship.source_id,
                 "target": relationship.target_id,
                 "label": relationship.canvas_label,
-                "relation_type": "identifying"
-                if relationship.identifying
-                else "non_identifying",
+                "relation_type": "identifying" if relationship.identifying else "non_identifying",
                 "semantic_relation": "association",
                 "arrow_at_start": False,
                 "arrow_at_end": False,
@@ -916,9 +877,7 @@ def typed_ir_to_scene(
                 **(
                     {
                         "bbox": participant.source_record.get("bbox"),
-                        "evidence_ids": list(
-                            participant.source_record.get("evidence_ids") or []
-                        ),
+                        "evidence_ids": list(participant.source_record.get("evidence_ids") or []),
                     }
                     if participant.source_record is not None
                     else {}

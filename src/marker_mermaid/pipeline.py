@@ -100,10 +100,12 @@ from marker_mermaid.scoring import (
 from marker_mermaid.security import MermaidSecurityScanner
 from marker_mermaid.serialization import SerializationContractError, SerializationResult
 from marker_mermaid.serializers import (
+    ARCHITECTURE_TEXT_COMPATIBILITY_WARNING,
     GANTT_TEXT_COMPATIBILITY_WARNING,
     MINDMAP_TEXT_COMPATIBILITY_WARNING,
     SEQUENCE_TEXT_COMPATIBILITY_WARNING,
     SerializationError,
+    enrich_architecture_accessibility_ir,
     enrich_gantt_accessibility_ir,
     enrich_mindmap_accessibility_ir,
     enrich_sequence_accessibility_ir,
@@ -111,6 +113,7 @@ from marker_mermaid.serializers import (
     scene_to_flowchart,
     serialize_runtime_fallback_result,
     serialize_typed_ir_result,
+    validated_architecture_accessibility_ir,
     validated_gantt_metadata_ir,
     validated_mindmap_accessibility_ir,
     validated_sequence_accessibility_ir,
@@ -2067,6 +2070,19 @@ class ReconstructionPipeline:
                             # explicitly empty field cannot be laundered into a
                             # publishable Quadrant candidate.
                             validate_quadrant_explicit_metadata(typed.ir)
+                        elif typed.diagram_type in {
+                            "architecture",
+                            "c4",
+                            "deployment",
+                            "component",
+                        }:
+                            # Freeze raw metadata before derived accessibility can
+                            # turn malformed directives into ordinary strings. The
+                            # whole Architecture family regenerates derived metadata
+                            # after an accepted label repair.
+                            accessibility_source_ir = validated_architecture_accessibility_ir(
+                                typed.ir
+                            )
                         elif typed.diagram_type == "gantt":
                             accessibility_source_ir = validated_gantt_metadata_ir(typed.ir)
                         elif typed.diagram_type == "mindmap":
@@ -2087,7 +2103,12 @@ class ReconstructionPipeline:
                             # metadata types, bounds, and omitted-empty semantics
                             # have been frozen.
                             accessibility_source_ir = validated_state_accessibility_ir(typed.ir)
-                        if typed.diagram_type == "gantt":
+                        if typed.diagram_type == "architecture":
+                            enriched_ir = enrich_architecture_accessibility_ir(
+                                accessibility_source_ir,
+                                experimental=self.config.mode != Mode.STRICT,
+                            )
+                        elif typed.diagram_type == "gantt":
                             enriched_ir = enrich_gantt_accessibility_ir(
                                 accessibility_source_ir,
                                 experimental=self.config.mode != Mode.STRICT,
@@ -2144,7 +2165,18 @@ class ReconstructionPipeline:
                         stored_typed_ir = (
                             accessibility_source_ir
                             if typed.diagram_type
-                            in {"er", "gantt", "mindmap", "sequence", "state", "timeline"}
+                            in {
+                                "architecture",
+                                "c4",
+                                "deployment",
+                                "component",
+                                "er",
+                                "gantt",
+                                "mindmap",
+                                "sequence",
+                                "state",
+                                "timeline",
+                            }
                             else enriched_ir
                         )
                         stored_typed_ir = canonical_typed_ir_snapshot(stored_typed_ir)
@@ -7038,6 +7070,13 @@ class ReconstructionPipeline:
                     validated_ir = validated_treemap_accessibility_ir(validated_ir)
                 elif current.diagram_type == "venn":
                     validated_ir = validated_venn_accessibility_ir(validated_ir)
+                elif current.diagram_type in {
+                    "architecture",
+                    "c4",
+                    "deployment",
+                    "component",
+                }:
+                    validated_ir = validated_architecture_accessibility_ir(validated_ir)
                 elif current.diagram_type == "gantt":
                     validated_ir = validated_gantt_metadata_ir(validated_ir)
                 elif current.diagram_type == "mindmap":
@@ -7260,7 +7299,15 @@ class ReconstructionPipeline:
             attempted.generated_scene_ir = evaluation.generated_scene_ir
             retained_warnings = _without_evaluation_warnings(attempted.warnings)
             canonical_compatibility_warnings: list[str] = []
-            if current.diagram_type == "state":
+            if current.diagram_type in {"architecture", "c4", "deployment", "component"}:
+                retained_warnings = [
+                    warning
+                    for warning in retained_warnings
+                    if warning != ARCHITECTURE_TEXT_COMPATIBILITY_WARNING
+                ]
+                if ARCHITECTURE_TEXT_COMPATIBILITY_WARNING in canonical.warnings:
+                    canonical_compatibility_warnings.append(ARCHITECTURE_TEXT_COMPATIBILITY_WARNING)
+            elif current.diagram_type == "state":
                 retained_warnings = [
                     warning
                     for warning in retained_warnings
@@ -7291,9 +7338,7 @@ class ReconstructionPipeline:
                     if warning != SEQUENCE_TEXT_COMPATIBILITY_WARNING
                 ]
                 if SEQUENCE_TEXT_COMPATIBILITY_WARNING in canonical.warnings:
-                    canonical_compatibility_warnings.append(
-                        SEQUENCE_TEXT_COMPATIBILITY_WARNING
-                    )
+                    canonical_compatibility_warnings.append(SEQUENCE_TEXT_COMPATIBILITY_WARNING)
             elif current.diagram_type == "mindmap":
                 retained_warnings = [
                     warning

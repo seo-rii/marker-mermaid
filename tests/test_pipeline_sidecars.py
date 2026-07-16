@@ -3866,13 +3866,10 @@ def test_architecture_family_runtime_rejection_retries_flowchart_in_same_candida
     assert result.selected.diagram_type == diagram_type
     assert result.selected.typed_ir is not None
     assert {key: result.selected.typed_ir[key] for key in case["ir"]} == case["ir"]
-    assert set(result.selected.typed_ir) == {
-        *case["ir"],
-        "acc_title",
-        "acc_description",
-    }
-    assert result.selected.typed_ir["acc_title"]
-    assert result.selected.typed_ir["acc_description"]
+    # The whole Architecture family retains a validated raw metadata snapshot.
+    # Derived accessibility is regenerated for each native/fallback serialization
+    # and after accepted semantic repairs instead of being persisted as evidence.
+    assert set(result.selected.typed_ir) == set(case["ir"])
     assert result.selected.emitted_diagram_type == "flowchart"
     assert result.selected.runtime_diagram_type == "flowchart-v2"
     assert result.selected.fallback_chain == case["chain"]

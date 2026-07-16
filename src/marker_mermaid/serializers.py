@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
@@ -29,6 +29,7 @@ from marker_mermaid.flowchart_structure import (
     prepare_swimlane_structure,
 )
 from marker_mermaid.models import (
+    MAX_EVIDENCE_REFS,
     MAX_ID_CHARS,
     MAX_SCENE_ELEMENTS,
     MAX_SCENE_GROUPS,
@@ -54,6 +55,26 @@ class ArchitectureStructurePlan:
     group_placements: tuple[FlowchartGroupPlacement, ...]
 
 
+def _architecture_source_id(value: Any, *, fallback: str, context: str) -> str:
+    if value is None or (type(value) is str and value == ""):
+        source_id = fallback
+    elif type(value) is str:
+        source_id = value
+    else:
+        raise SerializationError(f"{context} must be a string")
+    if not source_id.strip() or len(source_id) > MAX_ID_CHARS:
+        raise SerializationError(f"{context} must be a bounded non-empty string")
+    if any(
+        unicodedata.category(character) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for character in source_id
+    ):
+        raise SerializationError(f"{context} contains unsupported text")
+    try:
+        source_id.encode("utf-8")
+    except UnicodeEncodeError as exc:  # pragma: no cover - Cs is rejected above
+        raise SerializationError(f"{context} is not valid UTF-8 text") from exc
+    return source_id
+
+
 def plan_architecture_structure(ir: dict[str, Any]) -> ArchitectureStructurePlan:
     """Plan the exact bounded identities visible in native and fallback output."""
 
@@ -71,11 +92,19 @@ def plan_architecture_structure(ir: dict[str, Any]) -> ArchitectureStructurePlan
     for index, group in enumerate(raw_groups, start=1):
         if not isinstance(group, dict):
             raise SerializationError("architecture groups must be objects")
-        group_id = str(group.get("id") or f"G{index}")
+        group_id = _architecture_source_id(
+            group.get("id"),
+            fallback=f"G{index}",
+            context="architecture group id",
+        )
         if group_id in group_members:
             raise SerializationError("architecture group ids must be unique")
         emitted_group_id = portable_identifier(group_id, f"G{index}")
-        label = group.get("label") or emitted_group_id
+        raw_label = group.get("label")
+        if raw_label is None or (type(raw_label) is str and raw_label == ""):
+            label = emitted_group_id
+        else:
+            label = raw_label
         if not isinstance(label, str) or len(label) > MAX_TEXT_CHARS:
             raise SerializationError("architecture group label must be a bounded string")
         group_records.append(
@@ -92,7 +121,11 @@ def plan_architecture_structure(ir: dict[str, Any]) -> ArchitectureStructurePlan
     for index, service in enumerate(raw_services, start=1):
         if not isinstance(service, dict):
             raise SerializationError("architecture services must be objects")
-        service_id = str(service.get("id") or f"S{index}")
+        service_id = _architecture_source_id(
+            service.get("id"),
+            fallback=f"S{index}",
+            context="architecture service id",
+        )
         if service_id in service_ids:
             raise SerializationError("architecture service ids must be unique")
         service_ids.add(service_id)
@@ -100,7 +133,6 @@ def plan_architecture_structure(ir: dict[str, Any]) -> ArchitectureStructurePlan
             {
                 **service,
                 "id": service_id,
-                "label": service.get("label") or service.get("name") or service_id,
             }
         )
         group_id = service.get("group")
@@ -161,11 +193,17 @@ def plan_architecture_structure(ir: dict[str, Any]) -> ArchitectureStructurePlan
     if len(raw_edges) > MAX_SCENE_RELATIONS:
         raise SerializationError("architecture edge count exceeds the Scene relation limit")
     edges: list[dict[str, Any]] = []
-    for edge in raw_edges:
+    for index, edge in enumerate(raw_edges, start=1):
         if not isinstance(edge, dict):
             raise SerializationError("architecture edges must be objects")
-        source = str(edge.get("source"))
-        target = str(edge.get("target"))
+        source_value = edge.get("source")
+        target_value = edge.get("target")
+        if type(source_value) is not str or type(target_value) is not str:
+            raise SerializationError(
+                f"architecture edge {index} requires source and target strings"
+            )
+        source = source_value
+        target = target_value
         if source not in emitted_node_by_source or target not in emitted_node_by_source:
             raise SerializationError(
                 f"architecture edge references unknown endpoint: {source!r} -> {target!r}"
@@ -492,7 +530,7 @@ def _mermaid_utf16_units(text: str) -> int:
     try:
         return len(text.encode("utf-16-le")) // 2
     except UnicodeEncodeError as exc:  # pragma: no cover - semantic text rejects surrogates
-        raise SerializationError("sequence output is not valid UTF-16") from exc
+        raise SerializationError("Mermaid output is not valid UTF-16") from exc
 
 
 def _plan_sequence_text(
@@ -812,11 +850,11 @@ def serialize_sequence(ir: dict[str, Any], *, experimental: bool = False) -> str
 _MINDMAP_METADATA_FIELDS = ("title", "description", "acc_title", "acc_description")
 _MINDMAP_MAX_OUTPUT_CHARS = 50_000
 _MINDMAP_MAX_OUTPUT_LINES = 5_000
-_MINDMAP_ENTITY_LITERAL = re.compile(
+_MARKDOWN_LABEL_ENTITY_LITERAL = re.compile(
     r"&(?P<body>#[A-Za-z0-9][^;\s]*|[A-Za-z][A-Za-z0-9]*);"
     r"|(?<!&)#(?P<standalone>[A-Za-z0-9][^;\s]*);"
 )
-_MINDMAP_NAMED_ENTITY_PREFIX = re.compile(r"&(?=[A-Za-z][A-Za-z0-9]*;)")
+_MARKDOWN_LABEL_NAMED_ENTITY_PREFIX = re.compile(r"&(?=[A-Za-z][A-Za-z0-9]*;)")
 
 MINDMAP_TEXT_COMPATIBILITY_WARNING = (
     "Mindmap text uses visible compatibility glyphs for quotes, Markdown emphasis/code "
@@ -826,13 +864,18 @@ MINDMAP_TEXT_COMPATIBILITY_WARNING = (
 
 
 @dataclass(frozen=True, slots=True)
-class MindmapTextPlan:
-    """One Mindmap terminal across semantic IR, source, and SVG canvas text."""
+class MarkdownLabelTextPlan:
+    """One quoted Markdown label across semantic IR, source, and SVG canvas text."""
 
     semantic: str
     source: str
     canvas: str
     compatibility_substitutions: bool
+
+
+# Kept as a public compatibility alias for callers that adopted the v0.3
+# Mindmap plan before Architecture began sharing the same Mermaid label grammar.
+MindmapTextPlan = MarkdownLabelTextPlan
 
 
 @dataclass(frozen=True, slots=True)
@@ -886,7 +929,7 @@ def validated_mindmap_accessibility_ir(ir: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _mindmap_canvas_text(semantic: str) -> str:
+def _markdown_label_canvas_text(semantic: str) -> str:
     def replace_entity(match: re.Match[str]) -> str:
         body = match.group("body")
         if body is None:
@@ -896,7 +939,7 @@ def _mindmap_canvas_text(semantic: str) -> str:
         return f"&{body};"
 
     return (
-        _MINDMAP_ENTITY_LITERAL.sub(replace_entity, semantic)
+        _MARKDOWN_LABEL_ENTITY_LITERAL.sub(replace_entity, semantic)
         .replace('"', "″")
         .replace("*", "＊")
         .replace("`", "ˋ")
@@ -904,11 +947,11 @@ def _mindmap_canvas_text(semantic: str) -> str:
     )
 
 
-def _mindmap_source_text(canvas: str) -> str:
+def _markdown_label_source_text(canvas: str) -> str:
     # Split source-authored named entities before adding XML entities for actual
     # angle brackets. This distinction keeps literal ``&amp;`` visible as text while
     # still allowing ``<`` and ``>`` to round-trip through Mermaid's SVG renderer.
-    source = _MINDMAP_NAMED_ENTITY_PREFIX.sub(
+    source = _MARKDOWN_LABEL_NAMED_ENTITY_PREFIX.sub(
         f"&{_SEQUENCE_ZERO_WIDTH_SPACE}",
         canvas,
     )
@@ -928,15 +971,549 @@ def _mindmap_source_text(canvas: str) -> str:
     return f"{_SEQUENCE_ZERO_WIDTH_SPACE}{source}"
 
 
-def _plan_mindmap_text(value: Any, *, context: str) -> MindmapTextPlan:
+def _plan_markdown_label_text(value: Any, *, context: str) -> MarkdownLabelTextPlan:
     semantic = _semantic_terminal_text(value, context=context)
-    canvas = _mindmap_canvas_text(semantic)
-    return MindmapTextPlan(
+    canvas = _markdown_label_canvas_text(semantic)
+    return MarkdownLabelTextPlan(
         semantic=semantic,
-        source=_mindmap_source_text(canvas),
+        source=_markdown_label_source_text(canvas),
         canvas=canvas,
         compatibility_substitutions=canvas != semantic,
     )
+
+
+def _plan_mindmap_text(value: Any, *, context: str) -> MindmapTextPlan:
+    """Compatibility wrapper for the shared quoted-Markdown label planner."""
+
+    return _plan_markdown_label_text(value, context=context)
+
+
+_ARCHITECTURE_METADATA_FIELDS = ("title", "description", "acc_title", "acc_description")
+_ARCHITECTURE_MAX_OUTPUT_CHARS = 50_000
+_ARCHITECTURE_MAX_OUTPUT_LINES = 5_000
+_ARCHITECTURE_ICONS = frozenset({"cloud", "database", "disk", "internet", "server"})
+
+ARCHITECTURE_TEXT_COMPATIBILITY_WARNING = (
+    "Architecture labels use visible compatibility glyphs for quotes, Markdown "
+    "emphasis/code delimiters, and numeric entity-like literals that Mermaid 11.16 "
+    "cannot preserve verbatim; semantic text remains in typed IR."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ArchitectureAccessibilityPlan:
+    """Exact Architecture accessibility text across semantics, source, and SVG metadata."""
+
+    title_semantic: str
+    title_source: str
+    title_canvas: str
+    description_semantic: str
+    description_source: str
+    description_canvas: str
+
+
+@dataclass(frozen=True, slots=True)
+class ArchitectureServicePlan:
+    """One Architecture service with a shared native/fallback terminal identity."""
+
+    source_record: dict[str, Any]
+    source_id: str
+    emitted_id: str
+    text: MarkdownLabelTextPlan
+    icon: str
+    group_source_id: str | None
+    group_emitted_id: str | None
+    evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ArchitectureGroupPlan:
+    """One Architecture group and its exact terminal-visible membership."""
+
+    source_record: dict[str, Any]
+    source_id: str
+    emitted_id: str
+    text: MarkdownLabelTextPlan
+    icon: str
+    member_source_ids: tuple[str, ...]
+    member_emitted_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ArchitectureRelationPlan:
+    """One unlabeled Architecture connector shared by both emitted grammars."""
+
+    source_record: dict[str, Any]
+    scene_id: str
+    source_id: str
+    target_id: str
+    source_emitted_id: str
+    target_emitted_id: str
+    source_side: str
+    target_side: str
+    bidirectional: bool
+    evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ArchitecturePlan:
+    """Canonical Architecture records for serialization, Scene, OCR, and repair."""
+
+    services: tuple[ArchitectureServicePlan, ...]
+    groups: tuple[ArchitectureGroupPlan, ...]
+    relations: tuple[ArchitectureRelationPlan, ...]
+    accessibility: ArchitectureAccessibilityPlan
+    fallback_direction: str
+    compatibility_substitutions: bool
+
+
+def validated_architecture_accessibility_ir(ir: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate raw Architecture metadata before accessibility enrichment."""
+
+    for field in _ARCHITECTURE_METADATA_FIELDS:
+        value = ir.get(field)
+        if value is None:
+            continue
+        if type(value) is not str:
+            raise SerializationError(f"architecture {field} must be text when provided")
+        if value == "":
+            continue
+        _semantic_terminal_text(value, context=f"architecture {field}")
+    return {
+        key: value
+        for key, value in ir.items()
+        if key not in _ARCHITECTURE_METADATA_FIELDS or value != ""
+    }
+
+
+def _architecture_record_label(
+    record: Mapping[str, Any],
+    *,
+    fields: tuple[str, ...],
+    fallback: str,
+    context: str,
+) -> MarkdownLabelTextPlan:
+    selected: Any = fallback
+    for field in fields:
+        value = record.get(field)
+        if value is None or (type(value) is str and value == ""):
+            continue
+        selected = value
+        break
+    planned = _plan_markdown_label_text(selected, context=context)
+    plain_candidate = (
+        planned.source.removeprefix(_SEQUENCE_ZERO_WIDTH_SPACE)
+        .replace(f" {_SEQUENCE_ZERO_WIDTH_SPACE} ", " ")
+        .replace(f"_{_SEQUENCE_ZERO_WIDTH_SPACE}", "_")
+    )
+    underscores_are_internal = all(
+        0 < index < len(planned.semantic) - 1
+        and planned.semantic[index - 1].isalnum()
+        and planned.semantic[index + 1].isalnum()
+        for index, character in enumerate(planned.semantic)
+        if character == "_"
+    )
+    characters_are_plain = all(
+        character.isalnum() or character in {" ", "_", "-", ".", ",", "/"}
+        for character in planned.semantic
+    )
+    if (
+        plain_candidate != planned.semantic
+        or not underscores_are_internal
+        or not characters_are_plain
+    ):
+        return planned
+    # Plain labels do not need the Mindmap root sentinel or Markdown whitespace
+    # sentinels in either Architecture grammar. Keeping their source literal also
+    # preserves the long-standing readable sidecar form.
+    return replace(planned, source=planned.semantic)
+
+
+def _architecture_icon(value: Any, *, fallback: str, context: str) -> str:
+    if value is None or (type(value) is str and value == ""):
+        return fallback
+    if type(value) is not str:
+        raise SerializationError(f"{context} must be text")
+    normalized = value.casefold()
+    return normalized if normalized in _ARCHITECTURE_ICONS else fallback
+
+
+def _architecture_evidence_ids(record: Mapping[str, Any]) -> tuple[str, ...]:
+    """Keep valid record-local provenance without coercing malformed containers."""
+
+    values = record.get("evidence_ids")
+    if values is None:
+        return ()
+    if type(values) is not list or len(values) > MAX_EVIDENCE_REFS:
+        return ()
+    if any(
+        type(value) is not str
+        or not value
+        or len(value) > MAX_ID_CHARS
+        or any(0xD800 <= ord(character) <= 0xDFFF for character in value)
+        for value in values
+    ):
+        return ()
+    return tuple(values)
+
+
+def _architecture_numeric_entity(character: str) -> str:
+    return f"#{ord(character)};"
+
+
+def _architecture_accessibility_source(text: str) -> str:
+    """Encode active source spellings while preserving exact SVG metadata text.
+
+    Mermaid's accessibility grammar decodes numeric entities that omit the usual
+    leading ampersand. Encode literal entity introducers first, then split only
+    scanner-active source spellings. This keeps source-authored ``&amp;`` distinct
+    from a literal ampersand and introduces no zero-width canvas characters.
+    """
+
+    source = "".join(
+        _architecture_numeric_entity(character) if character in {"&", "#", "<", ">"} else character
+        for character in text
+    )
+    # Architecture's accessibility lexer stops at any raw ``%%`` pair, not only
+    # a complete directive opening.
+    source = source.replace("%%", f"%{_architecture_numeric_entity('%')}")
+    source = source.replace("//", f"/{_architecture_numeric_entity('/')}")
+    source = _SEQUENCE_CSS_IMPORT.sub(
+        lambda match: (
+            f"{match.group(0)[:3]}"
+            f"{_architecture_numeric_entity(match.group(0)[3])}"
+            f"{match.group(0)[4:]}"
+        ),
+        source,
+    )
+    source = _SEQUENCE_DANGEROUS_SCHEME.sub(
+        lambda match: f"{match.group(0)[:-1]}{_architecture_numeric_entity(':')}",
+        source,
+    )
+    source = _SEQUENCE_REMOTE_ICON.sub(
+        lambda match: (
+            f"{match.group(0)[:4]}"
+            f"{_architecture_numeric_entity(match.group(0)[4])}"
+            f"{match.group(0)[5:]}"
+            if match.group(0).casefold() == "iconify"
+            else match.group(0).replace(":", _architecture_numeric_entity(":"))
+        ),
+        source,
+    )
+    source = _SEQUENCE_CALLBACK.sub(
+        lambda match: f"{match.group(0)[:-1]}{_architecture_numeric_entity('(')}",
+        source,
+    )
+    source = _SEQUENCE_CONTROL_WORD.sub(
+        lambda match: (
+            f"{match.group(0)[0]}"
+            f"{_architecture_numeric_entity(match.group(0)[1])}"
+            f"{match.group(0)[2:]}"
+        ),
+        source,
+    )
+    source = _SEQUENCE_CONFIG.sub(
+        lambda match: f"{match.group(0)[:-1]}{_architecture_numeric_entity(':')}",
+        source,
+    )
+    return source.replace("---", f"-{_architecture_numeric_entity('-')}-")
+
+
+def _architecture_accessibility_plan(
+    ir: Mapping[str, Any],
+    *,
+    services: tuple[ArchitectureServicePlan, ...],
+    relations: tuple[ArchitectureRelationPlan, ...],
+    accessibility_type: str,
+    experimental: bool,
+) -> ArchitectureAccessibilityPlan:
+    semantic_ir: dict[str, Any] = {
+        key: ir[key] for key in _ARCHITECTURE_METADATA_FIELDS if key in ir
+    }
+    semantic_ir["services"] = [
+        {"id": service.source_id, "label": service.text.semantic} for service in services
+    ]
+    semantic_ir["edges"] = [
+        {"source": relation.source_id, "target": relation.target_id} for relation in relations
+    ]
+    resolved = resolve_accessibility(
+        semantic_ir,
+        accessibility_type,
+        experimental=experimental,
+    )
+    title = _semantic_terminal_text(resolved.title, context="architecture resolved title")
+    description = _semantic_terminal_text(
+        resolved.description,
+        context="architecture resolved description",
+    )
+    return ArchitectureAccessibilityPlan(
+        title_semantic=title,
+        title_source=_architecture_accessibility_source(title),
+        title_canvas=title,
+        description_semantic=description,
+        description_source=_architecture_accessibility_source(description),
+        description_canvas=description,
+    )
+
+
+def _architecture_native_lines(plan: ArchitecturePlan) -> Iterator[str]:
+    yield "architecture-beta"
+    yield f"    accTitle: {plan.accessibility.title_source}"
+    yield f"    accDescr: {plan.accessibility.description_source}"
+    for group in plan.groups:
+        yield f'    group {group.emitted_id}({group.icon})["{group.text.source}"]'
+    for service in plan.services:
+        suffix = f" in {service.group_emitted_id}" if service.group_emitted_id is not None else ""
+        yield (f'    service {service.emitted_id}({service.icon})["{service.text.source}"]{suffix}')
+    for relation in plan.relations:
+        connector = "<-->" if relation.bidirectional else "-->"
+        yield (
+            f"    {relation.source_emitted_id}:{relation.source_side} {connector} "
+            f"{relation.target_side}:{relation.target_emitted_id}"
+        )
+
+
+def _architecture_fallback_lines(plan: ArchitecturePlan) -> Iterator[str]:
+    yield f"flowchart {plan.fallback_direction}"
+    yield f"    accTitle: {plan.accessibility.title_source}"
+    yield f"    accDescr: {plan.accessibility.description_source}"
+    services_by_source = {service.source_id: service for service in plan.services}
+    grouped_source_ids: set[str] = set()
+    for group in plan.groups:
+        if not group.member_source_ids:
+            raise SerializationError(
+                f"architecture group {group.source_id!r} has no services for Flowchart fallback"
+            )
+        yield f'    subgraph {group.emitted_id}["{group.text.source}"]'
+        for source_id in group.member_source_ids:
+            service = services_by_source[source_id]
+            yield f'        {service.emitted_id}["{service.text.source}"]'
+            grouped_source_ids.add(source_id)
+        yield "    end"
+    for service in plan.services:
+        if service.source_id not in grouped_source_ids:
+            yield f'    {service.emitted_id}["{service.text.source}"]'
+    for relation in plan.relations:
+        connector = "<-->" if relation.bidirectional else "-->"
+        yield f"    {relation.source_emitted_id} {connector} {relation.target_emitted_id}"
+
+
+def _bounded_architecture_source(lines: Iterable[str], *, terminal: str) -> str:
+    parts: list[str] = []
+    utf16_units = 0
+    for line_count, line in enumerate(lines, start=1):
+        # Mermaid source ends in a newline, so its split-line representation also
+        # contains one trailing empty line. Enforce that budget before retaining
+        # another generated statement.
+        if line_count + 1 > _ARCHITECTURE_MAX_OUTPUT_LINES:
+            raise SerializationError(
+                f"{terminal} output exceeds source-line limit of {_ARCHITECTURE_MAX_OUTPUT_LINES}"
+            )
+        line_units = _mermaid_utf16_units(line) + 1
+        if utf16_units + line_units > _ARCHITECTURE_MAX_OUTPUT_CHARS:
+            raise SerializationError(
+                f"{terminal} output exceeds UTF-16 source-character limit of "
+                f"{_ARCHITECTURE_MAX_OUTPUT_CHARS}"
+            )
+        utf16_units += line_units
+        parts.append(f"{line}\n")
+    return "".join(parts)
+
+
+def validate_architecture_terminal_plan(
+    plan: ArchitecturePlan,
+    *,
+    emitted_type: str,
+) -> None:
+    """Preflight the exact Architecture-family terminal selected by runtime."""
+
+    is_fallback = emitted_type.casefold().startswith("flowchart")
+    source_line_count = (
+        3 + (2 * len(plan.groups)) + len(plan.services) + len(plan.relations)
+        if is_fallback
+        else 3 + len(plan.groups) + len(plan.services) + len(plan.relations)
+    )
+    if source_line_count + 1 > _ARCHITECTURE_MAX_OUTPUT_LINES:
+        terminal = "architecture Flowchart fallback" if is_fallback else "architecture"
+        raise SerializationError(
+            f"{terminal} output exceeds source-line limit of {_ARCHITECTURE_MAX_OUTPUT_LINES}"
+        )
+    if is_fallback:
+        _bounded_architecture_source(
+            _architecture_fallback_lines(plan),
+            terminal="architecture Flowchart fallback",
+        )
+        return
+    _bounded_architecture_source(
+        _architecture_native_lines(plan),
+        terminal="architecture",
+    )
+
+
+def plan_architecture_records(
+    ir: Mapping[str, Any],
+    *,
+    experimental: bool = False,
+    accessibility_type: str = "architecture",
+) -> ArchitecturePlan:
+    """Freeze Architecture identities, terminal labels, topology, and accessibility."""
+
+    validated_ir = validated_architecture_accessibility_ir(ir)
+    structure = plan_architecture_structure(dict(validated_ir))
+    emitted_group_by_source = {
+        placement.source_id: placement.emitted_id for placement in structure.group_placements
+    }
+    services: list[ArchitectureServicePlan] = []
+    for index, (record, placement) in enumerate(
+        zip(structure.services, structure.nodes, strict=True),
+        start=1,
+    ):
+        group_value = record.get("group")
+        group_source_id = (
+            str(group_value) if group_value is not None and group_value != "" else None
+        )
+        services.append(
+            ArchitectureServicePlan(
+                source_record=record,
+                source_id=placement.source_id,
+                emitted_id=placement.emitted_id,
+                text=_architecture_record_label(
+                    record,
+                    fields=("label", "name"),
+                    fallback=placement.source_id,
+                    context=f"architecture service {index} label",
+                ),
+                icon=_architecture_icon(
+                    record.get("icon"),
+                    fallback="server",
+                    context=f"architecture service {index} icon",
+                ),
+                group_source_id=group_source_id,
+                group_emitted_id=(
+                    emitted_group_by_source[group_source_id]
+                    if group_source_id is not None
+                    else None
+                ),
+                evidence_ids=_architecture_evidence_ids(record),
+            )
+        )
+    groups = tuple(
+        ArchitectureGroupPlan(
+            source_record=record,
+            source_id=placement.source_id,
+            emitted_id=placement.emitted_id,
+            text=_architecture_record_label(
+                record,
+                fields=("label",),
+                fallback=placement.emitted_id,
+                context=f"architecture group {index} label",
+            ),
+            icon=_architecture_icon(
+                record.get("icon"),
+                fallback="cloud",
+                context=f"architecture group {index} icon",
+            ),
+            member_source_ids=placement.member_source_ids,
+            member_emitted_ids=placement.member_emitted_ids,
+        )
+        for index, (record, placement) in enumerate(
+            zip(structure.groups, structure.group_placements, strict=True),
+            start=1,
+        )
+    )
+    emitted_service_by_source = {service.source_id: service.emitted_id for service in services}
+    relations: list[ArchitectureRelationPlan] = []
+    for index, edge in enumerate(structure.edges, start=1):
+        source_side_value = edge.get("source_side")
+        target_side_value = edge.get("target_side")
+        source_side = (
+            "R" if source_side_value is None or source_side_value == "" else source_side_value
+        )
+        target_side = (
+            "L" if target_side_value is None or target_side_value == "" else target_side_value
+        )
+        if type(source_side) is not str or source_side not in {"L", "R", "T", "B"}:
+            raise SerializationError(f"architecture edge {index} uses an unsupported source_side")
+        if type(target_side) is not str or target_side not in {"L", "R", "T", "B"}:
+            raise SerializationError(f"architecture edge {index} uses an unsupported target_side")
+        bidirectional_value = edge.get("bidirectional")
+        if bidirectional_value is None:
+            bidirectional = False
+        elif type(bidirectional_value) is bool:
+            bidirectional = bidirectional_value
+        else:
+            raise SerializationError(f"architecture edge {index} bidirectional must be a boolean")
+        relations.append(
+            ArchitectureRelationPlan(
+                source_record=edge,
+                scene_id=f"generated-relation-{index}",
+                source_id=edge["source"],
+                target_id=edge["target"],
+                source_emitted_id=emitted_service_by_source[edge["source"]],
+                target_emitted_id=emitted_service_by_source[edge["target"]],
+                source_side=source_side,
+                target_side=target_side,
+                bidirectional=bidirectional,
+                evidence_ids=_architecture_evidence_ids(edge),
+            )
+        )
+    direction_value = validated_ir.get("direction")
+    fallback_direction = (
+        direction_value.upper()
+        if type(direction_value) is str and direction_value.upper() in {"TB", "BT", "LR", "RL"}
+        else "LR"
+    )
+    services_tuple = tuple(services)
+    relations_tuple = tuple(relations)
+    accessibility = _architecture_accessibility_plan(
+        validated_ir,
+        services=services_tuple,
+        relations=relations_tuple,
+        accessibility_type=accessibility_type,
+        experimental=experimental,
+    )
+    plan = ArchitecturePlan(
+        services=services_tuple,
+        groups=groups,
+        relations=relations_tuple,
+        accessibility=accessibility,
+        fallback_direction=fallback_direction,
+        compatibility_substitutions=any(
+            item.text.compatibility_substitutions for item in (*services_tuple, *groups)
+        ),
+    )
+    # The native grammar is the first terminal attempted for every Architecture
+    # family. Reject an oversized plan before Scene/OCR can claim content that no
+    # candidate is allowed to emit.
+    validate_architecture_terminal_plan(plan, emitted_type="architecture")
+    return plan
+
+
+def enrich_architecture_accessibility_ir(
+    ir: Mapping[str, Any],
+    *,
+    experimental: bool,
+    architecture_plan: ArchitecturePlan | None = None,
+) -> dict[str, Any]:
+    """Return raw Architecture metadata plus accessibility from planned semantics."""
+
+    validated_ir = validated_architecture_accessibility_ir(ir)
+    plan = architecture_plan or plan_architecture_records(
+        validated_ir,
+        experimental=experimental,
+    )
+    accessibility = _architecture_accessibility_plan(
+        validated_ir,
+        services=plan.services,
+        relations=plan.relations,
+        accessibility_type="architecture",
+        experimental=experimental,
+    )
+    return {
+        **validated_ir,
+        "acc_title": accessibility.title_semantic,
+        "acc_description": accessibility.description_semantic,
+    }
 
 
 def _mindmap_source_line(node: MindmapNodePlan) -> str:
@@ -2055,44 +2632,21 @@ def serialize_gantt(ir: dict[str, Any], *, experimental: bool = False) -> str:
     return "\n".join(lines) + "\n"
 
 
-def serialize_architecture(ir: dict[str, Any], *, experimental: bool = False) -> str:
-    structure = plan_architecture_structure(ir)
-    lines = [
-        "architecture-beta",
-        *_accessibility(ir, experimental, diagram_type="architecture"),
-    ]
-    emitted_group_by_source = {
-        group.source_id: group.emitted_id for group in structure.group_placements
-    }
-    for group, placement in zip(
-        structure.groups,
-        structure.group_placements,
-        strict=True,
-    ):
-        icon = _identifier(str(group.get("icon") or "cloud"))
-        lines.append(f'    group {placement.emitted_id}({icon})["{_text(placement.label)}"]')
-    emitted_service_by_source = {node.source_id: node.emitted_id for node in structure.nodes}
-    for service, placement in zip(structure.services, structure.nodes, strict=True):
-        source_id = placement.source_id
-        icon = _identifier(str(service.get("icon") or "server"))
-        group = service.get("group")
-        suffix = (
-            f" in {emitted_group_by_source[str(group)]}"
-            if group is not None and group != ""
-            else ""
-        )
-        label = _text(service.get("label") or service.get("name") or source_id)
-        lines.append(f'    service {placement.emitted_id}({icon})["{label}"]{suffix}')
-    for edge in structure.edges:
-        source = emitted_service_by_source[str(edge["source"])]
-        target = emitted_service_by_source[str(edge["target"])]
-        source_side = edge.get("source_side", "R")
-        target_side = edge.get("target_side", "L")
-        if source_side not in {"L", "R", "T", "B"} or target_side not in {"L", "R", "T", "B"}:
-            source_side, target_side = "R", "L"
-        connector = "<-->" if edge.get("bidirectional") else "-->"
-        lines.append(f"    {source}:{source_side} {connector} {target_side}:{target}")
-    return "\n".join(lines) + "\n"
+def serialize_architecture(
+    ir: dict[str, Any],
+    *,
+    experimental: bool = False,
+    accessibility_type: str = "architecture",
+) -> str:
+    plan = plan_architecture_records(
+        ir,
+        experimental=experimental,
+        accessibility_type=accessibility_type,
+    )
+    return _bounded_architecture_source(
+        _architecture_native_lines(plan),
+        terminal="architecture",
+    )
 
 
 def serialize_architecture_flowchart_fallback(
@@ -2109,55 +2663,14 @@ def serialize_architecture_flowchart_fallback(
     connector ports, and relation labels remain in typed IR and review metadata.
     """
 
-    structure = plan_architecture_structure(ir)
-    groups: list[dict[str, Any]] = []
-    for placement in structure.group_placements:
-        if not placement.member_source_ids:
-            raise SerializationError(
-                f"architecture group {placement.source_id!r} has no services for Flowchart fallback"
-            )
-        groups.append(
-            {
-                "id": placement.source_id,
-                "label": placement.label,
-                "member_ids": list(placement.member_source_ids),
-            }
-        )
-    edges = [
-        {
-            "source": edge["source"],
-            "target": edge["target"],
-            "bidirectional": bool(edge.get("bidirectional")),
-        }
-        for edge in structure.edges
-    ]
-
-    accessibility = resolve_accessibility(
+    plan = plan_architecture_records(
         ir,
-        accessibility_type,
         experimental=experimental,
+        accessibility_type=accessibility_type,
     )
-    direction = str(ir.get("direction") or "LR").upper()
-    if direction not in {"TB", "BT", "LR", "RL"}:
-        direction = "LR"
-    return serialize_flowchart(
-        {
-            **ir,
-            "acc_title": accessibility.title,
-            "acc_description": accessibility.description,
-            "direction": direction,
-            "nodes": [
-                {"id": placement.source_id, "label": service["label"]}
-                for service, placement in zip(
-                    structure.services,
-                    structure.nodes,
-                    strict=True,
-                )
-            ],
-            "groups": groups,
-            "edges": edges,
-        },
-        experimental=experimental,
+    return _bounded_architecture_source(
+        _architecture_fallback_lines(plan),
+        terminal="architecture Flowchart fallback",
     )
 
 
@@ -2224,6 +2737,7 @@ def _ensure_extended_serializers() -> None:
     from marker_mermaid.serializers_experimental import serialize_experimental
     from marker_mermaid.serializers_phase2 import (
         BLOCK_ACCESSIBILITY_LIMITATION,
+        plan_phase2_architecture_ir,
         serialize_phase2,
     )
     from marker_mermaid.serializers_planning import serialize_planning
@@ -2257,6 +2771,14 @@ def _ensure_extended_serializers() -> None:
             experimental: bool = False,
             _requested_type: str = requested_type,
         ) -> SerializationResult:
+            architecture_compatibility_substitutions = False
+            if _requested_type in {"c4", "deployment", "component"}:
+                phase2_architecture_ir = plan_phase2_architecture_ir(_requested_type, ir)
+                architecture_compatibility_substitutions = plan_architecture_records(
+                    phase2_architecture_ir,
+                    experimental=experimental,
+                    accessibility_type=_requested_type,
+                ).compatibility_substitutions
             code, emitted_type, fallback_reason = serialize_phase2(
                 _requested_type,
                 ir,
@@ -2264,19 +2786,29 @@ def _ensure_extended_serializers() -> None:
             )
             stability = stabilities[_requested_type]
             if emitted_type == _requested_type:
+                native_warnings = (
+                    (ARCHITECTURE_TEXT_COMPATIBILITY_WARNING,)
+                    if architecture_compatibility_substitutions
+                    else ()
+                )
                 return SerializationResult.native(
                     _requested_type,
                     code,
                     warnings=(
-                        (BLOCK_ACCESSIBILITY_LIMITATION,) if _requested_type == "block" else ()
+                        (BLOCK_ACCESSIBILITY_LIMITATION,)
+                        if _requested_type == "block"
+                        else native_warnings
                     ),
                     stability=stability,
                 )
+            fallback_warnings = [fallback_reason or f"Portable fallback from {_requested_type}."]
+            if architecture_compatibility_substitutions:
+                fallback_warnings.append(ARCHITECTURE_TEXT_COMPATIBILITY_WARNING)
             return SerializationResult.fallback(
                 _requested_type,
                 emitted_type,
                 code,
-                warnings=(fallback_reason or f"Portable fallback from {_requested_type}.",),
+                warnings=tuple(fallback_warnings),
                 stability=stability,
             )
 
@@ -2508,6 +3040,7 @@ def serialize_typed_ir_result(
     er_plan = None
     state_record_compatibility_substitutions = False
     state_plan = None
+    architecture_plan = None
     gantt_plan = None
     mindmap_plan = None
     sequence_plan = None
@@ -2520,6 +3053,14 @@ def serialize_typed_ir_result(
         _validate_quadrant_explicit_accessibility_fields(ir)
     elif diagram_type == "sankey":
         _validate_sankey_explicit_accessibility_fields(ir)
+    elif diagram_type == "architecture":
+        accessibility_source_ir = validated_architecture_accessibility_ir(ir)
+        architecture_plan = plan_architecture_records(
+            accessibility_source_ir,
+            experimental=experimental,
+        )
+    elif diagram_type in {"c4", "deployment", "component"}:
+        accessibility_source_ir = validated_architecture_accessibility_ir(ir)
     elif diagram_type in {"treemap", "venn"}:
         accessibility_source_ir = _validated_chart_set_accessibility_ir(diagram_type, ir)
     elif diagram_type == "gantt":
@@ -2553,7 +3094,13 @@ def serialize_typed_ir_result(
         state_plan = plan_state_records(accessibility_source_ir)
         state_record_compatibility_substitutions = state_plan.compatibility_substitutions
     _ensure_extended_serializers()
-    if diagram_type == "gantt":
+    if diagram_type == "architecture":
+        enriched_ir = enrich_architecture_accessibility_ir(
+            accessibility_source_ir,
+            experimental=experimental,
+            architecture_plan=architecture_plan,
+        )
+    elif diagram_type == "gantt":
         enriched_ir = enrich_gantt_accessibility_ir(
             accessibility_source_ir,
             experimental=experimental,
@@ -2604,7 +3151,13 @@ def serialize_typed_ir_result(
         enriched_ir,
         experimental=experimental,
     )
-    if diagram_type == "er":
+    if diagram_type == "architecture" and architecture_plan.compatibility_substitutions:
+        if ARCHITECTURE_TEXT_COMPATIBILITY_WARNING not in result.warnings:
+            result = replace(
+                result,
+                warnings=(*result.warnings, ARCHITECTURE_TEXT_COMPATIBILITY_WARNING),
+            )
+    elif diagram_type == "er":
         from marker_mermaid.serializers_uml import (
             ER_TEXT_COMPATIBILITY_WARNING,
             plan_er_accessibility,
@@ -2666,12 +3219,15 @@ def serialize_typed_ir_result(
                 result,
                 warnings=(*result.warnings, SEQUENCE_TEXT_COMPATIBILITY_WARNING),
             )
-    elif diagram_type == "mindmap" and mindmap_plan.compatibility_substitutions:
-        if MINDMAP_TEXT_COMPATIBILITY_WARNING not in result.warnings:
-            result = replace(
-                result,
-                warnings=(*result.warnings, MINDMAP_TEXT_COMPATIBILITY_WARNING),
-            )
+    elif (
+        diagram_type == "mindmap"
+        and mindmap_plan.compatibility_substitutions
+        and MINDMAP_TEXT_COMPATIBILITY_WARNING not in result.warnings
+    ):
+        result = replace(
+            result,
+            warnings=(*result.warnings, MINDMAP_TEXT_COMPATIBILITY_WARNING),
+        )
     if supports_accessibility_directives(result.emitted_type):
         return result
     warning = accessibility_limitation_warning(result.emitted_type)

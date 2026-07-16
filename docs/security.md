@@ -21,6 +21,16 @@ Flowchart를 한 번만 만들고 source security scan, parse/render, SVG, termi
 실패하면 해당 후보만 invalid로 유지합니다. 각 손실과 전환은 candidate warning, fallback chain과 repair
 history에 기록되고 후보 budget이나 보안 allowlist를 늘리지 않습니다.
 
+Architecture service/group label은 quoted Markdown terminal plan에서 directive, callback, URL, remote icon,
+CSS import와 statement-like token을 source-only separator로 분리합니다. Quote·Markdown delimiter·numeric
+entity-like spelling을 Mermaid 11.16이 그대로 표시할 수 없을 때만 visible compatibility glyph를 쓰고
+warning을 남깁니다. `accTitle`/`accDescr`는 별도 grammar-scoped `#NN;` codec으로 active spelling을 분리해
+SVG metadata 원문을 보존합니다. 이 numeric codec은 실행 statement나 direct Mermaid를 난독화하는
+우회 수단으로 허용하지 않으며, 최종 source scanner·parse/render·SVG 검사는 그대로 적용됩니다.
+C4·Deployment·Component도 raw 접근성 snapshot을 유지해 accepted repair마다 이 codec 입력을 다시 만들며,
+Phase 2 projection은 endpoint의 `str()` coercion과 falsey label fallback을 금지해 실제 `"None"`/`"1"` ID를
+이용한 invented edge나 malformed label 세탁을 차단합니다.
+
 ## strict에서 금지되는 입력
 
 - `click`, callback, JavaScript

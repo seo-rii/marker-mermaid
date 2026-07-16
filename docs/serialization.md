@@ -310,6 +310,37 @@ budget은 증가하지 않습니다. 성공하면 requested type은 유지하되
 `c4|deployment|component → architecture → flowchart` 전체 경로를 기록합니다. 전환은 warning과
 `runtime_portable_fallback` repair history에도 남습니다.
 
+### Architecture terminal plan
+
+Architecture native와 nested Flowchart는 service/group의 semantic text, Mermaid source, 실제 SVG canvas
+text를 하나의 frozen plan에서 공유합니다. `label` → `name` → source ID와 group label fallback을 한 번만
+결정하고, Unicode whitespace를 한 ASCII space로 정규화하며 non-string·normalized-empty·control/format·
+surrogate·oversized text를 runtime 전에 거부합니다. Plain label source는 읽기 쉬운 원문을 유지하고,
+quote·Markdown emphasis/code/link delimiter·entity-like literal·scanner/lexer-active spelling이 있는 label만
+quoted-Markdown 전용 source neutralization을 사용합니다. Mermaid 11.16이 verbatim으로 보존하지 못하는
+quote/Markdown delimiter/numeric entity-like spelling은 compatibility glyph와 candidate warning으로
+공개하고 semantic 원문은 raw typed/review IR에 남깁니다. 이 조건부 warning은 Architecture 요청뿐 아니라
+같은 terminal plan을 사용하는 C4·Deployment·Component의 initial candidate와 accepted repair에도 동일하게
+추가·제거됩니다.
+
+두 serializer는 이 plan에서 직접 source를 만들며 pre-escaped label을 공용 `_text()`나 generic Flowchart
+serializer에 다시 넣지 않습니다. 따라서 backslash duplication과 literal `&quot;` 재인코딩이 없습니다.
+Scene element/group label과 semantic OCR projection도 같은 canvas text, emitted ID, membership, endpoint,
+bidirectional marker와 record-local evidence를 사용합니다. Raw relation label·port·icon은 해당 terminal이
+표시하는 범위 밖에서 OCR text로 승격하지 않습니다. Native Scene direction은 grammar layout을 추측하지
+않아 `unknown`, Flowchart retry는 validated `TB/BT/LR/RL` 또는 기본 `LR`을 사용합니다.
+`bidirectional`은 exact built-in boolean 또는 생략만 허용하므로 문자열 `"false"`를 truthy 양방향 간선으로
+바꾸지 않습니다. `evidence_ids`가 bounded string list가 아니면 Mermaid 구조는 유지하되 해당 service 또는
+relation의 evidence tuple 전체만 비웁니다.
+
+Raw 접근성 네 필드는 enrichment 전에 검사하고 exact empty를 omitted로 만든 snapshot만 candidate에
+저장합니다. Native/fallback serialization과 accepted repair는 현재 service plan에서 derived accessibility를
+재생성합니다. Native와 retry source는 각각 50,000 UTF-16 unit 및 5,000줄을 넘으면 fail closed입니다.
+줄 수는 plan cardinality로 source 생성 전에 계산하고, UTF-16 unit은 statement별로 누적해 상한을 넘는 전체
+line list나 source 문자열을 먼저 만들지 않습니다.
+누락/non-string edge endpoint는 문자열로 coercion하지 않으며, source ID가 실제로 `"None"`인 service에도
+잘못 연결하지 않습니다.
+
 ### C4 자동 후보와 진단용 native C4
 
 C4 typed extraction은 `elements: list` root와 선택 `boundaries`·`relations`·`level`을 strict nested
@@ -335,6 +366,11 @@ service/group ID, 실제 표시 label, membership, endpoint 및 bidirectional co
 runtime이 Architecture를 받아들이거나 Flowchart로 재시도해도 평가 구조는 게시된 의미 표현과 같은 ID
 공간에 있습니다.
 
+Projection은 `label`/`name`에서 `None`과 exact empty string만 fallback으로 간주합니다. `0`, `False`, list
+같은 falsey 비문자 값은 source ID label로 세탁하지 않고 공용 terminal text gate에서 거부합니다. Relation
+source/target도 exact non-empty string이어야 하며 누락값이나 숫자를 `"None"`/`"1"`로 바꾸지 않으므로 같은
+문자열 ID가 실제 element로 존재해도 invented edge를 만들지 않습니다.
+
 원 element의 bbox/`evidence_ids`, relation evidence와 boundary bbox는 attribution을 위해 유지합니다.
 relation polyline, technology, description, relation label, exact C4 boundary notation처럼 fallback이
 표시하지 않는 raw metadata는 generated node/edge/group label이나 topology로 승격하지 않고 typed IR에만
@@ -350,7 +386,8 @@ Flowchart가 empty subgraph를 안전하게 표현하지 못하므로, 해당 ne
 ### Deployment·Component의 Architecture projection
 
 Deployment와 Component도 자동 후보가 각각 `nodes`·`components` 필수 root와 내부 record를 strict nested
-contract로 통과한 뒤 Architecture로 방출됩니다. Deployment `artifacts`와 Component `interfaces`는 별도
+contract로 통과한 뒤 serializer와 generated Scene이 공유하는 단일 Architecture projection으로 방출됩니다.
+Deployment `artifacts`와 Component `interfaces`는 별도
 notation으로 그리지 않고 primary record 뒤에 평탄화된 generic service가 됩니다. `groups`는 service
 `group` reference와 함께 공용 Architecture plan의 실제 group/membership으로 방출됩니다. 따라서 artifact나
 interface의 ID와 `label`/`name`은 보이지만, artifact containment·stereotype과 provided/required interface
@@ -363,6 +400,12 @@ root에 있으면 빈 list여도 legacy `edges`를 병합하거나 대신 사용
 bbox는 Mermaid에 방출하지 않고 typed IR에 보존합니다. Endpoint와 strict `bidirectional`, 대문자
 `source_side`/`target_side`(`L/R/T/B`)가 unlabeled Architecture edge를 결정하며 evidence는 generated Scene
 attribution에 유지됩니다.
+
+공용 Phase 2 projection은 node label의 falsey non-string을 보존해 terminal gate가 거부하게 하고 relation
+endpoint를 exact non-empty string으로만 resolve합니다. 따라서 public serializer와 generated Scene도 nested
+provider model 바깥에서 값을 stringification하거나 ID fallback으로 세탁하지 않습니다. Candidate에는 derived
+`acc_*` 대신 validated raw metadata를 저장해 accepted repair와 Architecture→Flowchart runtime retry마다 현재
+label에서 접근성 설명을 다시 만듭니다.
 
 Service-like icon은 open string입니다. Serializer가 지원하는 `cloud`·`database`·`disk`·`internet`·`server`는
 대소문자를 정규화해 사용하고 알 수 없는 값은 `server`로 낮추므로, extraction contract가 fallback 가능한

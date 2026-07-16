@@ -19,8 +19,9 @@ NFKC/casefold label만 사용합니다. normalized ID collision은 alias로 강�
 label/evidence 같은 독립 근거가 있을 때만 정렬합니다. Geometry로 node를 맞추지 않으므로 layout metric이
 자신의 가정을 검증하는 순환을 피합니다. edge topology는 방향을
 무시하고 방향 오류는 arrow metric이 별도로 측정합니다.
-Flowchart/Swimlane/BPMN/Architecture의 generated Scene 방향은 raw arrow hint가 아니라 serializer가 실제
-방출하는 connector에서 파생합니다. Native Sequence는 style plan의 실제 operator를 사용합니다. `solid`와
+Flowchart/Swimlane/BPMN의 generated Scene 방향은 raw arrow hint가 아니라 serializer가 실제 방출하는
+connector에서 파생합니다. Native Architecture layout은 IR direction을 소비하지 않으므로 `unknown`, nested
+Flowchart retry만 validated direction 또는 `LR`을 사용합니다. Native Sequence는 style plan의 실제 operator를 사용합니다. `solid`와
 `dotted`는 arrowhead, `cross`는 crosshead를 가지지만 `open`과 `dotted_open`은 end marker가 없으므로
 일괄 `arrow_at_end=true`로 세지 않습니다.
 Native Mindmap은 shared preorder plan의 parent-child branch를 `containment` relation으로 복원하되 실제
@@ -176,7 +177,12 @@ relation polyline, technology, description, relation label, native boundary nota
 표시하지 않는 raw metadata는 구조나 OCR label로 승격하지 않습니다. `reading_direction`은 runtime의
 Architecture→Flowchart 선택을 generated Scene이 미리 알 수 없으므로 IR 값 또는 `unknown`을 유지합니다.
 형식이 잘못됐거나 reference 예산을 넘은 C4 `evidence_ids`는 기존 Mermaid 게시를 막지 않고 해당
-generated Scene attribution에서 제외합니다.
+generated Scene attribution에서 제외합니다. 같은 record-local omission과 공용 Architecture projection은
+Architecture·Deployment·Component에도 적용되므로 scalar 문자열이 문자별 evidence ID로 분해되거나
+serializer와 Scene의 endpoint/label identity가 달라지지 않습니다.
+누락·비문자 endpoint와 falsey non-text label도 projection 전에 exact 형으로 판정해 generated Scene이
+stringification으로 만들어진 node/edge를 품질 근거로 인정하지 않습니다. Accepted repair는 raw 접근성
+snapshot에서 현재 label 설명을 다시 만들므로 semantic score 개선과 SVG metadata가 같은 revision을 가리킵니다.
 
 ## 기존 metric과 결합
 
@@ -308,8 +314,12 @@ generated Scene attribution에서 제외합니다.
 - Requested type이 fallback으로 방출되는 경우 projection은 요청 문법이 아니라 실제 emitted serializer를
   따릅니다. C4의 `architecture` 또는 nested Flowchart 결과는 위 공용 plan의 emitted boundary group과
   service label만 세고 technology, relation label, description은 제외합니다. Architecture도 native와
-  nested Flowchart에서 service `label`/`name` alias, group label과 label 없는 topology를 동일하게
-  평가합니다. label 없는 Architecture group은 두 serializer가 같은 portable emitted ID를 표시합니다.
+  nested Flowchart에서 frozen terminal plan의 service `label`/`name` alias, group canvas label과 label 없는
+  topology를 동일하게 평가합니다. quote·Markdown·numeric entity compatibility glyph도 실제 SVG text대로
+  세고 semantic 원문이나 source-only separator에는 OCR credit을 주지 않습니다. label 없는 Architecture
+  group은 두 serializer가 같은 portable emitted ID를 표시합니다. Service evidence는 element에, relation
+  evidence는 같은 `generated-relation-N` connector에 record-local로 유지되며 raw accessibility metadata와
+  hidden relation label은 semantic OCR에서 제외합니다.
   Deployment와 Component fallback에서 보존만 되는 relation label은 세지 않으며, Use-case Flowchart
   relation은 serializer와 같은 `type` 우선, `label` fallback 순서로 셉니다. 이 세 software fallback의
   Scene node도 serializer의 record planner를 공유해 missing/colliding ID, `label`/`name` alias와 endpoint를

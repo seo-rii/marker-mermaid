@@ -8,7 +8,9 @@
 각각 하나일 때만 시작·종료를 덧붙입니다. Chart의 증가·감소, 관계 의미, 누락 숫자를 추측하지
 않습니다. Experimental 후보에는 review가 필요하다는 문구를 한 번만 추가합니다. 일반 후보의 생성된 값은
 code와 enriched `typed_ir`에 함께 저장되어 directive를 지원하지 않는 문법에서도 review metadata로 남습니다.
-State·Gantt·ER·Sequence·Mindmap·Timeline처럼 terminal별 source/canvas plan을 가진 유형은 예외입니다. 이 유형은 stale derived text를
+Architecture 계열(Architecture·C4·Deployment·Component)과
+State·Gantt·ER·Sequence·Mindmap·Timeline처럼 terminal별 source/canvas plan을 가진 유형은 예외입니다.
+이 유형은 stale derived text를
 막기 위해 candidate `typed_ir`에 validated raw metadata snapshot을 유지하고, initial serialization과 accepted
 repair마다 현재 semantic record에서 접근성 값을 다시 계산합니다.
 
@@ -33,6 +35,21 @@ Pinned Mermaid 11.16에서 다음 native grammar에는 directive를 넣지 않�
 유지하지만, stale derived text를 막는 Mindmap/Timeline terminal은 예외로 candidate typed IR에 validated raw
 snapshot만 저장하고 serialization/review 시 현재 record plan에서 값을 다시 계산합니다. Portable flowchart
 fallback이 선택되면 fallback grammar가 directive를 지원하므로 동일한 resolved text를 정상 출력합니다.
+
+Native Architecture, C4·Deployment·Component의 Architecture projection과 nested Flowchart fallback은 같은
+raw-snapshot 정책을 사용합니다. Raw
+`title`/`description`/`acc_title`/`acc_description`은 enrichment 전에 exact string, raw·normalized bound,
+UTF-8와 Unicode category를 검사하고 exact `""`은 omitted로 처리합니다. Candidate와 accepted repair에는
+파생 `acc_*`가 아닌 이 raw snapshot을 저장하며, 현재 요청 유형과 service-like semantic label에서
+description을 다시 계산합니다. 따라서 Phase 2 label repair 뒤 이전 derived description이 explicit metadata로
+남지 않습니다.
+
+Architecture의 접근성 lexer에는 label용 Markdown escape를 재사용하지 않습니다. Literal `&`, `#`, `<`,
+`>`와 scanner-active token의 한 글자만 Architecture directive가 해석하는 `#NN;` source entity로 바꿉니다.
+따라서 literal `&amp;`, `&#35;`, `<tag>`, quote, 한 개의 backslash, Markdown punctuation과 한글이 strict
+scanner를 통과하면서 SVG `<title>`/`<desc>`에는 normalized semantic 원문으로 정확히 남습니다. 이 codec은
+접근성 text terminal 전용이며 service/group statement에는 쓰지 않습니다. 접근성 metadata는 node/group
+OCR recall에 포함하지 않습니다.
 
 Native Venn의 explicit `title`은 canvas content이므로 Scene/OCR에도 포함합니다. 반면 resolved
 `accTitle`/`accDescr`는 native source에 넣지 않고 enriched typed IR과 limitation warning에만 남깁니다.

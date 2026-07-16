@@ -354,7 +354,7 @@ def plan_c4_architecture_fallback(ir: dict[str, Any]) -> C4ArchitectureFallbackP
         services.append(
             {
                 "id": output_id,
-                "label": record.get("label") or record.get("name") or source_id,
+                "label": _phase2_architecture_label(record, source_id=source_id),
                 "icon": icon,
                 "group": boundary,
                 "bbox": record.get("bbox"),
@@ -396,7 +396,7 @@ def plan_c4_architecture_fallback(ir: dict[str, Any]) -> C4ArchitectureFallbackP
             {
                 "source": source,
                 "target": target,
-                "bidirectional": bool(relation.get("bidirectional")),
+                "bidirectional": relation.get("bidirectional"),
                 "source_side": relation.get("source_side", "R"),
                 "target_side": relation.get("target_side", "L"),
                 "evidence_ids": list(relation_evidence_ids),
@@ -418,8 +418,15 @@ def plan_c4_architecture_fallback(ir: dict[str, Any]) -> C4ArchitectureFallbackP
 def _resolve_relation(
     relation: dict[str, Any], id_map: dict[str, str], *, field: str
 ) -> tuple[str, str]:
-    source_key = str(relation.get("source"))
-    target_key = str(relation.get("target"))
+    source_key = relation.get("source")
+    target_key = relation.get("target")
+    if (
+        type(source_key) is not str
+        or not source_key
+        or type(target_key) is not str
+        or not target_key
+    ):
+        raise SerializationError(f"{field} relation requires source and target strings")
     source = id_map.get(source_key)
     target = id_map.get(target_key)
     if source is None or target is None:
@@ -643,7 +650,11 @@ def _emit_architecture_fallback(
     limitation: str,
 ) -> Phase2Serialization:
     if native_runtime_valid:
-        code = serialize_architecture(architecture_ir, experimental=experimental)
+        code = serialize_architecture(
+            architecture_ir,
+            experimental=experimental,
+            accessibility_type=requested_type,
+        )
         return code, "architecture", limitation
     code = serialize_architecture_flowchart_fallback(
         architecture_ir,
@@ -658,16 +669,23 @@ def _emit_architecture_fallback(
     )
 
 
-def _architecture_fallback(
+def _phase2_architecture_label(record: dict[str, Any], *, source_id: str) -> Any:
+    """Preserve malformed aliases so the shared terminal planner can reject them."""
+
+    for field in ("label", "name"):
+        value = record.get(field)
+        if value is None or (type(value) is str and value == ""):
+            continue
+        return value
+    return source_id
+
+
+def _plan_architecture_fallback_ir(
     requested_type: str,
     ir: dict[str, Any],
     records: Any,
     edges: Any,
-    *,
-    experimental: bool,
-    native_runtime_valid: bool,
-    limitation: str,
-) -> Phase2Serialization:
+) -> dict[str, Any]:
     normalized, id_map = plan_phase2_record_ids(
         records, field=f"{requested_type} IR", fallback_prefix="S"
     )
@@ -679,9 +697,11 @@ def _architecture_fallback(
         services.append(
             {
                 "id": output_id,
-                "label": record.get("label") or record.get("name") or source_id,
+                "label": _phase2_architecture_label(record, source_id=source_id),
                 "icon": icon,
                 "group": record.get("group"),
+                "bbox": record.get("bbox"),
+                "evidence_ids": record.get("evidence_ids"),
             }
         )
     if not isinstance(edges, list):
@@ -695,19 +715,47 @@ def _architecture_fallback(
             {
                 "source": source,
                 "target": target,
-                "bidirectional": bool(edge.get("bidirectional")),
+                "bidirectional": edge.get("bidirectional"),
                 "source_side": edge.get("source_side", "R"),
                 "target_side": edge.get("target_side", "L"),
+                "evidence_ids": edge.get("evidence_ids"),
             }
         )
-    architecture_ir = {**ir, "services": services, "edges": architecture_edges}
-    return _emit_architecture_fallback(
-        requested_type,
-        architecture_ir,
-        experimental=experimental,
-        native_runtime_valid=native_runtime_valid,
-        limitation=limitation,
-    )
+    return {**ir, "services": services, "edges": architecture_edges}
+
+
+def plan_phase2_architecture_ir(diagram_type: str, ir: dict[str, Any]) -> dict[str, Any]:
+    """Project a Phase 2 Architecture family into its exact shared terminal IR."""
+
+    if diagram_type == "c4":
+        return plan_c4_architecture_fallback(ir).architecture_ir
+    if diagram_type == "deployment":
+        records = ir.get("nodes")
+        artifacts = ir.get("artifacts", [])
+        if not isinstance(artifacts, list):
+            raise SerializationError("deployment artifacts must be a list")
+        if not isinstance(records, list):
+            raise SerializationError("deployment nodes must be a list")
+        return _plan_architecture_fallback_ir(
+            "deployment",
+            ir,
+            [*records, *artifacts],
+            ir.get("links", ir.get("edges", [])),
+        )
+    if diagram_type == "component":
+        components = ir.get("components")
+        interfaces = ir.get("interfaces", [])
+        if not isinstance(components, list):
+            raise SerializationError("component components must be a list")
+        if not isinstance(interfaces, list):
+            raise SerializationError("component interfaces must be a list")
+        return _plan_architecture_fallback_ir(
+            "component",
+            ir,
+            [*components, *interfaces],
+            ir.get("dependencies", ir.get("edges", [])),
+        )
+    raise SerializationError(f"no Architecture projection for Phase 2 type {diagram_type}")
 
 
 def serialize_c4(
@@ -736,18 +784,10 @@ def serialize_deployment(
     experimental: bool = False,
     native_runtime_valid: bool = True,
 ) -> Phase2Serialization:
-    records = ir.get("nodes")
-    artifacts = ir.get("artifacts", [])
-    if not isinstance(artifacts, list):
-        raise SerializationError("deployment artifacts must be a list")
-    if not isinstance(records, list):
-        raise SerializationError("deployment nodes must be a list")
-    combined = [*records, *artifacts]
-    return _architecture_fallback(
+    architecture_ir = plan_phase2_architecture_ir("deployment", ir)
+    return _emit_architecture_fallback(
         "deployment",
-        ir,
-        combined,
-        ir.get("links", ir.get("edges", [])),
+        architecture_ir,
         experimental=experimental,
         native_runtime_valid=native_runtime_valid,
         limitation=(
@@ -763,18 +803,10 @@ def serialize_component(
     experimental: bool = False,
     native_runtime_valid: bool = True,
 ) -> Phase2Serialization:
-    components = ir.get("components")
-    interfaces = ir.get("interfaces", [])
-    if not isinstance(components, list):
-        raise SerializationError("component components must be a list")
-    if not isinstance(interfaces, list):
-        raise SerializationError("component interfaces must be a list")
-    records = [*components, *interfaces]
-    return _architecture_fallback(
+    architecture_ir = plan_phase2_architecture_ir("component", ir)
+    return _emit_architecture_fallback(
         "component",
-        ir,
-        records,
-        ir.get("dependencies", ir.get("edges", [])),
+        architecture_ir,
         experimental=experimental,
         native_runtime_valid=native_runtime_valid,
         limitation=(
