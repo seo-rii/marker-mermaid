@@ -1,0 +1,75 @@
+name: Bug report
+description: Report a reproducible problem in marker-mermaid.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve marker-mermaid. Remove secrets and private document content
+        before posting. Security vulnerabilities must be reported privately via SECURITY.md.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Include marker-mermaid, Python, Marker, and Mermaid runtime versions when relevant.
+      placeholder: marker-mermaid 0.1.0 / commit SHA
+    validations:
+      required: true
+
+  - type: dropdown
+    id: command
+    attributes:
+      label: Affected command or component
+      options:
+        - convert
+        - reconstruct
+        - validate
+        - review
+        - evaluate
+        - install-runtime / doctor
+        - Python integration
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Use a synthetic or redistributable input and include the smallest command or code sample.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include sanitized logs, warnings, and quality metadata when useful.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: OS, Python, Node.js, optional dependencies, LLM service, and relevant configuration
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed credentials, personal data, and confidential document content.
+          required: true
+        - label: This report is not a security vulnerability.
+          required: true
