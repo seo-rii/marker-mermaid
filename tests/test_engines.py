@@ -1214,7 +1214,8 @@ def test_marker_vlm_rejects_unloaded_pillow_imagefile_without_calling_loader():
         )
 
     assert not called
-    assert source_view.im is None
+    image_state = engines_module._PIL_IMAGE_DICT_DESCRIPTOR.__get__(source_view, Image.Image)
+    assert image_state.get(engines_module._PIL_IMAGING_CORE_STATE_KEY) is None
 
 
 def test_marker_vlm_ignores_image_subclass_shared_copy_override():

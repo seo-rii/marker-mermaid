@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- Pillow 12.3 compatibility for canonical image-core snapshots used by structured VLM and
+  repair contexts, while preserving the existing size, type, and caller-hook isolation checks.
+
 ### Added
 
 - Public open-source project documentation in English, including contribution, vulnerability

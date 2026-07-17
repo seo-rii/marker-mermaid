@@ -405,8 +405,10 @@ def test_assembly_page_to_canvas_mapping_overrides_bbox_fallback() -> None:
 
 
 def test_marker_block_id_selects_the_matching_same_page_vector_placement() -> None:
-    from marker.schema import BlockTypes
-    from marker.schema.blocks.base import BlockId
+    marker_schema = pytest.importorskip("marker.schema")
+    marker_blocks = pytest.importorskip("marker.schema.blocks.base")
+    BlockTypes = marker_schema.BlockTypes
+    BlockId = marker_blocks.BlockId
 
     marker_id = BlockId(page_id=3, block_type=BlockTypes.Figure, block_id=2)
 

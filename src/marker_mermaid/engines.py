@@ -49,8 +49,20 @@ MAX_VLM_RESPONSE_SCHEMA_CHARS = 65_536
 MAX_VLM_VIEW_NAME_CHARS = 128
 MAX_VLM_EVIDENCE_INPUT_CHARS = MAX_EVIDENCE_INPUT_CHARS
 MAX_VLM_OCR_INPUT_CHARS = 8_000_000
-_PIL_IMAGING_CORE_TYPE = type(Image.new("RGB", (1, 1)).im)
 _PIL_IMAGE_DICT_DESCRIPTOR = Image.Image.__dict__["__dict__"]
+_PIL_REFERENCE_IMAGE = Image.new("RGB", (1, 1))
+_PIL_IMAGING_CORE_TYPE = type(_PIL_REFERENCE_IMAGE.im)
+_PIL_REFERENCE_IMAGE_STATE = _PIL_IMAGE_DICT_DESCRIPTOR.__get__(
+    _PIL_REFERENCE_IMAGE, Image.Image
+)
+# Pillow 12 moved the core from ``im`` to ``_im``. Bind the trusted base
+# implementation's storage key once so caller-owned subclasses cannot choose it.
+_PIL_IMAGING_CORE_STATE_KEY = next(
+    key
+    for key in ("_im", "im")
+    if type(_PIL_REFERENCE_IMAGE_STATE.get(key)) is _PIL_IMAGING_CORE_TYPE
+)
+del _PIL_REFERENCE_IMAGE, _PIL_REFERENCE_IMAGE_STATE
 _VIEW_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]*\Z")
 _STRUCTURAL_KINDS = ("arrowhead", "line_segment", "contour", "vector_text")
 _SELECTION_PROFILE = "structural-quota-v1"
@@ -283,7 +295,7 @@ class MarkerStructuredVLMEngine:
                 raise RuntimeError("Structured VLM view has no canonical Pillow image state")
             declared_mode = image_state.get("_mode")
             declared_size = image_state.get("_size")
-            source_core = image_state.get("im")
+            source_core = image_state.get(_PIL_IMAGING_CORE_STATE_KEY)
             if (
                 type(declared_mode) is not str
                 or declared_mode != "RGB"
