@@ -1,52 +1,59 @@
-# 후보 영역 발견
+# Candidate discovery
 
-`discovery.py`는 Marker 객체에 의존하지 않는 deterministic proposal 계층입니다. Marker block,
-page-level detector, 사용자 선택 영역이 같은 함수를 재사용하도록 PIL image와 plain bbox만 받습니다.
+`discovery.py` is a deterministic proposal layer with no dependency on Marker objects. Marker
+blocks, page-level detections, and user-selected regions reuse the same functions by passing only
+Pillow images and plain bounding boxes.
 
-## Composite panel
+## Composite panels
 
-`propose_composite_panels()`는 다음 신호를 결합합니다.
+`propose_composite_panels()` combines these signals:
 
-- foreground density가 낮고 충분히 넓은 수직·수평 whitespace gutter
-- 길이가 길고 얇은 separator line
-- split 양쪽에 존재하는 독립 connected-component group
-- 전체 면적 대비 최소 panel 면적
+- A sufficiently wide vertical or horizontal whitespace gutter with low foreground density
+- A long, thin separator line
+- Independent connected-component groups on both sides of the split
+- A minimum panel area relative to the full source
 
-중심에서 가장 강한 수직/수평 split 하나씩만 선택하므로 최대 네 panel을 제안합니다. 모든 결과
-region에 의미 있는 component가 있어야 하며, unsplit source를 삭제하지 않습니다.
-`split_composite_figure()`가 원본 좌표 bbox와 crop을 함께 반환합니다. OpenCV가 없으면 bounded
-8-neighbor Python connected-component 구현을 사용합니다.
+It selects at most one strongest vertical and one strongest horizontal split near the center, so
+no more than four panels are proposed. Every output region must contain a meaningful component,
+and the unsplit source is never deleted. `split_composite_figure()` returns both original-coordinate
+bounding boxes and crops. A bounded eight-neighbor Python connected-component implementation is
+used when OpenCV is unavailable.
 
-## Fragment merge
+## Fragment merging
 
-`propose_fragment_merges()`는 인접 bbox 또는 호환되는 boundary touch라는 공간 신호와 shared
-caption/continued라는 의미 신호를 요구합니다. 단순히 가까운 두 Figure만으로는 merge하지 않습니다.
-cross-page proposal은 앞 page bottom과 다음 page top의 boundary touch 및 의미 신호가 모두 필요합니다.
+`propose_fragment_merges()` requires both a spatial signal—adjacent bounding boxes or compatible
+boundary contact—and a semantic signal—shared caption or `continued`. Merely placing two figures
+near one another is not enough. A cross-page proposal requires boundary contact between the
+bottom of the earlier page and the top of the next page as well as a semantic signal.
 
-proposal은 source block을 수정하지 않습니다. `DiscoveredSource.fragments`는 각 page의 bbox,
-block mapping, crop bbox, image size, virtual canvas offset을 별도로 보존하여 multi-page continuation도
-단일 bbox로 뭉개지지 않게 합니다.
+Proposals never modify source blocks. `DiscoveredSource.fragments` preserves each page bounding
+box, block mapping, crop bounding box, image size, and virtual-canvas offset independently, so a
+multi-page continuation is never flattened into a single bounding box.
 
 ## Full-page coverage
 
-`assess_full_page_coverage()`는 page와 candidate 교집합의 width/height/area ratio 및 네 edge distance를
-계산합니다. page 밖 overscan은 coverage에서 clipping합니다. 기본 판정은 area 90% 이상이고 모든
-edge가 page dimension의 4% 이내인 경우입니다.
+`assess_full_page_coverage()` measures width, height, and area ratios of the page/candidate
+intersection together with distance from all four page edges. Overscan outside the page is
+clipped for the calculation. The default requires at least 90% area coverage with every edge
+within 4% of the corresponding page dimension.
 
-## 현재 경계
+## Current boundaries
 
-`MarkerSourceDiscovery`는 Marker의 구조화 block뿐 아니라 `current_children`의 loose object와 reference도
-같은 iterator로 탐색합니다. registry는 `source_id → DiscoveredSource`, pixel registry는
-`fragment_id → crop 전 PIL image`로 분리됩니다. 동일 page, bbox, image size, pixel digest를 가진
-nested Figure/Picture는 canonical source 하나로 축약합니다.
+`MarkerSourceDiscovery` traverses both structured Marker blocks and loose objects/references in
+`current_children` through the same iterator. Separate registries map `source_id` to
+`DiscoveredSource` and `fragment_id` to the pre-crop Pillow image. Nested `Figure`/`Picture`
+objects with the same page, bounding box, image size, and pixel digest collapse into one
+canonical source.
 
-`assemble_discovered_source()`는 panel crop과 same-page/cross-page fragment를 흰색 RGB virtual canvas에
-결정적으로 조립합니다. 각 placement에는 source crop, canvas bbox, source→canvas 및 page→canvas affine,
-page/block mapping이 남습니다. 조립 전 dimension과 pixel budget을 검사하며, 한 panel/merge 실패는
-original이나 다른 source 처리를 중단하지 않습니다.
+`assemble_discovered_source()` deterministically places panel crops and same-page/cross-page
+fragments on a white RGB virtual canvas. Each placement records its source crop, canvas bounding
+box, source-to-canvas and page-to-canvas affine transforms, and page/block mapping. Dimension and
+pixel budgets are checked before assembly; one panel or merge failure does not stop the original
+or other sources.
 
-full-page image에는 [page-level detector](page-detector.md)를 적용합니다. 기존 diagram block과 겹치지
-않는 edge/component cluster를 `page_proposal`로 만들고, proposal pixel만 crop하여 보관합니다. 같은
-page의 기존 diagram block은 Markdown 삽입 위치로만 사용하며 source evidence로 귀속하지 않습니다.
-anchor가 없는 proposal은 PageGroup 내부 metadata queue로 넘겨 reconstruction/sidecar에는 포함하되,
-삽입할 원본 image block이 없으므로 Marker Markdown에는 자동 삽입하지 않습니다.
+The [page-level detector](page-detector.md) runs on full-page images. Non-overlapping
+edge/component clusters become `page_proposal` crops, and only proposal pixels are retained. An
+existing diagram block on the page is used only as a Markdown anchor and is not attributed as
+source evidence. An anchorless proposal enters the internal `PageGroup` metadata queue for
+reconstruction and sidecar output, but is not automatically inserted into Marker Markdown
+because no original image block exists at the insertion point.

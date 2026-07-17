@@ -1,598 +1,678 @@
-# 보안 모델
+# Security model
 
-## 위협 범위
+## Threat scope
 
-Mermaid input은 신뢰하지 않습니다. LLM, OCR, fixture, 사용자 수정은 모두 동일한 검사 경로를
-통과합니다. Mermaid 자체 `securityLevel: strict`는 제품 allowlist가 아닙니다. 외부 링크가
-SVG에 남을 수 있으므로 다음의 중첩 방어를 사용합니다.
+Mermaid input is untrusted. LLM output, OCR, fixtures, and user edits all pass through the same
+validation path. Mermaid's own `securityLevel: strict` is not the product allowlist. Because
+external links can remain in SVG, the system uses layered defenses:
 
-1. byte/후보 budget과 product source scanner
-2. 네트워크가 차단된 Chromium context
+1. byte/candidate budgets and the product source scanner
+2. a Chromium context with network access blocked
 3. `mermaid.parse()`
 4. `mermaid.render()`
-5. SVG XML 재검사
-6. 게시 정책 평가
-
-native C4는 Mermaid 11.16에서 parse/render되지만 생성 SVG가 undeclared `xlink` prefix를 사용한
-`data:` image를 포함합니다. strict SVG/XML gate를 완화하지 않고 `architecture-beta` fallback을
-우선 사용합니다. 이 Architecture grammar까지 runtime에서 거부되면 같은 candidate slot에서 nested
-Flowchart를 한 번만 만들고 source security scan, parse/render, SVG, terminal runtime type을 모두 다시
-검사합니다. C4뿐 아니라 Architecture/Deployment/Component도 같은 재검증 경계를 사용하며, fallback이
-실패하면 해당 후보만 invalid로 유지합니다. 각 손실과 전환은 candidate warning, fallback chain과 repair
-history에 기록되고 후보 budget이나 보안 allowlist를 늘리지 않습니다.
-
-Architecture service/group label은 quoted Markdown terminal plan에서 directive, callback, URL, remote icon,
-CSS import와 statement-like token을 source-only separator로 분리합니다. Quote·Markdown delimiter·numeric
-entity-like spelling을 Mermaid 11.16이 그대로 표시할 수 없을 때만 visible compatibility glyph를 쓰고
-warning을 남깁니다. `accTitle`/`accDescr`는 별도 grammar-scoped `#NN;` codec으로 active spelling을 분리해
-SVG metadata 원문을 보존합니다. 이 numeric codec은 실행 statement나 direct Mermaid를 난독화하는
-우회 수단으로 허용하지 않으며, 최종 source scanner·parse/render·SVG 검사는 그대로 적용됩니다.
-C4·Deployment·Component도 raw 접근성 snapshot을 유지해 accepted repair마다 이 codec 입력을 다시 만들며,
-Phase 2 projection은 endpoint의 `str()` coercion과 falsey label fallback을 금지해 실제 `"None"`/`"1"` ID를
-이용한 invented edge나 malformed label 세탁을 차단합니다.
-
-## strict에서 금지되는 입력
-
-- `click`, callback, JavaScript
-- `http:`, `https:`, `ftp:`, `file:`, `data:`, protocol-relative 외부 참조
-- init/config directive (`%%{...}%%`)
-- script, iframe, object, embed, link, style, img, svg HTML tag
-- `@import`, 외부 CSS `url()`
-- remote icon pack
-- `style`, `classDef`, `linkStyle`
-
-`style-only`은 마지막 세 Mermaid style statement만 허용하고 외부 URL/CSS는 계속 거부합니다.
-`trusted-local`은 자동 Markdown에 게시할 수 없습니다.
-
-검증 runtime의 SVG와 PNG는 각각 UTF-8/byte 기준 16,000,000 bytes 이하만 허용합니다. SVG는 XML·외부
-resource 검사를 통과해야 하고, PNG는 실제 PNG signature/format과 최대 한 변 8,192 pixels, 전체
-50,000,000 pixels 이하인지 검사합니다. 잘못되거나 과대한 SVG는 render hard gate를 실패시키고, 선택적
-PNG만 잘못된 경우에는 Mermaid/SVG 게시를 유지하면서 preview bytes를 버립니다. Review validator가 새로
-반환하는 PNG에도 같은 검사를 적용하되 기존 bundle read 호환성은 별도로 유지합니다.
-
-Validation/publication HMAC seal은 공개 model 생성자, JSON round-trip, 일반적인 사후 mutation이 검증을
-가장하는 것을 막는 process-local capability입니다. 같은 Python process에서 실행되는 engine과 plugin은
-trusted code로 간주하며, underscore/private API나 module memory를 읽을 수 있는 적대적 Python 코드를
-sandbox하지는 않습니다. 신뢰하지 않는 extractor/plugin은 별도 OS process/container에 격리하고 검증된
-IR 또는 image만 이 process로 전달해야 합니다.
-
-Source scanner는 줄 시작뿐 아니라 세미콜론 뒤도 Mermaid statement 시작으로 해석합니다. `flowchart`와
-`graph`에서는 실제 node 또는 bracketed subgraph label opener 바로 뒤의 큰따옴표만 LF/CRLF를 가로지르는
-quoted-label 상태를 시작합니다. `class`, `direction`, Gantt title과 접근성 text에 나타난 임의 큰따옴표는
-다음 statement를 숨기지 않습니다. apostrophe, backtick, backslash도 quote delimiter나 escape로 취급하지
-않으므로 같은 줄에 이어 쓴 `click`, `style`, `classDef`, `linkStyle`은 각 profile의 동일한 규칙을
-적용받습니다. 큰따옴표로 감싼 node label, `accTitle`/`accDescr` text, 줄 시작의 optional whitespace 뒤
-`%%` comment 안의 세미콜론·keyword만 statement로 오인하지 않습니다.
-
-State의 `state ID <<choice|fork|join>>`은 Mermaid 자체의 pseudo-state 문법이므로 HTML이 아닙니다. Source
-scanner는 첫 statement가 exact `stateDiagram`/`stateDiagram-v2` header이고 전체 줄이 normalized identifier와
-세 종류 stereotype 중 하나로만 구성된 경우에만 이 angle syntax를 허용합니다. Flowchart 안의 같은 문자열,
-unknown stereotype, suffix HTML은 계속 `html` finding으로 거부합니다. State label의 bare email/`www`
-autolink는 `@` 뒤와 `www.` 내부의 source-only separator로 비활성화해 visible text를 보존합니다. 일반
-`<b>` text나 수식의 `<`도 source-only separator로 동작만 비활성화합니다.
-
-Statement scanner의 accessibility prefix 판정은 128자로 제한하고 그 이후의 `:`/`{`를 전체 prefix와
-반복 비교하지 않습니다. HTML-like source도 line별 linear scan으로 찾으므로 최대 label 안의 반복
-punctuation이 candidate budget보다 큰 regex/statement 비용으로 증폭되지 않습니다. 제한을 넘는 비정상
-indentation은 accessibility text 상태로 완화하지 않고 일반 statement처럼 fail closed합니다.
-
-State node ID가 `state`, `class`, `click`, `accTitle`, `as` 같은 lexer/security 예약 토큰과 충돌하거나 normalized
-ID에 strict remote-icon rule의 `iconify` substring이 있으면 serializer가 source identity와 evidence를 그대로
-둔 채 위험 token을 포함하지 않는 collision-free `mmx_state_id_…` emitted ID를 배정합니다. 기존 normalized ID
-전체를 먼저 예약하므로 사용자가 이미 같은 alias를 제공해도 다른 node를 덮어쓰지 않습니다. 이 mapping은
-strict scanner 우회가 아니라 비활성 identifier 치환이며 Scene endpoint와 Mermaid edge가 공유합니다.
-
-ER relationship role은 항상 double-quoted terminal 하나로 방출합니다. Unquoted multiword text가 짧은 role과
-추가 entity statement로 분리되는 Mermaid 11.16 해석을 허용하지 않으며, role 안의 세미콜론도 새 statement를
-열 수 없습니다. Entity alias, attribute type/name, comment와 role은 각각의 ER grammar 자리에서 exact
-built-in string, bounded normalized text, UTF-8, non-whitespace control/format/surrogate 제한을 통과합니다.
-Attribute key는
-`PK`/`FK`/`UK`만 허용하고 type/name이 key token 또는 plain word grammar와 충돌하면 backtick terminal로
-격리합니다.
-
-ER source ID가 `erDiagram`, `style`, `classDef`, `class`, `one`, `many`, `to`, `click`, `linkStyle`,
-`__proto__` 같은 lexer/security namespace와 충돌하거나 `iconify` substring을 포함하면 serializer는
-collision-safe `mmx_er_id_N[_suffix]`를 방출합니다. Source identity와 evidence는 typed IR에 남고 entity
-declaration, relationship endpoint, generated Scene이 같은 alias를 사용합니다. 이는 금지 statement를
-allowlist에 넣는 예외가 아니라 active token을 source identifier로 내보내지 않는 치환입니다.
-
-Mermaid 11.16이 literal canvas를 보존하지 못하는 ER terminal에는 자리별 visible compatibility glyph를
-사용합니다. Entity quote·percent·grammar-active backslash, attribute backtick, comment/role의 active
-Markdown/entity-like text와 accessibility numeric entity 치환은 warning으로 공개하고 semantic 원문은 typed
-IR에 보존합니다. URL, callback, directive, style/control word와 remote-icon pattern은 source-only zero-width
-separator로 lexer/scanner 동작만 비활성화합니다. Separator는 Scene/OCR canvas에서 제거되고 visible text를
-바꾸지 않으므로 그 자체로 compatibility warning을 만들지 않습니다. Raw source는 여전히 일반 strict source
-scan, Mermaid parse/render와 SVG 재검사를 모두 통과해야 합니다.
-
-ER의 raw `title`/`description`/`acc_title`/`acc_description`은 accessibility enrichment와 semantic repair
-직렬화 전에 exact built-in string, raw/normalized 길이, UTF-8과 Unicode category를 검사합니다.
-Absent/`None`과 exact-empty omitted만 허용하고 whitespace-only, subclass/hook, control/format/surrogate/
-line-separator text는 derived 접근성 문구로 세탁되기 전에 후보 단위로 격리합니다. Initial candidate와 repair는
-validated raw snapshot에서 각각 record/accessibility plan을 새로 만들며, accepted repair는 현재 plan에 맞춰
-derived text와 visible-substitution warning을 재조정합니다.
-
-Gantt의 raw `title`/`description`/`acc_title`/`acc_description`/`date_format`은 generic enrichment와 semantic
-repair 직렬화보다 먼저 exact built-in string, raw/normalized 길이, UTF-8, Unicode category를 검사합니다.
-Absent/`None`과 exact-empty omitted만 허용하고 whitespace-only, subclass/hook, control/format/surrogate/
-line-separator text는 derived 접근성 문구로 세탁되기 전에 후보 단위로 격리합니다. Record plan과 별도인
-accessibility plan은 semantic section/task label만 사용합니다. Explicit description/acc-description은 repair
-뒤에도 authoritative하고, 둘 다 없을 때만 current repaired IR에서 description을 다시 파생합니다.
-
-Task status는 닫힌 token 집합이며 `active`와 `done`을 함께 허용하지 않습니다. 정확히 하나의 end/duration과
-bounded task ID/start/end/duration/date-format syntax를 요구합니다. Task ID는 전체 diagram에서 고유해야
-하고 runtime tag `active`/`done`/`crit`/`milestone`/
-`vert`, `__proto__`, `iconify` substring을 거부합니다. Schedule field를 추가할 수 있는 `,`/`#`/`;`도 거부합니다.
-지원하는 numeric date-format token만 parsing format으로 변환해 invalid calendar date를 차단하고, end는 start
-뒤여야 하되 milestone만 equality를 허용합니다. `h`/`hh`는 `A`/`a`와 짝지어야 합니다. End date가 zero-width가
-되는 `Z`/`ZZ`·`S`/`SS`는 거부하고 `SSS`만 지원합니다. Seconds timestamp `X`도 Mermaid 11.16의 unit 불일치로
-거부하며, milliseconds `x`는 canonical no-leading-zero decimal과 ECMAScript Date maximum을 요구합니다.
-Duration과 prior-only `after` chain을 적용한 resolved end도 그 maximum을 넘을 수 없습니다.
-Duration은 exact decimal+unit grammar 뒤 Mermaid-rounded fractional `ms`/`d`/`w`/`M`/`y`를 거부합니다.
-Fractional `h`/`m`/`s`는 정확한 양의 integer millisecond로 환산되어야 하고 전체 magnitude도 bounded runtime
-range 안이어야 하며, exact zero는 milestone에만 허용합니다. `after` target은 실제 고유 ID이면서 source order상 현재 task보다
-앞서야 합니다. 이 backward-only gate로 forward/partial resolution과 cycle을 막습니다. `after`와 end date의
-조합 및 모든 `until`은 fail-closed합니다.
-
-Runtime type이 `gantt`인 final SVG는 whitespace class token `task`를 가진 모든 rectangle에 finite positive
-width/height를 요구합니다. 이 pinned-runtime shape gate는 다른 diagram의 `task` class에는 적용되지 않으며,
-parse/render-valid처럼 보이는 mixed-scale 0폭 task를 인증·게시 전에 render-invalid로 격리합니다. Runtime type을
-알 수 없는 standalone/review SVG 검사는 root `aria-roledescription="gantt"`일 때만 같은 gate를 적용합니다.
-
-Gantt label source에서는 directive opener, `//`, URL/data/JavaScript scheme, `@import`, callback, remote icon,
-config와 Gantt control word, numeric entity, `---`, task 선두 ISO date를 visually inert zero-width separator로
-비활성화합니다. Normalized canvas와 Scene/OCR은 separator를 제거하지만 raw SVG DOM text/title/description에는
-남을 수 있습니다. Mermaid 11.16이 task의 `:`/`%`와 title/accessibility의 `<`를 literal canvas로 보존하지
-못하는 경우에는 각각 `∶`/`％`/`‹`를 보이는 문자로 사용하고 compatibility warning을 남깁니다. Task의 모든
-`%`는 fullwidth이므로 directive-like text도 visible substitution을 사용하고, title/section의 plain `%%`은
-active directive opener가 아니면 literal로 남을 수 있습니다. Initial/repair 후보는 validated raw snapshot과
-각각의 record/accessibility plan을 다시 검사하며 accepted repair는 현재 plan에 맞춰 warning을 조정합니다.
-
-Specialized typed serializer의 label에 위 token이 관찰돼도 active statement로 방출하지 않습니다.
-keyword와 URL-like token 내부의 zero-width separator는 scanner와 parser 양쪽에서 동작을 비활성화하고,
-Flowchart label의 source `&`도 entity로 재해석되지 않도록 같은 방식으로 분리합니다. Event Modeling edge의
-`|`·`;`는 NFKC로 delimiter/statement가 되돌아오지 않는 `∣`·`⁏`로 표시합니다.
-Quote·backslash·entity-like literal도 pinned Flowchart SVG가 실제 보존하는
-`″`·`∖`·`＆`/`＃` glyph로 바꾸고 warning을 남깁니다. source가 제공한 control/format 문자와
-line/paragraph separator는 공백 정규화 전에 거부하므로 invisible character를 이용해 검사 규칙을 우회할
-수 없습니다. Packet,
-TreeView, Ishikawa는 각 native grammar의 실제 SVG text 동작에 맞춘 encoder를 사용하며 보존할 수 없는
-문자는 검증 가능한 Flowchart fallback과 compatibility warning으로 전환합니다. unsafe 접근성 원문은
-typed IR/review metadata에만 유지하고 자동 SVG에는 generic 문구를 넣습니다. native/fallback label과
-SVG title/description은 pinned Mermaid integration test로 검사합니다.
-
-Native Sequence는 source participant ID를 Mermaid identifier로 직접 방출하지 않습니다. Source order의
-`mmx_sequence_participant_N` namespace를 declaration, 모든 message endpoint와 generated Scene에 공유해
-`participant`/`end`/`style` 같은 lexer·scanner token, `__proto__`, `iconify` substring, 향후 grammar 예약어와
-원천적으로 분리합니다. Source ID는 typed IR/provenance에 그대로 남습니다. Participant/message의 literal
-`;`는 strict scan과 parse/render를 통과한 채 새 statement를 삽입할 수 있으므로, 모든 `#`와 `;`를 문자별
-native `#35;`/`#59;`로 encode합니다. Compound entity-like literal도 이 순서로 정확한 SVG text를 유지합니다.
-
-Directive opener, comment, URL/data/JavaScript scheme, callback, remote icon, config, style/control word에는
-source-only zero-width separator를 넣고 raw/NFKC strict scan 뒤 pinned runtime에 전달합니다. Quote,
-backslash, colon, Markdown punctuation은 native Sequence canvas가 원문을 보존하므로 visible glyph로 바꾸지
-않습니다. 접근성 angle bracket만 Mermaid 11.16의 double-escape를 피해 `〈`/`〉`로 표시하며 warning을
-남깁니다. Raw 접근성 필드는 generic enrichment 및 repair 전에 exact-string/Unicode/bounds gate를 통과하고
-candidate에는 validated raw snapshot을 저장하므로 malformed/empty directive가 다음 source line을 삼키거나
-derived text로 세탁되지 않습니다.
-
-Native Mindmap은 user logical ID를 source identifier로 방출하지 않고 preorder의 `root`/`node_N` namespace를
-사용합니다. 모든 root/child label은 quoted shape terminal 안에 두며 generated leading sentinel과 source-only
-zero-width separator로 directive opener, comment, URL/data/JavaScript scheme, callback, remote icon, config,
-click/style/control word를 비활성화합니다. Backslash·underscore·bracket·parenthesis separator는 Mindmap의
-Markdown escape/link와 shape delimiter 해석만 끄고 visible canvas에서는 제거됩니다. Source-authored named
-entity prefix도 분리한 뒤 실제 literal `<`/`>`만 XML entity로 encode하므로 `&amp;` spelling과 angle text를
-각각 구분해 복원합니다. 모든 ordinary space는 separator 양쪽에 배치해 neutralized token의 이웃 단어가 SVG
-text에서 붙지 않도록 합니다.
-
-Pinned Mermaid 11.16이 quote, active asterisk/backtick/tilde와 numeric entity-like spelling을 literal로 유지하지
-못하는 자리에는 visible `″`·`＊`·`ˋ`·`～`·`＆`/`＃` glyph를 사용하고 candidate warning에 공개합니다.
-Semantic 원문은 raw typed IR에 남습니다. Node label/ID와 top-level 접근성 metadata는 coercion 전에 bounded
-exact string, UTF-8, Unicode category gate를 통과하며 exact-empty alias/metadata만 omitted입니다. Initial과
-repair 모두 validated raw snapshot에서 plan을 다시 만들고 expanded source의 50,000 UTF-16 unit/5,000줄
-preflight 뒤 일반 strict scan, parse/render, SVG inspection을 그대로 적용합니다. Accessibility directive는
-추가 root가 되므로 native source에는 방출하지 않습니다.
-
-Native Timeline은 period가 `title`/`section`으로 시작하거나 `%`, `#`, literal colon을 포함할 때 같은 줄을
-제목·섹션·주석·추가 event로 재해석하는 문법입니다. 또한 renderer가 entity-like spelling을 decode하면서 주변
-공백을 잃을 수 있습니다. 따라서 normalized title/period/event terminal 앞에는 생성 zero-width sentinel을
-하나 두고, 모든 ASCII code point를 Mermaid numeric entity로 방출합니다. Lexer와 strict scanner는 user text의
-directive, URL, callback, HTML, click/style, comment, delimiter를 active source로 보지 않지만 Mermaid 11.16
-renderer는 quote, backslash, colon, semicolon, `#`, literal entity spelling과 공백을 exact canvas text로
-복원합니다. Sentinel은 source/SVG DOM에 남을 수 있으나 visually inert이고 Scene/OCR canvas에는 포함하지
-않습니다. Unicode control/format/surrogate input은 semantic gate에서 거부합니다.
-
-Raw `title`/`description`/`acc_title`/`acc_description`은 enrichment와 repair 전에 exact-string/bounds/Unicode
-gate를 통과하고 exact `""`만 omitted입니다. Timeline runtime은 accessibility directive를 실제 SVG metadata로
-만들지 않으므로 자동 source에는 넣지 않습니다. Candidate에는 raw snapshot만 저장하고 resolved 값은 현재
-record plan에서 필요할 때 다시 계산합니다. Source
-encoding 확장을 포함한 최종 code를 50,000 UTF-16 unit/5,000줄에서 preflight해 numeric expansion으로 runtime
-budget을 우회할 수 없게 합니다.
-
-ZenUML Sequence fallback은 participant의 source ID를 예약어와 분리된
-`zenuml_participant_*` namespace로 방출하고 message에는 이 namespaced endpoint만 씁니다.
-Mermaid message에 ID 문법이 없으므로 `zenuml_message_*`는 Scene/provenance slot에만 부여합니다.
-Alias/message text의
-`#`·`;`·entity-like literal은 각각 `＃`·`⁏`·`＆`/`＃`로 표시하고,
-active keyword·URL·callback·config token은 source 안에서만 invisible separator로
-분리합니다. `accTitle`·`accDescr`도 active token·entity·`#` 규칙을 공유하지만,
-Sequence accessibility SVG가 angle bracket을 double-escape하므로 `<`·`>`는 NFKC-stable
-`〈`·`〉`로 표시합니다. 한 줄 accessibility grammar에서 text로 입증된 `;`는 원문 glyph를
-유지합니다. 대체 사실은
-compatibility warning으로 남습니다.
-
-Wardley·Cynefin native serializer도 control/format/line separator를 정규화 전에 거부하고,
-entity-like literal을 renderer가 손실시키는 자리에 보이는 `＆`/`＃` compatibility glyph를 사용합니다.
-대체 사실은 warning에 남고 원문은 typed IR/sidecar에 보존됩니다. Strict nested 계약은
-Wardley `x`/`y`에 boolean·NaN·infinity를, `anchor`에 integer/string coercion을 허용하지
-않으며 Cynefin domain을 닫힌 official token 집합으로 검증합니다. Native `cynefin-beta`가 runtime에서
-거부되면 같은 candidate slot의 explicit-domain `flowchart LR`만 한 번 생성합니다. 이 fallback에도 raw/NFKC
-source scan, strict Flowchart label neutralization, parse/render, SVG inspection과 terminal-type 검사를 새로
-적용하며 후보 budget이나 allowlist를 늘리지 않습니다. Fixed runtime template나 membership connector를
-합성하지 않고 requested/emitted/runtime metadata, fallback history와 requested-type 접근성 sanitization을
-유지합니다. 검증되고 generated-node attribution threshold를 충족한 fallback만 일반 publication gate로
-이동하며 native 결과의 template-provenance review hold는 보안 fallback 성공으로 해제하지 않습니다.
-Organization·Data Lineage fallback은 raw ID를 Mermaid identifier로 직접 방출하지 않고
-type 전용 namespace와 normalization-collision 검사를 사용합니다. label은 control/format/
-lone-surrogate를 정규화 전에 거절하고 quote·backslash·entity-like literal, relation
-delimiter와 edge-grammar `()[]{}@`, accessibility angle bracket를 pinned runtime에 보이는
-compatibility glyph로 바꿉니다. Edge `@`는 `＠`로 표시하되 source에만 zero-width
-separator를 더해 NFKC 후 `@import`도 비활성으로 유지합니다. Active keyword·URL
-token은 source에서만 zero-width separator로 비활성화하며 원문은 typed IR/sidecar에
-남습니다. Data Lineage relation은 resolved, non-self, non-duplicate endpoint만 Flowchart에
-넘깁니다.
-
-Railroad는 strict discriminated expression contract로 variant와 payload container를 먼저 제한하고,
-공유 plan이 rule name 충돌, reference, depth와 record budget을 검사합니다. Native grammar가
-ASCII angle bracket·모든 ASCII `#`·entity-like `&` prefix·NFKC quote/backslash hazard를 안전하게 보존하지
-못하므로 각각 `〈`/`〉`, `＃`, `＆`, `″`/`∖` canonical visible glyph로 바꿉니다. Mermaid 전역
-`encodeEntities`가 bare `#word;`와 `#35;`도 변형하므로 ASCII `#`에는 예외를 두지 않고 warning을 남깁니다. 원
-semantic field는 typed IR/sidecar에 남깁니다. Rule/terminal/nonterminal/special과 접근성 text의 active
-URL·directive·callback·HTML-like token 및 compatibility-normalized hazard에는 source-only zero-width
-separator를 넣어 scanner와 parser에서 동작만 비활성화합니다. `style...:#...;`와
-`classDef...:#...;` substring도 Mermaid preprocessor에서 statement로 승격되지 않도록 source에서만
-분리합니다. Emitted source 원문과 NFKC-normalized source를 각각 strict scanner로 검사하며 어느 한쪽이라도
-active rule이 남으면 후보를 거부합니다. Railroad identifier grammar에 안전하지 않은
-scanner/preprocessor source-active name과 case-folded expression-word namespace, `railroad-beta`, case-folded lowercase
-`title*` prefix는 logical `railroad_rule_*` ID와 분리된 collision-safe `rrmapped_N[_suffix]` native
-name으로 mapping하고 visible change warning을 남깁니다. Logical `railroad_rule_*` ID는 Scene/provenance에만
-유지하고 Scene/OCR은
-실제 mapped `native_name =` text를 기록합니다. Normalized safe rule name은 그대로이며 allocator는 먼저
-모든 safe native name을 reserve한 뒤 suffix로 충돌을 피합니다. Mapped rule의 source name도 typed
-IR/sidecar와 nonterminal label에는 각각 raw/normalized 형태로 유지됩니다. 그 밖의 generated Scene/OCR
-label은 separator 없는 canonical compatibility text를 정확히 사용하고 원문 AST는 typed IR/sidecar에
-그대로 남습니다. Direct Scene projection도 `evidence_ids`가 null/생략 또는 string list가 아니면 fail
-closed합니다.
-
-Production은 raw와 NFKC-normalized emitted source에 strict source scan을 적용한 뒤 raw source만
-CandidateValidator parse/render hard gate로 보냅니다. Pinned integration fixture의 NFKC parse/render는 bare
-hash와 `style`/`classDef` substring이 grammar injection을 만들지 않는지 확인하는 안전성 probe이며,
-normalized SVG가 raw SVG와 같은 compatibility glyph를 표시한다고 요구하지 않습니다. 같은 substring을
-포함한 rule name도 source-active mapping 뒤에만 runtime에 전달합니다.
-
-Wardley·Cynefin·Event Modeling·ZenUML·Organization·Data Lineage·Railroad serializer의 생성 source는
-security scanner에 넘기기 전에도 50,000자·5,000줄을 넘으면 전체 후보 단위로 거부됩니다.
-
-`VisualEvidence` model의 record별 256 source-block reference 검사는 collection 전체의 list/object
-fan-out을 제한하지 못합니다. Runtime은 retained collection마다 `source_block_ids` occurrence를 최대
-20,000개, 해당 ID의 Python 문자열 길이 합계를 8,000,000자로 제한합니다. 중복 ID도 occurrence마다
-계산하며, `id`·`kind`·`text`·`font_weight`·source-block ID 전체의 기존 8,000,000자 evidence 상한도
-별도로 유지합니다. Exact boundary는 통과하고 어느 dimension이든 `+1`이면 해당 collection 또는
-reconstruction-global 신규 ID batch를 원자적으로 격리합니다.
-
-공용 snapshot은 exact plain list와 exact `VisualEvidence` public field를 hook-free built-in access로 한 번
-고정하고, 제한 안의 scalar/nested list로 detached record를 새로 만듭니다. 검증 전 live `model_dump`,
-deep copy, JSON serialization을 하지 않으며 mutable `kind`/`font_weight`는 UTF-8 encoding 전에 최대
-literal 길이와 allowlist를 확인합니다. Pipeline initial/custom-engine 입력과 global admission,
-fusion ingress/output, final result 및 publication/Markdown snapshot이 이 경계를 공유합니다. Sidecar는
-JSON/deep copy/directory 생성 전에, output은 image 쓰기 전에 전체 결과를 재검증하므로 사후 mutation도
-부분 artifact를 만들지 못합니다. 이 내부 방어는 공개 config와 sidecar schema/manifest version을
-변경하지 않습니다. Marker OCR adapter는 각 source-crop/OCR token을 append하기 전에 공용 누적
-budget에 admission하며, 초과 collection의 evidence와 OCR text context를 함께 비우고 bounded error를
-남긴 뒤 source reconstruction을 계속합니다. Review는 root/revision provenance read, trusted replacement,
-content digest/commit, structured `user_edit` 추가 전에 raw dict/model 입력을 한 건씩 detached
-canonical record로 바꿉니다. Standalone Structured VLM adapter도 전체 prior evidence에 이 snapshot을
-먼저 적용하고 나서만 view 검증, prompt selection, provider 호출을 수행합니다. 따라서 선택되지 않을
-tail의 duplicate source-block fan-out이나 capture 중 nested-list 변경도 provider 경계를 넘지 못합니다.
-Evaluation prediction importer는 hash-verified plain JSON array를 `VisualEvidence` model로 만들기 전에
-같은 raw-record admission을 수행합니다. Duplicate를 포함한 source-block occurrence 20,000개와 해당
-Python 문자 8,000,000자 exact boundary를 허용하고 `+1`은 manifest error로 원자적으로 거부해 report
-writer를 호출하지 않습니다. 공개 prediction `0.1`의 100,000-record와 64 MiB artifact 계약을 유지하기
-위해 evaluation의 full-evidence character limit은 artifact byte limit을 사용합니다. JSON parser 자체가
-만드는 bounded raw object tree는 이 validator보다 앞서며, 완전한 streaming parse는 별도 격리 과제입니다.
-
-PDF vector provider도 신뢰하는 collection이 아닙니다. Vector source와 raw text/drawing,
-PyMuPDF drawing command는 전체를 먼저 materialize하지 않고 각 상한보다 한 개만 더 읽어
-초과를 판정합니다. Reconstruction 전체에 기본 256 source, 2,048 primitive/command
-record, 5,000 text record, 8,000,000 text character를 공유하며 primitive·text 설정 최대의
-합은 observation evidence 20,000개를 넘을 수 없고 primitive 상한은 Scene node 5,000개를
-넘을 수 없습니다. 문자 상한도 공용 evidence 입력 상한보다 늘릴 수 없습니다.
-
-예산은 validation 후의 유효 record나 deduplication 후의 결과가 아니라 원시 시도에서
-소모됩니다. 따라서 malformed, crop 밖, duplicate record와 빈 nested drawing container도
-유효한 결과처럼 작업 예산을 사용하며, count 또는 character dimension이 닫힌 뒤에는
-나중 source가 그 예산을 다시 사용할 수 없습니다. Polygon은 256 point, polyline은 512
-point를 넘으면 record 전체를 거부하여 잘린 geometry가 provenance로 남지 않게 합니다.
-전체 보존 geometry는 100,000 point, kind·command·color·style 같은 non-label token은
-각 256자로 제한합니다. Exact duplicate는 hash로 제거하고 approximate bbox dedup은 250,000회,
-text ownership과 endpoint ownership은 각각 1,000,000회 비교 뒤 fail-closed warning으로
-종료합니다. Warning도 observation당 256개로 제한합니다. Custom extractor 및 직접 주입된
-`VectorObservation`은 자체 work metadata를 신뢰하지 않고 engine/Scene 경계에서 다시
-bound·clamp됩니다. 이 검사는 Pydantic 최종 거부나 O(n²) deduplication 후에 의존하지 않고
-외부 iterable을 전체 소비하거나 후단 검증에 넘기기 전에 적용됩니다. Duck-typed text span도
-direct attribute와 `get_text("dict"/"words")` 모두 label을 한 번 읽어 plain snapshot으로 고정한
-뒤 파싱과 `strip()` 전에 그 exact-string 길이를 raw character work에 합산합니다. Numeric scalar는
-finite float로 안전하게 변환 가능한 exact `int`/`float`만 허용해 초대형 정수도 격리합니다.
-
-Record별 256 source-block reference gate와 별도로, 최종 vector 경계는 위 공용 상수를 사용하는 더 이른
-allocation preflight입니다. Canonical deduplicated
-source-block ID가 유효·deduplicate된 shape/text/open-line evidence마다 복제될 aggregate provenance를
-preflight합니다. Reconstruction 전체에서 logical reference 20,000개와 Python 문자열 길이
-8,000,000자를 exact boundary까지 허용합니다. 한쪽이라도 `+1`이면 어떤 Scene/`VisualEvidence`도
-만들기 전에 unknown prediction, 빈 Scene/evidence와 단일 warning으로 vector observation 전체를
-격리합니다. 따라서 bounded prefix가 provenance authority로 게시되지 않으며, 이 공통 경계는
-built-in/direct/custom extraction에 적용됩니다. 실패는 해당 engine에만 머물러 다른 reconstruction
-engine은 계속 실행합니다. Payload 없는 warning은 bounded generation failure로 result와 sidecar
-manifest에 보존됩니다. 두 aggregate 상한은 공개 config/API가 아닌 내부 보안 정책입니다.
-
-Source mapping도 vector source별 linear scan 대신 built-in `observe()` 호출에서 한 번만 bounded
-index로 고정합니다. Exact built-in placement list/tuple은 256개까지 받고 한 개 lookahead로
-초과를 판정하며, 257번째가 있으면 일부 prefix를 쓰지 않고 index 전체를 invalid로 둡니다.
-각 placement의 exact list/tuple `source_block_ids`도 256개까지 index하고 257개면 그
-placement의 block/page+block key 전체를 생략합니다. Placement 자체와 유효한 page key는
-all/page ambiguity에 계속 남아 partial block-ID authority나 허위 unique match를 만들지 않습니다.
-Index는 exact-dict placement reference만 보존하고 build 중 affine/bbox를 파싱하지 않습니다.
-따라서 malformed transform placement도 후보에서 미리 제외되지 않아 ambiguity를 없애지 않습니다.
-
-Index는 all/page/block/page+block tuple을 생성하고 각 source에서 O(1) dictionary lookup만
-수행합니다. Source의 explicit page ID가 있으면 해당 page를 먼저 고정하며 block key가
-다른 page placement로 우회할 수 없습니다. Present-but-invalid page ID는 sole placement도
-선택하지 않습니다. Placement block key는 exact bounded string만 사용하고, source identity는
-exact bounded string/integer 또는 필드가 검증된 Marker `BlockId`에서 canonical string으로
-만듭니다. 이 과정에서 arbitrary `str()`/hash/equality hook을 호출하지 않습니다. 조회 결과가
-유일할 때만 선택 placement의 affine/bbox를 지연 파싱하고, 선택 affine이 invalid하면 bbox
-fallback으로 fail closed합니다. 이 index는 공개 config/API 표면을 늘리지 않는 built-in 통합
-내부 방어입니다.
-
-단, 이 상한은 provider가 반환한 값의 소비부터 적용됩니다. Duck-typed property/callable,
-custom extractor, `get_text()`/`get_drawings()` 호출 및 라이브러리 내부 materialization 자체에는
-아직 wall-clock/RSS 격리가 없습니다. 따라서 provider 구현은 trusted local code여야 하며,
-untrusted provider 실행에는 별도 worker process와 kill/reap 자원 제한이 필요합니다.
-
-Style recovery는 Scene IR 값을 그대로 CSS로 복사하지 않습니다. Node와 edge는 exact built-in PDF vector
-engine이 현재 source block에서 새로 등록한 collision-free contour/line과 bbox/endpoint ownership을
-증명해야 하며 edge는 source/vector/generated/code 네 방향 표현도 일치해야 합니다. 그 trusted vector
-값에만 hex와 제한된 named color, `stroke-width`,
-`stroke-dasharray`를 허용하고, vector-backed label 굵기는 상수
-`font-weight:bold`만 허용합니다. 굵기는 registered bold `vector_text` evidence와 모호하지 않은
-source→candidate mapping을 모두 요구합니다. evidence는 실제 vector engine origin, 고유 ID, source bbox
-내부 span, source/candidate/span label 일치까지 재검사합니다. VLM/fixture가 color나 vector evidence
-kind/ID를 self-declare해도 style authority가 되지 않습니다. `strict` 또는 `portable-basic`
-조합에서는 code를 바꾸지 않고 evidence를 IR에만 남깁니다. edge color/style은 모든 Mermaid edge의
-순서를 정확히 mapping할 수 있을 때만 하나의 `linkStyle`로 출력합니다. 생성 style code도 동일한
-source scanner와 SVG 검사를 통과해야 합니다.
-
-Flowchart/Generic Network의 typed→fused node-ID mapping은 engine이 선언한 bbox/owner 문자열만으로
-권한을 얻지 않습니다. 호출 전 evidence payload, trusted source image canvas와 block 집합, owner-local
-geometry contour를 함께 검사하고 mapping record를 immutable하게 봉인합니다. Sidecar writer는 private
-pipeline certification seal, claim digest, 현재 evidence schema, fused-node reference와 source block을
-다시 확인합니다. 하나라도 어긋나면 임시 bundle을 지우고 `node-id-map.json`을 게시하지 않습니다.
-
-대화형 review workspace도 저장 전 strict scanner와 parse/render/SVG 검사를 동일하게 적용합니다.
-`trusted-local` callback 실행기는 제공하지 않으므로 `click`과 callback은 계속 거부됩니다.
-
-## Review HTTP 경계
-
-review server는 기본적으로 `127.0.0.1`에만 bind합니다. mutation API는 session별 CSRF token,
-same-origin `Origin` 검사, JSON content type, 1 MB body limit, optimistic version/digest를 요구합니다.
-요청 `Host`는 실제 listener와 일치해야 하므로 loopback DNS rebinding host에는 bootstrap도 제공하지 않습니다.
-동시 HTTP request는 기본 8개 slot으로 제한하며 초과 요청은 thread를 만들지 않고 503을 반환합니다.
-각 accepted socket은 기본 10초 timeout을 사용해 incomplete-header slowloris가 slot을 영구 점유하지
-못합니다. Wildcard listener의 추가 hostname은 `--allowed-host` exact allowlist에 명시해야 합니다.
-HTML은 inline script/style 없이 제공하며 CSP는 `script-src 'self'`, `connect-src 'self'`,
-`frame-ancestors 'none'`을 적용합니다. artifact server는 원본 image와 `final.svg/png`만 공개하고
-revision/state 파일은 HTTP로 노출하지 않습니다.
-source overlay는 이 same-origin allowlist URL을 새 image element에만 설정하고 pixel readback, object URL,
-추가 canvas/fetch 경로를 만들지 않습니다. URL 변경 시 이전 element와 focusable bbox를 폐기하며 현재
-request identity와 일치한 load만 Scene-coordinate overlay를 다시 표시할 수 있습니다.
-허용된 static 경로는 `openat`-style directory descriptor와 `O_NOFOLLOW`로 모든 path component를 열고
-검사한 descriptor를 직접 stream하므로 symlink 및 check/use 교체를 거부합니다. validator가 만든 SVG/PNG는 저장 전에
-각 16 MB로 제한하고, undo/redo는 optional IR/SVG/PNG의 생성과 삭제를 같은 rollback 경계에서 처리합니다.
-
-이 서버에는 사용자 인증이 없습니다. `--host 0.0.0.0` 같은 non-loopback bind는 신뢰하는 격리망에서만
-사용해야 하며 CLI가 경고를 출력합니다. CSRF token은 인증을 대신하지 않습니다.
-
-승인은 이전 validation metadata를 재사용하지 않습니다. 현재 digest를 optimistic lock으로 확인한 뒤
-같은 strict validator에서 code를 다시 parse/render하고, 성공한 새 render artifact와 승인 revision을
-함께 기록합니다. Review validator를 구성하지 않은 API embedding은 승인할 수 없습니다.
-
-구조 연산 API는 자연어 command와 분리된 closed discriminated schema를 사용합니다. 현재
-source-backed node label 선택·추가·삭제, edge 추가·재연결·label 설정·삭제, group 생성·삭제와 advisory
-node 이동만 허용합니다. 기존 IR relation/node와 독립 Mermaid line이 정확히 대응하지 않거나 연산별
-허용 범위 밖의 group, style, chained/labeled edge 같은 추가 참조가 있으면 mutation 전에 거부합니다.
-optimistic revision은 operation을
-IR에 해석하기 전과 실제 commit lock 안에서 모두 검사합니다. node 추가는 safe ID/label,
-reason, positive bbox, explicit Scene canvas bounds를 요구하며 client가 evidence ID/kind/score/source를
-정하지 못하게 서버가 revision 기반 `user_edit` evidence를 생성합니다. 이동 payload는 현재 Scene node
-ID와 finite/non-boolean `0..1` center만 허용하며 bbox/style/URL/evidence field를 받을 수 없습니다.
-`layout-hints.json`은 content-addressed revision과 manifest digest로 검증되지만 provenance 주장을 만들지
-않습니다. source bbox를 Mermaid layout 좌표로 재사용하는 이동과 provenance 없는 자유 배치 추가는
-제공하지 않습니다.
-
-`group_nodes`는 client가 group ID, bbox, provenance, layout 또는 Mermaid fragment를 정하지 못하게
-합니다. 서버가 Scene 순서의 unique safe node ID로 deterministic group ID와 exact bbox union을 만들며,
-member bbox의 finite/non-boolean/order/canvas bounds를 확인합니다. 기존 Scene group과 bounded flat
-Mermaid subgraph membership은 operation 전에 ID/member 기준 1:1이어야 합니다. nested/unbalanced
-subgraph, 중복·겹침 membership, implicit/duplicate node declaration, group/node ID collision은 전체
-transaction을 거절합니다. group label만 single-line length/escape 검사를 거쳐 quoted subgraph label이
-되며 최종 code는 동일한 strict parse/render/SVG gate를 다시 통과합니다.
-
-`add_edge`는 closed payload에서 source/target ID만 받고 top-level bounded evidence note를 요구합니다.
-relation/evidence ID와 relation type·semantic·arrow·confidence는 서버가 next revision으로 고정하며,
-label/style/polyline 입력은 허용하지 않습니다. 추가 전 기존 IR ordered endpoint multiset과 Mermaid plain
-edge multiset 전체를 1:1 대조하고, non-plain/labeled/chained/bidirectional edge signal은 fail-closed로
-거부합니다. endpoint node도 각각 하나의 quoted rectangle declaration이 있어야 합니다. 생성 evidence는
-`user_edit`, `bbox=None`, note text, current source block IDs로 제한됩니다.
-
-`delete_edge`도 같은 global mapping preflight 뒤 stable relation ID, unique ordered pair, unique plain line을
-모두 확인하고 검증한 line index만 제거합니다. edge ordinal을 다른 style에 잘못 적용하지 않도록 comment와
-quoted node label을 제외한 `linkStyle` token이 어디에 있어도 거부합니다. delete는 evidence를 지우지 않아
-undo가 relation을 같은 provenance에 다시 연결할 수 있습니다. 두 operation 모두 strict render 실패나
-stale optimistic lock에서 code/IR/render/history/provenance/layout 어느 파일도 commit하지 않습니다.
-
-`set_edge_label`은 stable relation ID와 필수 `label`만 받는 closed payload입니다. label은 `null` 또는
-control/format/surrogate/line-separator가 없는 200자 이하 non-empty single-line 문자열이며, 문자열은
-quoted pipe wrapper 안에 넣습니다. literal `|`은 quote 안에서 보존하고, double quote와 backslash는
-각각 visible compatibility glyph `″`(U+2033), `∖`(U+2216)으로 바꾸며 `&`, `<`, `>` 뒤에는
-U+200B separator를 붙여 Mermaid entity/HTML syntax로 재해석되지 않게 합니다. 원문은 Scene IR과
-audit history에 그대로 남습니다. 변환 뒤에도 source-wide scanner가 금지하는
-external/protocol-relative URL, directive, callback, HTML, CSS import 또는 remote icon pattern이 남으면
-label을 거절합니다. 서버는 모든 Scene relation과 독립 Mermaid edge의 ordered endpoint 및 canonical
-label을 먼저 1:1 대조하고 parallel, chained, unsupported connector, label mismatch, ambiguous line을
-fail-closed로 거부합니다. 성공 시 대상
-relation의 `label`과 정확히 한 edge의 quoted `|"..."|` segment만 추가·교체·제거합니다. provenance와
-`evidence_ids`는 그대로 보존하며 사용자 입력을 새로운 시각 근거로 만들지 않습니다. 같은 label은
-`no_change`로 거절되고, optimistic lock, full Scene schema, strict parse/render/SVG, validated revision과
-undo/redo gate는 다른 구조 연산과 같습니다.
-
-`delete_group` payload는 stable `group_id` 하나만 허용합니다. 삭제 전 모든 Scene group의 safe ID,
-group/node collision, disjoint existing members, exact bbox union과 모든 flat Mermaid subgraph의 ID/member
-mapping 및 grouped member declaration count를 다시 검증합니다. bounded parser가 기록한 target header부터
-matching `end`까지의 line slice만 제거하고, target block 밖에 같은 group ID token이 있으면 dangling
-style/class/click/reference를 추측하지 않고 거절합니다. member element·relation·bbox와 provenance/layout,
-source artifact는 수정하지 않으며 strict render와 optimistic revision transaction을 그대로 사용합니다.
-
-advisory canvas의 endpoint drag도 별도 mutation 권한을 만들지 않습니다. client는 화면 좌표로 유일한
-최근접 node를 선택한 뒤 기존 `reconnect_edge` schema의 relation/source/target ID만 전송합니다. 좌표,
-polyline, bbox, provenance, layout field는 payload에 없으며 server는 current revision의 stable ID와
-Scene↔Mermaid 1:1 mapping을 다시 해석합니다. 반대 endpoint 보존과 self-loop/no-op 거부도 server에서
-재검사되고, select form과 drag는 동일한 optimistic lock·strict render·atomic revision 경계를 씁니다.
-
-Review의 read-only difference blend는 새 endpoint, canvas readback, pixel upload 또는 server artifact를
-만들지 않습니다. 안전한 source URL과 실제 존재하는 current `final.png`에 대해서만 digest-bound
-descriptor를 만들고, 기존 same-origin static allowlist를 사용하며 off-by-default입니다. 두 image는
-독립적인 `contain + center`로 합성될 뿐 정렬·점수 근거가 되지 않습니다. PNG IHDR은 browser load 전에
-각 축 8,192 및 5천만 pixel budget을 검사하며 기존 16 MB artifact budget도 그대로 적용됩니다. source와
-render layer도 decoded bounds와 descriptor URL을 재확인하며 stale/error event는 현재 diff에 적용하지
-않습니다.
-
-Revision restore는 `r` 뒤 6자리 이상 숫자인 ID만 받고, optimistic version/code digest를 bundle lock
-안에서 먼저 확인한 뒤 validated active timeline membership을 검사합니다. revision file path나 cursor
-index, 분기 탈락 snapshot은 API로 받거나 노출하지 않습니다. 복원은 undo/redo와 같은 snapshot digest,
-optional artifact 삭제, provenance/layout content digest, manifest hash, rollback 경계를 사용하며
-`checkout_revision` user audit를 append합니다. History payload의 알 수 없는 field도 거부합니다.
-
-review provenance/layout은 root artifact의 sidecar manifest hash와 `mmx-review-0.4.1` current digest를
-검사합니다. 각 revision은 content-addressed provenance digest를 참조하며 code/IR/render와 같은
-rollback 및 undo/redo 경계에서 root artifact와 manifest hash를 교체합니다. legacy 0.3 state는 기존
-manifest hash가 있으면 먼저 검증한 뒤 정적 provenance digest를 고정해 lazy migration합니다. HTTP
-editor는 provenance replacement switch를 노출하지 않으며 trusted structured operation만 명시적으로
-교체할 수 있습니다. replacement를 포함한 모든 review commit은 Scene element/relation의
-`evidence_ids`가 current provenance의 고유 ID 집합에 포함되는지도 검사합니다.
-
-provenance 기반 node relabel payload는 `node_id`와 `evidence_id`만 허용합니다. optimistic
-version/digest를 확인한 current bundle에서 서버가 evidence text를 해석하므로 client는 label, evidence
-kind/score/bbox 또는 provenance replacement를 주입할 수 없습니다. 선택 evidence는 고유한
-`ocr_token`/`vector_text`이고 target node에 정확히 한 번, 다른 node에는 연결되지 않아야 합니다. text는
-control/format/surrogate/line-separator가 없는 200자 이하 single-line이어야 하며, 기존 provenance와 node
-`evidence_ids`를 수정하지 않은 채 target, before/after label과 선택 ID를 user audit에 남깁니다. 결과
-code는 다른 edit와 같은 strict scanner, parse/render, SVG 검사와 commit-lock optimistic 재검사를
-통과해야 합니다.
-
-VLM/fixture JSON에는 Scene/IR 개수·깊이·문자·point·ID 상한과 finite-number 검사를 적용하며 sidecar
-JSON은 비표준 `NaN`/Infinity를 허용하지 않습니다. Structured VLM은 mutable evidence를 canonical
-model로 다시 검증합니다. canonical copy 전 evidence ID/text/source-block 문자의 합이 8,000,000을
-넘는 입력은 거부합니다. Evidence와 OCR root container는 exact plain list만 허용하고 각각 한 번 만든
-bounded snapshot을 이후 검사와 선택에 공통 사용합니다. 선택 대상으로 자른 OCR prefix도 plain `str`만
-허용하고 문자열 합계 8,000,000자를 넘으면 escape scan 전에 거부합니다. OCR/evidence 전체를 먼저 JSON
-직렬화하지 않으며, 설정된 item/문자 예산과 구조 quota 안에서 선택합니다. Prompt에 맞지 않는 OCR
-string은 raw length lower bound를 먼저 검사해 큰 문자열을 JSON escape scan 없이 건너뜁니다. Marker 1.10.2의 canonical
-response-schema text reserve까지 더한 고정 system/schema/view 영역이 prompt 상한을 넘으면 외부 provider
-호출 전에 실패합니다. 선택 record는 완전한 JSON 단위로만 포함되고 최종 prompt도 UTF-8로 다시
-검사합니다.
-
-Post-construction mutation도 신뢰하지 않습니다. Evidence의 bbox/score/text/font/id를 exact type,
-finite-number, field-size 계약으로 먼저 검사하고, nested `source_block_ids`는 허용 개수보다 하나만 더 읽는
-bounded snapshot으로 고정합니다. 이 snapshot들로 새 canonical payload를 만들어 검증하므로 live evidence
-model을 뒤에서 다시 dump하지 않습니다. Trusted connector/label ID도 exact `set`/`frozenset`에서 bounded
-UTF-8 ID snapshot을 만든 뒤 그 immutable snapshot만 우선순위와 provenance 선택에 사용합니다.
-
-Marker 1.10.2 stock Ollama가 nested `$defs`를 버리는 경로에는 local reference만 허용하는 bounded inline
-schema adapter를 사용합니다. 외부·재귀 reference나 schema 상한 초과는 provider 호출 전에 실패하며,
-Ollama 응답도 공통 canonical model 검증을 우회하지 않습니다.
-
-VLM candidate의 게시 provenance 권한은 해당 호출 직전의 비충돌 evidence 중 실제 prompt에 선택된
-ID에만 있습니다. 문자/item 예산으로 빠진 ID와 같은 응답이 새로 선언한 `vlm_observation`은 review
-overlay와 sidecar evidence로 보존할 수 있지만, 원본 후보·fusion 후보·repair의 자동 게시 근거가 될 수
-없습니다. 다른 trusted engine은 자기 호출에서 canonicalized된 evidence 권한을 유지하며, fusion typed
-candidate는 선택된 원 owner의 닫힌 권한 집합과 독립적으로 인증된 ID mapping 근거만 이어받습니다.
-중복 direct Mermaid candidate도 전체 fusion input 권한의 합집합이 아니라 실제 선택된 원 owner의 권한만
-이어받으며, 명시적 빈 집합은 빈 상태로 유지됩니다.
-
-Structured VLM view도 첫 `original`, portable name, RGB Pillow type, 개별/전체 pixel budget을 호출 전에
-검사합니다. View dict는 전체를 materialize하지 않고 설정 상한보다 하나 많은 항목까지만 읽어 개수를
-판정합니다. 호출자 소유 image를 검사 뒤 그대로 넘기지 않고, 독립된 plain `PIL.Image.Image` snapshot을
-Pillow의 exact pixel core에서 복제하고 다시 크기 검증해 view manifest와 provider image list 양쪽에
-사용합니다. 호출자 객체의 `size`/`mode` property와 `load`/`copy` hook은 이 복사 경로에서 실행하지
-않습니다. Lazy ImageFile subclass는 호출 전에 이미 load되어 exact Pillow pixel core를 가져야 합니다.
-Marker preview image는 별도로 dimension 8,192와 5천만 pixel 상한을 넘거나 Pillow decompression-bomb
-판정이 나면 preview만 격리해 생략합니다.
-
-Reconstruction 진입점도 engine adapter와 별개의 trust boundary입니다. Source block/page ID, OCR,
-initial evidence, opaque source/vector object list는 exact plain list와 item/aggregate 문자 상한으로 먼저
-snapshot합니다. 잘못되거나 초과한 collection은 prefix를 부분 신뢰하지 않고 collection 전체를 격리해
-안전한 기본값과 source-context failure를 사용합니다. Initial/custom-engine evidence collection은
-20,000-item, 20,000 source-block occurrence, source-block 8,000,000-character, full-evidence
-8,000,000-character cap 중 하나라도 넘으면 전체를 격리합니다. Reconstruction-global admission도 새 evidence
-ID batch 전체를 먼저 계산해 전부 수용하거나 전부 publication authority에서 제외합니다. 각 engine 호출 전
-image/view/evidence/OCR/mapping/trusted-set snapshot을 다시 복원해 앞선
-custom engine의 mutation을 다음 engine으로 전달하지 않습니다. Built-in fusion 후보 여부도
-engine-controlled 이름 비교가 아니라 내부 pipeline 표식으로만 결정됩니다.
-
-`source_mapping`은 exact built-in `dict`/`list`/`tuple`과 JSON scalar만 받는 iterative walker로
-복사합니다. Depth 32, 25,000 items, field 50,000 characters, escaped compact JSON 4,000,000 bytes와
-finite/safe numeric 범위를 적용하고 tuple은 list로 정규화합니다. Built-in container primitive만 사용해
-subclass iteration/lookup/`deepcopy` hook을 실행하지 않으며 reference cycle도 거부합니다. Pipeline은
-engine과 repair에 이 snapshot만 전달하고, sidecar writer는 JSON 직렬화·deep copy 전에 재검증한 뒤
-before/live/snapshot canonical digest가 같을 때만 bundle을 publish합니다.
-
-Typed IR도 같은 hook-free exact-built-in walker를 사용하되 depth 64, 100,000 items, field 50,000
-characters, 누적 UTF-8 text 1,000,000 bytes, compact escaped JSON 4,000,000 bytes를 적용합니다. 하나의
-observation은 모든 typed candidate를 합쳐 8,000,000 JSON bytes를 넘을 수 없습니다. Dict key, 반복 alias,
-JSON escape와 structural separator를 모두 세고 tuple은 list로 정규화하며 cycle, subclass, non-finite 또는
-safe range 밖 숫자를 직렬화 전에 거부합니다. Pipeline과 fusion은 mutated model을 dump하기 전 명시 field로
-snapshot하고, accessibility/repair 결과도 재검증합니다. Sidecar는 selected와 alternative의 live IR을
-안전한 shallow candidate에 교체한 뒤에만 전체 result를 deep-copy합니다. Candidate envelope는 3개 공개
-field를 넘기면 `dict.copy` 전에 거부하며, fusion은 여러 observation을 합친 최종 후보에도 64개/8MB 전역
-상한을 다시 적용해 한 입력 초과가 전체 fusion 실패로 번지지 않게 합니다. Envelope field name은 exact
-built-in string인지 bounded copy에서 먼저 확인하며 Pydantic validation error는 원본 hostile input을 숨겨
-오류 문자열 생성도 equality/repr hook을 실행하지 않습니다.
-알려진 typed semantic record의 `evidence_ids`는 Scene과 공유하는 256-reference 상한을 prompt와 nested
-post-validation에 모두 노출합니다. 생략·`null`·빈 목록은 호환을 위해 유지하되, 초과 목록은 fusion,
-pipeline, accessibility/repair 및 sidecar sink의 현재-payload 재검증에서도 후보 단위로 격리됩니다.
-Fusion은 Scene element/relation evidence 및 같은 VisualEvidence의 source-block 합집합을 257번째 고유
-reference 전에 중단합니다. 같은 ID의 모든 입력을 원자적으로 판정하며, 초과 시 앞서 성공한 일부
-합집합도 새 provenance로 게시하지 않고 cross-input enrichment를 버려 precedence winner record를
-유지합니다. Vector text 결합도 새 SceneElement로 검증하며 초과한 label/font attribution 전체를
-생략합니다. Pipeline은 내부 fused Scene/evidence record뿐 아니라 evidence의 exact plain list,
-20,000-item, aggregate source-block occurrence/문자와 full-evidence 문자 상한을 scoring 전에 다시
-검증하므로 post-construction list mutation이 publication receipt와 sidecar 사이를 우회하지 못합니다.
-
-## SVG 검사
-
-runtime의 `render_valid` 보고만 신뢰하지 않으며 비어 있지 않은 문자열 SVG artifact를 함께 요구합니다.
-누락·빈 문자열·공백뿐인 SVG는 사후 검사를 건너뛰지 않고 render 실패로 바꿉니다. 유효 artifact에는
-단일 SVG root와 dimension/viewBox를 요구합니다. script 계열 element, event handler attribute,
-외부 href, style attribute 및 `<style>` text의 외부 CSS를 거부합니다. strict profile은 `foreignObject`도 거부하며 runtime에서
-`htmlLabels: false`를 강제합니다. fragment reference인 `href="#local-id"`만 허용합니다.
-
-## Chromium 격리와 수명
-
-Playwright context의 모든 network route를 abort합니다. remote font/icon을 등록하지 않습니다.
-worker는 browser 하나를 재사용하지만 candidate마다 DOM을 초기화하고 deterministic ID seed를
-사용합니다. worker stdout은 nonblocking JSONL buffer로 읽으며 응답 전체를 64 MB로 제한합니다.
-newline이 오지 않는 partial 응답도 Python deadline을 넘기지 않습니다. timeout, malformed/oversized
-response 또는 종료 시 기록한 worker process group에 SIGTERM을 보내고 제한 시간 후 SIGKILL합니다.
-`bindFunctions`는 호출하지 않습니다.
-
-`sandbox-experimental`은 config enum에는 예약되어 있지만 별도의 OS sandbox implementation은
-아직 없습니다. 현재 runtime은 어떤 profile에서도 동일한 network isolation을 유지합니다.
+5. SVG XML reinspection
+6. publication-policy evaluation
+
+Native C4 parses and renders in Mermaid 11.16, but its generated SVG contains a `data:` image that
+uses an undeclared `xlink` prefix. The strict SVG/XML gate is not relaxed; an `architecture-beta`
+fallback is preferred. If the runtime rejects that Architecture grammar as well, one nested
+Flowchart is created in the same candidate slot and is independently subjected to source security
+scanning, parse/render, SVG inspection, and terminal runtime-type validation. Architecture,
+Deployment, and Component use the same revalidation boundary as C4. If the fallback fails, only
+that candidate remains invalid. Every loss and transition is recorded in candidate warnings, the
+fallback chain, and repair history without increasing the candidate budget or security allowlist.
+
+Architecture service/group labels use a quoted-Markdown terminal plan that separates directives,
+callbacks, URLs, remote icons, CSS imports, and statement-like tokens with source-only separators.
+Visible compatibility glyphs are used, and a warning is recorded, only when Mermaid 11.16 cannot
+display quote, Markdown delimiter, or numeric-entity-like spelling literally. `accTitle` and
+`accDescr` use a separate grammar-scoped `#NN;` codec that separates active spellings while
+preserving the original SVG metadata text. This numeric codec may not be used to obfuscate an
+executable statement or Direct Mermaid; the final source scanner, parse/render, and SVG inspection
+still apply. C4, Deployment, and Component also retain a raw accessibility snapshot and rebuild the
+codec input after every accepted repair. Their Phase 2 projection forbids endpoint `str()` coercion
+and falsey-label fallback, preventing invented edges through real `"None"`/`"1"` IDs and preventing
+malformed labels from being laundered.
+
+## Input prohibited under `strict`
+
+- `click`, callbacks, and JavaScript
+- `http:`, `https:`, `ftp:`, `file:`, `data:`, and protocol-relative external references
+- init/config directives (`%%{...}%%`)
+- script, iframe, object, embed, link, style, img, and svg HTML tags
+- `@import` and external CSS `url()`
+- remote icon packs
+- `style`, `classDef`, and `linkStyle`
+
+`style-only` permits only the last three Mermaid style statements and continues to reject external
+URLs and CSS. `trusted-local` output cannot be published to automatic Markdown.
+
+Runtime-produced SVG and PNG artifacts are each limited to 16,000,000 bytes, measured as UTF-8 or
+raw bytes respectively. SVG must pass XML and external-resource inspection. PNG must have a real
+PNG signature/format, no dimension greater than 8,192 pixels, and no more than 50,000,000 pixels in
+total. Invalid or oversized SVG fails the render hard gate. If only an optional PNG is invalid,
+Mermaid/SVG publication remains valid but the preview bytes are discarded. Newly returned Review
+validator PNGs use the same checks, while compatibility for reading existing bundles is retained
+separately.
+
+Validation/publication HMAC seals are process-local capabilities that prevent public model
+constructors, JSON round trips, and ordinary post-validation mutation from impersonating a
+validated result. Engines and plug-ins running in the same Python process are trusted code. The
+seal does not sandbox hostile Python that can access underscore/private APIs or module memory.
+Untrusted extractors and plug-ins must run in a separate OS process or container and pass only
+validated IR or images into this process.
+
+The source scanner treats a semicolon as a possible Mermaid statement boundary in addition to the
+start of a line. In `flowchart` and `graph`, quoted-label state spanning LF or CRLF starts only when
+a double quote follows a real node opener or bracketed subgraph-label opener. An arbitrary double
+quote in `class`, `direction`, a Gantt title, or accessibility text cannot hide the next statement.
+Apostrophes, backticks, and backslashes are not quote delimiters or escapes, so same-line `click`,
+`style`, `classDef`, and `linkStyle` still follow the active profile's rules. Only a quoted node
+label, `accTitle`/`accDescr` text, or a `%%` comment after optional leading whitespace prevents
+semicolons and keywords within it from being mistaken for statements.
+
+State's `state ID <<choice|fork|join>>` is Mermaid pseudo-state syntax, not HTML. The source scanner
+allows this angle syntax only when the first statement is exactly a `stateDiagram` or
+`stateDiagram-v2` header and the entire declaration line consists solely of a normalized identifier
+plus one of the three stereotypes. The same text in a Flowchart, an unknown stereotype, and HTML
+suffixes remain `html` findings. Bare email and `www` autolinks in State labels are disabled with
+source-only separators after `@` and inside `www.`, preserving visible text. Source-only separators
+also disable behavior for ordinary `<b>` text and the `<` in formulas.
+
+Accessibility-prefix inspection in the statement scanner is limited to 128 characters and does
+not repeatedly compare later `:`/`{` characters with the full prefix. HTML-like source is also
+found with a linear per-line scan, preventing repeated punctuation in a maximum-size label from
+amplifying regex/statement work beyond the candidate budget. Abnormal indentation past the limit
+is not relaxed into accessibility-text state; it fails closed as an ordinary statement.
+
+If a State node ID collides with lexer/security-reserved tokens such as `state`, `class`, `click`,
+`accTitle`, or `as`, or its normalized ID contains the strict remote-icon rule's `iconify`
+substring, the serializer retains source identity and evidence while allocating a collision-free
+`mmx_state_id_…` emitted ID that contains no dangerous token. All normalized IDs are reserved first,
+so a user-provided matching alias cannot overwrite another node. This mapping is an inactive
+identifier substitution, not a scanner bypass, and is shared by Scene endpoints and Mermaid edges.
+
+An ER relationship role is always emitted as one double-quoted terminal. Mermaid 11.16 is not
+allowed to parse unquoted multiword text as a short role followed by phantom entity statements, and
+a semicolon inside the role cannot open a new statement. Entity aliases, attribute types/names,
+comments, and roles must pass exact built-in-string, bounded normalized-text, UTF-8, and
+non-whitespace control/format/surrogate restrictions for their specific ER grammar positions.
+Attribute keys are limited to `PK`, `FK`, and `UK`; when a type/name conflicts with a key token or
+plain-word grammar, it is isolated in a backtick terminal.
+
+If an ER source ID collides with the lexer/security namespace, including `erDiagram`, `style`,
+`classDef`, `class`, `one`, `many`, `to`, `click`, `linkStyle`, or `__proto__`, or contains the
+`iconify` substring, the serializer emits a collision-safe `mmx_er_id_N[_suffix]`. Source identity
+and evidence remain in typed IR, while entity declarations, relationship endpoints, and the
+generated Scene share the alias. This is not an allowlist exception for prohibited statements; it
+avoids emitting active tokens as source identifiers.
+
+ER terminals that Mermaid 11.16 cannot preserve literally use position-specific visible
+compatibility glyphs. Entity quotes, percent signs, grammar-active backslashes, attribute
+backticks, active Markdown/entity-like text in comments and roles, and accessibility numeric-entity
+substitutions are disclosed by a warning, while semantic originals remain in typed IR. URLs,
+callbacks, directives, style/control words, and remote-icon patterns receive source-only
+zero-width separators that disable lexer/scanner behavior. Those separators are removed from the
+Scene/OCR canvas and do not change visible text, so they do not by themselves produce a
+compatibility warning. Raw source must still pass the ordinary strict source scan, Mermaid
+parse/render, and SVG reinspection.
+
+Raw ER `title`/`description`/`acc_title`/`acc_description` fields are checked before accessibility
+enrichment and semantic-repair serialization for exact built-in string type, raw and normalized
+length, UTF-8, and Unicode category. Only absent/`None` and exactly empty omitted values are
+accepted. Whitespace-only values, subclasses/hooks, and control/format/surrogate/line-separator text
+are isolated at candidate scope before they can be laundered into derived accessibility text.
+Initial candidates and repairs each rebuild record/accessibility plans from a validated raw
+snapshot. An accepted repair reconciles derived text and visible-substitution warnings with the
+current plan.
+
+Raw Gantt `title`/`description`/`acc_title`/`acc_description`/`date_format` fields undergo the same
+exact built-in-string, raw/normalized-length, UTF-8, and Unicode-category checks before generic
+enrichment and semantic-repair serialization. Only absent/`None` and exactly empty omitted values
+are accepted. Whitespace-only values, subclasses/hooks, and control/format/surrogate/line-separator
+text are isolated before they can be laundered into derived accessibility text. The separate
+accessibility plan uses only semantic section/task labels. Explicit `description` and
+`acc_description` remain authoritative after repair; a description is rederived from the repaired
+IR only when both are absent.
+
+Task status is a closed token set and may not contain both `active` and `done`. Each task requires
+exactly one end or duration and bounded task-ID/start/end/duration/date-format syntax. Task IDs must
+be unique across the diagram and reject runtime tags `active`, `done`, `crit`, `milestone`, `vert`,
+`__proto__`, and the `iconify` substring. `,`, `#`, and `;`, which could append schedule fields, are
+also rejected. Only supported numeric date-format tokens are converted to parsing formats, blocking
+invalid calendar dates. End must be after start, except that a milestone may be equal. `h`/`hh`
+must be paired with `A`/`a`. Zero-width end-date forms `Z`/`ZZ` and `S`/`SS` are rejected; only `SSS`
+is supported. Seconds timestamp `X` is rejected because of Mermaid 11.16's unit mismatch.
+Milliseconds `x` requires canonical decimal without a leading zero and must remain within the
+ECMAScript Date maximum. Resolved ends after duration and prior-only `after` chains must also stay
+within that maximum. Durations must match exact decimal-plus-unit grammar; Mermaid-rounded
+fractional `ms`/`d`/`w`/`M`/`y` values are rejected. Fractional `h`/`m`/`s` must convert to an exact
+positive integer number of milliseconds, and the total magnitude must remain inside the bounded
+runtime range. Exact zero is allowed only for a milestone. An `after` target must be an existing
+unique ID that precedes the current task in source order. This backward-only gate prevents forward
+or partial resolution and cycles. Combining `after` with an end date, and every `until`, fails
+closed.
+
+For runtime type `gantt`, every rectangle in the final SVG with whitespace class token `task` must
+have finite, positive width and height. This pinned-runtime shape gate does not apply to a `task`
+class in other diagram types. It isolates a mixed-scale, zero-width task as render-invalid before
+certification and publication even if it appears parse/render-valid. Standalone/Review SVG
+inspection where runtime type is unknown applies the same gate only when the root has
+`aria-roledescription="gantt"`.
+
+Gantt label source neutralizes directive openers, `//`, URL/data/JavaScript schemes, `@import`,
+callbacks, remote icons, config and Gantt control words, numeric entities, `---`, and a task-leading
+ISO date with visually inert zero-width separators. Normalized canvas text and Scene/OCR remove the
+separators, although raw SVG DOM text/title/description can retain them. When Mermaid 11.16 cannot
+preserve a task's `:`/`%` or a title/accessibility `<` literally, the serializer uses visible
+`∶`/`％`/`‹` and records a compatibility warning. Every task `%` becomes fullwidth, so
+directive-like task text also uses visible substitution; plain `%%` in a title/section may remain
+literal when it is not an active directive opener. Initial and repair candidates revalidate their
+raw snapshots and record/accessibility plans, and an accepted repair reconciles warnings with the
+current plan.
+
+Observing the prohibited tokens in a specialized typed-serializer label never emits them as active
+statements. Zero-width separators inside keywords and URL-like tokens disable behavior in both the
+scanner and parser. Source `&` in a Flowchart label is separated the same way to prevent entity
+reinterpretation. Event Modeling edge `|` and `;` display as `∣` and `⁏`, whose NFKC forms do not
+restore delimiter/statement behavior. Quotes, backslashes, and entity-like literals use the
+`″`, `∖`, and `＆`/`＃` glyphs that pinned Flowchart SVG actually preserves, with a warning. Source
+control/format characters and line/paragraph separators are rejected before whitespace
+normalization, preventing invisible-character bypasses. Packet, TreeView, and Ishikawa use encoders
+matched to the actual SVG behavior of each native grammar; characters that cannot be preserved
+switch to a verifiable Flowchart fallback with a compatibility warning. Unsafe original
+accessibility text remains only in typed IR/Review metadata, while automatic SVG receives generic
+wording. Native/fallback labels and SVG titles/descriptions are covered by pinned Mermaid
+integration tests.
+
+Native Sequence never emits a participant's source ID directly as a Mermaid identifier. A
+source-ordered `mmx_sequence_participant_N` namespace is shared by declarations, every message
+endpoint, and the generated Scene, separating it from lexer/scanner tokens such as `participant`,
+`end`, and `style`, from `__proto__`, from the `iconify` substring, and from future reserved words.
+The source ID remains in typed IR and provenance. Because literal `;` in participant/message text
+can pass strict scanning and parse/render while injecting a statement, every `#` and `;` is encoded
+character by character as native `#35;`/`#59;`. Compound entity-like literals retain exact SVG text
+under this order.
+
+Directive openers, comments, URL/data/JavaScript schemes, callbacks, remote icons, config, and
+style/control words receive source-only zero-width separators before raw and NFKC strict scans and
+the pinned runtime. Quotes, backslashes, colons, and Markdown punctuation are not replaced because
+the native Sequence canvas preserves them. Only accessibility angle brackets display as `〈`/`〉` to
+avoid Mermaid 11.16 double-escaping, with a warning. Raw accessibility fields pass exact-string,
+Unicode, and bounds gates before generic enrichment and repair. The candidate stores a validated
+raw snapshot so a malformed or empty directive cannot swallow the next source line or be laundered
+into derived text.
+
+Native Mindmap does not emit a user logical ID as a source identifier; it uses the preorder
+`root`/`node_N` namespace. Every root/child label sits inside a quoted shape terminal. A generated
+leading sentinel and source-only zero-width separators disable directive openers, comments,
+URL/data/JavaScript schemes, callbacks, remote icons, config, and click/style/control words.
+Backslash, underscore, bracket, and parenthesis separators disable only Mindmap Markdown
+escape/link and shape-delimiter interpretation and disappear from the visible canvas. A
+source-authored named-entity prefix is separated, while actual literal `<`/`>` characters alone are
+XML-entity encoded, distinguishing and recovering `&amp;` spelling and angle text. Ordinary spaces
+are placed on both sides of separators so adjacent words do not join in SVG text.
+
+Where pinned Mermaid 11.16 cannot retain a quote, active asterisk/backtick/tilde, or
+numeric-entity-like spelling literally, visible `″`, `＊`, `ˋ`, `～`, and `＆`/`＃` glyphs are used
+and disclosed in candidate warnings. Semantic originals remain in raw typed IR. Node labels/IDs and
+top-level accessibility metadata pass bounded exact-string, UTF-8, and Unicode-category gates
+before coercion; only exactly empty aliases/metadata are omitted. Initial and repair paths both
+rebuild plans from validated raw snapshots, preflight expanded source at 50,000 UTF-16 units and
+5,000 lines, and still apply the ordinary strict scan, parse/render, and SVG inspection. An
+accessibility directive would become another root, so native source does not emit it.
+
+Native Timeline grammar can reinterpret a period beginning with `title` or `section`, or containing
+`%`, `#`, or a literal colon, as a title, section, comment, or additional event on the same line.
+The renderer can also decode entity-like spellings while losing surrounding spaces. The serializer
+therefore prefixes normalized title/period/event terminals with one generated zero-width sentinel
+and emits every ASCII code point as a Mermaid numeric entity. The lexer and strict scanner no
+longer see user directives, URLs, callbacks, HTML, click/style, comments, or delimiters as active
+source, while the Mermaid 11.16 renderer restores quotes, backslashes, colons, semicolons, `#`,
+literal entity spellings, and whitespace exactly on the canvas. The sentinel may remain in source
+or the SVG DOM, but it is visually inert and excluded from Scene/OCR canvas text. Unicode
+control/format/surrogate input fails the semantic gate.
+
+Raw `title`/`description`/`acc_title`/`acc_description` fields pass exact-string, bounds, and Unicode
+gates before enrichment and repair, with only exact `""` omitted. Timeline runtime does not turn
+accessibility directives into real SVG metadata, so automatic source omits them. Candidates store
+only the raw snapshot and resolve values from the current record plan when needed. Final code,
+including source-encoding expansion, is preflighted at 50,000 UTF-16 units and 5,000 lines so
+numeric expansion cannot bypass runtime budgets.
+
+The ZenUML Sequence fallback emits participant source IDs through a reserved
+`zenuml_participant_*` namespace and uses only those namespaced endpoints in messages. Because
+Mermaid messages have no ID syntax, `zenuml_message_*` exists only as a Scene/provenance slot.
+Alias/message `#`, `;`, and entity-like literals display as `＃`, `⁏`, and `＆`/`＃`; active
+keyword/URL/callback/config tokens are split only in source with invisible separators. `accTitle`
+and `accDescr` share active-token, entity, and `#` rules, but display `<`/`>` as NFKC-stable
+`〈`/`〉` because Sequence accessibility SVG double-escapes angle brackets. A semicolon proven to be
+text in the one-line accessibility grammar retains its original glyph. Substitutions are recorded
+as compatibility warnings.
+
+Wardley and Cynefin native serializers also reject control/format/line-separator characters before
+normalization and use visible `＆`/`＃` compatibility glyphs where the renderer would lose
+entity-like literals. Warnings record the substitutions, while originals remain in typed IR and
+sidecars. Their strict nested contracts reject booleans, NaN, and infinity for Wardley `x`/`y`,
+integer/string coercion for `anchor`, and any Cynefin domain outside the closed official token set.
+If runtime rejects native `cynefin-beta`, one explicit-domain `flowchart LR` is generated in the
+same candidate slot. The fallback independently receives raw/NFKC source scans, strict Flowchart
+label neutralization, parse/render, SVG inspection, and terminal-type checking, without increasing
+the candidate budget or allowlist. It invents neither the fixed runtime template nor membership
+connectors and retains requested/emitted/runtime metadata, fallback history, and requested-type
+accessibility sanitization. Only a validated fallback that meets the generated-node attribution
+threshold can proceed through normal publication gates; success of the security fallback does not
+remove the native result's template-provenance review hold.
+
+Organization and Data Lineage fallbacks do not emit raw IDs directly as Mermaid identifiers; they
+use type-specific namespaces and normalization-collision checks. Labels reject control/format/lone
+surrogates before normalization and replace quote, backslash, entity-like literals, relation
+delimiters, edge-grammar `()[]{}@`, and accessibility angle brackets with compatibility glyphs
+visible in the pinned runtime. Edge `@` displays as `＠`, with an additional source-only zero-width
+separator that also keeps NFKC `@import` inactive. Active keywords and URL tokens are disabled only
+in source, while originals remain in typed IR and sidecars. A Data Lineage relation reaches
+Flowchart only when its endpoints are resolved, non-self, and non-duplicate.
+
+Railroad first bounds expression variants and payload containers with a strict discriminated
+contract, then a shared plan checks rule-name collisions, references, depth, and record budgets.
+Because the native grammar cannot safely preserve ASCII angle brackets, any ASCII `#`, an
+entity-like `&` prefix, or an NFKC quote/backslash hazard, it converts them respectively to canonical
+visible `〈`/`〉`, `＃`, `＆`, and `″`/`∖`. Mermaid's global `encodeEntities` also mutates bare
+`#word;` and `#35;`, so ASCII `#` has no exception and always produces a warning. Original semantic
+fields remain in typed IR and sidecars. Source-only zero-width separators disable active
+URL/directive/callback/HTML-like tokens and compatibility-normalized hazards in rule, terminal,
+nonterminal, special, and accessibility text. `style...:#...;` and `classDef...:#...;` substrings
+are also split only in source so Mermaid's preprocessor cannot promote them to statements. Both
+the emitted source and its NFKC-normalized form pass the strict scanner independently; the
+candidate is rejected if either retains an active rule.
+
+Scanner/preprocessor-active names that are unsafe under Railroad identifier grammar, the case-folded
+expression-word namespace, `railroad-beta`, and a case-folded lowercase `title*` prefix are mapped
+from logical `railroad_rule_*` IDs to collision-safe `rrmapped_N[_suffix]` native names, with a
+visible-change warning. Logical `railroad_rule_*` IDs remain only in Scene/provenance, while
+Scene/OCR records the actual mapped `native_name =` text. A normalized safe rule name remains
+unchanged. The allocator reserves every safe native name before using suffixes to avoid collisions.
+For a mapped rule, the source name remains in typed IR/sidecars in raw form and in nonterminal
+labels in normalized form. Other generated Scene/OCR labels use exact canonical compatibility text
+without separators; the original AST remains in typed IR/sidecars. Direct Scene projection also
+fails closed unless `evidence_ids` is null/omitted or a string list.
+
+Production applies strict source scans to raw and NFKC-normalized emitted source, then sends only
+raw source to the CandidateValidator parse/render hard gate. The pinned integration fixture's NFKC
+parse/render is a safety probe that confirms bare hashes and `style`/`classDef` substrings cannot
+create grammar injection; it does not require normalized SVG to display the same compatibility
+glyphs as raw SVG. Rule names containing those substrings reach the runtime only after
+source-active mapping.
+
+Generated source from Wardley, Cynefin, Event Modeling, ZenUML, Organization, Data Lineage, and
+Railroad serializers is rejected at whole-candidate scope before security scanning if it exceeds
+50,000 characters or 5,000 lines.
+
+A per-record limit of 256 source-block references in the `VisualEvidence` model does not bound
+list/object fan-out across an entire collection. Every retained collection therefore limits
+`source_block_ids` to 20,000 occurrences and the sum of their Python string lengths to 8,000,000
+characters. Duplicate IDs count on every occurrence. The separate 8,000,000-character evidence
+limit across `id`, `kind`, `text`, `font_weight`, and source-block IDs also remains. Exact boundaries
+pass; `+1` in any dimension atomically isolates the collection or reconstruction-global new-ID
+batch.
+
+The shared snapshot reads an exact plain list and exact public `VisualEvidence` fields once through
+hook-free built-in access and creates detached records from in-budget scalar/nested-list values. It
+does not call live `model_dump`, deep copy, or JSON serialization before validation. Mutable `kind`
+and `font_weight` values are checked against maximum literal length and allowlists before UTF-8
+encoding. Pipeline initial/custom-engine input and global admission, fusion ingress/output, final
+results, and publication/Markdown snapshots share this boundary. Sidecar output revalidates the
+entire result before JSON/deep copy/directory creation, and document output does so before image
+writes, preventing post-mutation partial artifacts. This internal defense does not change public
+configuration or the sidecar schema/manifest version.
+
+The Marker OCR adapter admits each source crop/OCR token against the shared cumulative budget before
+appending it. For an over-budget collection it clears evidence and OCR text context together,
+records a bounded error, and continues source reconstruction. Review canonicalizes raw dict/model
+inputs into detached records one by one before root/revision provenance reads, trusted replacement,
+content digest/commit, or structured `user_edit` insertion. The standalone Structured VLM adapter
+applies the same snapshot to all prior evidence before view validation, prompt selection, or a
+provider call. Thus an unselected tail with duplicate source-block fan-out, or nested-list mutation
+during capture, cannot cross the provider boundary.
+
+The evaluation prediction importer applies the same raw-record admission before converting a
+hash-verified plain JSON array into `VisualEvidence` models. It accepts the exact boundaries of
+20,000 source-block occurrences including duplicates and 8,000,000 Python characters, while `+1`
+atomically rejects the manifest without invoking the report writer. To preserve the public
+prediction `0.1` contract of 100,000 records and 64 MiB per artifact, evaluation uses the artifact
+byte limit for the full-evidence character limit. The bounded raw object tree produced by the JSON
+parser exists before this validator; fully streaming parsing remains separate isolation work.
+
+PDF vector providers are not trusted collections either. Vector sources, raw text/drawings, and
+PyMuPDF drawing commands are not fully materialized; the system reads at most one past each bound
+to detect overflow. A reconstruction shares defaults of 256 sources, 2,048 primitive/command
+records, 5,000 text records, and 8,000,000 text characters. The configured primitive and text
+maxima together may not exceed 20,000 observation-evidence records, the primitive maximum may not
+exceed 5,000 Scene nodes, and the character maximum may not exceed the shared evidence-input
+limit.
+
+Budgets are consumed by raw attempts rather than only by valid records after validation or
+deduplication. Malformed, out-of-crop, duplicate records and empty nested drawing containers consume
+work just like valid results; once a count or character dimension closes, a later source cannot
+reuse it. A polygon above 256 points or a polyline above 512 points is rejected whole so truncated
+geometry never becomes provenance. Total retained geometry is limited to 100,000 points, while
+non-label tokens such as kind, command, color, and style are limited to 256 characters each. Exact
+duplicates are hash-deduplicated. Approximate bbox deduplication stops after 250,000 comparisons,
+and text and endpoint ownership each stop after 1,000,000 comparisons with a fail-closed warning.
+Warnings are limited to 256 per observation.
+
+Custom extractors and directly injected `VectorObservation` values cannot authorize themselves
+through work metadata; engine/Scene boundaries re-bound and clamp them. These checks do not rely on
+eventual Pydantic rejection or post hoc O(n²) deduplication and run before fully consuming an
+external iterable or handing it to downstream validation. A duck-typed text span from either a
+direct attribute or `get_text("dict"/"words")` has its label read once into a plain snapshot. Exact
+string length is charged to raw character work before parsing or `strip()`. Numeric scalars must be
+exact `int`/`float` values safely convertible to finite float, isolating enormous integers as well.
+
+Separate from the per-record 256-source-block-reference gate, the final vector boundary performs an
+earlier allocation preflight using the shared constants. It calculates the aggregate provenance
+that would duplicate canonical, deduplicated source-block IDs onto every valid and deduplicated
+shape, text, and open-line evidence record. The reconstruction permits exactly 20,000 logical
+references and 8,000,000 Python string characters. If either reaches `+1`, the entire vector
+observation is isolated as an unknown prediction with empty Scene/evidence and one warning before
+any Scene or `VisualEvidence` object is created. No bounded prefix therefore becomes publication
+authority. The boundary applies to built-in, direct, and custom extraction. Failure stays inside
+that engine while other reconstruction engines continue. A payload-free warning is retained in
+the result and sidecar manifest as a bounded generation failure. These aggregate limits are
+internal security policy, not public configuration or API.
+
+Source mapping is also frozen once as a bounded index in built-in `observe()`, rather than rescanned
+linearly for every vector source. An exact built-in placement list/tuple accepts at most 256 entries
+and uses one-entry lookahead. If entry 257 exists, the entire index is invalid and no partial prefix
+is used. An exact list/tuple `source_block_ids` on each placement is likewise indexed up to 256;
+entry 257 omits that placement's block and page-plus-block keys. The placement itself and valid page
+key remain in all/page ambiguity, preventing partial block-ID authority or a false unique match.
+The index stores only exact-dict placement references and does not parse affine transforms or bboxes
+during construction, so a malformed-transform placement is not pre-excluded in a way that removes
+ambiguity.
+
+The index builds all/page/block/page-plus-block tuples and performs only O(1) dictionary lookups for
+each source. An explicit source page ID fixes that page first, so a block key cannot escape to a
+placement on another page. A present but invalid page ID does not select even a sole placement.
+Placement block keys are exact bounded strings. Source identity is an exact bounded string/integer
+or the canonical string of a field-validated Marker `BlockId`; arbitrary `str()`, hash, or equality
+hooks are not invoked. Only a unique lookup result causes lazy parsing of the selected affine/bbox,
+and an invalid selected affine fails closed to bbox fallback. This index is an internal built-in
+integration defense and does not expand public configuration or API surface.
+
+These provider limits begin when returned values are consumed. Duck-typed properties/callables,
+custom extractors, `get_text()`/`get_drawings()`, and internal library materialization do not yet
+have wall-clock or RSS isolation. Provider implementations must therefore be trusted local code.
+An untrusted provider requires a separate worker process with kill/reap resource limits.
+
+Style recovery never copies Scene IR values directly into CSS. A node or edge must be supported by
+a collision-free contour/line freshly registered for the current source block by the exact
+built-in PDF vector engine, with bbox/endpoint ownership established. An edge also requires
+agreement across source, vector, generated, and code direction representations. Only these trusted
+vector values may supply hex or limited named colors, `stroke-width`, and `stroke-dasharray`.
+Vector-backed label weight is limited to the constant `font-weight:bold` and requires both
+registered bold `vector_text` evidence and unambiguous source-to-candidate mapping. Evidence is
+rechecked for actual vector-engine origin, unique ID, source-bbox-contained span, and matching
+source/candidate/span labels. A VLM or fixture cannot become style authority by self-declaring a
+color or vector evidence kind/ID. Under `strict` or `portable-basic`, code is unchanged and evidence
+remains only in IR. Edge color/style is emitted as one `linkStyle` only when every Mermaid edge can
+be mapped in exact order. Generated style code still passes the same source scanner and SVG
+inspection.
+
+Typed-to-fused Flowchart/Generic Network node-ID mapping does not gain authority from engine-declared
+bbox/owner strings alone. Before invocation, the system checks evidence payloads, the trusted
+source-image canvas and block set, and owner-local geometry contours, then seals the mapping record
+immutably. The sidecar writer rechecks the private pipeline certification seal, claim digest,
+current evidence schema, fused-node reference, and source block. On any mismatch it removes the
+temporary bundle and does not publish `node-id-map.json`.
+
+The interactive Review workspace applies the same strict scanner and parse/render/SVG checks before
+saving. It provides no `trusted-local` callback executor, so `click` and callbacks remain rejected.
+
+## Review HTTP boundary
+
+The Review server binds to `127.0.0.1` by default. Mutation APIs require a per-session CSRF token,
+same-origin `Origin`, JSON content type, a 1 MB body limit, and optimistic version/digest values. A
+request `Host` must match the actual listener, so a loopback DNS-rebinding host cannot obtain even
+bootstrap content. Concurrent HTTP requests are limited to eight slots by default; excess requests
+receive 503 without creating a thread. Every accepted socket has a default 10-second timeout so an
+incomplete-header slowloris cannot hold a slot indefinitely. Additional hostnames for a wildcard
+listener must appear in the exact `--allowed-host` allowlist. HTML contains no inline script/style,
+and CSP uses `script-src 'self'`, `connect-src 'self'`, and `frame-ancestors 'none'`. The artifact
+server exposes only the original image and `final.svg/png`; revision/state files are not available
+over HTTP.
+
+The source overlay assigns its same-origin allowlisted URL only to a new image element. It performs
+no pixel readback and creates no object URL, extra canvas, or fetch path. On a URL change, the old
+element and focusable bboxes are destroyed, and only a load matching the current request identity
+can restore Scene-coordinate overlays. Allowed static paths are opened component by component using
+an `openat`-style directory descriptor and `O_NOFOLLOW`, and the inspected descriptor itself is
+streamed, rejecting symlinks and check/use substitution. Validator-produced SVG/PNG is limited to
+16 MB each before saving. Undo/redo places creation and deletion of optional IR/SVG/PNG in the same
+rollback boundary.
+
+The server has no user authentication. A non-loopback bind such as `--host 0.0.0.0` is suitable only
+on a trusted isolated network, and the CLI emits a warning. A CSRF token is not authentication.
+
+Approval never reuses prior validation metadata. After checking the current digest as an optimistic
+lock, the same strict validator reparses and rerenders the code, then records the successful new
+render artifact and approval revision together. An API embedding without a configured Review
+validator cannot approve.
+
+Structural-operation APIs use a closed discriminated schema separate from natural-language
+commands. They currently permit only source-backed node-label selection/addition/deletion, edge
+addition/reconnection/label setting/deletion, group creation/deletion, and advisory node movement.
+Mutation is rejected before execution when existing IR relations/nodes do not map exactly to
+independent Mermaid lines, or when out-of-scope groups, styles, chained/labeled edges, or other
+references are present. The optimistic revision is checked both before interpreting the operation
+against IR and inside the actual commit lock.
+
+Node addition requires a safe ID/label, reason, positive bbox, and explicit Scene canvas bounds. The
+server creates revision-based `user_edit` evidence, so the client cannot choose evidence ID, kind,
+score, or source. Movement payloads accept only a current Scene node ID and a finite, non-boolean
+`0..1` center; they cannot include bbox, style, URL, or evidence fields. `layout-hints.json` is
+validated against a content-addressed revision and manifest digest but makes no provenance claim.
+The server offers neither movement that reuses a source bbox as Mermaid layout coordinates nor
+free-placement addition without provenance.
+
+`group_nodes` prevents the client from choosing group ID, bbox, provenance, layout, or a Mermaid
+fragment. The server constructs a deterministic group ID and exact bbox union from unique safe node
+IDs in Scene order, checking finite/non-boolean/order/canvas bounds for each member bbox. Before the
+operation, existing Scene groups and bounded flat Mermaid subgraph membership must correspond
+one-to-one by ID and members. Nested or unbalanced subgraphs, duplicate/overlapping membership,
+implicit or duplicate node declarations, and group/node ID collisions reject the whole
+transaction. Only the group label undergoes single-line length/escape validation before becoming a
+quoted subgraph label. Final code must again pass the same strict parse/render/SVG gate.
+
+`add_edge` accepts only source/target IDs in a closed payload and requires a bounded, top-level
+evidence note. The server fixes relation/evidence IDs and relation type, semantics, arrow, and
+confidence from the next revision; label, style, and polyline input are not accepted. Before
+addition, it compares the full existing IR ordered-endpoint multiset one-to-one with the Mermaid
+plain-edge multiset. A non-plain, labeled, chained, or bidirectional edge signal fails closed. Each
+endpoint node must also have exactly one quoted rectangle declaration. Generated evidence is
+limited to kind `user_edit`, `bbox=None`, the note text, and current source-block IDs.
+
+`delete_edge` performs the same global mapping preflight, then verifies a stable relation ID, unique
+ordered pair, and unique plain line and removes only the validated line index. It rejects any
+`linkStyle` token outside comments and quoted node labels, preventing an edge ordinal from being
+misapplied to another style. Deletion retains evidence so undo can reconnect the relation to the
+same provenance. For both operations, strict-render failure or a stale optimistic lock commits no
+code, IR, render, history, provenance, or layout file.
+
+`set_edge_label` accepts only a stable relation ID and required `label` in a closed payload. The
+label is either `null` or a non-empty single-line string up to 200 characters without
+control/format/surrogate/line-separator characters, and it is placed inside a quoted pipe wrapper.
+Literal `|` is retained inside the quote. Double quotes and backslashes display as compatibility
+glyphs `″` (U+2033) and `∖` (U+2216), while U+200B is placed after `&`, `<`, and `>` to prevent
+Mermaid entity/HTML reinterpretation. The original remains in Scene IR and audit history. The label
+is rejected if the transformed source still matches a source-wide prohibited external or
+protocol-relative URL, directive, callback, HTML, CSS import, or remote-icon pattern.
+
+The server first maps every Scene relation one-to-one to an independent Mermaid edge by ordered
+endpoints and canonical label. Parallel edges, chained edges, unsupported connectors, label
+mismatches, and ambiguous lines fail closed. On success, only the target relation's `label` and the
+exact one edge's quoted `|"..."|` segment are added, replaced, or removed. Provenance and
+`evidence_ids` remain unchanged; user input does not become new visual evidence. Setting the same
+label is rejected as `no_change`. Optimistic lock, full Scene schema, strict parse/render/SVG,
+validated revision, and undo/redo gates match those of other structural operations.
+
+`delete_group` accepts only one stable `group_id`. Before deletion, it revalidates every Scene
+group's safe ID, group/node collisions, disjoint existing members, exact bbox union, and every flat
+Mermaid subgraph's ID/member mapping and grouped-member declaration count. The bounded parser
+removes only the line slice from the target header through its matching `end`. If the same group ID
+token appears outside the target block, the operation rejects rather than guessing about dangling
+style/class/click/reference use. Member elements, relations, bboxes, provenance/layout, and source
+artifacts are unchanged, and the strict-render/optimistic-revision transaction is retained.
+
+Endpoint dragging on the advisory canvas creates no separate mutation authority. The client uses
+screen coordinates to select one unique nearest node and then sends only relation/source/target IDs
+under the existing `reconnect_edge` schema. The payload contains no coordinates, polyline, bbox,
+provenance, or layout field. The server reinterprets stable IDs and Scene-to-Mermaid one-to-one
+mapping from the current revision. It also rechecks preservation of the opposite endpoint and
+rejects self-loops and no-ops. Select-form and drag operations share the same optimistic-lock,
+strict-render, and atomic-revision boundary.
+
+Review's read-only difference blend creates no endpoint, canvas readback, pixel upload, or server
+artifact. It is off by default and builds a digest-bound descriptor only for the safe source URL
+and an existing current `final.png`, using the same-origin static allowlist. The two images are
+composited independently with `contain + center`; the result is not alignment or scoring evidence.
+Before browser load, PNG IHDR is limited to 8,192 on each axis and 50 million pixels, in addition to
+the existing 16 MB artifact limit. Source and render layers recheck decoded bounds and descriptor
+URLs, and stale/error events cannot affect the current diff.
+
+Revision restore accepts only IDs consisting of `r` plus at least six digits. It checks optimistic
+version/code digest inside the bundle lock before validating active-timeline membership. The API
+neither accepts nor exposes revision file paths, cursor indexes, or snapshots discarded from a
+branch. Restore uses the same snapshot digest, optional-artifact deletion, provenance/layout content
+digest, manifest hash, and rollback boundary as undo/redo and appends a `checkout_revision` user
+audit event. Unknown history-payload fields are rejected.
+
+Review provenance/layout validates the root artifact's sidecar manifest hash and the
+`mmx-review-0.4.1` current digest. Every revision references a content-addressed provenance digest;
+root artifacts and manifest hashes are replaced in the same rollback and undo/redo boundary as
+code, IR, and render. Legacy 0.3 state first validates an existing manifest hash and then pins a
+static provenance digest during lazy migration. The HTTP editor exposes no provenance-replacement
+switch; only a trusted structured operation can replace it explicitly. Every Review commit,
+including one with replacement, also verifies that Scene element/relation `evidence_ids` belong to
+the unique ID set of current provenance.
+
+A provenance-backed node-relabel payload accepts only `node_id` and `evidence_id`. The server
+interprets evidence text from the current bundle after checking optimistic version/digest; the
+client cannot inject label, evidence kind/score/bbox, or provenance replacement. Selected evidence
+must be unique `ocr_token`/`vector_text`, attached exactly once to the target node and to no other
+node. Text must be a single line up to 200 characters without
+control/format/surrogate/line-separator characters. Existing provenance and node `evidence_ids`
+remain unchanged, and target, before/after labels, and the selected ID enter the user audit. The
+resulting code passes the same strict scanner, parse/render, SVG inspection, and commit-lock
+optimistic recheck as every other edit.
+
+VLM/fixture JSON receives Scene/IR count, depth, character, point, and ID limits plus finite-number
+checks. Sidecar JSON rejects non-standard `NaN` and Infinity. Structured VLM revalidates mutable
+evidence as canonical models and rejects input whose aggregate evidence ID/text/source-block
+characters exceed 8,000,000 before canonical copying. Evidence and OCR root containers must be
+exact plain lists, and the same bounded snapshot of each is reused for later validation and
+selection. A selected OCR prefix also accepts only plain `str` values and is rejected before escape
+scanning if its total exceeds 8,000,000 characters. The system never serializes all OCR/evidence to
+JSON first; it selects within configured item/character budgets and structural quotas. An OCR string
+that cannot fit the prompt is screened by a raw-length lower bound and skipped without JSON escape
+scanning. If the fixed system/schema/view region plus Marker 1.10.2's canonical response-schema text
+reserve exceeds the prompt limit, the external provider is not called. Selected records are
+included only as complete JSON units, and the final prompt is rechecked as UTF-8.
+
+Post-construction mutation is also untrusted. Evidence bbox, score, text, font, and ID are checked
+first for exact type, finite number, and field size. Nested `source_block_ids` is frozen as a
+bounded snapshot that reads at most one beyond the permitted count. New canonical payloads are
+created from those snapshots, avoiding later dumps of live evidence models. Trusted connector and
+label IDs are similarly copied from exact `set`/`frozenset` values into bounded UTF-8 ID snapshots,
+and only the immutable snapshots participate in priority and provenance selection.
+
+The Marker 1.10.2 stock Ollama path that discards nested `$defs` uses a bounded inline-schema adapter
+that accepts only local references. External/recursive references or schema-budget overflow fail
+before the provider call. Ollama responses still pass the shared canonical-model validation.
+
+Publication provenance authority for a VLM candidate is limited to non-conflicting evidence IDs
+actually selected into that call's prompt immediately beforehand. IDs omitted by character/item
+budgets, and response-declared `vlm_observation` records with matching IDs, may remain as Review
+overlay and sidecar evidence but cannot authorize automatic publication of original, fused, or
+repaired candidates. Another trusted engine retains evidence authority canonicalized for its own
+call. A fused typed candidate inherits only the selected original owner's closed authority set and
+independently certified ID-mapping evidence. A duplicate Direct Mermaid candidate likewise
+inherits only the authority of the original owner actually selected, not the union of all fusion
+inputs; an explicitly empty set remains empty.
+
+Structured VLM views are validated before the call for a first `original` view, portable names,
+RGB Pillow type, and per-view/total pixel budgets. The view dictionary is not fully materialized;
+at most one entry beyond the configured limit is read. A caller-owned image is not passed through
+after validation. Instead, an independent plain `PIL.Image.Image` snapshot is copied from Pillow's
+exact pixel core, dimensions are revalidated, and that snapshot is used by both the view manifest
+and provider image list. The caller object's `size`/`mode` properties and `load`/`copy` hooks do not
+run on this path. A lazy ImageFile subclass must already be loaded and expose an exact Pillow pixel
+core before the call. A Marker preview image exceeding dimension 8,192 or 50 million pixels, or
+triggering Pillow's decompression-bomb judgment, is isolated by omitting only the preview.
+
+The reconstruction entry point is a trust boundary separate from engine adapters. It snapshots
+source block/page IDs, OCR, initial evidence, and opaque source/vector object lists only from exact
+plain lists under item and aggregate-character limits. An invalid or oversized collection is
+isolated whole, not partially trusted by prefix, and a safe default plus source-context failure is
+used. Initial/custom-engine evidence is isolated if any of these limits is exceeded: 20,000 items,
+20,000 source-block occurrences, 8,000,000 source-block characters, or 8,000,000 full-evidence
+characters. Reconstruction-global admission precomputes an entire new evidence-ID batch and either
+accepts all of it or excludes all of it from publication authority. Before each engine call, image,
+view, evidence, OCR, mapping, and trusted-set snapshots are restored so mutation by an earlier
+custom engine cannot reach the next. Built-in fusion-candidate status is determined only by an
+internal pipeline marker, never by comparing an engine-controlled name.
+
+`source_mapping` is copied by an iterative walker that accepts only exact built-in
+`dict`/`list`/`tuple` and JSON scalars. It applies depth 32, 25,000 items, 50,000 characters per
+field, 4,000,000 bytes of escaped compact JSON, and finite safe numeric ranges; tuples normalize to
+lists. Only built-in container primitives are used, so subclass iteration, lookup, and `deepcopy`
+hooks do not run, and reference cycles are rejected. The pipeline passes only this snapshot to
+engines and repairs. Before JSON serialization or deep copy, the sidecar writer revalidates it and
+publishes only when before/live/snapshot canonical digests agree.
+
+Typed IR uses the same hook-free exact-built-in walker with depth 64, 100,000 items, 50,000
+characters per field, 1,000,000 aggregate UTF-8 text bytes, and 4,000,000 bytes of compact escaped
+JSON. All typed candidates in one observation may total at most 8,000,000 JSON bytes. Dict keys,
+repeated aliases, JSON escapes, and structural separators all count; tuples normalize to lists;
+cycles, subclasses, non-finite numbers, and numbers outside the safe range are rejected before
+serialization. Pipeline and fusion snapshot explicit fields before dumping a mutated model, and
+accessibility/repair results are revalidated. A sidecar replaces selected and alternative live IR
+with safe shallow candidates before deep-copying the full result. A candidate envelope with more
+than three public fields is rejected before `dict.copy`. Fusion reapplies global limits of 64
+candidates and 8 MB to the merged result so one oversized input does not fail all fusion. Envelope
+field names are checked as exact built-in bounded strings. Pydantic validation errors omit hostile
+original input so error-string construction cannot invoke equality or representation hooks.
+
+Known typed semantic-record `evidence_ids` exposes the shared Scene limit of 256 references in both
+the prompt and nested post-validation. Omitted, `null`, and empty lists remain for compatibility;
+oversized lists isolate the candidate during fusion, pipeline, accessibility/repair, and sidecar
+current-payload revalidation. Fusion stops before the 257th unique reference while combining Scene
+element/relation evidence and source-block IDs from the same `VisualEvidence`. All inputs sharing an
+ID are judged atomically. On overflow, it discards cross-input enrichment rather than publishing a
+partial union and retains the precedence winner's record. Vector-text combination also validates a
+new `SceneElement` and omits the entire over-limit label/font attribution. Before scoring, the
+pipeline revalidates internal fused Scene/evidence records and the evidence collection's exact
+plain-list, 20,000-item, aggregate source-block occurrence/character, and full-evidence character
+limits, preventing post-construction list mutation between publication receipt and sidecar. If this
+backstop fails, only the fused candidate is isolated and original engine candidates remain.
+
+## SVG inspection
+
+The runtime's `render_valid` report is insufficient; a non-empty string SVG artifact is required.
+Missing, empty, or whitespace-only SVG is converted to a render failure rather than skipping
+post-inspection. A valid artifact must have one SVG root and dimensions/viewBox. Script-like
+elements, event-handler attributes, external hrefs, and external CSS in style attributes or
+`<style>` text are rejected. The `strict` profile also rejects `foreignObject` and forces
+`htmlLabels: false`. Only fragment references of the form `href="#local-id"` are accepted.
+
+## Chromium isolation and lifecycle
+
+Every network route in the Playwright context is aborted. No remote font or icon is registered.
+The worker reuses one browser, but resets the DOM and uses a deterministic ID seed for every
+candidate. Worker stdout is read through a nonblocking JSONL buffer with a 64 MB response limit. A
+partial response without a newline cannot exceed the Python deadline. On timeout, malformed or
+oversized response, or shutdown, SIGTERM is sent to the recorded worker process group and SIGKILL
+follows after the grace period. `bindFunctions` is never called.
+
+`sandbox-experimental` is reserved in the configuration enum but has no separate OS-sandbox
+implementation yet. The current runtime maintains the same network isolation under every profile.

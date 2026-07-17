@@ -1,82 +1,135 @@
 # marker-mermaid
 
-`marker-mermaid`는 Marker가 찾은 Figure, Picture, ComplexRegion을 근거 추적 가능한
-Mermaid 후보로 복원하는 `marker-pdf 1.10.2` 확장입니다. 원본 이미지를 항상 보존하고,
-보안 검사와 실제 Mermaid parse/render를 통과한 코드만 Markdown에 넣습니다. 봉인된 serializer stability가
-`experimental`이면 품질 등급이 A여도 자동 Markdown에 experimental reconstruction 경고를 함께 표시합니다.
+[![License: GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+[![Project status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](docs/spec-coverage.md)
 
-이 저장소는 MMX-001 v0.3 Phase 1~5 유형의 serializer와 안전한 실행 경로를 제공하는
-experimental engineering baseline입니다. Core/계획 serializer에 더해 State, Class, ER, Requirement, Block을 native 문법으로
-생성하며 BPMN/Swimlane/C4/Deployment/Component/Use-case는 검증된 portable grammar로 명시적으로
-fallback합니다. Pie, XY, Quadrant, Sankey, Radar, Treemap, Venn도 explicit numeric/set IR을
-native 또는 loss-disclosed fallback으로 처리합니다. 대화형 workspace에서는 검증된 code/IR
-편집, provenance overlay, 대안 선택, 제한된 자연어 patch, undo/redo, 승인/거절을 제공합니다.
-Review canvas의 node drag는 source bbox를 덮어쓰지 않는 revisioned advisory layout hint로 저장되며,
-edge endpoint drag는 화면상 node 선택만 수행한 뒤 기존의 검증된 reconnect transaction을 재사용합니다.
-명시적 node group도 Scene↔Mermaid membership을 대조한 closed operation으로만 생성합니다.
-edge 추가·삭제 역시 전체 Scene relation↔plain Mermaid edge mapping이 일치할 때만 revision됩니다.
-edge label 추가·교체·제거도 stable relation ID와 전체 Scene↔Mermaid label mapping을 검증하며
-provenance를 새로 만들지 않습니다.
-Group 삭제는 member node/edge를 보존하면서 exact Scene↔subgraph block만 제거합니다.
-유형별 추출 schema, 외부 평가 corpus, 일부 review 조작처럼 아직 구현하지 않은 v0.3 범위는
-[스펙 대응표](docs/spec-coverage.md)에 숨김없이 구분했습니다.
+Evidence-aware Mermaid reconstruction for [Marker](https://github.com/datalab-to/marker).
 
-## 핵심 보장
+`marker-mermaid` turns diagrams found in PDF figures, pictures, and complex regions into
+editable Mermaid candidates while retaining the original image and traceable visual evidence.
+Only Mermaid that passes the configured security checks and a real parse-and-render cycle may
+be published into generated Markdown.
 
-- 원본 이미지 보존은 끌 수 없습니다.
-- 자동 게시 코드는 사전 보안 검사, `mermaid.parse()`, `mermaid.render()`, 사후 SVG 검사를
-  모두 통과해야 합니다. runtime이 render 성공을 보고해도 비어 있지 않은 SVG artifact가 없으면
-  render 실패로 처리합니다.
-- 최종 Mermaid source, 검사된 SVG, 선택적 runtime PNG는 SHA-256 validation receipt로 결합되고,
-  게시 정책·보안 프로필·결정 상태는 별도 process-private authorization seal로 고정됩니다. 검증 뒤
-  source/SVG·품질 점수나 정책 결과가 바뀌면 Markdown과 게시 sidecar 경계가 fail-closed로 동작합니다.
-  선택적 PNG가 바뀌면 Markdown code는 유지하되 preview를 생략하며, PNG 저장을 요청한 sidecar는
-  거부합니다. Markdown/Marker는 동일한 봉인 snapshot에서 code와 preview를 만들고 sidecar는 원자적
-  deep snapshot을 기록하므로 동시 변경으로 서로 다른 상태가 섞이지 않습니다.
-- Process-private seal은 같은 process의 engine/plugin을 trusted code로 보는 무결성 경계입니다. 신뢰하지
-  않는 Python plugin은 별도 process/container에서 실행해야 합니다.
-- 후보 하나의 실패가 문서 전체를 실패시키지 않습니다.
-- `extended` 기본 budget은 type 2개, candidate 3개, repair 3회입니다.
-- 의미 점수가 없는 결과는 성공률을 부풀리지 않고 `U` 등급과 review 대상으로 둡니다.
-- syntax/render 점수는 의미 점수를 희석할 수 없으며 게시 정책의 semantic threshold도 별도로 통과해야 합니다.
-- `extended`의 자동 생성 node는 생성 결과 기준 collision-free provenance가 80% 미만이면
-  review로 보냅니다. 하나의 node 근거를 둘 이상의 generated node가 재사용하면 그 근거는
-  모두에서 모호한 것으로 간주해 coverage를 늘리지 않습니다.
-- node/relation의 OCR, contour, VLM observation 등 provenance를 sidecar에 보존합니다.
-- composite panel과 adjacent/continued multi-page fragment를 virtual source로 조립·출력합니다.
-- panel/merge OCR bbox와 원 page/block을 잇는 affine provenance를 sidecar에 보존합니다.
-- geometry contour/line/arrowhead evidence를 VLM보다 먼저 수집하며 engine별 후보를 공정하게 배분합니다.
-- PDF vector/CV/OCR/VLM observation을 출처별 우선순위로 fusion하고 충돌 warning을 남깁니다.
-- explicit flat/disjoint Flowchart group을 검증된 subgraph로 방출하고 lane/group membership을 SceneGroup sidecar에 보존합니다.
-- exact member set과 bbox containment가 일치하는 trusted vector container만 group fill/stroke style로 복원합니다.
-- node fill/border와 edge stroke도 collision-free built-in PDF vector contour/line 근거가 있을 때만 복원합니다.
-- 등록된 PDF vector span 근거가 있는 Flowchart bold label을 안전한 상수 style로 복원합니다.
-- trusted Marker/Vector text와 exact bbox/block, 또는 충돌 없는 built-in Geometry relation이 지지할 때만 Flowchart label·방향·무라벨 누락 edge를 복구합니다.
-- 평가 가능한 경우 edge·arrow·layout·root-to-terminal path 구조 점수를 기록합니다.
-- 렌더 런타임은 외부 네트워크를 차단하며 종료 시 Chromium process group을 정리합니다.
+> [!IMPORTANT]
+> This project is an experimental engineering baseline for MMX-001 v0.3 and currently targets
+> `marker-pdf==1.10.2`. Reconstruction quality varies by diagram and input quality. Review
+> experimental output before relying on it for operational or safety-critical decisions.
 
-## 설치
+## Why marker-mermaid?
 
-Python 3.11+, Node 20+가 필요합니다. Marker 통합은 의도적으로 기준 버전에 고정됩니다.
-Atomic sidecar publication은 Linux의 `renameat2(RENAME_NOREPLACE)`와 macOS의
-`renameatx_np(RENAME_EXCL)`을 지원하며, 해당 no-replace primitive가 없는 OS에서는 기존 bundle을
-덮어쓸 가능성이 있는 fallback 대신 sidecar 쓰기를 거부합니다.
+Image-to-diagram conversion is not just OCR. A useful reconstruction must recover labels,
+geometry, edge direction, grouping, diagram semantics, and enough provenance to explain where
+each generated element came from. This project combines multiple signals instead of trusting a
+single model response:
+
+- Marker blocks and optional page-level discovery
+- PDF vector primitives, contours, lines, arrowheads, and OCR observations
+- Type-aware visual priors such as edge maps and overlays
+- Typed intermediate representations and deterministic serializers
+- Multiple candidates with bounded repair iterations
+- Real Mermaid syntax/render validation and post-render SVG inspection
+- Reference-free semantic scoring and source-to-output provenance
+- A local review workspace with revision history
+
+The original source image is always preserved. A candidate failure never aborts the surrounding
+document conversion.
+
+## Project status
+
+The default mode is `extended` and the default publication policy is
+`best_effort_validated`. The implementation includes the Phase 1–5 serializer and safety
+baseline, but it does not claim complete semantic extraction for every type in the MMX-001
+specification.
+
+| Area | Current behavior |
+| --- | --- |
+| Core structure | Native Flowchart, Sequence, State, Class, ER, Requirement, and Block serializers |
+| Architecture | Native Architecture plus explicit portable fallbacks for C4, Deployment, Component, BPMN/Swimlane, and Use-case inputs |
+| Planning | Mindmap, Timeline, Gantt, Journey, Kanban, and GitGraph projections |
+| Charts | Pie, XY, Quadrant, Sankey, Radar, Treemap, and Venn with numeric/set safety gates |
+| Specialized | Packet, Ishikawa, TreeView, Wardley, Cynefin, Railroad, Event Modeling, and ZenUML projections |
+| Review | Validated Mermaid/IR edits, provenance overlays, candidate selection, bounded natural-language patches, undo/redo, approval/rejection, and immutable revisions |
+
+See the [specification coverage matrix](docs/spec-coverage.md) for implemented, partial, and
+planned behavior. Experimental serializer stability always produces an experimental warning in
+automatic Markdown, even when the measured quality grade is A.
+
+## Safety guarantees
+
+- Keeping the original image cannot be disabled.
+- Automatically published Mermaid must pass a pre-render security scan,
+  `mermaid.parse()`, `mermaid.render()`, and post-render SVG inspection.
+- A render result without a non-empty SVG artifact is rejected.
+- Final Mermaid source, inspected SVG, and optional runtime PNG are tied together by SHA-256
+  validation receipts and process-private authorization seals.
+- Mutating validated source, SVG, scores, or policy state causes publication to fail closed.
+- The renderer blocks external network access and cleans up the Chromium process group.
+- Unknown semantic quality remains grade `U`; syntax success cannot hide missing semantic
+  evidence.
+- In `extended` mode, automatically generated nodes require at least 80% collision-free
+  provenance coverage or the result is routed to review.
+- Candidate, type, repair, input, output, and reconstruction-global resource budgets are bounded.
+
+The process-private seal treats in-process engines and plug-ins as trusted code. Run untrusted
+Python extensions in a separate process or container. Read the full [security model](docs/security.md)
+and report vulnerabilities according to [SECURITY.md](SECURITY.md).
+
+## Requirements
+
+- Python 3.11 or newer
+- Node.js 20 or newer
+- Linux or macOS for atomic no-replace sidecar publication
+- Optional Marker and vision dependencies for end-to-end PDF reconstruction
+
+Atomic publication uses `renameat2(RENAME_NOREPLACE)` on Linux and
+`renameatx_np(RENAME_EXCL)` on macOS. On platforms without a safe no-replace primitive,
+marker-mermaid refuses to overwrite an existing sidecar bundle.
+
+The browser runtime pins `mermaid@11.16.0`, `playwright@1.61.1`, and the corresponding Chromium
+revision. Its default cache directory is `$XDG_CACHE_HOME/marker-mermaid/runtime`; a development
+checkout with `node_modules` or `MARKER_MERMAID_RUNTIME_DIR` can override that location.
+
+## Installation
+
+The project has not published a stable package release. Install a development checkout:
 
 ```bash
+git clone https://github.com/seo-rii/marker-mermaid.git
+cd marker-mermaid
 python -m venv .venv
 . .venv/bin/activate
-pip install -e '.[marker,vision,dev]'
+pip install -e '.[vision,dev]'
 marker-mermaid install-runtime
 marker-mermaid doctor
 ```
 
-Node 런타임은 `mermaid@11.16.0`, `playwright@1.61.1`과 해당 Chromium revision을 사용합니다.
-기본 설치 위치는 `$XDG_CACHE_HOME/marker-mermaid/runtime`입니다. 개발 checkout에 이미
-`node_modules`가 있거나 `MARKER_MERMAID_RUNTIME_DIR`을 설정하면 그 위치를 사용합니다.
+The optional `marker` extra is intentionally pinned to the compatibility baseline:
 
-## 빠른 사용법
+```bash
+pip install -e '.[marker,vision,dev]'
+```
 
-PDF 변환은 Marker가 지원하는 LLM service를 그대로 사용합니다.
+> [!WARNING]
+> As of 2026-07-17, the `marker-pdf==1.10.2` dependency graph constrains Pillow to a release line
+> below versions containing current public security fixes. Use the Marker compatibility extra
+> only in an isolated environment and do not process untrusted documents with it. See the
+> [known upstream dependency constraint](SECURITY.md#known-upstream-dependency-constraint).
+
+Marker source code is GPL-licensed, while Marker model weights have separate upstream terms.
+Review the [upstream Marker repository](https://github.com/datalab-to/marker) before downloading
+or using those weights.
+
+## Quick start
+
+The CLI is the supported interface during the alpha period. Python modules and constructor-level
+integration points may change without a compatibility layer until the public API is stabilized.
+
+Convert a PDF using a Marker-supported LLM service:
+
+The selected service may receive source images, OCR text, and generated visual priors. Review
+that provider's data-handling terms and deployment configuration before processing confidential
+documents. The offline fixture path below does not call a remote model service.
 
 ```bash
 marker-mermaid convert input.pdf \
@@ -85,7 +138,7 @@ marker-mermaid convert input.pdf \
   --llm-service marker.services.gemini.GoogleGeminiService
 ```
 
-네트워크 없이 파이프라인과 출력 형식을 재현하려면 이미지와 fixture observation을 사용합니다.
+Reproduce the pipeline and output contract offline with the included fixture:
 
 ```bash
 marker-mermaid reconstruct examples/flowchart.pbm \
@@ -93,34 +146,33 @@ marker-mermaid reconstruct examples/flowchart.pbm \
   --output output/fixture
 ```
 
-Mermaid 파일만 검증할 수도 있습니다.
+The fixture intentionally uses Korean diagram labels to exercise multilingual reconstruction;
+the project documentation and interface guidance are English.
+
+Validate a Mermaid source file:
 
 ```bash
 marker-mermaid validate diagram.mmd
 ```
 
-생성 결과를 local workspace에서 검토하고 수정합니다.
+Open the local review workspace:
 
 ```bash
 marker-mermaid review output/document
 ```
 
-고정된 MMX-001 corpus manifest를 집계하고 release gate 보고서를 만들 수 있습니다. Manifest와
-모든 source/ground-truth/prediction artifact는 SHA-256으로 고정됩니다.
+Run the fixed-corpus release evaluation:
 
 ```bash
 marker-mermaid evaluate corpus/manifest.json --output output/evaluation
 ```
 
-종료 코드는 trusted-runner 입력의 전체 gate 통과 `0`, gate 실패 또는 필수 근거 부재 `1`,
-잘못된 manifest/artifact `2`, 보고서 I/O 실패 `3`입니다. Corpus runner와 manifest 계약은
-[Release evaluation](docs/evaluation.md)을 참고하세요.
+The evaluator pins the manifest and every source, ground-truth, and prediction artifact by
+SHA-256. Exit codes are `0` for all trusted-runner gates passing, `1` for a gate failure or
+missing required evidence, `2` for an invalid manifest/artifact, and `3` for report I/O failure.
+See [release evaluation](docs/evaluation.md) for the trust and corpus contracts.
 
-수정 Mermaid는 strict security scan과 실제 parse/render를 다시 통과해야 저장됩니다. Scene IR,
-SVG/PNG, 이력, immutable revision도 같은 commit으로 갱신됩니다. 자세한 사용법과 지원되는
-자연어 명령은 [Review Workspace](docs/review-workspace.md)를 참고하세요.
-
-## 출력
+## Output
 
 ```text
 output/document/
@@ -132,54 +184,65 @@ output/document/
     └── page_4_figure_2/
         ├── manifest.json
         ├── final.mmd
-        ├── final.svg             # 자동 게시 bundle은 필수, 그 외 설정에 따라 선택적
-        ├── final.png             # runtime 생성 및 write_png 설정에 따라 선택적
+        ├── final.svg
+        ├── final.png
         ├── scene-ir.json
-        ├── generated-scene-ir.json # 생성 후보 구조(평가 대상, 가용한 경우)
+        ├── generated-scene-ir.json
         ├── typed-ir.json
-        ├── node-id-map.json        # 안전한 typed→fused ID remap이 있는 경우
+        ├── node-id-map.json
         ├── provenance.json
         ├── source-map.json
         ├── scores.json
         ├── review-history.json
-        ├── review-state.json        # 첫 review 수정 후
-        ├── layout-hints.json        # advisory node center (drag 후, 선택적)
-        ├── versions/                # immutable review revisions
+        ├── review-state.json
+        ├── layout-hints.json
+        ├── versions/
         └── alternatives/
 ```
 
-자세한 스키마와 atomic write 규칙은 [출력 형식](docs/output-format.md)을 참고하세요.
+`final.svg` is required for an automatically published bundle. `final.png`, review state,
+layout hints, and several typed/evaluation artifacts are conditional. See the
+[output format](docs/output-format.md) for schemas and atomic-write rules.
 
-## 문서
+## Documentation
 
-- [아키텍처와 처리 흐름](docs/architecture.md)
-- [후보 영역 발견](docs/discovery.md)
+- [Architecture and processing flow](docs/architecture.md)
+- [Candidate discovery](docs/discovery.md)
 - [Geometry engine](docs/geometry.md)
 - [Type-aware visual priors](docs/visual-priors.md)
-- [Page-level missed diagram detector](docs/page-detector.md)
-- [Vector extraction과 fusion](docs/vector-fusion.md)
-- [품질 평가와 점수 availability](docs/quality.md)
-- [Release corpus와 MMX-001 gate](docs/evaluation.md)
-- [접근성 title/description 생성](docs/accessibility.md)
-- [Typed serializer와 fallback 계약](docs/serialization.md)
-- [Typed extraction 계약과 평가 Scene](docs/typed-extraction.md)
-- [차트 serializer와 숫자 안전성](docs/charts.md)
-- [계획·특수 다이어그램 serializer](docs/specialized-diagrams.md)
-- [결정적 source repair](docs/source-repair.md)
+- [Page-level diagram detector](docs/page-detector.md)
+- [Vector extraction and fusion](docs/vector-fusion.md)
+- [Quality scoring and availability](docs/quality.md)
+- [Release corpus and MMX-001 gates](docs/evaluation.md)
+- [Accessible titles and descriptions](docs/accessibility.md)
+- [Typed serializers and fallback contracts](docs/serialization.md)
+- [Typed extraction and evaluation scenes](docs/typed-extraction.md)
+- [Chart serializers and numeric safety](docs/charts.md)
+- [Planning and specialized serializers](docs/specialized-diagrams.md)
+- [Deterministic source repair](docs/source-repair.md)
 - [Evidence-backed semantic repair](docs/semantic-repair.md)
 - [Style recovery](docs/style-recovery.md)
-- [설정 레퍼런스](docs/configuration.md)
-- [Marker 1.10.2 통합](docs/marker-integration.md)
-- [보안 모델](docs/security.md)
-- [출력 형식](docs/output-format.md)
-- [Review Workspace](docs/review-workspace.md)
-- [스펙 대응표와 로드맵](docs/spec-coverage.md)
-- [개발 및 테스트](docs/development.md)
-- [연구 배경](docs/references.md)
-- [변경 이력](CHANGELOG.md)
+- [Configuration reference](docs/configuration.md)
+- [Marker 1.10.2 integration](docs/marker-integration.md)
+- [Security model](docs/security.md)
+- [Output format](docs/output-format.md)
+- [Review workspace](docs/review-workspace.md)
+- [Specification coverage and roadmap](docs/spec-coverage.md)
+- [Development and testing](docs/development.md)
+- [Research references](docs/references.md)
+- [Changelog](CHANGELOG.md)
 
-Mermaid 브라우저 API는 공식 [usage 문서](https://mermaid.js.org/config/usage)와
-[API interface](https://mermaid.js.org/config/setup/mermaid/interfaces/Mermaid.html)를 기준으로
-사용합니다. Marker 통합은 설치된 1.10.2 실 API에 대한 compatibility test로 고정합니다.
+## Contributing
 
-Marker와 직접 통합되는 이 프로젝트는 `GPL-3.0-only`로 배포됩니다.
+Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), follow the
+[Code of Conduct](CODE_OF_CONDUCT.md), and keep changes within the documented security and
+publication boundaries. Please do not open a public issue for a suspected vulnerability.
+
+## License and acknowledgements
+
+marker-mermaid is distributed under the [GNU General Public License v3.0 only](LICENSE).
+
+This is an independent extension project and is not affiliated with or endorsed by Datalab or
+the Mermaid project. Marker, Mermaid, Playwright, Chromium, and other dependencies remain under
+their respective licenses. Research and implementation influences are listed in
+[docs/references.md](docs/references.md).

@@ -1,95 +1,115 @@
 # Evidence-backed semantic repair
 
-Marker 기본 pipeline은 typed Flowchart/Generic Network의 label과 명확한 directed relation에 한해
-deterministic semantic repair를 시도합니다. 이는 자유 형식 LLM self-correction이 아니라 원본 evidence와
-공통 품질 평가가 동시에 지지하는 좁은 enrichment입니다.
+The default Marker pipeline attempts deterministic semantic repair only for labels and clearly
+directed relations in typed Flowchart/Generic Network candidates. This is not free-form LLM
+self-correction; it is a narrow enrichment supported simultaneously by source evidence and the
+shared quality evaluation.
 
-교정은 다음 조건을 모두 만족해야 합니다.
+A correction must satisfy every condition below:
 
-- 후보가 typed IR에서 생성된 Flowchart 또는 Generic Network이다.
-- source Scene과 typed node가 exact ID로 일치한다.
-- source Scene label이 비어 있지 않고 현재 typed label과 실제로 다르다.
-- source element가 참조한 `vector_text`, 또는 score 0.8 이상의 `ocr_token` text가 source label과
-  NFKC/casefold 정규화 후 정확히 일치한다.
-- text evidence가 초기 Marker OCR 또는 exact built-in `VectorPrimitiveEngine`에서 왔고 ID 충돌이 없다.
-- evidence bbox 중심이 source node bbox 안에 있으며 현재 source block ID를 공유한다. VLM이 새로 선언한
-  OCR/vector evidence는 label repair 권한이 없다.
+- The candidate is a Flowchart or Generic Network generated from typed IR.
+- The source Scene and typed node have the same exact ID.
+- The source Scene label is non-empty and actually differs from the current typed label.
+- `vector_text` referenced by the source element, or `ocr_token` text with a score of at least 0.8,
+  exactly matches the source label after NFKC/casefold normalization.
+- The text evidence came from initial Marker OCR or the exact built-in `VectorPrimitiveEngine`, and
+  its ID does not collide.
+- The center of the evidence bbox lies inside the source-node bbox and shares a current source
+  block ID. OCR/vector evidence newly declared by a VLM has no label-repair authority.
 
-충족한 label을 한 번에 모두 교정하며 node ID와 node 수는 바꾸지 않습니다. Supporting evidence ID를
-typed node에 추가하고 accessibility description도 generated text였던 경우에만 다시 계산합니다. 명시적으로
-작성된 accessibility text는 유지합니다.
+Every qualifying label is corrected in one operation; node IDs and node count do not change.
+Supporting evidence IDs are added to the typed node, and the accessible description is recomputed
+only when it was generated text. Explicitly authored accessibility text is retained.
 
-조건 분기 relation의 label은 다음 이중 gate를 모두 통과한 **기존 edge**에만 추가하거나 교정합니다.
+A conditional-relation label is added to or corrected on an **existing edge** only when all parts
+of the following dual gate pass:
 
-- typed edge label이 비어 있거나 source label과의 NFKC/casefold 문자열 유사도가 0.60 이상인 오타 후보여야
-  합니다. 이미 존재하는 의미가 다른 label은 자동으로 덮어쓰지 않습니다.
-- source Scene의 conditional/branch/decision/gateway relation과 typed IR edge가 같은 exact source/target을
-  가지며, 각 unordered endpoint pair에 source relation과 typed edge가 하나씩만 존재해야 합니다. Typed edge는
-  이미 source와 같은 방향인 단방향 edge여야 합니다.
-- ID 충돌과 engine 간 방향 충돌이 없는 built-in `GeometryEngine` relation 하나가 같은 endpoint와 방향을
-  지지해야 합니다. score 0.6 이상의 trusted `line_segment`와 `arrowhead`가 relation에 연결되고 현재 source의
-  같은 block을 공유해야 합니다.
-- source relation label과 NFKC/casefold 정규화 후 정확히 일치하는 trusted `vector_text`, 또는 score 0.8
-  이상의 trusted `ocr_token`이 relation에 직접 연결되어야 합니다. Text evidence는 connector와 같은 block에
-  있어야 하며 다른 source relation과 evidence ID를 공유하지 않아야 합니다. 양의 면적을 가진 text bbox의
-  중심은 node 내부가 아니어야 하고, bbox의 짧은 변 길이의 2배 이내에서 source polyline과 확장된 trusted
-  line bbox 양쪽에 모두 근접해야 합니다. 같은 중심이 다른 trusted connector의 두 corridor에도 동시에
-  들어가면 어느 edge의 label인지 추측하지 않고 거부합니다.
+- The typed edge label is empty, or it is a likely typo with NFKC/casefold string similarity of at
+  least 0.60 to the source label. A present label with different semantics is not overwritten
+  automatically.
+- A conditional/branch/decision/gateway relation in the source Scene and the typed-IR edge have the
+  same exact source and target, and each unordered endpoint pair has exactly one source relation and
+  one typed edge. The typed edge must already be a one-way edge in the same direction as the source.
+- Exactly one built-in `GeometryEngine` relation, with neither an ID collision nor an inter-engine
+  direction conflict, supports the same endpoints and direction. Trusted `line_segment` and
+  `arrowhead` evidence with scores of at least 0.6 must be attached to the relation and share the
+  same current-source block.
+- Trusted `vector_text` that exactly matches the source-relation label after NFKC/casefold
+  normalization, or trusted `ocr_token` with a score of at least 0.8, must be attached directly to
+  the relation. Text evidence must be in the same block as the connector and may not share an
+  evidence ID with another source relation. The center of a positive-area text bbox must not lie
+  inside a node and must be close to both the source polyline and the expanded trusted-line bbox,
+  within twice the bbox's shorter side. If the same center also falls inside the two corridors of
+  another trusted connector, the repair is rejected instead of guessing which edge owns the label.
 
-이 repair는 typed edge의 `label`과 해당 text/connector evidence attribution만 갱신합니다. Node, endpoint,
-방향, relation 수와 source Scene은 변경하지 않으며 before/after label과 두 evidence 집합을 repair history에
-기록합니다. 기존 edge가 reverse 방향이거나 병렬·양방향이면 label과 방향을 한 번에 추측하지 않습니다.
+This repair updates only the typed edge's `label` and the associated text/connector evidence
+attribution. It does not change nodes, endpoints, direction, relation count, or the source Scene.
+The before/after labels and both evidence sets are recorded in repair history. When an existing edge
+is reversed, parallel, or bidirectional, the system does not attempt to infer a label and direction
+in one operation.
 
-방향 반전 또는 누락 edge 추가는 다음 조건을 추가로 모두 만족해야 합니다.
+Reversing an edge or adding a missing edge must additionally satisfy every condition below:
 
-- source relation이 서로 다른 exact node ID를 연결하고 confidence 0.6 이상인 단방향 relation이다.
-- 내장 `GeometryEngine`이 생성한 directed relation의 endpoint와 connector evidence 집합이 source relation과
-  일치한다. ID 충돌이 없는 `line_segment`와 `arrowhead`는 각각 bbox와 score 0.6 이상을 가져야 한다.
-  이 하한은 기본 Hough line 0.6/arrowhead 0.65 신호가 실제 경로에 참여하게 하면서 engine identity와
-  relation geometry를 별도 hard gate로 둡니다. VLM이 새로 선언한 connector evidence는 repair 권한이 없다.
-- 두 evidence가 현재 source의 동일한 Marker block ID를 공유한다.
-- 같은 unordered endpoint pair에 상충하거나 병렬인 source relation이 없다.
-- fusion 전 engine observation 사이에도 방향/arrow 상태 충돌이 없고 trusted Geometry pair가 정확히 하나다.
-- 방향 반전은 typed IR에 반대 방향 무라벨 edge가 정확히 하나 있고 양방향 edge가 아닐 때만 수행한다.
-- 누락 edge 추가는 어느 방향 edge도 없고 source relation label이 없을 때만 수행한다.
+- The source relation connects distinct exact node IDs, has confidence of at least 0.6, and is
+  one-way.
+- The endpoints and connector-evidence set of a directed relation produced by the built-in
+  `GeometryEngine` match the source relation. Collision-free `line_segment` and `arrowhead` evidence
+  must each have a bbox and a score of at least 0.6. This floor lets the default Hough-line 0.6 and
+  arrowhead 0.65 signals participate in the path while keeping engine identity and relation
+  geometry as separate hard gates. Connector evidence newly declared by a VLM has no repair
+  authority.
+- Both evidence records share the same current-source Marker block ID.
+- The same unordered endpoint pair has no conflicting or parallel source relation.
+- Engine observations before fusion have no direction/arrow-state conflict, and there is exactly
+  one trusted Geometry pair.
+- Reversal is performed only when typed IR contains exactly one unlabeled edge in the opposite
+  direction and that edge is not bidirectional.
+- A missing edge is added only when neither direction exists and the source-relation label is empty.
 
-방향 반전은 기존 style과 그 밖의 edge metadata를 유지하고 connector evidence ID를 추가합니다. 누락
-edge는 source의 relation/semantic type만 복사하며 deterministic `repair_edge_N` ID를 사용합니다. 라벨이 있는
-누락 branch, conditional/decision/gateway topology, decision/gateway/diamond source node의 새 outgoing edge,
-ambiguous/parallel relation, self-loop, dangling endpoint, malformed IR은 자동 수정하지 않습니다.
-이미 style recovery를 채택한 후보는 재직렬화가 style을 버릴 수 있으므로 기본 semantic repair에서
-제외합니다.
+Reversal preserves the existing style and all other edge metadata and adds the connector evidence
+IDs. A missing edge copies only the source relation and semantic type and uses the deterministic ID
+`repair_edge_N`. The system does not automatically repair a missing labeled branch,
+conditional/decision/gateway topology, a new outgoing edge from a decision/gateway/diamond source
+node, an ambiguous or parallel relation, a self-loop, a dangling endpoint, or malformed IR.
+Candidates that have already adopted style recovery are excluded from default semantic repair
+because reserialization could discard the style.
 
-## 채택 gate
+## Acceptance gate
 
-Repair proposal은 code와 갱신된 typed IR을 함께 반환합니다. Pipeline은 typed IR을 deterministic serializer로
-다시 입력과 동일한 depth/item/text budget으로 검증한 후 직렬화해 proposal code와 byte-for-byte 일치하고
-emitted type이 유지되는지 먼저 확인합니다. 그 뒤 수정
-code를 다시 security scan/parse/render합니다. 초기 후보와 같은 평가 함수로 OCR,
-numeric, provenance, edge, arrow, layout, path, type fitness를 모두 다시 계산합니다. 다음 조건을 모두
-만족할 때만 채택합니다.
+A repair proposal returns both code and updated typed IR. The pipeline first validates the typed IR
+against the same depth/item/text budgets as the input, serializes it with the deterministic
+serializer, and verifies that the result is byte-for-byte identical to the proposed code and
+retains the emitted type. It then runs the repaired code through security scanning, parsing, and
+rendering again. OCR, numeric, provenance, edge, arrow, layout, path, and type-fitness metrics are
+all recomputed with the same evaluation functions used for the initial candidate. A repair is
+accepted only when every condition below holds:
 
-- 이전 aggregate와 새 aggregate가 모두 평가 가능하다.
-- aggregate가 epsilon보다 크게 엄격 개선된다.
-- non-runtime semantic score가 감소하지 않는다.
-- 기존 numeric/provenance publication gate를 그대로 통과한다.
+- The old and new aggregates are both available.
+- The aggregate improves strictly by more than epsilon.
+- The non-runtime semantic score does not decrease.
+- The existing numeric/provenance publication gates still pass.
 
-Packet proposal이 이 평가 경로에 들어오면 native/fallback 여부와 관계없이 새 typed IR의 field-local numeric
-association을 다시 계산합니다. Candidate publication authority 안에서 field가 인용한 OCR/vector evidence와
-양의 면적·image-bounded field/evidence bbox만 사용하며 evidence bbox 전체가 해당 field 안에 있어야 합니다.
-Source-wide `ocr_texts`는 field binding을 만들지 않습니다. Exact label+range는 `1.0`, 결합된 잘못된 range나
-추가 숫자는 `0.0`과 review이고, `start == end`는 endpoint 숫자 한 번을 요구합니다. 동일 normalized
-text+bbox OCR/vector 중복은 한 번만 세되 공간적으로 다른 반복은 유지합니다. Field overlap, broad box,
-shared/같은 위치의 모호한 관측, authority·geometry·budget 불충분은 metric 전체를 unavailable로 둡니다.
-따라서 proposal이 field와 range를 바꾸면서 전역 숫자 multiset만 유지해도 gate를 통과할 수 없습니다.
+If a Packet proposal enters this evaluation path, field-local numeric association is recomputed
+from the new typed IR regardless of whether the terminal is native or a fallback. Only OCR/vector
+evidence cited by the field within candidate publication authority and positive-area,
+image-bounded field/evidence bboxes are used; the entire evidence bbox must be inside its field.
+Source-wide `ocr_texts` cannot establish field binding. An exact label and range produce `1.0`; an
+associated but incorrect range or extra numbers produce `0.0` and review. When `start == end`, the
+single-bit field requires one occurrence of the endpoint number. Duplicate OCR/vector observations
+with the same normalized text and bbox count once, while spatially distinct repetitions are
+preserved. Field overlap, broad boxes, shared or co-located ambiguous observations, and inadequate
+authority, geometry, or budget make the entire metric unavailable. A proposal therefore cannot
+pass merely by changing a field and range while preserving the global numeric multiset.
 
-따라서 `aggregate_score=None`인 held candidate를 semantic repair만으로 게시 가능하게 만들 수 없습니다. 원본
-baseline candidate는 변경하지 않고 alternative에 남으며 repair candidate에는 구조화된 correction,
-before/after score, 채택 여부가 기록됩니다.
+Consequently, semantic repair alone cannot make a held candidate with `aggregate_score=None`
+publishable. The original baseline candidate remains unchanged as an alternative. The repair
+candidate records structured corrections, before/after scores, and whether it was accepted.
 
-현재 기본 repair는 node label, 이중 text/connector gate를 통과한 기존 조건 분기 edge의 label-only 교정,
-강한 line/arrow evidence가 있는 반전 edge와 무라벨 누락 edge만 다룹니다. 누락 node, 조건 분기 topology,
-endpoint·방향 변경, 새 branch 생성, Yes/No 의미 추론, 병렬 relation, layout, raw Mermaid 수정은 code와 typed
-IR을 동시에 안전하게 갱신할 더 넓은 AST/semantic patch 계층이 마련되기 전까지 자동 수행하지 않습니다.
-또한 typed node ID와 fused source Scene node ID가 exact match하지 않으면 공간만으로 ID를 추정하지 않고
-repair를 건너뜁니다. 서로 다른 engine의 node ID remapping은 별도 fusion 과제로 남아 있습니다.
+The default repair currently covers node labels, label-only correction of an existing conditional
+edge that passes both text and connector gates, reversed edges with strong line/arrow evidence, and
+unlabeled missing edges. Missing nodes, conditional topology, arbitrary endpoint or direction
+changes, new branch creation, Yes/No semantic inference, parallel relations, layout, and raw
+Mermaid edits are not performed automatically until a broader AST/semantic patch layer can update
+code and typed IR together safely. If a typed node ID does not exactly match a fused source-Scene
+node ID, the repair is skipped rather than inferring an ID from geometry alone. Remapping node IDs
+across engines remains separate fusion work.

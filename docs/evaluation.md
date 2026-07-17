@@ -1,73 +1,81 @@
 # Release evaluation
 
-`marker-mermaid evaluate`는 MMX-001 §23 테스트 corpus와 §24 승인 기준을 고정된
-`mmx-001-v0.3-extended` profile로 집계합니다. 이 명령은 PDF 변환이나 VLM 호출을 실행하는 benchmark
-runner가 아닙니다. 신뢰된 runner가 만든 prediction과 telemetry를 입력으로 받고, artifact 무결성과
-집계 재현성을 책임집니다.
+`marker-mermaid evaluate` aggregates the MMX-001 §23 test corpus and §24 acceptance criteria under
+the fixed `mmx-001-v0.3-extended` profile. It is not a benchmark runner that performs PDF
+conversion or VLM calls. It accepts predictions and telemetry produced by a trusted runner and is
+responsible for artifact integrity and reproducible aggregation.
 
 ```bash
 marker-mermaid evaluate corpus/manifest.json --output output/evaluation
 ```
 
-필수 근거가 없는 gate는 성공으로 간주하지 않고 `unavailable`로 기록합니다. 전체 상태는 하나라도
-`fail`이면 `fail`, 실패는 없지만 `unavailable`이 있으면 `unavailable`, 모두 충족하면 `pass`입니다.
-CLI 종료 코드는 각각 `1`, `1`, `0`이며 manifest/path/hash 오류는 `2`, 보고서 I/O 오류는 `3`입니다.
-Report의 `attestation` 값은 항상 `trusted_runner_input`입니다. 따라서 `pass`는 hash-bound 입력이 고정
-profile의 수치 조건을 충족했다는 뜻이며, runner의 신원이나 telemetry의 진실성을 암호학적으로
-증명하지 않습니다.
+A gate that lacks required evidence is not treated as successful; it is recorded as `unavailable`.
+The overall status is `fail` if any gate fails, `unavailable` if none fail but at least one is
+unavailable, and `pass` only when every gate is satisfied. The corresponding CLI exit codes are
+`1`, `1`, and `0`; manifest/path/hash errors return `2`, and report I/O errors return `3`. The
+report's `attestation` value is always `trusted_runner_input`. A `pass` therefore means that
+hash-bound inputs satisfied the fixed profile's numeric conditions. It does not cryptographically
+prove the runner's identity or the truth of its telemetry.
 
 ## Trust boundary
 
-입력은 세 개의 서로 다른 artifact로 나뉩니다.
+The input is divided into three distinct artifacts:
 
-- `source`: 실제 image/PDF 또는 synthetic source
-- `ground_truth`: 독립적으로 주석한 diagram type, Scene IR, OCR label, 숫자
-- `prediction`: runner가 만든 type, `generated_scene_ir`, 게시 결과, validation 및 hard-gate telemetry
+- `source`: the actual image/PDF or synthetic source
+- `ground_truth`: independently annotated diagram type, Scene IR, OCR labels, and numbers
+- `prediction`: runner-produced type, `generated_scene_ir`, publication result, validation data,
+  and hard-gate telemetry
 
-세 파일은 manifest 상대 경로와 SHA-256으로 고정됩니다. absolute path, `..`, symlink, root 밖으로
-해석되는 path, digest가 다른 파일은 거부합니다. 소스에서 관찰한 `scene-ir.json`을 prediction으로
-사용하면 안 됩니다. Typed/Scene candidate의 출력 구조인 sidecar `generated-scene-ir.json`을 prediction
-artifact의 `generated_scene_ir`에 넣어야 합니다. Direct Mermaid에 이 구조가 없으면 `null`로 기록하며,
-provenance/구조 gate는 fail-closed로 `unavailable` 또는 낮은 recall이 됩니다.
+The manifest binds all three files by relative path and SHA-256. Absolute paths, `..`, symlinks,
+paths that resolve outside the root, and files with mismatched digests are rejected. The
+source-observed `scene-ir.json` must not be used as the prediction. For Typed/Scene candidates, put
+the output-structure sidecar `generated-scene-ir.json` in the prediction artifact's
+`generated_scene_ir`. If a Direct Mermaid candidate has no such structure, record `null`;
+provenance and structural gates then fail closed as `unavailable` or low recall.
 
-`telemetry`는 aggregator가 독립적으로 재실행해 검증하는 값이 아니라 trusted runner의 측정값입니다.
-Runner는 격리된 runtime에서 다음을 직접 관찰해야 합니다.
+`telemetry` contains trusted-runner measurements, not values independently rerun and verified by
+the aggregator. The runner must observe the following directly in an isolated runtime:
 
-- 원본 image가 최종 document에 존재하고 참조되는지
-- 게시된 Mermaid가 security scan, parse, render, SVG inspection을 통과했는지
-- candidate failure injection이 document 전체 실패로 전파되는지
-- external action, 중복 삽입, orphan process, candidate budget 초과가 발생했는지
+- whether the original image exists in and is referenced by the final document
+- whether published Mermaid passed the security scan, parse, render, and SVG inspection
+- whether injected candidate failures propagate into a whole-document failure
+- whether any external action, duplicate insertion, orphan process, or candidate-budget overrun
+  occurred
 
-이 신뢰 경계를 숨기지 않기 위해 prediction schema의 필드 이름을 `telemetry`로 두고, report에는
-manifest SHA-256 snapshot을 포함합니다.
+To keep this trust boundary explicit, the prediction schema calls the field `telemetry`, and the
+report includes a SHA-256 snapshot of the manifest.
 
-Prediction은 `VisualEvidence[]` registry도 포함합니다. Generated node의 `evidence_ids` 문자열이 비어
-있지 않은 것만으로 provenance를 인정하지 않고, 같은 hash-bound prediction artifact registry에 실제로
-존재하는 `ocr_token`, `vector_text`, `contour`, `vlm_observation`, `user_edit` ID와
-교집합이 있어야 합니다. `source_crop`, `line_segment`, `arrowhead`는 node provenance credit을
-만들지 않습니다. 한 case에서 둘 이상의 generated node가 같은 eligible evidence ID를 참조하면
-그 ID는 모든 claimant에서 revoke합니다. 이 충돌 계산은 case-local이므로 다른 corpus case의
-같은 로컬 ID는 서로 충돌하지 않으며, relation/group 참조도 node claim 충돌에 포함하지 않습니다.
+The prediction also includes a `VisualEvidence[]` registry. A non-empty `evidence_ids` string on a
+generated node does not establish provenance by itself. It must intersect IDs of kind `ocr_token`,
+`vector_text`, `contour`, `vlm_observation`, or `user_edit` that actually exist in the same
+hash-bound prediction-artifact registry. `source_crop`, `line_segment`, and `arrowhead` provide no
+node-provenance credit. If two or more generated nodes in one case reference the same eligible
+evidence ID, that ID is revoked from every claimant. Collision computation is case-local, so an
+identical local ID in another corpus case does not collide. Relation and group references also do
+not participate in node-claim collisions.
 
-Prediction evidence registry는 최대 100,000 record를 계속 허용합니다. 이 item capacity는 일반
-reconstruction runtime의 20,000 evidence-item limit과 독립적이며, source-block reference가 없는 작은
-registry는 20,000개를 넘어도 유효합니다. 대신 registry 전체의 `source_block_ids`는 중복을 포함해
-20,000 occurrence, 해당 ID의 Python `len()` 합계는 8,000,000자로 제한합니다. Exact boundary는
-허용하고 `+1`은 hash가 맞더라도 invalid prediction artifact로 처리합니다. Loader는 plain JSON record를
-`VisualEvidence`로 만들기 전에 detached canonical snapshot을 생성하므로 over-budget prefix만 평가에
-남지 않습니다. Manifest error의 CLI 종료 코드는 `2`이며 기존 또는 새 report directory를 쓰지 않습니다.
+The prediction evidence registry continues to allow up to 100,000 records. This item capacity is
+independent of the normal reconstruction runtime's 20,000-evidence-item limit, so a small registry
+without source-block references remains valid beyond 20,000 records. Across the whole registry,
+however, `source_block_ids` is limited to 20,000 occurrences, including duplicates, and the sum of
+Python `len()` values for those IDs is limited to 8,000,000 characters. The exact boundary is
+accepted; `+1` makes the prediction artifact invalid even when its hash matches. Before constructing
+`VisualEvidence` objects, the loader creates detached canonical snapshots from plain JSON records,
+so an over-budget prefix is not left behind for evaluation. A manifest error returns CLI exit code
+`2` and writes neither an existing nor a new report directory.
 
-Prediction `0.1`의 100,000-record와 JSON artifact당 64 MiB 계약을 보존하기 위해 evaluation은 일반
-runtime의 8,000,000 full-evidence-character limit 대신 검증된 artifact byte limit을 사용합니다. 따라서
-이번 제한은 schema field/version을 바꾸지 않고 provenance fan-out dimension만 강화합니다. JSON parser가
-만드는 64 MiB 이하 raw object tree 자체는 pre-field snapshot보다 먼저 materialize되며, 완전한 streaming
-ingestion은 별도 process-isolation 과제입니다. Prediction 0.1에서 기존 Pydantic parser가 무시하던
-evidence object의 unknown field도 계속 무시하며, canonical registry에는 공개 `VisualEvidence` field만
-남깁니다. 다른 runtime/Review raw ingress의 unknown-field strict rejection은 바뀌지 않습니다.
+To preserve prediction `0.1`'s contract of 100,000 records and 64 MiB per JSON artifact, evaluation
+uses the verified artifact byte limit instead of the normal runtime's 8,000,000-character
+full-evidence limit. This strengthens only the provenance fan-out dimension without changing the
+schema field or version. The raw object tree for JSON up to 64 MiB is still materialized by the JSON
+parser before per-field snapshotting; fully streaming ingestion remains separate process-isolation
+work. Unknown fields on evidence objects that the existing Pydantic parser ignored in prediction
+0.1 remain ignored, and only public `VisualEvidence` fields enter the canonical registry. Strict
+unknown-field rejection at other runtime and Review raw-ingress boundaries is unchanged.
 
 ## Manifest contract
 
-최상위 schema는 `mmx-eval-manifest-0.1`입니다.
+The top-level schema is `mmx-eval-manifest-0.1`.
 
 ```json
 {
@@ -76,7 +84,7 @@ evidence object의 unknown field도 계속 무시하며, canonical registry에�
   "corpus": {
     "corpus_id": "enterprise-diagrams",
     "version": "2026.07",
-    "license": "internal-evaluation-only",
+    "license": "CC0-1.0",
     "split": "release-test"
   },
   "cases": [
@@ -95,58 +103,63 @@ evidence object의 unknown field도 계속 무시하며, canonical registry에�
 }
 ```
 
-`fixture_tiers`는 하나의 case가 real enterprise이면서 multilingual일 수 있으므로 배열입니다.
-`scope`는 `serializer`, `end_to_end`, `detector`, `fault_probe` 중 하나입니다. §24 기능 gate는
-`source_origin=real`이고 `scope=end_to_end`인 case만 인정합니다. `fault_probe`는 prediction telemetry에
-실제 candidate failure injection을 표시해야 합니다.
+`fixture_tiers` is an array because one case can be both real enterprise and multilingual. `scope`
+is one of `serializer`, `end_to_end`, `detector`, or `fault_probe`. The §24 feature gate recognizes
+only cases with `source_origin=real` and `scope=end_to_end`. A `fault_probe` must record actual
+candidate-failure injection in prediction telemetry.
 
-Configured diagram type마다 stability와 fixture group이 고정되어 있습니다. 예를 들어 flowchart는
-`core/flowchart`, C4는 `experimental/architecture_c4`, pie는 `extended/data_chart`여야 합니다.
-같은 source SHA-256은 path와 case ID가 달라도 두 fixture로 셀 수 없으며 manifest를 거부합니다.
+Each configured diagram type has a fixed stability and fixture group. For example, Flowchart must
+be `core/flowchart`, C4 must be `experimental/architecture_c4`, and Pie must be
+`extended/data_chart`. A source SHA-256 may not count as two fixtures even when its path and case ID
+differ; such a manifest is rejected.
 
-Ground truth schema `mmx-eval-ground-truth-0.1`은 positive case에 독립 Scene IR을 요구합니다.
-Negative case는 `expected_reconstruction=false`, `type_stability=negative`이며 type/Scene/label/number를
-가질 수 없습니다. Prediction schema는 `mmx-eval-prediction-0.1`입니다. 게시 결과의
-`syntax_valid`/`render_valid`가 false 또는 null인 위반 사례도 artifact 자체는 유효하며, hard gate가
-이를 `fail`로 보고합니다. Aggregate provenance resource violation은 품질 실패가 아니라 artifact/manifest
-오류이므로 report 집계 전에 거부됩니다.
+The `mmx-eval-ground-truth-0.1` ground-truth schema requires an independent Scene IR for a positive
+case. A negative case has `expected_reconstruction=false` and `type_stability=negative` and may not
+contain a type, Scene, labels, or numbers. The prediction schema is `mmx-eval-prediction-0.1`. A
+published result whose `syntax_valid`/`render_valid` is false or null remains a valid artifact; the
+hard gate reports it as `fail`. An aggregate provenance resource violation is an artifact/manifest
+error rather than a quality failure and is rejected before report aggregation.
 
-Positive Scene은 node가 하나 이상이어야 하며 text-bearing node의 token multiset을 `ocr_labels`가 모두
-포함해야 합니다. 숫자 유형은 `numeric_applicable=true`와 하나 이상의 유한 Decimal 값, 또는
-`numeric_applicable=false`와 이유를 요구합니다. `1`, `1.0`, `1e0`은 같은 canonical Decimal로
-비교합니다. Flowchart는 `path_applicable`을 명시하고 false이면 이유를 기록해야 합니다. 자동 게시된
-A/B/C end-to-end 결과의 `human_accepted`는 prediction이 아니라 hash-bound ground truth annotation에
-두며, 하나라도 빠지면 human-review coverage gate가 실패하고 accept rate는 unavailable입니다.
+A positive Scene must contain at least one node, and the `ocr_labels` token multiset must include
+every token from text-bearing nodes. A numeric type requires either `numeric_applicable=true` plus
+at least one finite Decimal value, or `numeric_applicable=false` plus a reason. `1`, `1.0`, and `1e0`
+compare as the same canonical Decimal. A Flowchart must state `path_applicable` and give a reason
+when it is false. `human_accepted` for automatically published A/B/C end-to-end results belongs in
+the hash-bound ground-truth annotation, not the prediction. If any such annotation is missing, the
+human-review coverage gate fails and the acceptance rate is unavailable.
 
 ## Fixed gates
 
-Fixture 최소치는 Flowchart 100, UML 100, Architecture/C4 80, BPMN/Swimlane 80, planning 80,
-data chart 120, mindmap/tree 50, specialized 100, negative 150입니다. 기능 gate는 스펙의 22개 유형
-각각에 실제 end-to-end parse/render 성공 fixture를 하나 이상 요구합니다.
-Positive fixture 최소치에는 end-to-end case만, negative 최소치에는 detector case만 포함하므로
-serializer/fault probe로 corpus 크기를 부풀릴 수 없습니다.
+Minimum fixture counts are Flowchart 100, UML 100, Architecture/C4 80, BPMN/Swimlane 80, planning
+80, data chart 120, mindmap/tree 50, specialized 100, and negative 150. The feature gate requires at
+least one real, end-to-end, parse/render-successful fixture for each of the specification's 22
+types. Only end-to-end cases count toward positive fixture minima, and only detector cases count
+toward negative minima, so serializer and fault probes cannot inflate corpus size.
 
-구조 precision/recall, flowchart edge F1과 path F1은 case별 F1 평균이 아니라 전체 true-positive,
-false-positive, false-negative를 합친 micro score입니다. 동일 label이 다른 case에 나타나는 OCR recall도
-case ID로 분리한 token multiset으로 세므로 case 내부/사이의 반복 label 누락도 반영합니다. Architecture node recall은 C4를 섞지 않고
-정답 type이 정확히 `architecture`인 case만 사용합니다. Negative image에서 생성한 node/relation은 구조
-precision의 false positive입니다.
+Structural precision/recall and Flowchart edge/path F1 are micro scores computed from total true
+positives, false positives, and false negatives, not means of per-case F1. OCR recall separates the
+token multiset by case ID even when the same label appears in multiple cases, preserving repeated
+label omissions within and across cases. Architecture node recall does not mix in C4; it uses only
+cases whose ground-truth type is exactly `architecture`. Nodes and relations generated for a
+negative image are structural false positives.
 
-Positive 품질 분모에는 `scope=end_to_end`만 들어가며 serializer와 fault probe는 제외합니다. Negative
-hallucination은 `scope=detector`만 structural precision에 포함합니다. Data chart는 구조 다이어그램
-precision/recall에서 제외하고 numeric exact match로 평가합니다. Flowchart edge F1은 arrow flag에서
-만든 directed arc multiset이므로 모든 화살표를 뒤집으면 일치하지 않습니다. Node ID는 ground truth가
-`shared_id_namespace=true`를 명시한 경우에만 직접 일치시키며, 기본은 unique normalized label로
-독립 정답과 예측을 정렬합니다.
+Only `scope=end_to_end` contributes to the positive-quality denominator; serializer and fault
+probes are excluded. Only `scope=detector` negative hallucinations contribute to structural
+precision. Data charts are excluded from structural-diagram precision/recall and are evaluated by
+numeric exact match. Flowchart edge F1 uses a directed-arc multiset derived from arrow flags, so
+reversing every arrow does not match. Node IDs match directly only when ground truth declares
+`shared_id_namespace=true`; by default, independently annotated truth and prediction are aligned by
+unique normalized label.
 
-Path가 applicable인 flowchart는 reference path가 실제로 열거되어야 합니다. 생성 path 열거가
-10,000-path 또는 100,000-state budget을 넘으면 해당 필수 metric은 조용히 제외되지 않고
-`unavailable_case_ids`와 함께 unavailable이 됩니다. Experimental end-to-end 결과는 warning, sidecar,
-review 가능성, hallucination precision 기록을 모두 별도 gate로 확인합니다.
+When paths are applicable to a Flowchart, reference paths must actually be enumerated. If generated
+path enumeration exceeds the 10,000-path or 100,000-state budget, the required metric is not
+silently omitted; it becomes unavailable and records `unavailable_case_ids`. Experimental
+end-to-end results have separate gates for a warning, a sidecar, reviewability, and recorded
+hallucination precision.
 
 ## Output
 
-출력 directory는 완성된 임시 tree로 만든 뒤 교체됩니다.
+The output directory is built as a complete temporary tree and then replaced.
 
 ```text
 output/evaluation/
@@ -158,10 +171,12 @@ output/evaluation/
     └── architecture-001.json
 ```
 
-JSON report schema는 `mmx-eval-report-0.1`입니다. Manifest digest, corpus metadata, fixture counts,
-모든 gate의 observed/required/sample count, raw TP/FP/FN, evidence/unavailable case ID, case별
-type/node/edge/path 지표를 보존합니다. `manifest-snapshot.json`은 normalize한 재직렬화가 아니라 검증한
-원문 bytes이므로 report의 manifest SHA-256을 그대로 재현합니다.
+The JSON report schema is `mmx-eval-report-0.1`. It retains the manifest digest, corpus metadata,
+fixture counts, observed/required/sample counts for every gate, raw TP/FP/FN, evidence and
+unavailable case IDs, and per-case type/node/edge/path metrics. `manifest-snapshot.json` contains
+the verified original bytes rather than a normalized reserialization, so it reproduces the
+report's manifest SHA-256 exactly.
 
-기존 output directory를 교체하려면 evaluator ownership marker가 있어야 합니다. 일반 directory,
-symlink, corpus root 또는 그 조상은 거부하므로 `--output .` 같은 입력이 기존 작업물을 지우지 않습니다.
+Replacing an existing output directory requires an evaluator ownership marker. An ordinary
+directory, symlink, corpus root, or ancestor of the corpus root is rejected, preventing input such
+as `--output .` from deleting existing work.

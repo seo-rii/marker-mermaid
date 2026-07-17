@@ -4,6 +4,10 @@
 
 ### Added
 
+- Public open-source project documentation in English, including contribution, vulnerability
+  disclosure, community conduct, dependency notice, citation, issue, and pull-request guidance.
+- Canonical GPL-3.0-only license text, package license-file metadata, public project URLs,
+  Dependabot configuration, and a pinned-action Python 3.11 CI workflow.
 - Deterministic composite-panel, fragment-merge, and full-page coverage proposal APIs.
 - Page-aware `SourceFragment` and `DiscoveredSource` models for virtual diagram sources.
 - Optional OpenCV geometry engine for contour, line, and arrowhead provenance.

@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use marker-mermaid in research, please cite the software using this metadata."
+title: "marker-mermaid"
+type: software
+authors:
+  - family-names: "Lee"
+    given-names: "Seohyun"
+version: 0.1.0
+repository-code: "https://github.com/seo-rii/marker-mermaid"
+url: "https://github.com/seo-rii/marker-mermaid"
+license: GPL-3.0-only
+keywords:
+  - marker-pdf
+  - Mermaid
+  - diagram reconstruction
+  - OCR
+  - computer vision

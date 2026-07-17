@@ -1,642 +1,706 @@
-# 품질 평가와 availability
+# Quality evaluation and availability
 
-점수를 만들 수 있다는 사실과 정확하다는 사실을 혼동하지 않도록 각 metric은 `MetricResult`로
-`value`, `available`, `warning`, `evidence_ids`를 함께 반환합니다. 필요한 구조가 없으면 0을 넣지 않고
-`available=false`로 두며 aggregate는 실제로 존재하는 weight만 다시 정규화합니다.
+To avoid confusing the ability to produce a score with correctness, every metric returns a
+`MetricResult` containing `value`, `available`, `warning`, and `evidence_ids`. If required structure
+is absent, the metric uses `available=false` rather than inserting zero, and the aggregate
+renormalizes only the weights that are actually present.
 
-## 구조 metric
+## Structural metrics
 
-| metric | 비교 | unavailable 조건의 예 |
+| metric | comparison | example unavailable condition |
 | --- | --- | --- |
-| `edge_agreement` | 정렬된 node 사이 edge multiset F1 | source relation 또는 node alignment 없음 |
-| `arrow_agreement` | edge의 명시적 arrow endpoint multiset F1 | source에 arrowhead flag 없음 |
-| `layout_similarity` | node 쌍의 좌/우·상/하 상대 순서 | 2개 미만 정렬, explicit generated position 없음 |
-| `path_consistency` | 명시적 방향 root→terminal simple path multiset F1 | root/terminal 없음, cycle, path budget 초과 |
+| `edge_agreement` | edge-multiset F1 between aligned nodes | no source relation or node alignment |
+| `arrow_agreement` | multiset F1 of explicit arrow endpoints | no source arrowhead flag |
+| `layout_similarity` | left/right and above/below ordering of node pairs | fewer than two alignments or no explicit generated position |
+| `path_consistency` | multiset F1 of explicitly directed root-to-terminal simple paths | no root/terminal, a cycle, or path-budget overflow |
 
-node 정렬은 같은 ID, collision-free portable emitted-ID alias 순서로 사용하고, 그다음 중복되지 않는
-NFKC/casefold label만 사용합니다. normalized ID collision은 alias로 강제 정렬하지 않습니다. 방출 ID가
-다른 raw source ID와 우연히 같아지는 collision cluster는 raw exact-ID provenance도 부여하지 않고 unique
-label/evidence 같은 독립 근거가 있을 때만 정렬합니다. Geometry로 node를 맞추지 않으므로 layout metric이
-자신의 가정을 검증하는 순환을 피합니다. edge topology는 방향을
-무시하고 방향 오류는 arrow metric이 별도로 측정합니다.
-Flowchart/Swimlane/BPMN의 generated Scene 방향은 raw arrow hint가 아니라 serializer가 실제 방출하는
-connector에서 파생합니다. Native Architecture layout은 IR direction을 소비하지 않으므로 `unknown`, nested
-Flowchart retry만 validated direction 또는 `LR`을 사용합니다. Native Sequence는 style plan의 실제 operator를 사용합니다. `solid`와
-`dotted`는 arrowhead, `cross`는 crosshead를 가지지만 `open`과 `dotted_open`은 end marker가 없으므로
-일괄 `arrow_at_end=true`로 세지 않습니다.
-Native Mindmap은 shared preorder plan의 parent-child branch를 `containment` relation으로 복원하되 실제
-grammar처럼 양쪽 marker를 모두 끄고 `radial` 방향을 사용합니다. Raw logical ID, direction, role, shape를
-평가 Scene에 복사하지 않으며 root circle/child rectangle과 source-order `root`/`node_N` identity만 씁니다.
+Node alignment tries the same ID first, then a collision-free portable emitted-ID alias, and then a
+unique NFKC/casefold label. A normalized-ID collision is not force-aligned through an alias. A
+collision cluster in which an emitted ID happens to equal another raw source ID receives no raw
+exact-ID provenance; it aligns only with independent evidence such as a unique label or evidence
+reference. Geometry is not used to align nodes, avoiding a circular layout metric that validates
+its own assumption. Edge topology ignores direction; the arrow metric measures direction errors
+separately.
 
-typed IR은 serializer가 실제 방출하는 node/edge 구조로 다시 변환합니다. bbox가 IR에 명시되지 않으면
-layout을 추측하지 않습니다. Scene IR portable fallback은 deterministic serializer 보존 여부를 평가할 수
-있습니다. raw/direct Mermaid는 아직 일반 AST→Scene 변환이 없으므로 구조 점수가 unavailable일 수 있습니다.
-평가 Scene adapter는 sequence/ZenUML, hierarchy/organization, planning/event,
-Packet/Pie/Radar/Treemap/Ishikawa/TreeView, Wardley/Cynefin, data-lineage, Railroad, Venn까지 포함하며 typed
-record의 evidence ID를 보존합니다.
-Event Modeling의 generated Scene은 fallback serializer와 같은 namespaced frame/relation ID,
-화면에 보이는 typed/time label, lane subgraph membership, `LR` 방향, end-arrow만 사용합니다.
-ZenUML도 Sequence fallback의 namespaced participant/message ID, alias label, endpoint와 end-arrow를
-공유합니다. 두 adapter는 raw bbox·direction·role·shape·style·bidirectional metadata를
-방출 구조로 복사하지 않고 zero geometry를 써서 layout score를 위조하지 않습니다.
-Wardley의 label 없는 component와 ZenUML의 label 없는 participant도 임의 `text`가 아니라
-serializer가 실제 표시하는 safe source ID를 사용합니다.
+Generated-Scene direction for Flowchart/Swimlane/BPMN comes from the connector actually emitted by
+the serializer, not a raw arrow hint. Native Architecture ignores the IR direction and therefore
+uses `unknown`; only the nested Flowchart retry uses a validated direction or `LR`. Native Sequence
+uses the style plan's real operator: `solid` and `dotted` have arrowheads, `cross` has a crosshead,
+and `open` and `dotted_open` have no end marker, so they are not all counted as
+`arrow_at_end=true`. Native Mindmap rebuilds parent-child branches from the shared preorder plan as
+`containment` relations, turns off both markers as the grammar does, and uses `radial`. It does not
+copy raw logical IDs, direction, role, or shape into the evaluation Scene; it uses root-circle and
+child-rectangle shapes with source-ordered `root`/`node_N` identities.
 
-Organization generated Scene은 shared plan의 logical `treeview_node_*` identity, 실제 visible label,
-parent→child containment, `LR` 방향을 사용합니다. Pipeline은 검증된 terminal grammar를
-adapter에 넘겨 native TreeView의 marker 없는 connector/shape 미지정과 Flowchart fallback의
-rectangle/end-arrow를 구분합니다. Child record evidence는 child element와 해당 containment
-relation에 연결하고, native/fallback이 재현하지 않는 raw bbox/group/style은 버립니다.
-Data Lineage Scene은 `data_lineage_dataset_*`·
-`data_lineage_process_*` node, cylinder/rectangle shape, `data_lineage_relation_*`
-data-flow/end-arrow, 검증된 `TB`/`BT`/`LR`/`RL` 방향만 사용합니다.
-Lineage relation evidence는 해당 relation에만 연결합니다. 두 adapter의 geometry는 0,
-group은 빈 list이며 OCR projection은 화면에 보이는 node/relation label을 record당 한 번만
-사용합니다.
-Railroad Scene도 shared plan의 `railroad_rule_*`·`railroad_expression_N` logical element와
-`railroad_relation_N` containment slot을 사용합니다. Rule과 leaf expression evidence는 각 element에,
-expression evidence는 그 expression으로 들어오는 relation에도 연결합니다. Native connector에는 marker가
-없으므로 relation의 양쪽 arrow flag를 모두 끄고 `LR`, zero geometry, 빈 group으로 표시합니다.
-Terminal/nonterminal/special만 각 grammar-visible label을 갖고 구조 operator는 label이 없으며,
-nonterminal reference를 별도 dependency edge로 세지 않습니다. OCR projection도 rule `native_name =`, leaf
-label과 special `? text ?`만 한 번씩 사용하고 accessibility/title이나 operator type을 content recall에
-넣지 않습니다. 여기서 rule text는 normalized safe source name 또는 scanner/preprocessor source-active와
-native grammar-reserved name을 collision-safe `rrmapped_N[_suffix]`로 mapping한 실제
-`native_name =`입니다. Source-active 범위에는 `style`/`classDef` substring이 포함되고, reserved 범위에는
-case-folded expression-word namespace, `railroad-beta`, case-folded lowercase `title*` prefix가 포함됩니다.
-Logical element
-ID는 source 기반 `railroad_rule_*`를 유지합니다. Mapping은 warning으로 공개되고 raw source name은 typed
-IR에, normalized name은 nonterminal label에 남습니다. Terminal/special/title/accessibility의 ASCII angle은
-`〈`/`〉`, 모든 ASCII `#`는 `＃`, entity-like `&` prefix는 `＆`, NFKC quote/backslash hazard는 `″`/`∖`로
-투영하고 warning으로 공개합니다. Scene/OCR은 emitted source의 zero-width separator를 제외한 이 exact
-compatibility text를 공유하고 semantic 원문은 typed IR에 보존합니다. Direct Scene은 `evidence_ids`가
-null/생략 또는 string list가 아니면 fail closed합니다. Raw source bbox·ID·label·role·shape·style extra는
-Scene/OCR 구조로 승격하지 않습니다.
-Wardley Scene은 raw record bbox 대신 native 좌표를 화면에 맞게 바꾼 `(x, 1-y)`만
-`normalized` explicit position으로 씁니다. IR의 수평/수직 `x`/`y`는 native에 `[y, x]`로
-방출하고 token 반올림을 Scene 값에도 적용합니다. `->` link는 실제 SVG에 marker가 없으므로
-무방향 relation으로 평가해 arrow/path 점수를 만들지 않습니다.
-Native rejection 뒤 선택된 Wardley Flowchart fallback은 공용 plan의 순서 기반 emitted ID와 explicit
-무방향 topology를 유지하지만 좌표·축·anchor를 표현하지 않습니다. 따라서 generated Scene은 모든 node를
-zero bbox rectangle로 두고 `pixels`/`LR`를 사용합니다. `relative_layout_similarity`는 동일 중심점 때문에
-unavailable이며, fallback canvas에 보이지 않는 native title도 OCR generated label에서 제외합니다.
-Native Cynefin Scene은 domain·item·transition과 domain group membership을 공유 plan에서 복원하고,
-runtime이 항상 만드는 고정 domain/practice/response/disorder text를 무근거 template element로
-추가합니다. `confusion` item은 처음 세 개와 `+N more`만 native 렌더에 맞게 투영합니다.
-Native placement가 없어 zero geometry를 쓰므로 layout similarity는 unavailable이며, 고정 template의
-source provenance 계약이 없는 native 결과는 aggregate와 무관하게 review를 요구합니다.
+Typed IR is converted back into the node/edge structure actually emitted by its serializer. Layout
+is not inferred when the IR has no explicit bbox. Scene IR portable fallbacks can therefore be
+evaluated for deterministic serializer preservation. Raw/Direct Mermaid does not yet have a
+general AST-to-Scene conversion, so structural scores can be unavailable. Evaluation Scene
+adapters cover Sequence/ZenUML, hierarchy/Organization, planning/Event Modeling,
+Packet/Pie/Radar/Treemap/Ishikawa/TreeView, Wardley/Cynefin, Data Lineage, Railroad, and Venn and
+retain typed-record evidence IDs.
 
-Terminal runtime type이 Flowchart인 Cynefin fallback은 별도 projection을 사용합니다. Source에 있는 domain만
-같은 ID의 conceptual element와 group으로 만들고, 모든 explicit item과 explicit directed transition을
-축약 없이 투영합니다. Fixed template와 membership relation은 추가하지 않으며 domain label도 element/group
-때문에 두 번 세지 않습니다. 모든 bbox는 0이고 direction은 실제 fallback의 `LR`이므로 layout similarity는
-unavailable이며 quadrant/Cynefin 공간 의미 손실을 warning에 남깁니다. Domain/item/transition의 record-local
-provenance와 다른 semantic hard gate가 충분하면 이 fallback에는 native 전용 review hold를 적용하지 않습니다.
-Event Modeling·ZenUML·Wardley·Cynefin의 grammar/entity-like 원문을 Mermaid 11.16 호환
-glyph로 표시하는 경우 OCR projection도
-해당 호환 label이 실제 SVG에 보이는 text를 사용합니다. 원문을 projection에 넣어 렌더러 손실을
-숨기지 않습니다. Wardley 축·evolution stage처럼 grammar 고정 chrome을 전체 source label로
-간주하지는 않습니다.
+The Event Modeling generated Scene uses the fallback serializer's namespaced frame/relation IDs,
+visible typed/time labels, lane subgraph membership, `LR`, and end arrows. ZenUML shares the
+Sequence fallback's namespaced participant/message IDs, alias labels, endpoints, and end arrows.
+Neither adapter copies raw bbox, direction, role, shape, style, or bidirectional metadata into the
+emitted structure; both use zero geometry so they cannot fabricate a layout score. An unlabeled
+Wardley component and unlabeled ZenUML participant display the safe source ID actually shown by the
+serializer, not invented `text`.
 
-Packet Scene은 serializer의 field plan에서 나온 reserved-safe emitted ID, label,
-bbox/evidence를 그대로 사용하고 입력에 없는 field 간 edge를 추가하지 않습니다.
-Bit range는 같은 plan에서 검증되지만 Scene element로 승격하지 않고 별도 numeric
-projection/source gate에서 비교합니다. Pipeline은 검증된 terminal grammar도 semantic projection에
-전달합니다. Native Packet일 때만 실제 canvas의 normalized title을 OCR text에 포함하고, disconnected
-Flowchart fallback에서는 native-only title을 제외합니다. Entity-like title은 serializer와 같은 visible
-fullwidth glyph를 사용하지만 source security용 invisible separator는 OCR token을 쪼개지 않도록 제거합니다.
-Pie Scene은 serializer·semantic OCR과 같은 bounded `PiePlan`을 사용합니다. Native terminal은 각
-`pie_slice_N`을 `sector` element로 만들고 positive slice를 Mermaid percentage-label radius의 normalized
-centroid에 놓습니다. Zero slice는 legend-only이므로 zero bbox이며, relation/group 없이 `radial` 방향을
-사용합니다. Element text는 `showData` 표시를 포함한 실제 legend text입니다. Native OCR은 visible title,
-모든 legend와 positive slice percentage만 세고 접근성 metadata는 제외합니다. Flowchart terminal은
-`TB` 방향의 zero-geometry `label: exact-value` rectangle만 만들며 relation/group과 native-only title을
-추가하지 않습니다. Slice evidence는 두 terminal의 element에 record-local로 유지되고, malformed evidence
-list는 구조를 바꾸지 않은 채 해당 slice provenance를 비웁니다. Terminal-visible compatibility glyph과
-source-only separator 제거도 serializer/OCR/Scene이 같은 plan에서 공유합니다.
+The Organization generated Scene uses shared-plan logical `treeview_node_*` identities, actual
+visible labels, parent-to-child containment, and `LR`. The pipeline gives the validated terminal
+grammar to the adapter so native TreeView's marker-less connector and unspecified shape are distinct
+from a Flowchart fallback's rectangle and end arrow. Child-record evidence attaches to both the
+child element and its containment relation. Raw bbox, group, and style not reproduced by the
+terminal are discarded.
 
-Pie는 Extended generated-node provenance gate에 포함됩니다. Slice는 실제 Mermaid element이므로 native와
-fallback 모두 injective attribution 분모에 남고, 여러 slice가 같은 eligible evidence를 주장하면 기존
-collision 취소 규칙을 적용합니다. Percentage와 title은 별도의 generated node가 아니며 provenance credit을
-만들지 않습니다. 따라서 slice-local numeric binding이 정확해도 generated slice attribution이 80% 미만이거나
-계산 불가능하면 자동 게시하지 않습니다.
-Explicit Pie title/accessibility text는 별도 content node가 아니므로 전용 gate가 candidate-authorized 독립
-OCR/vector exact observation 또는 reconstruction 초기 입력의 exact `user_edit` evidence를 요구합니다.
-Engine-emitted `user_edit`는 이 신뢰 경계를 만들 수 없습니다. Slice-owned observation과 겹치거나 ID만 바꾼
-동일 text+bbox는 독립 근거가 아닙니다. 결정적으로 파생한 기본 접근성 문구와 experimental notice만 별도
-source attribution 없이 허용합니다.
-Radar Scene은 serializer·semantic OCR과 같은 `RadarPlan`을 사용합니다. Native terminal은 axis와 data point를
-Mermaid의 radial scale에 맞춘 `[0,1]` normalized 위치에 놓고, series element와 마지막 point→첫 point까지 닫힌
-marker/label 없는 `series_curve` association을 만듭니다. Series bbox는 point들의 normalized curve envelope이고
-source bbox나 임의 원점이 아닙니다. Direction은 `radial`, group은 비어 있으며 source
-bbox를 generated position으로 복사하지 않습니다. Series text는 `showLegend=true`일 때만 visible합니다.
-Fallback terminal은 실제 `flowchart TB`처럼 visible title을 isolated zero-geometry node로 보존하고,
-series별 zero-geometry group을 만들되 `showLegend=true`일 때만 label을 표시하며 rectangle
-`dimension: exact-value` cell과 빈 relation list를 사용합니다. Dimension/series evidence는 각 axis와
-series에, bounded union은 point/cell에, series evidence는 native curve relation에 연결합니다. Malformed
-evidence list는 그 record에서만 전부 비우며 terminal-visible compatibility glyph과 warning을 Scene/OCR에서도
-공유합니다.
-Native data point는 독립 Mermaid node가 아니라 series curve에서 파생된 geometry이므로 generated-node
-provenance 분모에서는 제외하고, 직접 귀속 가능한 axis와 series만 injective하게 평가합니다. Flowchart cell은
-두 source record의 terminal projection이므로 record-local association을 통과한 dimension/series evidence를
-공유할 수 있지만, 알려진 evidence가 전혀 없는 cell은 provenance credit을 받지 못합니다.
-Treemap Scene은 serializer·semantic OCR과 같은 DFS preorder `TreemapPlan`을 소비합니다.
-Native terminal은 source에서 고유하고 bounded한 ID 또는 collision-safe
-`treemap_node_N[_suffix]`를 section/leaf identity로 쓰고 parent/child를 arrow가 없는 logical
-containment로 표시합니다. 실제 SVG에 connector path가 없고 영역 중첩 배치이므로
-`reading_direction`은 `unknown`입니다. Source bbox는 typed IR/source provenance에 남지만
-native/fallback generated Scene은 모두 zero bbox를 써서 source 위치를 rendered layout으로
-오인한 거짓 layout score를 만들지 않습니다. Flowchart terminal은 같은 plan의
-DFS preorder `N1..Nn`, rectangle, `TB`, parent→child end-arrow와 explicit ` (value: x)` label을
-사용합니다. Child record evidence는 element와 containment relation에 공유하며 malformed/oversized
-`evidence_ids`는 해당 record의 목록 전체만 비워 partial provenance를 만들지 않습니다.
-Quote와 Flowchart angle/backslash/hash, native title angle의 visible compatibility glyph는 Scene/OCR에
-같이 투영하고 candidate warning으로 공개합니다. Scanner용 zero-width separator는 content token에
-남기지 않습니다. Unicode whitespace run은 terminal과 semantic projection에서 한 ASCII space로
-정규화하고, resolved accessibility metadata의 visible 치환도 candidate warning에서 누락하지 않습니다.
-Venn Scene도 serializer·semantic OCR과 같은 `VennPlan`을 소비합니다. Set의 portable emitted ID와
-collision-safe intersection ID를 공유하고 source bbox는 typed IR/review provenance에만 보존하며 두
-terminal의 generated bbox는 모두 zero입니다. Native는 set circle, shape 없는 intersection,
-label/marker 없는 logical membership, `unknown` direction을 사용합니다. Native OCR은 visible title과
-실제 area label만 세고 geometry input value는 canvas text로 세지 않습니다. Flowchart는 set circle,
-intersection round, exact value-suffix label, `intersects` relation label, end-arrow, `LR`을 사용합니다.
-Set/intersection evidence는 element에, intersection evidence는 그 membership relation에도 연결하고 malformed
-evidence tuple은 record-local로 비웁니다. Terminal-visible compatibility text와 warning도 같은 plan에서
-공유합니다.
-Ishikawa/TreeView는 serializer와 공유하는 DFS plan의 정확한 parent/emitted ID로 containment를
-만듭니다. Duplicate/normalized collision, missing-ID ambiguity, alias conflict, cycle, object reuse 또는
-resource 한도로 planner가 거부하면 Scene adapter는 충돌 node를 조용히 제거해 attribution
-분모를 줄이지 않고 전체 metric을 unavailable로 둡니다.
+The Data Lineage Scene uses `data_lineage_dataset_*` and `data_lineage_process_*` nodes,
+cylinder/rectangle shapes, `data_lineage_relation_*` data-flow relations with end arrows, and only
+validated `TB`/`BT`/`LR`/`RL` directions. Relation evidence attaches only to its relation. Both
+Organization and Data Lineage adapters use zero geometry and an empty group list. Their OCR
+projections count visible node/relation labels once per record.
 
-C4 자동 후보의 generated Scene은 진단용 native C4 macro를 재구성하지 않습니다. 자동 serializer가 실제
-게시 대상으로 만드는 Architecture와 필요 시 nested Flowchart fallback을 따라, C4 element·boundary·relation을
-공용 bounded Architecture service/group/edge plan에 넣습니다. 따라서 collision-safe emitted ID, boundary
-membership, 표시 label, endpoint와 arrow semantics는 두 fallback grammar 및 OCR projection에서
-동일합니다. element bbox/evidence, relation evidence, boundary bbox는 원 record에서 보존하지만,
-relation polyline, technology, description, relation label, native boundary notation과 기타 fallback이
-표시하지 않는 raw metadata는 구조나 OCR label로 승격하지 않습니다. `reading_direction`은 runtime의
-Architecture→Flowchart 선택을 generated Scene이 미리 알 수 없으므로 IR 값 또는 `unknown`을 유지합니다.
-형식이 잘못됐거나 reference 예산을 넘은 C4 `evidence_ids`는 기존 Mermaid 게시를 막지 않고 해당
-generated Scene attribution에서 제외합니다. 같은 record-local omission과 공용 Architecture projection은
-Architecture·Deployment·Component에도 적용되므로 scalar 문자열이 문자별 evidence ID로 분해되거나
-serializer와 Scene의 endpoint/label identity가 달라지지 않습니다.
-누락·비문자 endpoint와 falsey non-text label도 projection 전에 exact 형으로 판정해 generated Scene이
-stringification으로 만들어진 node/edge를 품질 근거로 인정하지 않습니다. Accepted repair는 raw 접근성
-snapshot에서 현재 label 설명을 다시 만들므로 semantic score 개선과 SVG metadata가 같은 revision을 가리킵니다.
+The Railroad Scene uses shared-plan logical `railroad_rule_*` and `railroad_expression_N` elements
+plus `railroad_relation_N` containment slots. Rule and leaf-expression evidence attaches to each
+element; expression evidence also attaches to the incoming relation for that expression. Native
+connectors have no markers, so both arrow flags are false. The Scene uses `LR`, zero geometry, and
+no groups. Only terminal, nonterminal, and special expressions have grammar-visible labels;
+structural operators are unlabeled, and a nonterminal reference is not counted as a separate
+dependency edge. OCR likewise counts rule `native_name =`, leaf labels, and special `? text ?` once
+and excludes accessibility/title and operator types from content recall.
 
-## 기존 metric과 결합
+Railroad rule text is the normalized safe source name, or the actual `native_name =` after a
+scanner/preprocessor-active or native-grammar-reserved source name has been mapped to collision-safe
+`rrmapped_N[_suffix]`. Source-active names include `style`/`classDef` substrings. Reserved names
+include the case-folded expression-word namespace, `railroad-beta`, and a case-folded lowercase
+`title*` prefix. Logical element IDs remain source-based `railroad_rule_*`. Mapping is disclosed by
+a warning; raw source names remain in typed IR and normalized names in nonterminal labels. ASCII
+angles in terminal/special/title/accessibility display as `〈`/`〉`, every ASCII `#` as `＃`, an
+entity-like `&` prefix as `＆`, and NFKC quote/backslash hazards as `″`/`∖`, with warnings. Scene/OCR
+share this exact compatibility text without emitted source's zero-width separators, while semantic
+originals remain in typed IR. Direct Scene fails closed unless `evidence_ids` is null/omitted or a
+string list. Raw source bbox, ID, label, role, shape, and style extras are not promoted into
+Scene/OCR structure.
 
-- syntax/render는 게시 hard gate이면서 score input입니다. CandidateValidator의 SVG inspection은 Mermaid가
-  render 성공을 보고해도 geometry attribute에 `NaN` 또는 `Infinity`가 있으면 render-invalid로 바꿉니다.
-- pipeline은 최종 source, 사후 보안 검사를 통과한 비어 있지 않은 SVG, 선택적 runtime PNG의 SHA-256,
-  security profile, emitted/runtime type을 validation receipt로 함께 봉인합니다. Receipt 설치에는
-  `CandidateValidator`가 exact source/SVG/PNG 검사를 끝낸 뒤 발급한 process-local certificate가 필요하며,
-  단순히 candidate의 valid flag를 설정해서는 발급되지 않습니다. 별도의 publication receipt는 freshly
-  recomputed publish policy, status, 자동 `review_required` routing과 선택 후보 receipt digest를
-  고정합니다. 사용자 승인·거절은 generation receipt를 바꾸지 않고 review state/revision/history에
-  기록합니다. Markdown renderer는 boolean flag만 신뢰하지 않고 두 receipt와 process-private seal이 현재 상태에 모두
-  일치할 때만 fence를 삽입합니다. 객체를 JSON으로 왕복하면 공개 digest는 audit용으로 남지만 private
-  trust는 복원되지 않으므로 다시 검증하지 않은 역직렬화 결과는 자동 게시할 수 없습니다.
-  Publication receipt의 quality digest는 표시되는 aggregate score와 grade, metric map, generation
-  warning을 함께 고정합니다. Markdown에 전달하는 봉인 snapshot은 serializer stability도 함께 고정하며,
-  `experimental` candidate는 grade A여도 `Experimental reconstruction` 경고를 표시합니다. Pipeline은 선택 후보 warning을 중복 제거하고 최대 256개·항목당 4,096자로
-  제한한 뒤 결정하므로, 점수나 `scores.json`만 바꿔 신뢰도가 높은 것처럼 표시할 수 없습니다. 이때 게시
-  보류·정책 제한을 설명하는 evaluation warning과 pinned renderer compatibility warning을 engine 진단보다
-  먼저 보존하고 남은 예산만 일반 warning에 사용하므로, noisy engine output이 best-effort 결과의 필수
-  experimental 경고를 밀어낼 수 없습니다. Digest의
-  확률 값은 exponent 없는 decimal string으로 encode하고 negative zero를 `"0"`으로 정규화하므로 Python과
-  JavaScript verifier가 같은 bytes를 재현할 수 있습니다.
-- Source/generated Scene은 nested record를 포함한 현재 payload가 Pydantic resource 계약을 다시 통과한
-  경우에만 semantic scoring에 들어갑니다. Fusion overflow는 winner record fallback으로 canonical화되고,
-  pipeline의 내부-fusion backstop은 evidence collection의 exact-list/20,000-item 계약도 확인합니다. 이
-  backstop이 실패하면 fused 후보만 격리한 채 원 engine 후보를 유지합니다.
-- OCR recall은 NFKC/casefold한 원 OCR token multiset의 occurrence recall입니다. 같은 text라도 다른 bbox에서
-  관찰되면 별도 occurrence로 유지하고, context OCR과 OCR/vector evidence가 겹치면 token별 최대 count를
-  사용합니다. bbox가 없는 동일 text evidence는 공간적으로 다른 occurrence임을 입증하지 못하므로 하나로
-  합칩니다. Typed/Scene 후보는 generated Scene의 node, relation, group label을 비교하며 Gantt task와
-  section도 Scene 의미 label로 복원합니다. 따라서 Mermaid ID, schedule field, header,
-  `accTitle`/`accDescr`가 recall을 올릴 수 없습니다. Scene adapter가 없는 direct 후보는 quoted label과
-  문법별 보수적 label fallback을 적용합니다.
-- OCR/vector reference와 생성 semantic label은 각각 최대 50,000개 observation, 1,000,000자,
-  100,000 token의 평가 예산을 적용합니다. 어느 한도를 넘으면 일부 입력을 잘라 점수를 만들지 않고
-  semantic evaluation을 unavailable로 표시하여 자동 게시를 막습니다. Token occurrence는 `Counter`로
-  유지하며 반복 횟수만큼 list를 확장하지 않습니다. Parse/render에 실패한 후보는 구조 변환과 OCR 같은
-  고비용 semantic scoring을 건너뛰고, typed Scene 변환 오류는 후보 단위 warning으로 격리합니다.
-- 구조 Scene은 topology를 위해 class member나 ER attribute를 node로 만들지 않습니다. 별도의 지연형
-  typed semantic projection이 실제 serializer가 표시하는 Class field/method/parameter/cardinality,
-  ER attribute type/name/key/comment, Timeline plan의 canvas title/period/모든 event label을 OCR 비교에
-  추가합니다. Timeline raw ID/role/shape/direction/hidden text, generated source sentinel, numeric source entity와
-  accessibility metadata는 OCR credit에서 제외합니다.
-  이 projection도 생성 label 예산 안에서 소비되므로 큰 typed IR이 제한을 우회하지 못합니다.
-  Core Scene도 serializer-visible default를 그대로 사용합니다. Block은 collision-safe emitted ID와
-  `[unreadable]` fallback을 공유하고, 일반 State는 serializer가 쓰는 label/ID만 세며 choice/fork/join은
-  topology element를 유지하되 실제 canvas에 없는 source label을 OCR text로 세지 않습니다. Sequence는
-  shared plan의 participant/message canvas label만 source order로 투영하고 무라벨 message는 `[unreadable]`로
-  셉니다. Source-only separator, raw participant/message ID, hidden `text`, raw role/shape/direction과
-  accessibility `<title>/<desc>`에는 OCR credit을 주지 않습니다. 모든 participant는
-  `mmx_sequence_participant_N`, message는 ordered `generated-relation-N` slot을 serializer/Scene과 공유하고,
-  object participant evidence는 해당 element, message evidence는 해당 relation에만 연결합니다. String
-  participant는 legacy 호환 입력이라 자체 record provenance가 없으며 일반 Extended provenance gate가 이를
-  review로 보낼 수 있습니다. Unknown/null endpoint 하나라도 있으면 message를 버리지 않고 전체 Scene을 fail
-  closed합니다. Mindmap은 preorder의 모든 terminal canvas label을 한 번씩 세며 `root`/`node_N`, root/child
-  shape, parent containment와 child record-local evidence를 serializer와 Scene에 공유합니다. Quote/Markdown/
-  numeric entity compatibility glyph는 실제 SVG text를 사용하고 raw semantic 원문, source-only separator,
-  raw ID/role/shape/direction과 접근성 metadata에는 OCR credit을 주지 않습니다. Alias conflict, malformed child,
-  object reuse/cycle, depth/node/source budget 오류가 하나라도 있으면 partial branch를 만들지 않습니다.
-  Timeline은 각 source record를 collision-free `timeline_event_N` Scene slot 하나에 연결하고
-  period를 element text로, title/period/모든 event label을 terminal OCR projection으로 셉니다. 여러 event label은
-  같은 source record의 bbox/evidence authority를 공유하지만 raw event ID나 hidden alias를 별도 구조로 늘리지
-  않습니다. Alias 충돌, duplicate ID 또는 malformed nested label 하나라도 있으면 partial Scene을 만들지
-  않습니다. Gantt 무라벨 task는 section-local `Task N`으로 투영하며 hidden task `text`/ID에 OCR credit을
-  주지 않습니다. State의 normalized ID와 transition endpoint는 serializer와
-  Scene이 하나의 plan을 공유하고 malformed 또는 unknown endpoint transition은 전체 Scene을 fail closed합니다.
-  `[*]` boundary marker는 structural relation으로 만들지 않지만 화면에 표시되는 transition label은 OCR
-  projection에 유지합니다.
-  일반 State label은 plan이 whitespace-normalized semantic/source/canvas text를 분리합니다. Quoted node의
-  ASCII quote는 `″`로 바꾸고, node/transition의 시작·끝·연속 run·CommonMark escape 앞처럼 renderer가
-  소비하는 backslash만 `∖`로 projection합니다. 중간의 안전한 `C\path`나 `A\ B`는 ASCII backslash를
-  유지합니다. 50,000자 입력에도 bounded linear scan을 사용해 active code span/link/emphasis/strike와
-  entity-like literal만 visible compatibility glyph로 고정하고 inactive punctuation은 보존합니다. Bare
-  email/`www` autolink는 source-only separator로 비활성화해 zero-width 제거 후 원문 canvas를 유지합니다.
-  Accessibility directive는 raw quote/backslash/Markdown/named entity를 유지하되 Mermaid 11.16이 손실하는
-  numeric entity와 `<`만 `＆＃…`/`‹`로 표시합니다. State grammar/scanner-active token에 삽입한 source-only
-  zero-width separator는 node/transition OCR에서 제거합니다. 따라서 renderer가 실제로 삭제·해석하는
-  glyph에 raw label credit을 주지 않으며 whitespace-only·non-whitespace control/format/surrogate label은
-  runtime과 scoring 전에 fail closed됩니다. Accessibility title/description은 Scene/OCR content가 아니라
-  SVG `<title>`/`<desc>` metadata로 검사합니다. Hidden choice/fork/join label은 derived accessibility에 다시
-  들어가지 않고 ID로 대체됩니다.
-  `title`/`description`/`acc_title`/`acc_description`도 enrichment 전에 exact built-in string, raw/normalized
-  bound, Unicode/UTF-8 gate를 거치며 exact `""`은 omitted 의미로 고정됩니다. 이 raw gate는 public/direct/
-  initial/repair에 공통이고 pipeline은 initial과 accepted repair 모두 derived `acc_*`가 아닌 validated raw
-  snapshot을 저장합니다. Compatibility warning은 accepted repair의 canonical plan에 맞춰 재조정됩니다.
-  State lexer/security 예약어 또는 strict remote-icon scanner의 `iconify` substring과 충돌하는 source ID는
-  전체 normalized ID 집합을 먼저 예약한 뒤 원래 위험 token을 포함하지 않는 collision-free
-  `mmx_state_id_…` emitted ID로 바꿉니다. Typed IR과 evidence는 source identity를 유지하고 Scene relation과 Mermaid
-  transition은 같은 emitted endpoint를 사용하므로, parse 성공처럼 보이면서 `state` source edge가 사라지는
-  silent renderer loss도 실제 SVG transition-count gate에서 검출합니다.
-  ER도 structural Scene과 semantic OCR이 serializer의 같은 record plan을 사용합니다. Structural Scene에는
-  emitted-ID entity element와 explicit relationship만 두고 attribute를 별도 node/edge로 만들지 않습니다.
-  Entity/relationship element와 endpoint, relationship Scene slot, identifying/non-identifying relation type,
-  direction, canvas label은 plan에서 가져오며 각각 원 record의 evidence ID를 유지합니다. Reserved ER ID나
-  `iconify` substring은 collision-safe `mmx_er_id_…` emitted identity로 바뀌지만 typed IR의 source ID와
-  provenance는 보존되고 Scene endpoint도 같은 alias를 사용합니다. Malformed record, unknown endpoint,
-  cardinality/identifying 누락 또는 plan resource 초과는 nodes-only partial Scene을 만들지 않고 candidate의
-  semantic metric을 unavailable로 둡니다.
-  ER semantic OCR은 entity canvas label과 각 attribute의 실제 canvas type/name/key/comment, quoted relationship
-  role을 record 순서대로 더합니다. Attribute key는 source가 제공한 `PK`/`FK`/`UK`만 포함하고 internal ID,
-  cardinality token, connector와 accessibility metadata는 content recall을 높이지 않습니다. Source-only
-  separator는 제거하고 quote·percent·backslash·backtick·active Markdown/entity text의 visible compatibility
-  glyph는 Mermaid 11.16 SVG와 같은 값으로 비교합니다. Accessibility title/description은 OCR content가 아니라
-  SVG `<title>`/`<desc>` metadata로 별도 검사합니다. Raw metadata는 enrichment 전 exact-string/bounds/
-  Unicode/UTF-8 gate와 exact-empty omitted 처리를 거치며 accepted repair는 현재 semantic plan에서 derived
-  accessibility를 재생성하고 compatibility warning을 재조정합니다. Pinned runtime fixture는 multiword role이
-  하나의 edge label로 남고 entity 수를 늘리지 않는지, plan의 canvas/accessibility text와 reserved emitted
-  identity가 실제 SVG에 일치하는지를 함께 확인합니다.
-  Gantt record plan은 title·section·task의 semantic/source/canvas text를 고정합니다. 별도 accessibility plan은
-  semantic section/task label로 derived description을 만들고 접근성 grammar의 canvas를 따르므로 task
-  compatibility canvas를 재사용하지 않습니다. Explicit `description`/`acc_description`은 계속 authoritative하며,
-  accepted repair가 현재 label로 description을 다시 파생하는 것은 두 field가 모두 없을 때뿐입니다. OCR
-  content에는 실제 canvas에 보이는 title과, empty-section 제거 뒤 남은 section/task label만 넣으며 task
-  `:`/`%`와 title `<`의 `∶`/`％`/`‹` compatibility glyph도 그대로 비교합니다.
-  Hidden task `text`, 내부 ID, schedule/status field와 SVG accessibility metadata는 canvas recall에 넣지 않습니다.
-  Missing 또는 exact-empty task는 section-local `Task N`, section은 `Tasks`로 투영합니다. Zero-width separator는
-  normalized canvas/Scene/OCR 비교에서 제거하지만 raw SVG DOM text/title/desc에는 남을 수 있습니다. Section
-  Scene identity는 collision-free하게 배정하고 terminal task ID 중복은 거부하며, task 없는 section은 Scene/OCR에서
-  제외하고 all-empty candidate는 scoring 전에 거부합니다. Date/token shape와 ECMAScript timestamp range,
-  prior-only `after` chain까지 계산한 resolved `x` end, millisecond-exact bounded duration을 serialization에서
-  먼저 검사해 renderer의 zero-width task를 scoring하지
-  않습니다. 그 뒤 runtime type이 Gantt인 SVG의 모든 `class~=task` rectangle도 finite positive width/height를
-  가져야 하므로 mixed-scale rounding으로 남은 0폭 task는 render-invalid이고 scoring/publication에 들어가지
-  않습니다. Valid `after` target은 source order상 현재 task보다
-  먼저 나와야 하므로 forward/partial resolution과 cycle을 serialization에서 차단합니다. 아직
-  `SceneRelation`을 만들지 않으므로 Gantt dependency edge/path score와 relation provenance는 unavailable일 수
-  있습니다.
-- Requested type이 fallback으로 방출되는 경우 projection은 요청 문법이 아니라 실제 emitted serializer를
-  따릅니다. C4의 `architecture` 또는 nested Flowchart 결과는 위 공용 plan의 emitted boundary group과
-  service label만 세고 technology, relation label, description은 제외합니다. Architecture도 native와
-  nested Flowchart에서 frozen terminal plan의 service `label`/`name` alias, group canvas label과 label 없는
-  topology를 동일하게 평가합니다. quote·Markdown·numeric entity compatibility glyph도 실제 SVG text대로
-  세고 semantic 원문이나 source-only separator에는 OCR credit을 주지 않습니다. label 없는 Architecture
-  group은 두 serializer가 같은 portable emitted ID를 표시합니다. Service evidence는 element에, relation
-  evidence는 같은 `generated-relation-N` connector에 record-local로 유지되며 raw accessibility metadata와
-  hidden relation label은 semantic OCR에서 제외합니다.
-  Deployment와 Component fallback에서 보존만 되는 relation label은 세지 않으며, Use-case Flowchart
-  relation은 serializer와 같은 `type` 우선, `label` fallback 순서로 셉니다. 이 세 software fallback의
-  Scene node도 serializer의 record planner를 공유해 missing/colliding ID, `label`/`name` alias와 endpoint를
-  실제 방출 결과와 같은 공간으로 정규화합니다. Use-case planner는 Actor와 UseCase의 최종 namespace를
-  함께 할당해 prefix 뒤의 2차 collision도 suffix로 분리합니다. serializer가 소비하지 않는 raw
-  `text`/`role`/`shape`/style/semantic metadata와 relation ID는 의미 구조로 승격하지 않으며, node와 relation
-  수가 Scene budget을 넘으면 serializer와 projection이 같은 경계에서 거부합니다.
-  Requirement는 serializer와 같은 normalized/collision-safe output ID,
-  requirement type·ID·text·risk·verification, element type·docref, relation type을 셉니다. 접근성 metadata와
-  serializer가 무시한 대체 label은 포함하지 않습니다. Event Modeling은 lane label과 실제 fallback의
-  time·frame type·label 조합 및 relation label, Wardley는 native title·component·link label을 셉니다.
-  Cynefin native는 고정 template·실제 visible item(`confusion`은 세 개+`+N more`)·transition label을,
-  Flowchart fallback은 supplied domain label을 한 번씩, 모든 explicit item과 transition label을 셉니다. ZenUML은
-  Sequence fallback의 participant alias·message label만 셉니다. Packet은 terminal이 native일 때만 canvas
-  title을 field label 앞에 세고 Flowchart fallback에서는 제외합니다. Pie native terminal은 visible title,
-  모든 legend와 positive slice의 percentage를 세며 `showData` value는 legend text에 포함합니다. Pie
-  Flowchart는 exact `label: value` cell만 세고 native-only title과 접근성 metadata는 제외합니다. Quadrant
-  native terminal은 visible title, axis endpoint 네 개, supplied quadrant label과 point label만 세고 좌표와
-  접근성 metadata는 제외합니다. Quadrant Flowchart는 title·axis·supplied slot·exact `label · x X, y Y`
-  cell을 셉니다. Sankey native
-  terminal은 node label과 renderer가 표시하는 `max(incoming, outgoing)` 합계를 세되 개별 flow weight는 세지 않고, Flowchart terminal은
-  node label과 exact edge-weight label을 셉니다. 두 Sankey 경로 모두 title/description을 canvas text로 세지
-  않습니다. Radar native terminal은 visible title·axis와 `showLegend=true`인 series legend만 세고, value,
-  bounds, ticks, graticule과 `accTitle`/`accDescr`는 geometry/metadata이므로 제외합니다. Radar Flowchart는 visible
-  title, `showLegend=true`인 series subgraph label과 각 `dimension: exact-value` cell을 세며 hidden option은
-  제외합니다.
-  Treemap native terminal은 visible `title`, 각 section/leaf label, d3-hierarchy의
-  reverse-order binary64 합산을 d3 `format(",")`으로 표시한 값을 세고, Flowchart terminal은
-  preorder node의 exact value-suffix label만 셉니다. `accTitle`/`accDescr`는 SVG metadata일 뿐 content
-  label이 아닙니다. Native renderer는 작은 cell text를 `display:none`으로 숨길 수 있으므로
-  실제 render review에서는 이 제한을 같이 봅니다. Venn native terminal은 visible title과 set/intersection
-  label만 세고 area value와 marker-less membership은 OCR text로 만들지 않습니다. Venn Flowchart는 exact
-  value-suffix node label과 membership마다 보이는 `intersects`를 세며 accessibility metadata와 native-only
-  title은 제외합니다. 내부 endpoint ID, 좌표, anchor 같은 문법 구조와
-  접근성 text는 OCR 의미 증거로 세지 않습니다.
-  각 유형의 record planning은 serializer와 projection이 같은 deterministic helper를 공유합니다.
-- Typed semantic projection이 malformed data나 adapter defect로 예외를 내면 해당 candidate의 OCR을
-  direct-code fallback으로 바꾸지 않습니다. 예외를 candidate warning으로 격리하고 aggregate를
-  unavailable로 유지하여 다른 candidate 선택과 문서 변환은 계속합니다.
-- 일반 numeric consistency는 source/generated 숫자 occurrence multiset의 precision·recall F1입니다. Pie·XY·
-  Quadrant·Sankey·Radar·Treemap과 Packet의 record-local 결합 검증은 아래 예외를 사용합니다. Bounded
-  evidence 안의 동일 normalized text+bbox는 한 관측으로 합치고, OCR context와 evidence 채널의 numeric
-  Counter는 token별 최대 occurrence로 병합합니다. 따라서 위치가 다른 반복값은 보존하면서 채널 간 중복
-  보고는 다시 세지 않습니다. 생성한 숫자가 source에 없거나 occurrence 수가 다르면 precision/recall을
-  낮춥니다. Generated projection은 Mermaid `%%` comment를 제외하고, detected grammar가 지원할 때만
-  `title ...`/`title: ...`, `accTitle: ...`, 한 줄 `accDescr: ...`와 block `accDescr { ... }`를 chart
-  metadata로 제외합니다. Sankey의 metadata-like CSV label과 weight는 실제 data로 보존합니다. Quadrant의
-  `quadrant-1`~`quadrant-4` slot index도 문법 토큰으로 제외하지만 directive label과 point 좌표 안의 실제
-  숫자는 보존합니다. Block metadata 뒤 같은 줄의 statement는 다시 평가하며 bounded suffix budget이
-  소진되면 부분 점수 대신 `0.0`으로 fail closed합니다.
-- Sankey 구조 metric도 검증된 terminal grammar를 따릅니다. Native는 source node identity와 marker-less
-  `data_flow` topology, 고정 `LR`, 무라벨 relation을 사용하고 node Scene text에는 파생 합계를 섞지 않습니다.
-  Flowchart fallback은 공용 planner의 collision-safe emitted ID, exact weight relation label, end-arrow와
-  정규화된 requested direction을 사용합니다. Node/flow record의 evidence만 attribution에 연결하며 입력의
-  미방출 role/shape/style/arrow/semantic hint와 title/description은 구조·OCR 점수를 높일 수 없습니다.
-  Malformed/oversized evidence list는 문자 단위 ID로 coercion하지 않고 해당 record에서만 빈 provenance로
-  격리하며, relation count와 relation ID도 Scene resource 경계 안에서 serializer와 함께 검증합니다.
-  Flowchart projection이 pinned runtime의 500-edge cap을 넘으면 partial Scene을 만들지 않고 unavailable입니다.
-- Sankey numeric consistency는 plan의 각 flow가 가진 exact `value_text`를 candidate-authorized OCR/vector
-  observation에 flow-local로 결합하고, 전역 source/generated 숫자 occurrence exactness도 요구합니다. Flow와
-  evidence bbox는 source image 안의 양의 면적이고 flow끼리 양의 면적으로 겹치지 않아야 하며 cited evidence는
-  해당 flow bbox 안에 완전히 포함되어야 합니다. Evidence ID나 normalized text+bbox의 cross-flow 재사용,
-  같은 bbox의 상충 관측, weight swap,
-  invalid/missing geometry·authority와 bounded reference/text/token/spatial budget 초과는 metric 전체를
-  unavailable 또는 mismatch로 두어 review합니다. Native, same-slot Flowchart와 semantic repair는 새 typed
-  IR/scoped evidence로 같은 gate를 다시 계산하며 direct 또는 untyped Sankey는 owner binding이 없어
-  review-only입니다.
-- Sankey accessibility attribution은 terminal을 따릅니다. Native terminal은 title/description을 방출하지 않아
-  metadata association에서 면제됩니다. Same-slot Flowchart는 resolved accessibility title/description을 SVG
-  metadata로 방출하므로 실제 방출되는 non-derived title과 description 두 역할에 각각 candidate-authorized
-  non-data-record spatial OCR/vector exact text 또는 reconstruction 초기 입력의 approved exact `user_edit`가
-  필요합니다.
-  `acc_title`/`acc_description`이 대응하는 legacy field를 output에서 shadow하면 숨겨진 legacy text는 면제합니다.
-  이 metadata는 content OCR label에는 포함하지 않습니다. Deterministic default와 experimental notice는
-  면제하지만, node/flow record가 소유한 evidence ID 또는 normalized text+bbox, metadata role 사이의 재사용,
-  same-bbox ambiguity, metadata bbox와 node/flow record bbox의 overlap, 필요한 data-record bbox의 missing/invalid
-  geometry, reference/text/token/spatial budget 소진, engine-emitted `user_edit` self-authorization은 전체 metadata
-  association을 unavailable로 두어 review합니다.
-  선택된 OCR/vector metadata proof의 numeric token만 flow-weight reference multiset에서 제외하고, 귀속되지 않은
-  source 숫자는 계속 extra occurrence로 판정합니다. Semantic repair proposal도 새 typed IR과 scoped evidence로
-  같은 terminal gate를 다시 계산합니다.
-- Pie 구조 metric은 `PiePlan`이 확정한 terminal을 따릅니다. Native는 최대 12 slice, zero-or-normal binary64
-  round-trip value와 left-to-right finite positive total, positive slice별 1% visibility, finite normalized
-  centroid, `showData`의 exact JavaScript string을 요구합니다. Positive slice는 normalized `sector`, zero slice는
-  legend-only zero bbox이고 relation/group은 없습니다. 조건 밖의 valid input과 native runtime rejection은 같은
-  candidate slot에서 최대 256개의 zero-geometry `TB` exact-value cell로 재검증합니다. Fallback도 relation을
-  만들지 않으며 두 terminal 모두 50,000 UTF-16 code-unit·5,000줄 source preflight를 공유합니다.
-- Quadrant 구조 metric은 `QuadrantPlan`이 고정한 terminal을 따릅니다. Native는 최대 256 point의
-  zero-or-normal binary64 coordinate와 pinned 500×500 renderer의 finite·distinct point/text visibility를
-  요구하고, `(x, 1-y)` point circle·네 axis endpoint·네 quadrant group을 평가합니다. Axis line, connector와
-  quadrant membership은 source에서 증명되지 않았으므로 만들지 않습니다. Native-lossy input과 runtime
-  rejection은 같은 slot의 zero-geometry `TB` title/axis/slot/exact-point cell로 재검증하며 edge/group은
-  비웁니다. Pairwise collision/association은 각각 candidate당 100,000회, source는 50,000 UTF-16
-  code-unit·5,000줄로 제한하고 초과 시 partial score를 만들지 않습니다.
-- Radar 구조 metric은 `RadarPlan`이 확정한 terminal을 따릅니다. Native는 최대 12 series와 zero-or-normal binary64
-  round-trip value/bound, positive finite effective span과 finite renderer radius를 요구하고 normalized radial
-  point 및 closed marker-less curve relation을 평가합니다. Flowchart는 최대 256 point의 zero-geometry `TB`
-  group/cell과 빈 relation list를 사용하므로 radial layout이나 edge를 가장하지 않습니다. Native runtime
-  rejection은 같은 candidate slot의 fallback을 한 번 재검증하며 fallback budget을 넘으면 partial Scene 대신
-  unavailable입니다. Native provenance gate는 derived point 대신 axis/series를 평가합니다. Flowchart의 실제
-  cell은 dimension과 series evidence를 공유하므로 Radar-local owner binding으로 추적하고, 알려진 record evidence가
-  없는 cell은 provenance credit을 받지 못합니다. 두 terminal은 reserved-safe ID namespace와
-  50,000 UTF-16 code-unit·5,000줄 source preflight를 공유합니다.
-- Radar numeric consistency는 dimension별 exact label record와 series별 `label + ordered values` record를
-  candidate-authorized OCR/vector evidence에 결합한 뒤 전역 숫자 occurrence exactness를 추가로 요구합니다. 모든
-  owner bbox는 source image 안의 양의 면적이고 서로 겹치지 않아야 하며, cited evidence bbox는 owner 안에 완전히
-  포함되어야 합니다. Evidence ID와 normalized text+bbox는 owner 사이에서 재사용할 수 없고, 같은 bbox의 uncited
-  contradictory text도 cherry-pick할 수 없습니다. Missing typed plan, invalid geometry/authority, 비어 있는 owner
-  observation, reference/text/token 또는 100,000회 spatial comparison budget 소진은 metric 전체를 unavailable로
-  두며, 결합된 label/value 순서가 다르면 `0.0`입니다. Native와 same-slot Flowchart, semantic repair proposal은
-  모두 새 typed IR과 같은 scoped evidence로 이 gate를 다시 계산합니다.
-- Radar visible title과 non-derived explicit accessibility title/description은 record-owned observation과 겹치지
-  않는 candidate-authorized spatial OCR/vector exact text 또는 reconstruction 초기 입력의 approved exact
-  `user_edit`를 별도로 요구합니다. 같은 evidence/normalized text+bbox를 metadata owner 사이에서 재사용하거나,
-  engine-emitted edit로 스스로 승인하거나, bounded metadata-to-record/matching comparison을 초과하면 native와
-  fallback 모두 review입니다. 구조에서 결정적으로 파생한 기본 accessibility와 experimental notice는 제외합니다.
-- Treemap 구조 metric은 공용 preorder plan이 고정한 terminal을 따릅니다. Native는 section/leaf
-  identity와 arrow 없는 logical containment, `unknown` direction을 쓰고, Flowchart는 `N1..Nn`,
-  `TB`, rectangle, end-arrow를 씁니다. Internal explicit value·binary64/renderer 표시 비호환은
-  exact-value Flowchart를 선택하고 native runtime rejection도 같은 candidate slot에서 그 fallback을
-  한 번 재검증합니다. Flowchart projection이 500 relation을 넘으면 unavailable이지만 같은
-  계층이 native resource 계약을 만족하면 native까지 금지하지 않습니다.
-- Treemap numeric publication은 모든 plan node의 finite in-image source bbox와 직접 인용한
-  candidate-authorized OCR/vector text를 요구합니다. Child는 parent bbox에 완전히 포함되되 동일할 수 없고
-  직접 sibling의 interior는 겹치지 않아야 하되 edge-touch는 허용합니다. Internal-node text evidence는 직접
-  child 영역 밖에 있어야 합니다. 각 owner는
-  exact label을, explicit value가 있는 owner는 label 뒤의 fixed-decimal value까지 reading order로 증명합니다.
-  Evidence ID와 normalized text+bbox는 owner 사이에서 injective하고 같은 bbox의 상충 observation,
-  equal/crossing hierarchy, invalid geometry 또는 bounded work 소진은 unavailable입니다. Aggregate
-  reference/text/character/token/spatial-comparison budget은 20,000/50,000/1,000,000/100,000/100,000입니다.
-  Local record가 다르면 association mismatch로 aggregate를 비우지만 `numeric_consistency`는 전역 multiset
-  진단값을 유지할 수 있습니다. 자동 게시에는 local association과 전역 occurrence가 모두 exact여야 합니다.
-  Same-slot fallback과 repair도 이
-  결합을 다시 계산하고 direct/untyped Treemap은 review-only로 남습니다. 이 source geometry는 attribution
-  검증용이며 generated Scene의 zero bbox나 작은 native cell의 `display:none` 위험을 해결한 것으로 보지
-  않습니다. Native가 계산한 internal total은 source-explicit record로 간주하지 않으므로 OCR/vector가 그
-  숫자를 별도로 관측한 경우 현재 전역 occurrence gate는 보수적으로 review를 요구합니다.
-- Treemap metadata gate는 terminal이 실제 내보내는 역할만 평가합니다. Native visible title과 non-derived
-  resolved accessibility title/description, Flowchart의 non-derived resolved accessibility title/description은
-  data node와 겹치지 않는 candidate-authorized OCR/vector exact observation 또는 승인된 초기 `user_edit`로
-  증명합니다. 동일한 native visible/accessibility title text는 한 title proof로 합치지만 title과 description은
-  같은 text여도 별도 owner입니다. Shadowed legacy metadata, deterministic defaults와 experimental notice는
-  면제하되 notice-only explicit description override는 structural description을 지우므로 fail closed입니다.
-  Node-owned/reused/ambiguous/overlapping evidence, engine-emitted edit와 node association이 공유하는
-  reference/text/character/token/spatial budget 소진은 aggregate를 unavailable로 둡니다. 선택된 OCR/vector
-  metadata proof의 numeric occurrence는 global Treemap data reference에서 제외한 뒤 local node binding과 함께
-  exactness를 판정합니다.
-- Treemap raw metadata gate는 attribution보다 먼저 실행됩니다. Pipeline typed candidate와 public typed/runtime
-  serializer는 enrichment 전에, typed direct `serialize_treemap()`은 planning 전에 네 explicit field를 검사합니다.
-  `None`/absent와 exact-empty omitted 호환 외에는 exact built-in string, raw/normalized length limit,
-  normalized non-empty, valid UTF-8와 raw `Cc`/`Cf`/`Zl`/`Zp` 부재를 요구합니다. Newline/tab normalization,
-  zero-width format, string subclass, non-text container/number, huge whitespace와 surrogate는 runtime 호출 전에
-  serialization failure로 격리됩니다. Repair는 exact-empty를 제거한 canonical IR을 직렬화·평가·저장에 공통
-  사용합니다. Raw Direct Mermaid는 typed metadata가 없어 security·parse·render와 typed-plan 부재 시
-  review-only gate를 유지합니다.
-- Venn 구조 metric도 공용 plan이 고정한 terminal을 따릅니다. Native는 positive normal
-  binary64-safe area, `200:1` visibility gate, exact-containment 제외, higher-order union별 complete explicit
-  pair를 요구하고 누락 area/pair를 합성하지 않습니다. Native Scene은 marker-less logical membership과
-  `unknown` direction, fallback은 labeled end-arrow membership과 `LR`을 사용합니다. Runtime native rejection은
-  같은 candidate slot의 exact-value Flowchart를 한 번 재검증합니다. Flowchart projection만 500-edge hard
-  cap을 적용하며 near-limit render 성능은 별도 runtime timeout에 계속 의존합니다.
-- Venn numeric publication은 document-wide occurrence multiset만 사용하지 않습니다. 모든 planned set과
-  intersection의 finite positive in-image source bbox는 candidate-authorized cited contour와 exact 일치해야 하고,
-  별도의 cited OCR/vector observation으로
-  실제 label과 explicit value를 record 단위로 결합해야 합니다. Label/value swap, evidence ID 또는 normalized
-  text+bbox의 교차 owner 재사용, same-bbox contradiction, missing authority/geometry와 bounded association work
-  소진은 aggregate를 unavailable로 둡니다. Label이나 value가 원래 없는 intersection에는 그 field를 합성하지
-  않고 둘 다 없으면 textual owner proof가 없어 review합니다. Set/intersection bbox의 상호 overlap은 Venn
-  의미상 허용하지만 intersection은 declared set 모두에 inclusively contained되고 undeclared set에는 완전히
-  contained되지 않아야 하며, higher-order intersection은 모든 explicit strict-subset intersection 안에 있어야
-  합니다. Equal containment는 허용합니다. 모든 set scan, intersection-pair scan, contour 비교와 text
-  containment가 하나의 bounded spatial-work counter를 공유합니다. 이 membership geometry와 cited
-  observation의 owner-local containment, local content binding, global numeric exactness는 native, same-slot
-  Flowchart와 repair에서 함께 재평가되며 runtime fallback repair는 같은 terminal로 canonical serialization을
-  유지합니다. Direct/untyped Venn은 review-only입니다.
-- Venn metadata gate는 terminal이 실제 내보내는 역할만 평가합니다. Native는 explicit visible title만,
-  intrinsic/runtime Flowchart는 non-derived resolved accessibility title/description만 요구합니다. Native에서
-  unsupported인 acc/description field와 fallback에서 effective `acc_*`에 shadow된 legacy field, deterministic
-  defaults와 pipeline-added notice suffix는 면제하지만 notice-only explicit description은 fail closed입니다.
-  각 역할은 모든 data area 밖의 candidate-authorized OCR/vector exact observation 또는 승인된 초기 exact
-  `user_edit`를 독립적으로 가져야 합니다. Data/metadata owner 사이 ID·normalized observation 재사용,
-  same-bbox ambiguity, area overlap, engine edit와 data gate가 공유하는 bounded work 소진은 aggregate를
-  unavailable로 둡니다. 증명된 OCR/vector metadata numeric occurrence만 global data reference에서 차감하고
-  `user_edit` occurrence는 차감하지 않으며, 동일 exact proof에서는 source observation을 edit보다 우선해 ID-order
-  독립성을 보장합니다. `strict`의 명시적 notice 문구는 pipeline suffix가 아니므로 증명 대상이고, fallback
-  title/description이 같은 text여도 별도 proof를 요구합니다.
-- Venn raw metadata gate는 attribution 전에 실행됩니다. Pipeline과 public typed/runtime fallback serializer는
-  enrichment 전의 네 explicit field를 공통 검사하고, direct chart-set serializer는 planning 시작 시 검사합니다.
-  `None`/absent와 omitted-compatible exact `""` 외에는 exact built-in string, raw/normalized length limit,
-  normalized non-empty, valid UTF-8, raw `Cc`/`Cf`/`Zl`/`Zp` 부재를 요구합니다. Newline/tab normalization,
-  zero-width format, string subclass, non-text container/number, huge whitespace와 surrogate는 runtime 호출 전에
-  serialization failure로 격리되며 repair proposal도 같은 public serializer 경계를 우회하지 못합니다. Repair는
-  exact-empty를 제거한 canonical IR을 직렬화·평가·저장에 공통 사용합니다.
-  여기서 direct chart-set serializer는 typed `serialize_venn()` API이며, typed metadata가 없는 Raw Direct
-  Mermaid 후보는 security·parse·render와 typed-plan 부재 시 review-only gate를 그대로 사용합니다.
-- Pie는 slice-local association과 전역 occurrence completeness를 함께 사용합니다. Native Pie, 같은-slot exact-value
-  Flowchart, semantic repair 모두 각 typed slice가 candidate publication authority의 `ocr_token` 또는
-  `vector_text`를 직접 참조해야 합니다. Slice/evidence bbox는 양의 면적이고 source image 안에 있어야 하며,
-  evidence bbox 전체가 해당 non-overlapping slice bbox 안에 들어가야 합니다. Source-wide `ocr_texts`는 label이나
-  value를 어떤 slice에도 귀속할 수 없습니다.
-- 모든 slice에서 bbox reading order의 cited observation이 punctuation-preserving 전체 label과 허용 separator,
-  하나의 value record에 정확히 결합되고 `(label 안의 숫자 + exact value)` numeric multiset도 같아야 합니다.
-  이 local 결과와 전체 source/generated numeric occurrence multiset이 모두 exact일 때만 Pie numeric
-  consistency는 `1.0`입니다. 정상적으로 결합된 record의 value가 swap되거나 source-wide 숫자가 더 있으면
-  `0.0`입니다. Label suffix omission이나 malformed/cited-extra record로 full-record 결합 자체가 성립하지 않으면
-  metric은 unavailable입니다. 두 경우 모두 threshold와 관계없이 review입니다. 동일 slice의 같은 normalized
-  text+bbox 중복은 한 관측으로 세고 공간적으로 다른 반복은 보존합니다.
-- Slice bbox가 겹치거나, broad/shared evidence, 같은 evidence ID 또는 같은 normalized text+bbox의 cross-slice
-  claim, 같은 bbox의 상충 text, invalid authority/geometry/image bounds, association work budget 소진이 있으면
-  일부 slice 점수를 내지 않고 Pie metric 전체를 unavailable/review로 둡니다. Typed slice slot이 없는 direct
-  Pie도 이 결합을 증명할 수 없습니다.
-- Packet은 위 전역 숫자 occurrence multiset을 사용하지 않고 field-local association으로 대체합니다.
-  Native Packet과 같은 candidate slot의 Flowchart fallback, semantic repair proposal은 모두 동일한
-  field plan과 평가 경로를 사용합니다. 각 field가 candidate publication authority 안의 `ocr_token` 또는
-  `vector_text` evidence를 명시적으로 참조하고, field/evidence bbox가 양의 면적이며 실제 source image
-  안에 있고 evidence bbox 전체가 해당 field bbox 안에 들어갈 때만 label과 `start`/`end`를 결합합니다.
-  Source 전체의 `ocr_texts`는 어떤 field에도 숫자나 label을 귀속할 권한이 없습니다.
-- 모든 field의 label과 range 숫자가 field-local evidence와 정확히 결합되면 Packet numeric consistency는
-  `1.0`입니다. Label은 결합됐지만 range 숫자가 다르거나 관계없는 숫자가 더 있으면 `0.0`으로 두고
-  threshold와 관계없이 review로 보냅니다. `start == end`인 single-bit field는 range endpoint 숫자 한 번을
-  요구합니다. 동일 field에서 OCR/vector가 같은 normalized text+bbox를 중복 보고하면 한 관측으로 세지만,
-  공간적으로 다른 반복 관측은 합치지 않습니다.
-- Field bbox가 겹치거나, evidence bbox가 여러 field에 걸치는 broad box이거나, 같은 evidence ID 또는 같은
-  위치의 모호한 관측을 여러 field가 주장하거나, candidate authority·bbox·image bounds·association work
-  budget을 확인할 수 없으면 일부 field만 평가하지 않고 Packet metric 전체를 unavailable로 두어 review를
-  요구합니다. Candidate authority 안의 같은 bbox에 서로 다른 normalized OCR/vector text가 있으면 field가
-  유리한 관측 하나만 인용했더라도 상충 관측을 숨길 수 없도록 unavailable로 처리합니다. Packet binding은
-  전역 multiset을 대체하고, Pie·XY·Quadrant·Radar binding은 전역 exactness에 추가됩니다. 다른 numeric type
-  계산은 바뀌지 않습니다.
-- visual entailment precision은 생성된 node를 source node ID, collision-free portable ID alias 또는
-  유일한 정규화 label로 정렬한 collision-free evidence coverage proxy입니다. Node 근거로
-  인정하는 kind는 `ocr_token`, `vector_text`, `contour`, `vlm_observation`, `user_edit`로
-  제한합니다. `source_crop`, `line_segment`, `arrowhead`는 registry에 존재해도 node credit을
-  만들지 않습니다. 둘 이상의 generated node가 같은 eligible evidence ID를 직접 참조하거나
-  source alignment에서 상속하면 그 ID는 모든 claimant에서 모호한 근거로 취소합니다.
-  한 node 내부의 동일 ID 반복은 한 claim으로 세고, 충돌하지 않는 eligible ID가 하나라도
-  남으면 그 node는 지지된 것으로 셉니다. Relation/group의 근거 참조는 node claim
-  충돌에 포함하지 않아 정상적인 connector·containment 근거 공유를 손상하지 않습니다.
-  Source scene 자체를 후보 precision으로 재사용하지 않습니다. model scorer는 후속입니다.
-- 구조 edge를 평가할 수 없고 render PNG가 있으면 raster edge IoU를 fallback으로 사용합니다.
+Wardley uses `(x, 1-y)` converted from native coordinates as its only explicit `normalized`
+position instead of a raw record bbox. Horizontal/vertical IR `x`/`y` are emitted to native syntax
+as `[y, x]`, and Scene values use the same token rounding. Because a `->` Wardley link has no marker
+in the actual SVG, it is evaluated as an undirected relation and produces no arrow/path score.
 
-path enumeration은 기본 10,000개 completed path와 100,000개 탐색 state/stack에서 중단합니다. Terminal로
-이어지지 않는 cyclic dead branch도 state budget을 소비하므로 simple-path 조합 폭발이 완료 path 수를 우회할
-수 없습니다. Source 또는 generated graph가 path/state/depth budget을 넘으면 부분 결과로 점수를 만들지 않고
-metric 전체를 unavailable로 둡니다.
-표시용 total score와 별도로 non-runtime semantic score를 계산합니다. syntax/render는 hard gate와 total
-score에는 참여하지만 0인 의미 점수를 게시 가능 등급으로 희석할 수 없습니다. `extended`/`maximal`의
-구조 후보는 위 eligible-kind·conservative-revocation 규칙을 적용한 collision-free 생성 node
-provenance가 80% 미만이거나 계산 불가능하면 review 대상으로 둡니다.
-Packet과 Pie도 이 구조 provenance gate에 포함되며, bit range 또는 slice value가 일치하는 것만으로
-unattributed field/slice를 자동 게시하지 않습니다.
+After native rejection, a selected Wardley Flowchart fallback retains the shared plan's
+source-ordered emitted IDs and explicit undirected topology but cannot represent coordinates,
+axes, or anchors. Its generated Scene therefore uses zero-bbox rectangles, `pixels`, and `LR`.
+`relative_layout_similarity` is unavailable because centers coincide. The native title, which is
+not visible on the fallback canvas, is omitted from generated OCR labels.
 
-`best_effort_validated`와 `strict_validated`에서 여러 parse/render 후보가 있으면 각 후보에 같은
-aggregate·semantic threshold와 provenance/numeric hold를 적용한 뒤, publish 가능한 class를 먼저
-선택합니다. 같은 class 안에서는 aggregate, OCR recall, generation method, candidate ID 순서를 유지합니다.
-따라서 metric availability가 적은 높은 total 후보가 실제 게시 가능한 evidence-rich 대안을 가리고 문서
-전체를 review 상태로 내리지 않습니다. 강제 review/sidecar 정책은 이 class 우선순위를 사용하지 않습니다.
-Typed/Scene 후보의 numeric hold는 fallback grammar와 무관하게 semantic type을 유지합니다. Direct 후보는
-typed semantic contract가 없으므로 prediction/requested type 대신 parse/render validation으로 확인한
-emitted/runtime grammar type을 기준으로 결정합니다.
+The native Cynefin Scene rebuilds domain, item, transition, and domain-group membership from the
+shared plan and adds the fixed domain/practice/response/disorder text always generated by the
+runtime as unprovenanced template elements. A `confusion` domain projects only the first three
+items plus `+N more`, matching native rendering. With no native placement, geometry is zero and
+layout similarity is unavailable. A native result without a provenance contract for the fixed
+template requires review regardless of aggregate score.
 
-Semantic repair 후보도 초기 후보와 같은 reference text 집합과 평가 함수를 사용합니다. OCR/vector,
-provenance, edge, arrow, layout, path, numeric gate를 새 typed IR에서 다시 계산하며 aggregate 엄격 개선과
-semantic score 비감소를 동시에 요구합니다. Held aggregate를 repair가 임의로 해제하지 않습니다. 방향
-반전과 무라벨 누락 edge proposal은 source relation confidence 0.6, 내장 Geometry engine이 생성한 exact
-endpoint/relation ownership, ID 충돌이 없는 bbox/score 0.6 이상의 line/arrow evidence, 동일 source block
-attribution을 모두 요구합니다. 이 threshold는 기본 detector의 line 0.6/arrow 0.65 범위를 포함하되 engine
-identity와 geometry relation 일치를 별도 gate로 둡니다. VLM이 새로 선언한 connector evidence와 약한 것을
-포함한 engine 간 방향 충돌, 상충·병렬·라벨·conditional relation과 decision/gateway/diamond source의
-outgoing edge는 자동 topology repair에서 제외됩니다.
-Label repair도 trusted Marker OCR/built-in Vector origin, source block, bbox containment, ID collision gate를
-통과해야 합니다. Proposal typed IR은 입력과 같은 resource budget을 다시 통과하고 code가 deterministic
-재직렬화 결과와 정확히 일치해야 평가 단계로 진입합니다.
+When terminal runtime type is Flowchart, the Cynefin fallback uses a separate projection. It creates
+same-ID conceptual elements and groups only for source-supplied domains and includes every explicit
+item and explicit directed transition without abbreviation. It adds neither the fixed template nor
+membership relations, and a domain label is not double-counted through both its element and group.
+Every bbox is zero and direction is the fallback's actual `LR`, so layout similarity is unavailable
+and a warning records the loss of quadrant/Cynefin spatial meaning. If record-local provenance for
+domains/items/transitions and the other semantic hard gates are sufficient, this fallback does not
+receive the native-only review hold.
 
-Typed/Scene semantic type 또는 direct 후보의 validated emitted/runtime type이
-Gantt/Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn이면 OCR/vector numeric evidence가 하나도 없거나
-numeric consistency가 게시 threshold보다 낮을 때 aggregate를 `None`으로 두어 자동 게시하지 않습니다.
-Pie는 candidate-authorized slice-local association, 전역 numeric completeness, explicit accessibility
-attribution 중 하나라도 unavailable/mismatch이면 설정된 게시 threshold로 우회하지 않고 aggregate를
-`None`으로 둡니다.
-XY는 typed plan이 지정한 axis·series·explicit point별로 candidate-authorized OCR/vector
-observation을 바인딩합니다. 각 source record의 finite in-image bbox 안에 있는 cited text가 axis
-label+category/bounds, series kind+ordered values, 또는 point x+y의 허용된 전체 표현과 일치해야 합니다.
-Evidence ID 또는 normalized text+bbox observation을 두 record가 공유하거나 category/value/x를 바꾸고 전역
-숫자 multiset만 맞추는 후보, invalid/missing bbox, budget 초과는 unavailable/mismatch로 review에 남습니다.
-Explicit metadata가 없으면 별도 bbox overlap scan을 실행하지 않고, 있는 경우에도 spatial
-evidence×record bbox 검사를 candidate당 100,000회로 제한해 초과 입력을 fail closed로 처리합니다.
-Explicit `title`/`acc_title`·`description`/`acc_description`은 data-owned observation·bbox와 분리된 exact
-OCR/vector evidence 또는 reconstruction 초기 exact `user_edit`를 요구하며, engine-emitted edit와 direct
-Mermaid-only XY는 typed record association을 스스로 만들 수 없습니다. Native가 same-slot Flowchart로 낮아가도
-게시 gate의 semantic type은 XY로 유지되어 동일한 규칙을 적용합니다.
-Quadrant도 typed plan의 axis/point record마다 complete low/high 또는 label/x/y를 candidate-authorized
-OCR/vector와 결합하고 global numeric multiset을 함께 검사합니다. Evidence ID, normalized text+bbox와 source
-record를 재사용하거나 axis/point·좌표를 바꾸는 후보는 숫자 multiset이 같아도 mismatch입니다. X axis는
-horizontal·아래쪽, y axis는 vertical·왼쪽인 bbox 관계도 만족해야 하므로 entire-record swap과 nonstandard
-axis geometry는 review입니다. Supplied
-quadrant label은 전체 source canvas의 해당 사분면 안에 있는 독립 exact observation 또는 reconstruction
-초기의 exact `user_edit` 중 유효한 source-quadrant bbox가 있는 근거를 요구하며 schema에 없는 slot evidence를
-axis/point에서 상속하지 않습니다.
-Explicit metadata도 data-owned observation과 분리해 검사하고, direct Mermaid-only Quadrant와 invalid/missing
-bbox, engine-emitted edit, 모든 spatial/matching phase가 공유하는 100,000회 budget 초과는 review-only입니다. Same-slot Flowchart에서도
-semantic type을 Quadrant로 유지해 이 gate를 우회하지 않습니다. Source quadrant는 detected plot bbox가 아닌
-전체 crop midpoint로 판정하므로 inset/off-center plot은 false-review될 수 있으며 향후 axis/vector plot bbox를
-도입하기 전에는 자동으로 위치를 보정하지 않습니다.
-Explicit title/description/접근성 metadata의 독립 관측은 현재 evidence schema에 immutable target role이 없어
-content existence만 증명합니다. 따라서 best-effort 정책은 role-attribution limitation warning을 남기고
-experimental candidate로만 게시하며, `strict_validated`는 aggregate를 unavailable로 두어 review를 요구합니다.
-Semantic repair가 새 explicit metadata를 제안하면 같은 제한을 다시 계산합니다. Strict 정책에서 제한된
-proposal은 점수 개선으로 채택하지 않되, 이미 검증된 이전 candidate의 code·IR·score·게시 가능성은 그대로
-보존합니다.
-Packet은 candidate-authorized field-local association이 unavailable이거나 `0.0`이면 전역 숫자 multiset이나
-설정된 게시 threshold로 우회하지 않고 aggregate를 `None`으로 둡니다.
-Treemap도 typed plan의 모든 node가 nested source geometry와 exact label/explicit-value observation에 결합되지
-않으면 aggregate를 `None`으로 둡니다. Parent-child containment, sibling interior non-overlap, internal-node cited-text
-exclusivity, injective evidence/observation ownership과 전역 numeric completeness 중 하나라도 확인할 수 없으면
-설정된 threshold로 우회하지 않습니다. Native runtime fallback과 semantic repair는 semantic type을 Treemap으로
-유지해 같은 gate를 다시 실행하며 direct Mermaid-only Treemap은 owner 결합을 스스로 만들 수 없습니다.
-Terminal-effective explicit metadata proof가 unavailable이면 node/value와 전역 숫자가 exact여도 같은 방식으로
-aggregate를 `None`으로 둡니다. Repair가 metadata를 추가·변경하면 새 resolved output 역할과 scoped evidence로
-다시 계산합니다.
+When Event Modeling, ZenUML, Wardley, or Cynefin originals use Mermaid 11.16 compatibility glyphs
+for grammar/entity-like text, OCR projection uses the text actually visible in SVG. It does not use
+the original and hide renderer loss. Grammar-fixed chrome such as Wardley axes or evolution stages
+is not treated as general source labels.
+
+The Packet Scene reuses reserved-safe emitted IDs, labels, bboxes, and evidence from the
+serializer's field plan and does not invent edges between fields. Bit ranges are validated by the
+same plan but remain a separate numeric projection/source gate rather than Scene elements. The
+pipeline passes validated terminal grammar into semantic projection. Native Packet OCR alone
+includes the normalized canvas title; a disconnected Flowchart fallback excludes the native-only
+title. Entity-like title text uses the serializer's visible fullwidth glyphs, while invisible
+source-security separators are removed so OCR tokens are not split.
+
+Pie Scene and semantic OCR share the bounded `PiePlan` with serialization. Native output represents
+each `pie_slice_N` as a `sector`, puts positive slices at normalized centroids on Mermaid's
+percentage-label radius, and leaves zero slices as legend-only zero bboxes. It has no relations or
+groups and uses `radial`. Element text is the real legend text including `showData`. Native OCR
+counts visible title, every legend, and positive-slice percentages, excluding accessibility
+metadata. Flowchart output uses `TB` zero-geometry `label: exact-value` rectangles with no
+relation/group or native-only title. Slice evidence stays record-local on both terminals. A
+malformed evidence list empties only that slice's provenance. Terminal compatibility glyphs and
+source-only separator removal are shared by serializer, OCR, and Scene.
+
+Pie participates in the Extended generated-node provenance gate. Each slice is a real Mermaid
+element, so both native and fallback slices remain in the injective-attribution denominator. If
+multiple slices claim the same eligible evidence, existing collision revocation applies.
+Percentages and titles are not separate generated nodes and yield no provenance credit. Even with
+correct slice-local numeric binding, output is not automatic when generated-slice attribution is
+below 80% or cannot be computed.
+
+Explicit Pie title/accessibility text is not a separate content node. Its dedicated gate requires
+an independent, candidate-authorized exact OCR/vector observation or exact `user_edit` evidence
+from initial reconstruction input. An engine-emitted `user_edit` cannot establish this trust.
+Slice-owned observations, or the same text+bbox under a different ID, are not independent.
+Deterministically derived default accessibility text and the experimental notice require no
+separate source attribution.
+
+Radar Scene and semantic OCR share `RadarPlan` with serialization. Native output places axes and
+data points in normalized `[0,1]` radial coordinates and creates a `series_curve` association from
+each point through the final point back to the first, without marker or label. A series bbox is the
+normalized curve envelope, not a source bbox or arbitrary origin. Direction is `radial`, groups are
+empty, and source bboxes are not copied to generated positions. Series text is visible only when
+`showLegend=true`.
+
+Radar's Flowchart terminal retains a visible title as an isolated zero-geometry node, creates one
+zero-geometry group per series, labels it only when `showLegend=true`, emits rectangle
+`dimension: exact-value` cells, and has no relations, matching the actual `flowchart TB`. Dimension
+and series evidence attaches to axes and series, a bounded union attaches to point/cell projections,
+and series evidence attaches to native curve relations. A malformed evidence list empties all
+provenance for that record only. Scene/OCR share terminal-visible compatibility glyphs and warnings.
+Native data points are derived series geometry rather than independent Mermaid nodes and are
+excluded from the generated-node provenance denominator; only directly attributable axes and
+series are evaluated injectively. A Flowchart cell projects two source records and may share
+dimension/series evidence that passed record-local association, but receives no provenance credit
+if no record evidence is known.
+
+Treemap Scene consumes the serializer/OCR DFS-preorder `TreemapPlan`. Native output uses a unique,
+bounded source ID or collision-safe `treemap_node_N[_suffix]` as section/leaf identity and models
+parent-child relationships as arrowless logical containment. Since actual SVG has no connector path
+and uses nested area layout, `reading_direction` is `unknown`. Source bboxes remain in typed
+IR/provenance, but both native and fallback generated Scenes use zero bboxes to avoid mistaking
+source positions for rendered layout.
+
+Treemap Flowchart output uses the same plan with DFS-preorder `N1..Nn`, rectangles, `TB`,
+parent-to-child end arrows, and explicit ` (value: x)` labels. Child-record evidence attaches to
+both the element and containment relation. Malformed or oversized `evidence_ids` empties the whole
+list for that record, never producing partial provenance. Visible compatibility glyphs for quote
+and Flowchart angle/backslash/hash, plus native-title angles, are shared with Scene/OCR and disclosed
+through candidate warnings. Scanner-only zero-width separators are not content tokens. Runs of
+Unicode whitespace normalize to one ASCII space in terminal and semantic projection. Visible
+substitution in resolved accessibility metadata also appears in candidate warnings.
+
+Venn Scene shares `VennPlan` with serialization and semantic OCR. It reuses portable emitted set IDs
+and collision-safe intersection IDs. Source bboxes remain only in typed IR/Review provenance;
+generated bboxes are zero on both terminals. Native output uses set circles, shapeless
+intersections, marker-less logical membership, and `unknown`. Native OCR counts visible title and
+area labels, not geometry input values. Flowchart output uses set circles, rounded intersections,
+exact value-suffix labels, `intersects` relation labels, end arrows, and `LR`. Set/intersection
+evidence attaches to elements, and intersection evidence also attaches to membership relations. A
+malformed evidence tuple empties provenance only for its record. Both terminals share compatibility
+text and warnings.
+
+Ishikawa and TreeView build containment from exact parent/emitted IDs in the serializer's shared DFS
+plan. If the planner rejects a duplicate/normalized collision, missing-ID ambiguity, alias conflict,
+cycle, object reuse, or resource overflow, the Scene adapter does not quietly drop colliding nodes
+and shrink the attribution denominator; the entire metric becomes unavailable.
+
+The generated Scene for an automatic C4 candidate does not reconstruct diagnostic native C4
+macros. It follows the actual publication path—Architecture and, when needed, a nested Flowchart
+fallback—by passing C4 elements, boundaries, and relations through the shared bounded Architecture
+service/group/edge plan. Collision-safe emitted IDs, boundary membership, visible labels,
+endpoints, and arrow semantics are therefore identical across both fallback grammars and OCR
+projection. Element bbox/evidence, relation evidence, and boundary bbox remain from their records,
+while relation polylines, technology, descriptions, relation labels, native boundary notation, and
+other raw metadata not shown by the fallback are not promoted to structure or OCR labels.
+`reading_direction` retains the IR value or `unknown` because the generated Scene cannot know in
+advance whether runtime will select Architecture or Flowchart.
+
+Malformed or over-reference-budget C4 `evidence_ids` do not block existing Mermaid publication;
+they are omitted from generated-Scene attribution for that record. Architecture, Deployment, and
+Component use the same record-local omission and shared Architecture projection, preventing scalar
+strings from splitting into character evidence IDs and preventing serializer/Scene endpoint or
+label identity divergence. Missing/non-string endpoints and falsey non-text labels are checked by
+exact type before projection, so stringification cannot create quality-authorizing nodes or edges.
+An accepted repair rebuilds the current label description from the raw accessibility snapshot,
+keeping semantic-score improvement and SVG metadata on the same revision.
+
+## Combination with existing metrics
+
+- Syntax and render are both publication hard gates and score inputs. CandidateValidator's SVG
+  inspection converts a Mermaid render success into render-invalid when any geometry attribute is
+  `NaN` or `Infinity`.
+- The pipeline seals final source, a non-empty post-security SVG, optional runtime-PNG SHA-256,
+  security profile, and emitted/runtime type in a validation receipt. Installing that receipt
+  requires a process-local certificate issued only after `CandidateValidator` completes exact
+  source/SVG/PNG inspection; setting candidate-valid flags cannot create it. A separate publication
+  receipt freezes a freshly recomputed publication policy, status, automatic `review_required`
+  routing, and selected-candidate receipt digest. User approval/rejection is recorded in Review
+  state/revision/history and does not alter the generation receipt. The Markdown renderer inserts a
+  fence only when both receipts and process-private seals match current state, not merely when a
+  boolean is true. JSON round trips preserve public digests for audit but not private trust, so a
+  deserialized result cannot publish automatically without revalidation.
+- A publication receipt's quality digest covers displayed aggregate score and grade, metric map,
+  and generation warnings. The sealed Markdown snapshot also freezes serializer stability; an
+  `experimental` candidate displays an `Experimental reconstruction` warning even at grade A. The
+  pipeline deduplicates selected-candidate warnings and bounds them to 256 items of at most 4,096
+  characters before deciding, preventing score or `scores.json` mutation from implying higher
+  confidence. Evaluation warnings that explain a publication hold or policy limit, and pinned
+  renderer-compatibility warnings, are retained before noisy engine diagnostics, which use only
+  the remaining budget. Engine noise therefore cannot evict a required experimental warning from
+  best-effort output. Probability values in the digest use exponent-free decimal strings and
+  normalize negative zero to `"0"`, so Python and JavaScript verifiers reproduce identical bytes.
+- Source/generated Scenes enter semantic scoring only when their current payload, including nested
+  records, passes the Pydantic resource contract again. Fusion overflow canonicalizes to the winner
+  record fallback. The pipeline's internal-fusion backstop also checks the evidence collection's
+  exact-list and 20,000-item contract; if it fails, only the fused candidate is isolated and the
+  original engine candidates remain.
+- OCR recall is occurrence recall over the NFKC/casefold source-OCR token multiset. Identical text
+  at distinct bboxes remains distinct; when context OCR overlaps OCR/vector evidence, the maximum
+  count per token is used. Same-text evidence without a bbox cannot prove spatially distinct
+  occurrences and is merged. Typed/Scene candidates compare generated-Scene node, relation, and
+  group labels, including Gantt task and section semantic labels. Mermaid IDs, schedule fields,
+  headers, `accTitle`, and `accDescr` cannot increase recall. A direct candidate without a Scene
+  adapter uses quoted labels and a conservative grammar-specific label fallback.
+- OCR/vector references and generated semantic labels each have evaluation budgets of 50,000
+  observations, 1,000,000 characters, and 100,000 tokens. Exceeding any limit does not produce a
+  truncated score; semantic evaluation becomes unavailable, blocking automatic publication. Token
+  occurrences remain in `Counter` values instead of being expanded into repeated lists.
+  Parse/render-invalid candidates skip expensive semantic work such as structure conversion and
+  OCR. Typed-Scene conversion failures are isolated as candidate warnings.
+- Structural Scenes do not turn class members or ER attributes into topology nodes. A separate lazy
+  typed semantic projection adds only serializer-visible Class fields/methods/parameters/
+  cardinalities, ER attribute type/name/key/comment, and Timeline-plan canvas title/period/every
+  event label to OCR comparison. Timeline raw ID/role/shape/direction/hidden text, generated source
+  sentinels, numeric source entities, and accessibility metadata receive no OCR credit. This
+  projection also consumes the generated-label budget, preventing large typed IR from bypassing
+  limits.
+- Core Scenes use serializer-visible defaults exactly. Block shares collision-safe emitted IDs and
+  `[unreadable]`. Ordinary State counts only the label/ID used by serialization; choice/fork/join
+  retain topology but do not count invisible source labels. Sequence projects only participant and
+  message canvas labels from the shared plan in source order, using `[unreadable]` for unlabeled
+  messages. Source-only separators, raw participant/message IDs, hidden `text`, raw
+  role/shape/direction, and accessibility `<title>/<desc>` receive no OCR credit. Participants share
+  `mmx_sequence_participant_N`; messages use ordered `generated-relation-N` slots across serializer
+  and Scene. Object-participant evidence attaches to its element and message evidence to its
+  relation. String participants are legacy-compatible inputs without record provenance and can be
+  routed to review by the normal Extended provenance gate. Any unknown/null endpoint fails the
+  entire Scene closed instead of dropping one message.
+- Mindmap counts each preorder terminal canvas label once and shares `root`/`node_N`, root/child
+  shape, parent containment, and child record-local evidence between serializer and Scene. Quote,
+  Markdown, and numeric-entity compatibility glyphs match actual SVG text. Semantic originals,
+  source-only separators, raw ID/role/shape/direction, and accessibility metadata receive no OCR
+  credit. Any alias conflict, malformed child, object reuse/cycle, or depth/node/source-budget
+  error prevents a partial branch.
+- Timeline maps each source record to one collision-free `timeline_event_N` Scene slot, using the
+  period as element text and title/period/all event labels in terminal OCR projection. Multiple
+  event labels share the source record's bbox/evidence authority but do not create structures for
+  raw event IDs or hidden aliases. Any alias collision, duplicate ID, or malformed nested label
+  prevents a partial Scene. An unlabeled Gantt task projects as section-local `Task N`, and hidden
+  task `text`/ID receives no OCR credit. State normalized IDs and transition endpoints share one
+  serializer/Scene plan; malformed or unknown endpoints fail the whole Scene. The `[*]` boundary is
+  not a structural relation, but a visible transition label remains in OCR projection.
+- Ordinary State labels separate whitespace-normalized semantic, source, and canvas text in the
+  plan. ASCII quotes in quoted nodes become `″`; only backslashes consumed at the beginning/end,
+  in runs, or before CommonMark escapes in node/transition text become `∖`. Safe middle forms such
+  as `C\path` and `A\ B` retain ASCII backslashes. A bounded linear scan works for 50,000-character
+  input, fixing only active code span/link/emphasis/strike and entity-like literals as visible
+  compatibility glyphs while retaining inactive punctuation. Bare email/`www` autolinks use
+  source-only separators and preserve original canvas text after zero-width removal. Accessibility
+  directives preserve raw quote/backslash/Markdown/named entities and display only Mermaid 11.16's
+  lossy numeric entities and `<` as `＆＃…` and `‹`. Node/transition OCR removes source-only
+  separators inserted around State grammar/scanner-active tokens. Raw labels never receive credit
+  for glyphs actually deleted or interpreted by the renderer. Whitespace-only and non-whitespace
+  control/format/surrogate labels fail before runtime and scoring. Accessibility title/description
+  is checked as SVG `<title>`/`<desc>` metadata rather than Scene/OCR content. Hidden
+  choice/fork/join labels do not reenter derived accessibility text and are replaced by IDs.
+- State `title`/`description`/`acc_title`/`acc_description` passes exact built-in-string,
+  raw/normalized-bound, Unicode, and UTF-8 gates before enrichment; exact `""` is omitted. The gate
+  is shared by public/direct/initial/repair paths, and the pipeline stores a validated raw snapshot,
+  not derived `acc_*`, for both initial and accepted-repair candidates. Compatibility warnings are
+  reconciled with the accepted repair's canonical plan. A source ID colliding with State
+  lexer/security-reserved terms or the strict remote-icon scanner's `iconify` substring is remapped
+  after first reserving the entire normalized-ID set to a collision-free `mmx_state_id_…` without
+  the dangerous token. Typed IR/evidence retain source identity; Scene relations and Mermaid
+  transitions share emitted endpoints. The real SVG transition-count gate therefore detects silent
+  renderer loss in which parse appears successful but a `state`-sourced edge disappears.
+- ER structural Scene and semantic OCR share the serializer's record plan. Structure contains only
+  emitted-ID entity elements and explicit relationships, never separate attribute nodes/edges.
+  Entity/relationship elements and endpoints, relationship Scene slots, identifying status,
+  direction, and canvas labels come from the plan and retain record evidence. Reserved ER IDs and
+  `iconify` substrings map to collision-safe `mmx_er_id_…` while typed-IR source identity and
+  provenance remain. Malformed records, unknown endpoints, missing cardinality/identifying flags,
+  or resource overflow make metrics unavailable rather than producing a nodes-only partial Scene.
+- ER OCR adds entity canvas labels and each attribute's actual canvas type/name/key/comment plus the
+  quoted relationship role in record order. Only source-provided `PK`/`FK`/`UK` keys count.
+  Internal IDs, cardinality tokens, connectors, and accessibility metadata cannot increase content
+  recall. Source-only separators are removed. Visible compatibility glyphs for quote, percent,
+  backslash, backtick, and active Markdown/entity text match Mermaid 11.16 SVG. Accessibility is
+  checked separately as SVG `<title>`/`<desc>`. Raw metadata receives exact-string/bounds/
+  Unicode/UTF-8 and exact-empty omission checks before enrichment. Accepted repair regenerates
+  derived accessibility and reconciles warnings from the current semantic plan. Pinned runtime
+  fixtures verify that a multiword role remains one edge label without increasing entity count and
+  that canvas/accessibility text and reserved emitted identities match the plan.
+- The Gantt record plan freezes title, section, and task semantic/source/canvas text. A separate
+  accessibility plan derives descriptions from semantic section/task labels and follows its own
+  accessibility grammar canvas rather than reusing task compatibility text. Explicit
+  `description`/`acc_description` remains authoritative; an accepted repair rederives a description
+  from current labels only when both fields are absent. OCR content contains visible title and
+  section/task labels remaining after empty sections are removed, including exact `∶`/`％`/`‹`
+  compatibility glyphs for task `:`/`%` and title `<`. Hidden task `text`, internal IDs,
+  schedule/status fields, and SVG accessibility metadata receive no canvas recall. Missing or
+  exactly empty tasks become section-local `Task N`; sections become `Tasks`. Zero-width separators
+  leave normalized canvas/Scene/OCR comparison but can remain in raw SVG DOM text/title/desc.
+  Section Scene identities are collision-free, duplicate terminal task IDs are rejected, empty
+  sections disappear from Scene/OCR, and an all-empty candidate is rejected before scoring.
+  Serialization first validates date/token shapes, ECMAScript timestamp range, resolved `x` ends
+  after prior-only `after` chains, and millisecond-exact bounded durations, so renderer-zero-width
+  tasks are never scored. Every Gantt SVG `class~=task` rectangle must then have finite positive
+  dimensions; mixed-scale rounding that leaves zero width is render-invalid. An `after` target must
+  precede the current task in source order, blocking forward/partial resolution and cycles.
+  Because no `SceneRelation` is created yet, Gantt dependency-edge/path scores and relation
+  provenance can remain unavailable.
+- When a requested type emits a fallback, projection follows the actual emitted serializer rather
+  than requested grammar. C4 Architecture or nested-Flowchart output counts only shared-plan
+  boundary groups and service labels, excluding technology, relation labels, and descriptions.
+  Architecture native and nested Flowchart evaluate the same frozen-plan service `label`/`name`
+  aliases, group canvas labels, and unlabeled topology. Quote/Markdown/numeric-entity compatibility
+  glyphs follow actual SVG; semantic originals and source-only separators receive no OCR credit.
+  An unlabeled Architecture group displays the same portable emitted ID in both serializers.
+  Service evidence attaches to elements and relation evidence to the corresponding
+  `generated-relation-N`, while raw accessibility metadata and hidden relation labels are excluded
+  from semantic OCR.
+- Deployment and Component omit relation labels preserved only in metadata. A Use-case Flowchart
+  relation counts serializer-visible `type` first and `label` as fallback. These three software
+  fallback Scenes share record planners with serializers, normalizing missing/colliding IDs,
+  `label`/`name` aliases, and endpoints into the emitted namespace. The Use-case planner allocates
+  Actor and UseCase identities together and suffixes secondary prefix collisions. Raw
+  `text`/`role`/`shape`/style/semantic metadata and relation IDs that serializers ignore are not
+  promoted. Node/relation resource overflow is rejected at the same serializer/projection boundary.
+- Requirement counts serializer-identical normalized collision-safe IDs, requirement
+  type/ID/text/risk/verification, element type/docref, and relation type, excluding accessibility
+  metadata and ignored alternate labels. Event Modeling counts lane labels and the fallback's real
+  time/frame-type/label combination and relation labels. Wardley counts native title, component,
+  and link labels. Native Cynefin counts fixed templates, actual visible items (three plus `+N more`
+  for `confusion`), and transition labels; Flowchart counts supplied domain labels once and every
+  explicit item/transition label. ZenUML counts only Sequence-fallback participant aliases and
+  message labels. Packet counts canvas title before fields only under native terminal. Native Pie
+  counts visible title, every legend, and positive percentages, including `showData` values in
+  legend text; Pie Flowchart counts exact `label: value` cells and excludes native-only title and
+  accessibility metadata. Native Quadrant counts visible title, four axis endpoints, supplied
+  quadrant labels, and point labels, excluding coordinates/accessibility; fallback counts title,
+  axes, supplied slots, and exact `label · x X, y Y` cells. Native Sankey counts node labels and the
+  renderer-visible `max(incoming, outgoing)` total but not individual flow weights; Flowchart counts
+  node labels and exact edge-weight labels. Neither Sankey path counts title/description as canvas
+  text. Native Radar counts visible title, axes, and `showLegend=true` legends but excludes values,
+  bounds, ticks, graticule, and accessibility metadata. Radar Flowchart counts title,
+  `showLegend=true` group labels, and `dimension: exact-value` cells.
+- Native Treemap counts visible `title`, section/leaf labels, and values computed through d3
+  hierarchy's reverse-order binary64 sum and d3 `format(",")`. Flowchart counts preorder exact
+  value-suffix labels. `accTitle`/`accDescr` is SVG metadata, not content. Native rendering can hide
+  small-cell text with `display:none`, a limitation to consider during rendered review. Native Venn
+  counts visible title and set/intersection labels, not area values or marker-less membership;
+  Flowchart counts exact value-suffix node labels and visible `intersects` on each membership.
+  Accessibility metadata and native-only title are excluded. Internal endpoint IDs, coordinates,
+  anchors, and accessibility text are not semantic OCR evidence. Deterministic helpers are shared
+  between record planning, serialization, and projection for every type.
+- If typed semantic projection raises on malformed data or an adapter defect, the candidate's OCR
+  is not replaced by a direct-code fallback. The exception is isolated as a candidate warning and
+  aggregate remains unavailable so other candidates and document conversion continue.
+- General numeric consistency is precision/recall F1 over source/generated numeric-occurrence
+  multisets. Record-local binding rules below override it for Pie, XY, Quadrant, Sankey, Radar,
+  Treemap, and Packet. Same normalized text+bbox within bounded evidence is one observation;
+  numeric Counters from OCR context and evidence channels merge by maximum occurrence per token,
+  preserving spatially distinct repetitions while avoiding duplicate channel reports. Invented
+  numbers or occurrence mismatches lower precision/recall. Generated projection excludes Mermaid
+  `%%` comments and, only in supported detected grammars, chart metadata `title ...`/`title: ...`,
+  `accTitle: ...`, one-line `accDescr: ...`, and block `accDescr { ... }`. Metadata-like Sankey CSV
+  labels and weights remain data. Quadrant `quadrant-1` through `quadrant-4` slot indexes are grammar
+  tokens, but numbers inside directive labels and point coordinates remain. Statements following
+  block metadata on the same line are reevaluated. Exhausting the bounded suffix budget fails
+  closed to `0.0`, not a partial score.
+- Sankey structural metrics follow validated terminal grammar. Native uses source node identity,
+  marker-less `data_flow` topology, fixed `LR`, and unlabeled relations; derived totals are not
+  mixed into Scene node text. Flowchart fallback uses shared-planner collision-safe emitted IDs,
+  exact weight relation labels, end arrows, and normalized requested direction. Only node/flow
+  record evidence contributes to attribution. Unemitted role/shape/style/arrow/semantic hints and
+  title/description cannot increase structure or OCR. Malformed/oversized evidence lists are not
+  coerced character by character; only that record's provenance is emptied. Relation count/IDs
+  share Scene resource validation with the serializer. Above the pinned runtime's 500-edge limit,
+  Flowchart projection is unavailable rather than partial.
+- Sankey numeric consistency binds each plan flow's exact `value_text` to candidate-authorized
+  flow-local OCR/vector observations and also requires exact global source/generated numeric
+  occurrences. Flow/evidence bboxes must be positive-area inside the source image; flow bboxes may
+  not overlap with positive area; cited evidence must be fully contained by its flow. Evidence-ID
+  or normalized-text+bbox reuse across flows, conflicting same-bbox observations, weight swaps,
+  invalid/missing geometry or authority, and reference/text/token/spatial-budget overflow make the
+  whole metric unavailable or mismatched and require review. Native, same-slot Flowchart, and
+  semantic repair recompute the same gate with new typed IR and scoped evidence. Direct/untyped
+  Sankey has no owner binding and is review-only.
+- Sankey accessibility attribution follows the terminal. Native emits no title/description and is
+  exempt. Same-slot Flowchart emits resolved accessibility metadata, so each non-derived title and
+  description role needs candidate-authorized, non-data-record, spatially exact OCR/vector text or
+  an approved exact initial-input `user_edit`. When `acc_title`/`acc_description` shadows a legacy
+  field, hidden legacy text is exempt. Metadata is not a content OCR label. Deterministic defaults
+  and experimental notices are exempt. Reuse across node/flow record evidence IDs, normalized
+  text+bbox, or metadata roles; same-bbox ambiguity; metadata overlap with node/flow bboxes;
+  missing/invalid required data-record geometry; budget exhaustion; and engine-emitted
+  self-authorizing `user_edit` make all metadata association unavailable. Numeric tokens from
+  selected OCR/vector metadata proof are removed from the flow-weight reference multiset; other
+  source numbers remain extra occurrences. Repair proposals recompute the same terminal gate.
+- Pie structural metrics follow the `PiePlan` terminal. Native allows at most 12 slices and requires
+  zero-or-normal binary64 round trips, a finite positive left-to-right total, at least 1% visibility
+  for every positive slice, finite normalized centroids, and exact JavaScript `showData` strings.
+  Positive slices are normalized `sector` elements; zero slices are legend-only zero bboxes, with
+  no relation/group. Valid input outside these conditions and native runtime rejection are
+  independently revalidated in the same candidate slot as at most 256 zero-geometry `TB`
+  exact-value cells. Fallback creates no relations. Both terminals share source preflight of 50,000
+  UTF-16 code units and 5,000 lines.
+- Quadrant structural metrics follow `QuadrantPlan`. Native allows up to 256 zero-or-normal binary64
+  points and requires finite, distinct point/text visibility on the pinned 500×500 renderer. It
+  evaluates `(x, 1-y)` circles, four axis endpoints, and four quadrant groups, inventing no axis
+  lines, connectors, or membership. Native-lossy input and runtime rejection are revalidated in the
+  same slot as zero-geometry `TB` title/axis/slot/exact-point cells with no edges/groups. Pairwise
+  collision and association each have 100,000 operations per candidate; source is limited to
+  50,000 UTF-16 code units and 5,000 lines. Overflow never yields a partial score.
+- Radar structural metrics follow `RadarPlan`. Native allows at most 12 series and requires
+  zero-or-normal binary64 value/bound round trips, a positive finite effective span, and finite
+  renderer radii, evaluating normalized radial points and closed marker-less curves. Flowchart uses
+  at most 256 zero-geometry `TB` group/cells and no relations, so it cannot fabricate radial layout
+  or edges. Native rejection gets one fresh same-slot fallback validation; fallback overflow makes
+  the Scene unavailable. Native provenance evaluates axes/series rather than derived points.
+  Flowchart cells share dimension/series evidence through Radar-local owner binding; a cell with no
+  known record evidence receives no credit. Both terminals share reserved-safe IDs and the 50,000
+  UTF-16-unit/5,000-line preflight.
+- Radar numeric consistency binds exact dimension-label records and each series' `label + ordered
+  values` record to candidate-authorized OCR/vector evidence, then requires global numeric
+  occurrence exactness. Every owner bbox must have positive area within the source image and not
+  overlap another; cited evidence must be fully inside its owner. Evidence IDs and normalized
+  text+bbox cannot be reused across owners, and contradictory uncited text at the same bbox cannot
+  be cherry-picked away. Missing typed plans, invalid geometry/authority, empty owner observations,
+  or reference/text/token/100,000-spatial-comparison overflow make the entire metric unavailable;
+  a different combined label/value order produces `0.0`. Native, same-slot Flowchart, and semantic
+  repair all recompute this gate from new typed IR and the same scoped evidence.
+- A Radar visible title and non-derived explicit accessibility title/description require separate
+  candidate-authorized spatially exact OCR/vector text, disjoint from record-owned observations,
+  or an approved exact `user_edit` from initial reconstruction input. Reusing evidence/normalized
+  text+bbox across metadata owners, engine-emitted self-approval, or bounded
+  metadata-to-record/matching overflow requires review on both terminals. Deterministically derived
+  accessibility defaults and experimental notices are exempt.
+- Treemap structural metrics follow the shared preorder plan's fixed terminal. Native uses
+  section/leaf identity, arrowless logical containment, and `unknown`; Flowchart uses `N1..Nn`,
+  `TB`, rectangles, and end arrows. An incompatible explicit value or binary64/renderer display
+  selects exact-value Flowchart, and native runtime rejection gets one same-slot fallback
+  validation. Flowchart projection above 500 relations is unavailable, but a hierarchy satisfying
+  native resource contracts is not prohibited solely by that fallback limit.
+- Treemap numeric publication requires a finite, in-image source bbox and directly cited
+  candidate-authorized OCR/vector text for every planned node. A child must be fully but not equally
+  contained in its parent. Direct siblings may touch edges but their interiors may not overlap.
+  Internal-node text evidence must lie outside direct child areas. Each owner proves its exact
+  label; an owner with explicit value proves the fixed-decimal value after its label in reading
+  order. Evidence IDs and normalized text+bbox are injective across owners. Same-bbox conflicts,
+  equal/crossing hierarchies, invalid geometry, and bounded-work overflow make association
+  unavailable. Aggregate reference/text/character/token/spatial budgets are
+  20,000/50,000/1,000,000/100,000/100,000. A local-record mismatch empties aggregate association,
+  though `numeric_consistency` can retain its global-multiset diagnostic. Automatic publication
+  requires both local association and global occurrence exactness. Same-slot fallback and repair
+  recompute the binding; Direct/untyped Treemap remains review-only. Source geometry authorizes
+  attribution but does not resolve generated Scene zero bboxes or the native small-cell
+  `display:none` risk. A native-computed internal total is not source-explicit; if OCR/vector
+  separately observes it, the current global occurrence gate conservatively requires review.
+- The Treemap metadata gate evaluates only roles emitted by the terminal: native visible title and
+  non-derived resolved accessibility title/description, or Flowchart non-derived resolved
+  accessibility title/description. Each requires candidate-authorized exact OCR/vector observation
+  outside data nodes or an approved initial `user_edit`. An identical native visible/accessibility
+  title is merged into one title proof, while title and description remain separate owners even
+  when text matches. Shadowed legacy metadata, deterministic defaults, and experimental notices are
+  exempt, but a notice-only explicit description override erases structural description and fails
+  closed. Node-owned/reused/ambiguous/overlapping evidence, engine-emitted edits, and budget
+  exhaustion shared with node association make aggregate unavailable. Numeric occurrences from
+  selected OCR/vector metadata proof are removed from global Treemap data reference before exactness
+  is combined with local node binding.
+- The Treemap raw-metadata gate runs before attribution. Pipeline typed candidates and public
+  typed/runtime serializers validate before enrichment; direct typed `serialize_treemap()` validates
+  before planning. Except for absent/`None` and omission-compatible exact empty values, each of four
+  explicit fields must be an exact built-in string, obey raw/normalized length limits, normalize
+  non-empty, encode as UTF-8, and contain no raw `Cc`/`Cf`/`Zl`/`Zp`. Newline/tab normalization,
+  zero-width formats, string subclasses, non-text containers/numbers, enormous whitespace, and
+  surrogates fail serialization before runtime. Repair serializes, evaluates, and stores one
+  canonical IR with exact-empty removed. Raw Direct Mermaid has no typed metadata and remains
+  security/parse/render validated but review-only when no typed plan exists.
+- Venn structural metrics follow the shared plan's terminal. Native requires positive normal
+  binary64-safe areas, a `200:1` visibility gate, no exact containment, and complete explicit pairs
+  for each higher-order union; it invents no missing areas or pairs. Native Scene uses marker-less
+  logical membership and `unknown`; fallback uses labeled end-arrow membership and `LR`. Runtime
+  native rejection gets one same-slot exact-value Flowchart validation. The 500-edge hard cap
+  applies only to Flowchart projection; near-limit performance still relies on runtime timeout.
+- Venn numeric publication does not rely only on a document-wide occurrence multiset. Every planned
+  set/intersection finite positive in-image source bbox must exactly match a candidate-authorized
+  cited contour, and a separate cited OCR/vector observation must bind actual label and explicit
+  value per record. Label/value swaps, evidence-ID or normalized-text+bbox cross-owner reuse,
+  same-bbox conflicts, missing authority/geometry, and bounded-association overflow make aggregate
+  unavailable. An intersection without a source label/value does not invent one; with neither, it
+  lacks textual owner proof and requires review. Set/intersection bboxes may overlap as Venn
+  semantics require, but an intersection must be inclusively contained in every declared set and
+  not fully contained in an undeclared set. A higher-order intersection must lie inside every
+  explicit strict-subset intersection; equal containment is allowed. All set scans,
+  intersection-pair scans, contour comparisons, and text containment share one bounded spatial
+  counter. Membership geometry, owner-local cited-observation containment, local content binding,
+  and global numeric exactness are reevaluated together for native, same-slot Flowchart, and repair;
+  runtime-fallback repair retains canonical serialization for the terminal. Direct/untyped Venn is
+  review-only.
+- The Venn metadata gate evaluates only terminal-emitted roles. Native requires only an explicit
+  visible title. Intrinsic/runtime Flowchart requires non-derived resolved accessibility
+  title/description. Native-unsupported accessibility/description fields, fallback legacy fields
+  shadowed by effective `acc_*`, deterministic defaults, and pipeline-added notice suffixes are
+  exempt; a notice-only explicit description fails closed. Each role requires an independent
+  candidate-authorized exact OCR/vector observation outside every data area or an approved exact
+  initial `user_edit`. Data/metadata ID or normalized-observation reuse, same-bbox ambiguity, area
+  overlap, engine edits, and bounded work shared with data gates make aggregate unavailable. Only
+  proven OCR/vector metadata numeric occurrences are removed from global data reference;
+  `user_edit` occurrences are not. For identical exact proof, source observation wins over edit so
+  results do not depend on ID order. Under `strict`, explicit notice text is not a pipeline suffix
+  and must be proven. Equal fallback title/description text still needs separate proof.
+- The Venn raw-metadata gate precedes attribution. Pipeline and public typed/runtime fallback
+  serializers share validation of four explicit fields before enrichment; the direct chart-set
+  serializer validates when planning begins. Except for absent/`None` and omission-compatible exact
+  `""`, values must be exact built-in strings, obey raw/normalized bounds, normalize non-empty,
+  encode as UTF-8, and contain no raw `Cc`/`Cf`/`Zl`/`Zp`. Newline/tab normalization, zero-width
+  formats, string subclasses, non-text containers/numbers, enormous whitespace, and surrogates fail
+  before runtime; repair cannot bypass the same public serializer. Repair shares exact-empty-removed
+  canonical IR across serialization, evaluation, and storage. Here the direct chart-set serializer
+  is the typed `serialize_venn()` API; Raw Direct Mermaid without typed metadata retains its
+  security/parse/render gates and review-only hold when no typed plan exists.
+- Pie combines slice-local association with global occurrence completeness. Native Pie, same-slot
+  exact-value Flowchart, and semantic repair require every typed slice to directly reference
+  candidate-authorized `ocr_token` or `vector_text`. Slice/evidence bboxes must have positive area
+  inside the source image, slice bboxes must not overlap, and each evidence bbox must be fully inside
+  its slice. Source-wide `ocr_texts` cannot assign a label or value to a slice.
+- For every slice, cited observations in bbox reading order must bind a punctuation-preserving full
+  label plus allowed separators to exactly one value record, and the numeric multiset of numbers in
+  the label plus exact value must match. Pie numeric consistency is `1.0` only when both this local
+  result and the full source/generated numeric occurrence multisets are exact. Swapped values in
+  otherwise associated records or extra source-wide numbers produce `0.0`. A missing label suffix
+  or malformed/cited-extra record that prevents full-record binding makes the metric unavailable.
+  Both cases require review regardless of threshold. Duplicate same-slice observations with equal
+  normalized text+bbox count once; spatially distinct repetitions remain.
+- Overlapping slice bboxes, broad/shared evidence, cross-slice reuse of an evidence ID or normalized
+  text+bbox, conflicting text at one bbox, invalid authority/geometry/image bounds, or exhausted
+  association budget makes the entire Pie metric unavailable/review-only, never a partial
+  per-slice score. Direct Pie without typed slice slots cannot prove this binding.
+- Packet replaces the global numeric occurrence multiset with field-local association. Native
+  Packet, same-slot Flowchart fallback, and semantic repair use the same field plan and evaluation.
+  A field binds label and `start`/`end` only when it explicitly cites candidate-authorized
+  `ocr_token`/`vector_text`, field/evidence bboxes have positive area inside the source image, and
+  the full evidence bbox lies within the field. Source-wide `ocr_texts` authorizes no field label or
+  number.
+- When all field labels and ranges bind exactly to field-local evidence, Packet numeric consistency
+  is `1.0`. A bound label with wrong range or unrelated extra numbers produces `0.0` and review
+  regardless of threshold. A single-bit `start == end` field requires one range-endpoint number.
+  Duplicate same-field OCR/vector observations with equal normalized text+bbox count once;
+  spatially distinct repetitions do not merge.
+- Overlapping field bboxes, a broad evidence bbox spanning fields, shared evidence IDs or co-located
+  ambiguous observations claimed by multiple fields, or unverifiable authority, bbox, image bounds,
+  or association budget makes the entire Packet metric unavailable, not a partial field score.
+  Conflicting normalized OCR/vector text at the same candidate-authorized bbox also makes it
+  unavailable even if the field cites only the favorable observation. Packet binding replaces the
+  global multiset; Pie, XY, Quadrant, and Radar binding is additional to global exactness. Other
+  numeric calculations are unchanged.
+- Visual-entailment precision is a collision-free evidence-coverage proxy aligning generated nodes
+  by source node ID, collision-free portable ID alias, or unique normalized label. Eligible node
+  evidence is limited to `ocr_token`, `vector_text`, `contour`, `vlm_observation`, and `user_edit`.
+  `source_crop`, `line_segment`, and `arrowhead` yield no node credit even when registered. If two
+  generated nodes directly reference or inherit the same eligible evidence ID through source
+  alignment, the ID is revoked from every claimant. Duplicate references within one node are one
+  claim. A node is supported if any collision-free eligible ID remains. Relation/group references
+  do not participate in node-claim collisions, preserving legitimate connector/containment sharing.
+  The source Scene itself is never reused as candidate precision. A model scorer is future work.
+- If structural edges cannot be evaluated and a rendered PNG exists, raster edge IoU is used as a
+  fallback.
+
+Path enumeration stops by default at 10,000 completed paths or 100,000 explored states/stack
+entries. A cyclic dead branch that never reaches a terminal still consumes state budget, preventing
+simple-path combinatorial growth from bypassing the completed-path cap. If source or generated graph
+exceeds path/state/depth budgets, no partial score is produced; the entire metric is unavailable.
+
+A non-runtime semantic score is calculated separately from the displayed total. Syntax/render
+participates in the hard gate and total score but cannot dilute a zero semantic score into a
+publishable grade. Under `extended`/`maximal`, structural candidates go to review when
+collision-free generated-node provenance under the eligible-kind and conservative-revocation rules
+is below 80% or unavailable. Packet and Pie are included, so matching bit ranges or slice values do
+not automatically publish unattributed fields/slices.
+
+When multiple parse/render-valid candidates exist under `best_effort_validated` or
+`strict_validated`, the same aggregate/semantic thresholds and provenance/numeric holds are applied
+to each candidate, after which a publishable class is selected first. Within a class, ordering is
+aggregate, OCR recall, generation method, then candidate ID. A high-total candidate with fewer
+available metrics therefore cannot hide an evidence-rich publishable alternative and force the
+whole document to review. Forced-review and sidecar policies do not use this class priority. A
+typed/Scene numeric hold retains the semantic type regardless of fallback grammar. A Direct
+candidate lacks a typed semantic contract and is judged by the emitted/runtime grammar type proven
+by parse/render validation rather than predicted/requested type.
+
+Semantic-repair candidates use the same reference-text sets and evaluation functions as initial
+candidates. OCR/vector, provenance, edge, arrow, layout, path, and numeric gates are recomputed from
+new typed IR, and acceptance requires both strict aggregate improvement and a non-decreasing
+semantic score. Repair cannot arbitrarily release a held aggregate. Reversal and unlabeled
+missing-edge proposals require source-relation confidence 0.6, exact endpoint/relation ownership
+from the built-in Geometry engine, collision-free line/arrow evidence with bbox and score of at
+least 0.6, and same-source-block attribution. This includes the default detector's line 0.6 and
+arrow 0.65 range while retaining engine identity and geometry-relation matching as separate gates.
+VLM-declared connector evidence, inter-engine direction conflicts including weak evidence,
+conflicting/parallel/labeled/conditional relations, and outgoing edges from
+decision/gateway/diamond source nodes are excluded from automatic topology repair.
+
+Label repair likewise requires trusted Marker OCR or built-in Vector origin, source block, bbox
+containment, and no ID collision. Proposal typed IR must pass the input's resource budgets again and
+its code must exactly equal deterministic reserialization before evaluation.
+
+If a Typed/Scene semantic type—or a Direct candidate's validated emitted/runtime type—is
+Gantt/Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn, aggregate is set to `None` and automatic publication
+is blocked when no OCR/vector numeric evidence exists or numeric consistency is below publication
+threshold. Pie does not fall through to the configured threshold when any of candidate-authorized
+slice-local association, global numeric completeness, or explicit accessibility attribution is
+unavailable/mismatched.
+
+XY binds candidate-authorized OCR/vector observations to every axis, series, and explicit point in
+the typed plan. Cited text within each finite in-image source-record bbox must match an allowed full
+form of axis label plus category/bounds, series kind plus ordered values, or point x plus y.
+Candidates remain unavailable/mismatched and in review if two records share an evidence ID or
+normalized text+bbox, if categories/values/x values are swapped while the global numeric multiset
+still matches, if a bbox is invalid/missing, or if budgets overflow. Without explicit metadata no
+extra bbox-overlap scan runs; when it does run, spatial evidence-to-record checks are limited to
+100,000 per candidate and fail closed on overflow. Explicit `title`/`acc_title` and
+`description`/`acc_description` require exact OCR/vector evidence or an initial exact `user_edit`
+separate from data-owned observations/bboxes. Engine-emitted edits and Direct-Mermaid-only XY cannot
+self-create typed record association. A same-slot downgrade to Flowchart retains semantic type XY
+and the same publication gate.
+
+Quadrant similarly binds complete low/high axis records or label/x/y point records to
+candidate-authorized OCR/vector evidence and also checks the global numeric multiset. Reused
+evidence IDs, normalized text+bbox, or source records, and swapped axes/points/coordinates, are
+mismatches even when numeric multisets agree. Bbox geometry must place the x axis horizontally at
+the bottom and the y axis vertically at the left, so whole-record swaps and nonstandard axes require
+review. A supplied quadrant label requires an independent exact observation in the corresponding
+quadrant of the full source canvas, or an exact initial `user_edit` with a valid source-quadrant
+bbox. It does not inherit nonexistent slot evidence from axes/points.
+
+Explicit Quadrant metadata is also checked separately from data-owned observations. Direct
+Mermaid-only Quadrant, invalid/missing bboxes, engine-emitted edits, or overflow of the shared
+100,000-operation budget across all spatial/matching phases remains review-only. Same-slot
+Flowchart retains semantic type Quadrant. Source quadrants use the full-crop midpoint rather than a
+detected plot bbox, so inset or off-center plots can be false-reviewed; position is not adjusted
+automatically until an axis/vector plot bbox exists.
+
+Independent observations for explicit title/description/accessibility metadata currently prove
+only content existence because the evidence schema has no immutable target role. Best-effort policy
+therefore records a role-attribution limitation warning and publishes only as experimental, while
+`strict_validated` makes aggregate unavailable and requires review. A semantic-repair proposal that
+adds explicit metadata recomputes the same limitation. Under strict policy, a limited proposal is
+not adopted merely for score improvement, while the previously validated candidate's code, IR,
+score, and publishability remain intact.
+
+Packet sets aggregate to `None` instead of falling through to a global numeric multiset or configured
+threshold when candidate-authorized field-local association is unavailable or `0.0`.
+
+Treemap likewise sets aggregate to `None` unless every typed-plan node binds nested source geometry
+and exact label/explicit-value observations. It does not fall through to a configured threshold if
+any parent-child containment, sibling-interior non-overlap, internal-node cited-text exclusivity,
+injective evidence/observation ownership, or global numeric completeness cannot be verified. Native
+runtime fallback and semantic repair retain semantic type Treemap and rerun the same gate. Direct
+Mermaid-only Treemap cannot self-create owner binding. If terminal-effective explicit metadata
+proof is unavailable, aggregate is `None` even when node/value and global numbers are exact. A
+repair that adds or changes metadata recomputes the gate with newly resolved output roles and
+scoped evidence.

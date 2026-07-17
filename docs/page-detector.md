@@ -1,26 +1,32 @@
-# Page-level missed diagram detector
+# Page-level missed-diagram detector
 
-Marker가 Figure/Picture/ComplexRegion으로 만들지 않은 구조 영역을 찾기 위해 full page image에 bounded
-detector를 적용합니다. 최대 처리 dimension으로 downscale한 뒤 Canny(OpenCV가 있을 때) 또는 Pillow
-edge map에서 connected component를 만들고, 한 축에서 정렬되며 작은 gap을 가진 component만 제한적으로
-병합합니다.
+The bounded page detector searches a full-page image for structural regions that Marker did not
+classify as `Figure`, `Picture`, or `ComplexRegion`. It first downscales the page to the configured
+maximum dimension, builds connected components from Canny edges when OpenCV is available (or a
+Pillow edge map otherwise), and conservatively merges only components that align on one axis and
+have a small gap.
 
-proposal은 다음 보수적 gate를 통과해야 합니다.
+A proposal must pass all of these gates:
 
-- 가로·세로 양쪽에 긴 structural edge가 존재
-- page 대비 최소 면적과 bounded aspect ratio 충족
-- edge/ink density가 text-line 또는 busy photo 범위가 아님
-- 기존 Marker diagram block bbox와 1% 넘게 겹치지 않음
-- deterministic NMS와 최대 region budget 통과
+- Long structural edges exist on both the horizontal and vertical axes.
+- The region meets the minimum page-relative area and bounded aspect-ratio requirements.
+- Edge and ink density do not look like ordinary text lines or a busy photograph.
+- The region overlaps no existing Marker diagram-block bounding box by more than 1%.
+- The region survives deterministic non-maximum suppression and the maximum-region budget.
 
-`DiagramRegion`은 원본 page-image 좌표의 bbox, confidence, component count, edge density, signal을
-보존합니다. Marker adapter는 PDF page bbox로 affine 변환한 `page_proposal` SourceFragment를 만들고,
-동일 page에 기존 diagram block이 있으면 가장 가까운 block을 Markdown insertion anchor로만 사용합니다.
-proposal crop의 `source_block_ids`는 비워 두어 anchor block을 시각 evidence로 잘못 귀속하지 않습니다.
-page에 anchor가 전혀 없으면 proposal은 PageGroup 내부 metadata queue로 전달되어 reconstruction과
-sidecar 원본 저장까지 수행됩니다. 삽입할 Marker image block이 없으므로 자동 Markdown에는 넣지 않습니다.
+`DiagramRegion` preserves the bounding box in original page-image coordinates, confidence,
+component count, edge density, and contributing signals. The Marker adapter applies an affine
+transform into the PDF page coordinate system and creates a `page_proposal` `SourceFragment`. If
+the page already contains a diagram block, the nearest block is used only as the Markdown
+insertion anchor. The proposal crop keeps an empty `source_block_ids` list so the anchor is not
+incorrectly attributed as visual evidence.
 
-OpenCV import나 실행이 실패하면 Pillow backend로 전환하고 detector result에 warning을 기록합니다.
-현재 Marker discovery metadata는 이 backend warning을 전달하지 않습니다. detector는 downscale 후
-grayscale을 만들고 proposal별 전체 page 복사 대신 필요한 crop만 보관합니다. page image와 Marker의
-전역 Block registry는 변경하지 않으며, detector 실패는 해당 page error로 격리됩니다.
+When no anchor exists on the page, the proposal enters an internal `PageGroup` metadata queue.
+It still goes through reconstruction and original-source sidecar storage, but it is not inserted
+into automatic Markdown because there is no Marker image block to carry the original image.
+
+If importing or running OpenCV fails, the detector switches to the Pillow backend and records a
+warning in the detector result. Current Marker discovery metadata does not propagate that backend
+warning. The detector creates grayscale data after downscaling and retains only the required crop
+for each proposal rather than copying the full page. It never mutates the page image or Marker's
+global block registry, and a detector failure is isolated to the affected page.

@@ -9,13 +9,19 @@ description = "Evidence-aware Mermaid reconstruction for Marker PDF"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "GPL-3.0-only"
+license-files = ["LICENSE"]
 keywords = ["marker-pdf", "mermaid", "diagram", "pdf", "ocr"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
   "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3.11",
   "Topic :: Documentation",
+  "Topic :: Multimedia :: Graphics",
+  "Topic :: Scientific/Engineering :: Image Processing",
+  "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
   "Pillow>=10.0",
@@ -33,6 +39,13 @@ dev = [
 
 [project.scripts]
 marker-mermaid = "marker_mermaid.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/seo-rii/marker-mermaid"
+Repository = "https://github.com/seo-rii/marker-mermaid.git"
+Issues = "https://github.com/seo-rii/marker-mermaid/issues"
+Documentation = "https://github.com/seo-rii/marker-mermaid/tree/main/docs"
+Changelog = "https://github.com/seo-rii/marker-mermaid/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/marker_mermaid"]

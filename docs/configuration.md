@@ -1,227 +1,234 @@
-# 설정 레퍼런스
+# Configuration Reference
 
-Marker JSON에서는 `MermaidDiagramProcessor_` prefix를 사용합니다. Python `MermaidConfig`에는
-prefix 없는 이름을 직접 전달할 수 있습니다. prefix 설정이 concise 설정을 덮어씁니다.
+Marker JSON uses the `MermaidDiagramProcessor_` prefix. Python `MermaidConfig` accepts the
+unprefixed names directly. Prefixed settings override concise settings.
 
-## 모드 기본값
+## Mode Defaults
 
-| 모드 | type 후보 | Mermaid 후보 | repair | direct Mermaid | style recovery |
+| Mode | Type candidates | Mermaid candidates | Repair | Direct Mermaid | Style recovery |
 | --- | ---: | ---: | ---: | --- | --- |
-| `strict` | 1 | 1 | 1 | 꺼짐 | 꺼짐 |
-| `extended` | 2 | 3 | 3 | 켜짐 | 켜짐 |
-| `maximal` | 3 | 6 | 10 | 켜짐 | 켜짐 |
+| `strict` | 1 | 1 | 1 | Off | Off |
+| `extended` | 2 | 3 | 3 | On | On |
+| `maximal` | 3 | 6 | 10 | On | On |
 
-명시한 `candidate_count`, `type_candidate_count`, `max_repair_iterations`는 모드 기본값보다
-우선합니다. 각각 12, 3, 10을 넘길 수 없습니다.
-repair 횟수는 structured `RepairEngine` proposal 상한입니다. Marker 기본 processor와 fixture CLI는
-evidence-backed Flowchart repair engine을 구성합니다. Label은 trusted Marker OCR 또는 exact built-in Vector
-text가 source block/bbox와 일치할 때만 교정합니다. Marker processor에서는 built-in Geometry relation이
-단독으로 지지하고 engine 간 방향 충돌이 없는 reversed edge와 무라벨 missing edge도 교정할 수 있습니다.
-기존 conditional edge의 label은 trusted OCR/vector text와 unique built-in Geometry connector가 각각 text와
-방향·위치를 독립적으로 지지하고, source/typed edge가 같은 exact 방향으로 하나씩만 존재할 때 label-only로
-교정합니다. Typed label이 비어 있거나 source label과 유사한 오타일 때만 허용하며 의미가 다른 기존 label은
-덮어쓰지 않습니다.
-Fixture CLI는 JSON이 trust를 스스로 선언하지 못하도록 connector topology repair를 활성화하지 않으며 label
-fixture도 trusted Marker/Vector provenance가 없으면 자동 교정하지 않습니다. 누락 node, conditional topology,
-endpoint·방향 변경, 새 branch와 Yes/No 의미 추론, parallel relation, layout repair는 아직 기본 연결하지
-않습니다.
+Explicit `candidate_count`, `type_candidate_count`, and `max_repair_iterations` values take
+precedence over mode defaults. They cannot exceed 12, 3, and 10, respectively.
+The repair count is the proposal limit for the structured `RepairEngine`. The default Marker processor
+and fixture CLI configure an evidence-backed Flowchart repair engine. Labels are corrected only when
+trusted Marker OCR or exact built-in Vector text matches the source block/bbox. In the Marker processor,
+reversed edges and unlabeled missing edges can also be corrected when they are supported solely by a
+built-in Geometry relation and there is no directional conflict between engines. An existing conditional
+edge label is corrected label-only when trusted OCR/vector text and a unique built-in Geometry connector
+independently support its text and direction/position, and exactly one source/typed edge exists in that
+same exact direction. This is allowed only when the typed label is empty or is a typo similar to the source
+label; an existing label with a different meaning is not overwritten.
+The fixture CLI does not enable connector topology repair, preventing JSON from declaring its own trust,
+and it does not automatically correct label fixtures without trusted Marker/Vector provenance. Missing
+nodes, conditional topology, endpoint or direction changes, new branches and Yes/No semantic inference,
+parallel relations, and layout repair are not yet wired into the default engine.
 
-## 게시 정책
+## Publication Policies
 
-| 정책 | parse/render 통과 후 동작 |
+| Policy | Behavior after parse/render succeeds |
 | --- | --- |
-| `strict_validated` | aggregate와 semantic score가 모두 `review_below_score` 이상일 때만 게시 |
-| `best_effort_validated` | aggregate와 semantic score가 모두 `publish_min_score` 이상인 A/B/C 게시 |
-| `review_required` | Markdown에 넣지 않고 sidecar/review만 생성 |
-| `sidecar_only` | Markdown에 넣지 않고 sidecar만 생성 |
+| `strict_validated` | Publish only when both aggregate and semantic scores are at least `review_below_score` |
+| `best_effort_validated` | Publish A/B/C results when both aggregate and semantic scores are at least `publish_min_score` |
+| `review_required` | Do not insert into Markdown; create sidecars/review data only |
+| `sidecar_only` | Do not insert into Markdown; create sidecars only |
 
-`sidecar_only`에서 검증된 후보를 sidecar에 저장한 결과는 게시나 review 요청 없이 성공 상태로 기록합니다.
+Under `sidecar_only`, saving a validated candidate to a sidecar records a successful result without
+publishing it or requesting review.
 
-모든 정책에서 parse 또는 render 실패 결과는 게시할 수 없습니다. `trusted-local` 보안 profile은
-`review_required` 또는 `sidecar_only`와만 조합할 수 있습니다.
+No policy may publish a result that fails parse or render validation. The `trusted-local` security profile
+can be combined only with `review_required` or `sidecar_only`.
 
-## 주요 옵션
+## Main Options
 
-| 이름 | 기본값 | 설명 |
+| Name | Default | Description |
 | --- | --- | --- |
-| `mode` | `extended` | 안전성/기능/budget preset |
-| `publish_policy` | `best_effort_validated` | 자동 Markdown 게시 정책 |
-| `enabled_types` | 전체 알려진 type | typed/direct 후보 allowlist |
-| `publish_min_score` | `0.50` | best effort 최소 점수 |
-| `review_below_score` | `0.70` | strict 최소 점수 및 review 경계 |
+| `mode` | `extended` | Safety/feature/budget preset |
+| `publish_policy` | `best_effort_validated` | Automatic Markdown publication policy |
+| `enabled_types` | All known types | Allowlist for typed/direct candidates |
+| `publish_min_score` | `0.50` | Minimum best-effort score |
+| `review_below_score` | `0.70` | Strict minimum score and review boundary |
 | `security_profile` | `strict` | Mermaid source allowlist |
-| `compatibility_profile` | `portable-rich` | serializer style 호환성 목표 |
-| `candidate_count` | 모드별 | source당 candidate 상한 |
-| `type_candidate_count` | 모드별 | source당 type top-k |
-| `max_repair_iterations` | 모드별 | 개선 후보 repair 상한 |
-| `enable_fusion` | `true` | 여러 engine observation의 결정적 병합 |
-| `enable_page_detector` | `true` | full-page coverage와 missed structural region proposal |
-| `enable_style_recovery` | `true` | compatibility/security가 허용할 때 node/edge/trusted-vector-group style evidence 방출 |
-| `runtime_dir` | cache 자동 탐색 | Node worker와 dependencies 위치 |
-| `render_timeout_seconds` | `20` | candidate당 parse/render 제한 |
-| `max_mermaid_chars` | `50000` | browser 전달 전 source 문자 상한 |
-| `max_mermaid_lines` | `5000` | browser 전달 전 source line 상한 |
-| `max_vlm_prompt_chars` | `100000` | provider-visible prompt와 Marker 1.10.2 response-schema reserve의 합산 상한 (`32768`~`1000000`) |
-| `max_vlm_evidence_items` | `256` | prompt에 포함할 provenance evidence 상한 (`1`~`4096`) |
-| `max_vlm_ocr_items` | `512` | prompt 후보로 검사하는 OCR text 상한 (`0`~`4096`) |
-| `max_image_dimension` | `2048` | VLM original/overlay 한 변 상한 (`1`~`4096`) |
-| `tile_size` | `1280` | source-resolution tile 한 변 (`64`~`4096`) |
-| `max_virtual_source_dimension` | `32768` | panel/merge canvas 한 변 상한 |
-| `max_virtual_source_pixels` | `100000000` | panel/merge canvas pixel budget |
-| `max_views` | `8` | VLM에 전달할 view 상한 (`1`~`16`) |
+| `compatibility_profile` | `portable-rich` | Serializer style compatibility target |
+| `candidate_count` | Mode-specific | Candidate limit per source |
+| `type_candidate_count` | Mode-specific | Type top-k per source |
+| `max_repair_iterations` | Mode-specific | Limit for improving repair candidates |
+| `enable_fusion` | `true` | Deterministic merging of observations from multiple engines |
+| `enable_page_detector` | `true` | Full-page coverage and missed structural-region proposals |
+| `enable_style_recovery` | `true` | Emit node/edge/trusted-vector-group style evidence when compatibility/security permits |
+| `runtime_dir` | Automatic cache lookup | Location of the Node worker and dependencies |
+| `render_timeout_seconds` | `20` | Parse/render limit per candidate |
+| `max_mermaid_chars` | `50000` | Source character limit before browser delivery |
+| `max_mermaid_lines` | `5000` | Source line limit before browser delivery |
+| `max_vlm_prompt_chars` | `100000` | Combined limit for the provider-visible prompt and Marker 1.10.2 response-schema reserve (`32768`–`1000000`) |
+| `max_vlm_evidence_items` | `256` | Provenance evidence limit in the prompt (`1`–`4096`) |
+| `max_vlm_ocr_items` | `512` | OCR text candidates examined for the prompt (`0`–`4096`) |
+| `max_image_dimension` | `2048` | Maximum side length for VLM originals/overlays (`1`–`4096`) |
+| `tile_size` | `1280` | Side length of a source-resolution tile (`64`–`4096`) |
+| `max_virtual_source_dimension` | `32768` | Maximum side length for panel/merge canvases |
+| `max_virtual_source_pixels` | `100000000` | Pixel budget for panel/merge canvases |
+| `max_views` | `8` | Maximum views passed to the VLM (`1`–`16`) |
 
-`write_ir`, `write_svg`, `write_png`, `write_alternatives`, `write_provenance`는 각 sidecar
-artifact 생성을 제어합니다. 선택된 `final.mmd`, `scores.json`, `review-history.json`, manifest는
-bundle의 최소 감사 기록으로 항상 남습니다. 단, 선택 후보에 provenance-backed `node-id-map.json`이
-있으면 dangling reference를 만들지 않도록 `write_provenance=false`여도 `provenance.json`을 함께
-기록합니다. 자동 게시 bundle은 validation receipt를 독립적으로 검증할 수 있어야 하므로
-`write_svg=false`보다 `final.svg` 보존이 우선합니다. `write_png=false`는 그대로 적용되며 이때 공개
-generation receipt의 선택적 PNG digest는 validation-time audit 값으로 유지하고
-`generation_artifact_presence.final.png=false`로 파일 부재를 명시합니다.
+`write_ir`, `write_svg`, `write_png`, `write_alternatives`, and `write_provenance` control the
+creation of their respective sidecar artifacts. The selected `final.mmd`, `scores.json`,
+`review-history.json`, and manifest always remain as the bundle's minimum audit record. If the selected
+candidate has a provenance-backed `node-id-map.json`, however, `provenance.json` is written even when
+`write_provenance=false` so that no dangling reference is created. An automatically published bundle must
+allow independent verification of its validation receipt, so preserving `final.svg` takes precedence over
+`write_svg=false`. `write_png=false` still applies; in this case the optional PNG digest in the public
+generation receipt remains as a validation-time audit value, while
+`generation_artifact_presence.final.png=false` explicitly records that the file is absent.
 
-`include_original_image`와 `extract_images`는 타입 수준에서 `true`만 허용합니다. Marker 공통
-`--disable_image_extraction`과 함께 사용할 수 없습니다.
+At the type level, `include_original_image` and `extract_images` accept only `true`. They cannot be used
+with Marker's shared `--disable_image_extraction` option.
 
-Renderer의 `MermaidMarkdownRenderer_include_rendered_preview=true`는 validation runtime이 만든 PNG를
-별도 `images/*--mermaid-preview.png`로 저장하고 원본 뒤에 삽입합니다. 기본값은 `false`이며 PNG가 없는
-후보에 preview를 추정하거나 SVG를 임의 rasterize하지 않습니다. 현재 PNG bytes가 validation receipt의
-digest와 다르면 Mermaid code는 게시하되 preview만 생략합니다.
+`MermaidMarkdownRenderer_include_rendered_preview=true` stores the validation runtime's PNG separately as
+`images/*--mermaid-preview.png` and inserts it after the original image. The default is `false`; no preview
+is inferred for a candidate without a PNG, and an SVG is not rasterized implicitly. If the current PNG
+bytes do not match the digest in the validation receipt, the Mermaid code is published but only the
+preview is omitted.
 
-## 구현 상태가 있는 옵션
+## Options with Implemented Behavior
 
-edge map, Hough line, detected-arrow overlay, OCR/vector/contour overlay, grayscale,
-adaptive threshold, color cluster, thumbnail, source-resolution tile,
-GeometryEngine과 duck-typed VectorPrimitiveEngine이 구현되어 있습니다. vector engine은
-`get_drawings()`, `get_text()`, `vector_primitives`, `vector_texts`를 노출하는 provider에서만 추출하며
-Marker processor는 `marker` extra의 PyMuPDF로 실제 PDF page provider를 열어 source page→canvas mapping과
-함께 전달합니다. provider를 열 수 없으면 block duck-typing으로 후퇴한 뒤 fail-closed empty observation을
-반환합니다. page-level detector는 bounded edge/component
-heuristic과 occupied-region exclusion을 사용하며 unanchored proposal은 PageGroup queue를 거쳐 sidecar로
-보존하되 Markdown에는 자동 삽입하지 않습니다.
-자세한 구분은 [스펙 대응표](spec-coverage.md)를 참고하세요.
+The edge map, Hough line map, detected-arrow overlay, OCR/vector/contour overlay, grayscale view,
+adaptive threshold view, color-cluster view, thumbnail, source-resolution tiles, GeometryEngine, and
+duck-typed VectorPrimitiveEngine are implemented. The vector engine extracts only from providers exposing
+`get_drawings()`, `get_text()`, `vector_primitives`, or `vector_texts`. The Marker processor opens an actual
+PDF page provider through PyMuPDF from the `marker` extra and passes it with source page-to-canvas mapping.
+If a provider cannot be opened, the engine falls back to block duck typing and then returns a fail-closed
+empty observation. The page-level detector uses bounded edge/component heuristics and occupied-region
+exclusion. Unanchored proposals pass through the PageGroup queue and are preserved in sidecars, but are not
+inserted into Markdown automatically.
+See the [specification coverage matrix](spec-coverage.md) for the detailed distinction.
 
-Vector extraction 세부 예산은 현재 Marker JSON/환경 설정으로 노출되지 않습니다.
-Custom integration은 `VectorPrimitiveEngine(max_primitives=..., max_texts=...,
-max_text_chars=..., max_points=...)`로 hard validation 상한 안에서 조정할 수 있으며 새
-`MermaidDiagramProcessor_*` key를 추측해 넘기면 안 됩니다. 생성자 기본값과 hard
-validation은 다음과 같습니다.
+Detailed vector-extraction budgets are not currently exposed through Marker JSON or environment settings.
+Custom integrations may adjust them within hard validation limits by constructing
+`VectorPrimitiveEngine(max_primitives=..., max_texts=..., max_text_chars=..., max_points=...)`; do not invent
+and pass new `MermaidDiagramProcessor_*` keys. Constructor defaults and hard validation limits follow.
 
-| Vector engine 자원 | 생성자 기본값 | 확장 불가 상한 |
+| Vector-engine resource | Constructor default | Non-expandable limit |
 | --- | ---: | ---: |
-| primitive/command raw work | 2,048 | 5,000 |
-| vector text raw work | 5,000 | primitive+text 합 20,000 |
-| vector text 문자 | 8,000,000 | 8,000,000 |
-| vector source | 256 | 256 |
-| polygon / polyline point | 256 / 512 | 256 / 512 |
-| reconstruction 전체 보존 point | 100,000 | 100,000 |
-| vector metadata token | 256자 | 256자 |
-| approximate dedup 비교 | 250,000 | 250,000 |
-| text ownership / endpoint 비교 | 1,000,000 / 1,000,000 | 동일 |
-| observation warning | 256 | 256 |
+| Primitive/command raw work | 2,048 | 5,000 |
+| Vector-text raw work | 5,000 | 20,000 primitive+text combined |
+| Vector-text characters | 8,000,000 | 8,000,000 |
+| Vector sources | 256 | 256 |
+| Polygon / polyline points | 256 / 512 | 256 / 512 |
+| Retained points across one reconstruction | 100,000 | 100,000 |
+| Vector metadata token | 256 characters | 256 characters |
+| Approximate-dedup comparisons | 250,000 | 250,000 |
+| Text-ownership / endpoint comparisons | 1,000,000 / 1,000,000 | Same |
+| Observation warnings | 256 | 256 |
 
-예산은 source별 보존 output이 아니라 reconstruction-global raw work입니다. Malformed,
-out-of-crop, deduplicated record와 빈 nested drawing container도 소모하며, count/문자 상한이
-닫히면 뒤 source에서 그 dimension을 다시 열지 않습니다. Source/raw iterable은 최대 한 개의
-lookahead만 사용하고 point 초과 geometry는 prefix로 자르지 않고 record 전체를 생략합니다.
-Point가 없는 primitive는 전체 point budget 소진 뒤에도 record count 예산 안에서 처리됩니다.
-비교 상한 뒤 label은 unassigned, connector는 unresolved로 보존하고 warning을 남깁니다.
-Custom extractor output과 `VectorObservation.to_engine_observation()` 직접 입력도 같은 상한으로
-다시 검사됩니다. 원시 작업량 계산과 fusion 경계는
-[Vector extraction과 fusion](vector-fusion.md)에 정리합니다.
+Budgets measure reconstruction-global raw work, not retained output per source. Malformed, out-of-crop,
+and deduplicated records, as well as empty nested drawing containers, consume budget. Once a count or
+character dimension closes, later sources cannot reopen it. Source/raw iterables use at most one item of
+lookahead. Geometry that exceeds its point limit is omitted as a whole rather than truncated to a prefix.
+Point-free primitives can still be processed within the record-count budget after the aggregate point
+budget is exhausted. After a comparison limit is reached, labels remain unassigned and connectors remain
+unresolved, with a warning. Custom extractor output and direct input to
+`VectorObservation.to_engine_observation()` are revalidated against the same limits. Raw-work accounting
+and the fusion boundary are documented in [Vector Extraction and Fusion](vector-fusion.md).
 
-State/Class/ER/Requirement/Block typed serializer와 C4/Deployment/Component/Use-case fallback은
-`enabled_types` allowlist에 포함할 때 활성화됩니다. 요청 type과 실제 grammar가 다를 수 있으므로
-[serializer 계약](serialization.md)의 emitted type과 fallback chain을 함께 확인해야 합니다.
-Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn도 같은 allowlist와 계약을 사용합니다. 숫자 chart의 자동
-게시에는 OCR 또는 vector numeric evidence와 최소 numeric consistency가 필요합니다. 구조 후보는
-`ocr_token`, `vector_text`, `contour`, `vlm_observation`, `user_edit`만 node 근거로 사용하고,
-나머지 `source_crop`, `line_segment`, `arrowhead`는 node credit을 만들지 않습니다. 둘 이상의
-generated node가 같은 eligible ID를 참조하면 그 ID를 모두에서 취소한 뒤 attribution을
-계산합니다. 이 collision-free attribution을 계산할 수 없거나 80% 미만이면 자동 게시하지
-않습니다. 이 규칙은 기존 설정과 스키마를 바꾸지 않습니다.
+State/Class/ER/Requirement/Block typed serializers and C4/Deployment/Component/Use-case fallbacks are
+enabled when their types are present in the `enabled_types` allowlist. Because the requested type and actual
+grammar can differ, also inspect the emitted type and fallback chain in the
+[serializer contract](serialization.md). Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn use the same allowlist and
+contract. Automatic publication of numeric charts requires OCR or vector numeric evidence and minimum
+numeric consistency. Structural candidates use only `ocr_token`, `vector_text`, `contour`,
+`vlm_observation`, and `user_edit` as node evidence; `source_crop`, `line_segment`, and `arrowhead` do not
+grant node credit. If two or more generated nodes cite the same eligible ID, that ID is canceled for all
+of them before attribution is calculated. A result is not published automatically if this collision-free
+attribution cannot be computed or is below 80%. This rule does not change existing configuration or schemas.
 
-`tile_size`는 64 이상이고 `tile_overlap`은 0 이상 `tile_size` 미만이어야 합니다. View slot은 큰
-source의 tile 1~2개를 먼저 예약하고, 앞선 engine의 type top-k에 따라 유형별 priority를 적용합니다.
-빈 OCR/arrow/contour/Hough overlay는 slot을 사용하지 않습니다.
+`tile_size` must be at least 64, and `tile_overlap` must be nonnegative and smaller than `tile_size`. View
+slots first reserve one or two tiles for large sources, then apply type-specific priorities based on the
+preceding engines' type top-k. Empty OCR/arrow/contour/Hough overlays do not consume a slot.
 
-Structured VLM의 provider-visible prompt는 system instruction, 활성 type 계약, view/selection manifest,
-prior evidence, OCR text와 Marker 1.10.2가 별도로 전달하는 canonical `EngineObservation` schema reserve를
-합쳐 `max_vlm_prompt_chars` 안에 있어야 합니다. 고정 영역만으로 상한을 넘으면 provider를 호출하지
-않습니다. 이 수치는 SDK 내부 wire encoding이나 임의 custom service가 덧붙이는 숨은 text까지 보장하지
-않습니다.
+The Structured VLM provider-visible prompt combines the system instruction, active type contract,
+view/selection manifest, prior evidence, OCR text, and the canonical `EngineObservation` schema reserve that
+Marker 1.10.2 sends separately. This total must fit within `max_vlm_prompt_chars`; the provider is not called
+when fixed content alone exceeds the limit. This value does not cover SDK-internal wire encoding or hidden
+text added by an arbitrary custom service.
 
-Marker 1.10.2 stock Ollama service에는 `$defs`가 소실되지 않도록 bounded inline response schema를
-자동으로 사용합니다. 다른 Marker service에는 원래 Pydantic schema class를 전달하며, 모든 응답은 같은
-canonical `EngineObservation` 후검증을 거칩니다.
+For Marker 1.10.2's stock Ollama service, a bounded inline response schema is used automatically so that
+`$defs` are not lost. Other Marker services receive the original Pydantic schema class, and every response
+passes the same canonical `EngineObservation` post-validation.
 
-Evidence 선택은 user edit와 trusted connector를 먼저 보존하고, 남은 slot의 최소 25%를 arrowhead,
-line, contour, vector text에 source 순서 round-robin으로 예약합니다. 남은 slot은 trusted label과 기존
-전역 우선순위로 결정적으로 backfill하므로 다수 OCR이 뒤쪽 구조 근거를 모두 밀어내지 않습니다. 큰
-record가 문자 예산에 맞지 않으면 JSON escape 길이를 allocation 없이 계산해 직렬화 전에 건너뛰고 다음
-작은 record로 backfill합니다. 각 record와 OCR string은 완전한 compact JSON item으로만 넣습니다.
-입력/검사/포함 수와 selection profile은 prompt manifest에 기록하고 candidate warning은 누락 개수를
-요약합니다. 구조화된 item/character omission 원인과 전체 수치는 결과 최상위
-`prompt_budget_notices`에 기록됩니다.
+Evidence selection preserves user edits and trusted connectors first, then reserves at least 25% of the
+remaining slots for arrowheads, lines, contours, and vector text in source-order round-robin. Remaining
+slots are deterministically backfilled with trusted labels and the existing global priority, preventing a
+large amount of OCR from displacing all later structural evidence. If a large record does not fit the
+character budget, its JSON escape length is calculated without allocation; it is skipped before
+serialization and a smaller later record backfills the slot. Every record and OCR string is included only
+as a complete compact JSON item. Input/considered/included counts and the selection profile are recorded in
+the prompt manifest, while candidate warnings summarize omission counts. Structured item/character omission
+reasons and totals are recorded in the top-level `prompt_budget_notices` result.
 
-Canonical copy 전 evidence 문자열 합계와 `max_vlm_ocr_items`로 자른 OCR prefix 문자열 합계에는 각각
-8,000,000자 hard cap이 있습니다. OCR은 exact plain string만 허용하며, 남은 prompt보다 raw JSON string
-lower bound가 큰 항목은 escape scan 전에 건너뜁니다. Evidence nested source-block ID list와 trusted
-label/connector ID set도 각 schema item 상한까지만 immutable snapshot으로 만들고, 그 snapshot만 canonical
-validation과 selection에 사용합니다.
+Before canonical copying, the aggregate evidence-string length and the OCR-prefix string length truncated
+by `max_vlm_ocr_items` each have a hard cap of 8,000,000 characters. OCR accepts exact plain strings only;
+an item whose raw JSON-string lower bound exceeds the remaining prompt is skipped before escape scanning.
+Nested source-block ID lists in evidence and trusted label/connector ID sets are also converted to immutable
+snapshots only up to each schema item limit. Only those snapshots enter canonical validation and selection.
 
-Prompt 설정과 별도로 retained runtime evidence에는 설정으로 늘릴 수 없는 aggregate provenance 계약이
-있습니다. `VisualEvidence.source_block_ids` occurrence 합계 20,000개와 그 ID의 Python `len()` 합계
-8,000,000자를 허용하며, 중복도 각각 계산합니다. `id`·`kind`·`text`·`font_weight`까지 포함한 기존 전체
-evidence 문자 합계도 독립적으로 8,000,000자를 넘을 수 없습니다. Exact boundary는 허용하고 `+1`은
-initial/custom-engine collection, reconstruction-global 신규 ID batch, fusion 또는 final sink snapshot
-단위로 원자적으로 거부합니다. 이 값에는 `MermaidDiagramProcessor_*` key가 없으며 Python 공개 config,
-sidecar schema와 manifest version도 바꾸지 않습니다. Marker OCR 생산과 Review provenance
-read/replacement/structured-add 경계 및 standalone Structured VLM prior-evidence ingress도 같은 고정
-budget을 사용합니다. Structured VLM은 prompt에 포함할 item을 고르기 전에 전체 collection을 검사하므로
-`max_vlm_evidence_items`를 낮춰도 초과 tail이 우회되지 않습니다. Evaluation prediction도 source-block
-occurrence/문자 budget을 공유하지만, 공개 `mmx-eval-prediction-0.1`의 100,000-record/64 MiB artifact
-계약을 유지하므로 일반 runtime의 20,000 evidence-item/8,000,000 full-evidence-character 상한과는
-독립적입니다. 이 evaluation 예외에도 설정 key는 없습니다.
+Independently of prompt settings, retained runtime evidence has a non-configurable aggregate provenance
+contract. `VisualEvidence.source_block_ids` permits 20,000 total occurrences and a combined Python `len()`
+of 8,000,000 for those IDs; duplicates count separately. The existing aggregate evidence-character total,
+including `id`, `kind`, `text`, and `font_weight`, independently cannot exceed 8,000,000. Exact boundaries
+are accepted; `+1` is rejected atomically at the initial/custom-engine collection,
+reconstruction-global new-ID batch, fusion, or final-sink snapshot boundary. There is no
+`MermaidDiagramProcessor_*` key for these values, and they do not alter the public Python configuration,
+sidecar schema, or manifest version. Marker OCR production, Review provenance read/replacement/structured-add
+boundaries, and standalone Structured VLM prior-evidence ingress use the same fixed budget. Structured VLM
+checks the whole collection before choosing prompt items, so lowering `max_vlm_evidence_items` cannot hide
+an oversized tail. Evaluation predictions share the source-block occurrence/character budget, but preserve
+the public `mmx-eval-prediction-0.1` contract of 100,000 records/64 MiB; this is independent of the normal
+runtime limits of 20,000 evidence items and 8,000,000 full-evidence characters. This evaluation exception
+also has no configuration key.
 
-`max_image_dimension`과 `tile_size`의 상한은 4,096px입니다. View는 `original`이 첫 항목인 RGB Pillow
-image여야 합니다. 이름, 개수, 한 변 4,096px, view당
-16,777,216px, 전체 33,554,432px를 provider 호출 전에 검사합니다. 입력 dict는 `max_views + 1`개까지만
-읽고, manifest와 image list는 같은 검증된
-독립 plain-Pillow snapshot ordered list에서 만듭니다. 따라서 호출자 소유 image나 stateful Pillow
-subclass를 검증 뒤 provider에 그대로 전달하지 않습니다. Caller의 property/load/copy hook은 실행하지
-않으며 lazy ImageFile subclass는 호출 전에 load되어 있어야 합니다.
+`max_image_dimension` and `tile_size` are capped at 4,096 px. Views must be RGB Pillow images with
+`original` as the first item. Names, count, a 4,096 px side limit, 16,777,216 pixels per view, and
+33,554,432 pixels in total are checked before the provider call. At most `max_views + 1` entries are read
+from the input dictionary, and both the manifest and image list are built from the same validated,
+independent ordered list of plain-Pillow snapshots. Caller-owned images or stateful Pillow subclasses are
+therefore not passed to the provider after validation. Caller property/load/copy hooks are not executed;
+lazy ImageFile subclasses must already be loaded before the call.
 
-다음 값은 설정으로 늘릴 수 없는 reconstruction source hard cap입니다.
+The following values are non-configurable hard caps for reconstruction sources.
 
-| 입력 | hard cap | 초과·비정규 입력 동작 |
+| Input | Hard cap | Behavior for excessive or noncanonical input |
 | --- | ---: | --- |
-| `source_block_ids`, `page_ids`, `source_blocks`, `vector_sources` | 각 256 items | 해당 collection 전체 격리 |
-| initial/custom-engine/fused evidence | reconstruction 전체 20,000 items | initial/engine collection 또는 fused observation 격리 |
-| retained evidence의 `source_block_ids` | 합계 20,000 logical occurrences, 8,000,000 Python characters | duplicate 포함; collection 또는 whole-new-ID batch 원자적 격리 |
-| source OCR | 50,000 items, 합계 1,000,000 chars | OCR collection 전체 격리 |
-| evidence ID/kind/text/font-weight/source-block text | 합계 8,000,000 Python characters | evidence collection 또는 whole-new-ID batch 원자적 격리 |
-| typed IR candidate | envelope 3 fields, depth 64, 100,000 items, field 50,000 chars, UTF-8 text 1,000,000 bytes, compact JSON 4,000,000 bytes | 해당 candidate 격리 |
-| observation/fused typed IR | 최대 64 candidates, compact JSON 합계 8,000,000 bytes | provider/fixture observation 거부 또는 fusion의 bounded prefix 유지 |
-| `source_mapping` | depth 32, 25,000 items, string 50,000 chars, compact JSON 4,000,000 bytes | mapping만 `null`로 격리 |
+| `source_block_ids`, `page_ids`, `source_blocks`, `vector_sources` | 256 items each | Isolate the entire collection |
+| Initial/custom-engine/fused evidence | 20,000 items across the reconstruction | Isolate the initial/engine collection or fused observation |
+| `source_block_ids` in retained evidence | 20,000 logical occurrences and 8,000,000 Python characters total | Count duplicates; atomically isolate the collection or whole new-ID batch |
+| Source OCR | 50,000 items and 1,000,000 characters total | Isolate the entire OCR collection |
+| Evidence ID/kind/text/font-weight/source-block text | 8,000,000 Python characters total | Isolate the evidence collection or whole new-ID batch |
+| Typed IR candidate | Three envelope fields, depth 64, 100,000 items, 50,000 characters per field, 1,000,000 bytes of UTF-8 text, 4,000,000 bytes of compact JSON | Isolate that candidate |
+| Observation/fused typed IR | At most 64 candidates and 8,000,000 compact JSON bytes total | Reject the provider/fixture observation or retain a bounded fusion prefix |
+| `source_mapping` | Depth 32, 25,000 items, 50,000 characters per string, 4,000,000 bytes of compact JSON | Isolate only the mapping as `null` |
 
-위 `vector_sources` source-context 항목은 pipeline 경계에서 비정규/초과 collection을 전체
-격리하는 규칙입니다. `VectorPrimitiveEngine`을 pipeline 밖에서 직접 주입했을 때의
-추가 백스톱은 source iterable을 256개 prefix와 한 개 lookahead까지만 소비하고 warning을
-남깁니다. 두 경계는 각각 caller container와 engine work을 방어하며 서로 대체하지 않습니다.
+The `vector_sources` source-context entry above is the pipeline-boundary rule that isolates an entire
+noncanonical or oversized collection. When `VectorPrimitiveEngine` is injected directly outside the
+pipeline, its additional backstop consumes only a 256-source prefix plus one lookahead item and records a
+warning. These boundaries protect the caller container and engine work independently; neither replaces
+the other.
 
-`source_mapping`은 exact `dict`/`list`/`tuple`과 JSON scalar만 허용합니다. Tuple은 JSON array로
-정규화되고 key는 정렬되며, finite number와 JavaScript safe-integer 범위를 요구합니다. 이 snapshot은
-engine, repair, 최종 result, sidecar에서 재사용·재검증되므로 container subclass의 iteration 또는
-`deepcopy` hook을 실행하지 않습니다.
+`source_mapping` accepts exact `dict`/`list`/`tuple` containers and JSON scalars only. Tuples normalize to
+JSON arrays, keys are sorted, and numbers must be finite and within the JavaScript safe-integer range. This
+snapshot is reused and revalidated by engines, repair, the final result, and sidecars, so container-subclass
+iteration and `deepcopy` hooks are not executed.
 
-Typed IR hard cap도 설정으로 확장할 수 없습니다. Dict key와 string value를 출현 횟수대로 세며 tuple은
-JSON array로 정규화합니다. 숫자는 finite JavaScript safe range여야 하고 cycle 또는 container/scalar
-subclass는 거부합니다. Candidate의 `diagram_type`, `ir`, `confidence` 외 extra field는 unbounded copy 전에
-거부합니다. Accessibility가 추가한 title/description과 semantic repair proposal도 같은 상한을 다시
-통과해야 serializer와 sidecar로 이동합니다.
+Typed IR hard caps are likewise not configurable. Dictionary keys and string values are counted by
+occurrence, and tuples normalize to JSON arrays. Numbers must be finite and within the JavaScript safe
+range; cycles and container/scalar subclasses are rejected. Extra fields beyond a candidate's
+`diagram_type`, `ir`, and `confidence` are rejected before any unbounded copy. Accessibility-added
+title/description fields and semantic-repair proposals must pass the same limits again before reaching a
+serializer or sidecar.
 
-기본 `strict` security profile에서는 `enable_style_recovery=true`여도 style statement를 만들지
-않습니다. 실제 style code를 원하면 `portable-rich`/`style-rich` compatibility와 `style-only` 같은
-비-strict security profile을 명시해야 하며 결과는 계속 parse/render/SVG hard gate를 거칩니다.
-PDF label 굵기는 trusted vector span evidence의 ID가 충돌하지 않고 text/bbox가 generated Flowchart
-node에 모호하지 않게 대응할 때만 상수 `font-weight:bold`로 복원됩니다.
+Under the default `strict` security profile, `enable_style_recovery=true` still emits no style statements.
+To produce actual style code, explicitly combine `portable-rich`/`style-rich` compatibility with a
+non-strict security profile such as `style-only`; results still pass the parse/render/SVG hard gate. PDF
+label weight is restored only as the constant `font-weight:bold`, and only when trusted vector-span evidence
+has a collision-free ID and maps unambiguously by text/bbox to a generated Flowchart node.

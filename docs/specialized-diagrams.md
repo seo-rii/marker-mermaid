@@ -1,234 +1,231 @@
-# 계획·특수 다이어그램 serializer
+# Planning and Specialized Diagram Serializers
 
-계획 및 특수 유형도 다른 typed serializer와 같은 `SerializationResult` 계약을 사용합니다. 입력에 없는
-ID, 숫자, 좌표, 날짜, branch 또는 relation endpoint를 생성하지 않으며 native grammar가 strict
-parse/render/SVG gate와 맞지 않으면 requested/emitted type과 손실 warning을 함께 기록합니다.
+Planning and specialized types use the same `SerializationResult` contract as other typed serializers.
+They do not invent IDs, numbers, coordinates, dates, branches, or relation endpoints absent from the input.
+When a native grammar is incompatible with the strict parse/render/SVG gate, requested/emitted types and a
+loss warning are recorded together.
 
-## 계획 유형
+## Planning Types
 
-| 유형 | 출력 | 필수 evidence |
+| Type | Output | Required evidence |
 | --- | --- | --- |
-| Journey | Timeline fallback | section/task, 1~5 정수 score, actor 목록 |
-| Kanban | native `kanban`, runtime 거부 시 Flowchart | column/card ID, card의 명시적 `column_id` |
-| GitGraph | native `gitGraph`, runtime 거부 시 Flowchart | `main` 초기 branch, 순서가 있는 commit/branch/merge, 전역 고유 commit ID |
+| Journey | Timeline fallback | Section/task, integer score from 1 to 5, actor list |
+| Kanban | Native `kanban`, then Flowchart on runtime rejection | Column/card ID and each card's explicit `column_id` |
+| GitGraph | Native `gitGraph`, then Flowchart on runtime rejection | Initial `main` branch, ordered commits/branches/merges, globally unique commit IDs |
 
-Mermaid 11.16 Journey는 strict SVG 검사에서 금지하는 `foreignObject`를 생성합니다. 따라서 score와
-actor를 Timeline event text로 보존하고 Journey scoring layout 손실을 warning으로 남깁니다.
-Journey score는 별도 source OCR/vector 숫자와 일치해야 자동 게시되며 task ID가 중복되면 attribution을
-조용히 합치지 않고 review로 보냅니다.
-Timeline item delimiter와 renderer truncation을 피하기 위해 section/task/actor의 colon은 `∶`, entity-like
-prefix는 `＆`/`＃` compatibility glyph로 표시하고 warning을 남깁니다. Journey title의 angle bracket도
-`‹`/`›`로 표시하며 원문은 typed IR과 sidecar에 유지합니다.
+Mermaid 11.16 Journey generates `foreignObject`, which the strict SVG inspection rejects. Scores and actors
+are therefore preserved in Timeline event text, with a warning for the loss of Journey scoring layout.
+Journey scores must also match separate source OCR/vector numbers for automatic publication; duplicate task
+IDs are sent to review instead of silently merging attribution. To avoid Timeline item delimiters and
+renderer truncation, colons in section/task/actor text are displayed as `∶`, and entity-like prefixes use
+the `＆`/`＃` compatibility glyphs with a warning. Angle brackets in a Journey title are displayed as `‹`/`›`,
+while the original text remains in typed IR and sidecars.
 
-Kanban serializer와 generated Scene은 하나의 bounded column/card plan을 사용합니다. Raw ID와 Mermaid
-정규화 ID의 충돌, unknown `column_id`를 먼저 거부하고 모든 emitted ID에 예약어 안전 `kanban_` namespace를
-적용합니다. Native와 Flowchart runtime fallback은 같은 emitted ID, label, containment를 사용합니다.
-Native runtime 실패 시 새 후보를 만들지 않고 같은 candidate
-slot에서 column/card node와 containment edge를 Flowchart로 한 번 재검증하며 lane/board layout 손실을
-warning으로 기록합니다.
-Native Kanban markdown label이 literal quote/backtick을 보존하지 못하면 `″`/`ˋ` glyph와 warning을
-사용합니다. Portable Flowchart fallback이 literal quote/backslash를 보존하지 못하면 `″`/`∖`를 사용합니다.
+The Kanban serializer and generated Scene use one bounded column/card plan. It first rejects collisions
+between raw and Mermaid-normalized IDs and unknown `column_id` values, then places every emitted ID in the
+reserved-word-safe `kanban_` namespace. Native and Flowchart runtime fallback use the same emitted IDs,
+labels, and containment. A native runtime failure does not create a new candidate: in the same candidate
+slot, column/card nodes and containment edges are revalidated once as Flowchart, with a warning for lost
+lane/board layout. When a native Kanban Markdown label cannot preserve a literal quote or backtick, it uses
+`″`/`ˋ` with a warning. When the portable Flowchart fallback cannot preserve a literal quote or backslash, it
+uses `″`/`∖`.
 
-GitGraph는 Mermaid가 자동 commit ID를 만들도록 두지 않으며 merge도 source/target과 merge commit ID가
-모두 있어야 합니다. 공용 branch-head replay plan이 commit/merge node, parent relation, branch membership과
-Flowchart fallback을 함께 결정합니다. `initial_branch`는 정규화 결과가 아니라 source 값 자체가 정확한
-`main`이어야 하고, branch-before-commit, 같은 head merge, self merge, raw/normalized ID 충돌과 record budget
-초과는 fail closed입니다. GitGraph commit ID는 Mermaid 인코딩 뒤 표시값도 고유해야 합니다. 세 planning
-type의 2,000-record cap은 구조 탐색의 절대 상한이고, 모든 native/fallback source가 validator와 같은
-50,000자·5,000줄 hard budget을 넘는지도 게시 전에 다시 확인합니다.
+GitGraph never lets Mermaid invent commit IDs, and a merge requires source, target, and merge-commit ID.
+A shared branch-head replay plan determines commit/merge nodes, parent relations, branch membership, and the
+Flowchart fallback together. `initial_branch` must be exactly the source value `main`, not merely normalize
+to it. Branch-before-commit, same-head merge, self-merge, raw/normalized ID collisions, and record-budget
+overflow fail closed. A GitGraph commit ID must remain unique after Mermaid encoding as well. The 2,000-record
+limit for all three planning types is an absolute structure-traversal limit; before publication, every
+native/fallback source is also checked against the validator's 50,000-character and 5,000-line hard budgets.
 
-Canonical field와 compatibility alias가 함께 있으면 정규화한 의미가 같아야 합니다. Journey
-`title/label`·`label/text`, Kanban `label/title`·`label/text`, GitGraph `name/id`·`commit_type/style` 충돌은
-source evidence를 임의로 선택하지 않고 거부합니다. GitGraph의 commit/branch/merge별 known field 집합도
-닫혀 있어 다른 operation에만 의미가 있는 field를 조용히 폐기하지 않습니다.
+When a canonical field and compatibility alias are both present, their normalized meanings must match.
+Conflicts in Journey `title/label` or `label/text`, Kanban `label/title` or `label/text`, and GitGraph
+`name/id` or `commit_type/style` are rejected rather than selecting source evidence arbitrarily. The known
+field sets for GitGraph commit, branch, and merge records are closed as well, so a field meaningful only to
+another operation is not silently discarded.
 
-Pinned Mermaid 11.16 GitGraph는 일반 HTML numeric entity를 label에서 정확히 복원하지 않으므로 broad entity
-encoder를 사용하지 않습니다. Quote와 backslash는 grammar quoting으로 원문 glyph를 보존하고 URL/directive,
-callback, import, entity-like active token에는 보이지 않는 separator만 삽입합니다. `<`와 `>`는 native SVG가
-원문을 보존하지 않아 `‹`와 `›`로 바꾸고 compatibility warning을 남깁니다. 이 규칙은 commit ID, tag,
-accessible title/description에 동일하게 적용되며 실제 SVG text integration fixture로 검증합니다.
+Pinned Mermaid 11.16 does not reproduce ordinary HTML numeric entities exactly in GitGraph labels, so the
+serializer does not use a broad entity encoder. Quotes and backslashes preserve their original glyphs
+through grammar quoting; invisible separators are inserted only into URL/directive, callback, import, and
+entity-like active tokens. Because native SVG does not preserve `<` and `>`, they become `‹` and `›` with a
+compatibility warning. The same rules apply to commit IDs, tags, accessible titles, and descriptions, and
+are verified by real SVG-text integration fixtures.
 
-## 특수 유형
+## Specialized Types
 
-- Packet은 strict nested `fields[]` 계약에서 각 field의 integer `start`/`end`를 요구합니다.
-  range overlap, 역순, 누락을 거부하고 non-contiguous range는 gap 값이나 필드 간
-  화살표를 만들지 않은 disconnected Flowchart fallback으로 보존합니다.
-  Native Packet, 같은 candidate slot의 Flowchart fallback, semantic repair proposal은 하나의 field plan과
-  field-local numeric association을 공유합니다. 각 field의 label·range는 candidate가 게시 근거로 사용할
-  권한이 있고 field가 직접 인용한 `ocr_token`/`vector_text`에서만 확인합니다. Source-wide `ocr_texts`는
-  field binding 권한이 없습니다. Field와 evidence bbox는 양의 면적으로 실제 image 안에 있어야 하고,
-  evidence bbox 전체가 해당 field 안에 들어가야 합니다.
-  모든 label과 `start`/`end`가 정확히 결합되면 `1.0`, label은 결합되지만 range 숫자가 다르거나 불필요한
-  숫자가 더 있으면 `0.0`과 review입니다. `start == end`인 field는 endpoint 숫자 한 번을 요구합니다.
-  같은 field의 동일 normalized text+bbox OCR/vector 중복은 한 번만 세고 공간적으로 다른 반복은
-  보존합니다. Field overlap, 여러 field에 걸치는 broad evidence box, 공유 evidence ID, 같은 위치의 모호한
-  관측, 누락되거나 잘못된 authority/bbox/image bounds, association budget 소진은 부분 판정 없이
-  unavailable/review가 됩니다. Candidate authority 안의 같은 bbox에 상충 text가 있으면 field가 그중 하나만
-  인용해도 모호성을 숨긴 것으로 보지 않고 unavailable로 처리합니다.
-- Ishikawa와 TreeView는 effect/category/cause 또는 root/children을 strict recursive contract로
-  후검증합니다. 공유 hierarchy planner가 ID, normalized collision, cycle, 같은 dict
-  object 재사용, 최대 depth/node 예산을 한 번만 판정합니다.
-- Event Modeling은 strict nested lane/frame/relation 계약을 통과한 뒤 lane-aware Flowchart로
-  출력합니다. Pinned renderer가 현재 native AST error를 반환하므로 native 성공으로
-  표시하지 않습니다. 공유 frozen plan은 fallback에 방출하는 `eventmodeling_lane_*`·
-  `eventmodeling_frame_*` ID와 lane membership, typed/time label, 명시 relation을 고정합니다.
-  Mermaid edge에는 ID 문법이 없으므로 `eventmodeling_relation_*`는 Scene/provenance slot에만
-  부여하고, topology·label·evidence는 fallback·Scene·OCR에 공통 적용합니다. strict scanner가
-  금지하는 keyword·URL-like
-  token은 source에서만 zero-width separator로 비활성화하고, 실제 SVG에 보이는
-  compatibility label에서 quote·backslash·entity-like literal은 `″`·`∖`·`＆`/`＃`로,
-  relation label의 `|`·`;`는 추가로 `∣`·`⁏`로 손실을 공개합니다. OCR projection도 원문으로
-  성공을 가장하지 않고 이 화면 label을 사용합니다.
-- Wardley는 strict nested component/link 계약에서 각 component의 0~1 범위 `x`/`y`와
-  strict boolean `anchor`를 검증하며 누락 좌표를 배치 알고리즘으로 추정하지 않습니다. 공유
-  plan은 component ID·표시 label 충돌, endpoint, self/duplicate link와 record 예산을
-  native output·Scene·OCR에 동일하게 적용합니다. Source 문자/줄 예산은 serializer 반환 전
-  preflight가 별도로 판정합니다.
-- Cynefin은 strict nested domain/item/transition 계약에서 다섯 공식 domain과 명시적
-  domain transition만 허용합니다. Canonical item은 `label`/bbox/evidence를 갖는 object이며,
-  기존 scalar string item은 입력 호환을 위해 받지만 provenance를 만들지 않습니다. 공유 plan은
-  domain·item·transition ID와 표시 text, membership을 고정합니다. Native `cynefin-beta`가 runtime에서
-  거부되면 새 후보를 만들지 않고 같은 candidate slot에서 `flowchart LR`를 한 번 재검증합니다.
-- Railroad는 strict nested rule/expression contract와 frozen preorder plan으로
-  terminal/nonterminal/special/sequence/choice/optional/repetition AST를 직렬화합니다.
-  Rule은 `railroad_rule_*`, expression은 `railroad_expression_N`, native source에 ID 문법이 없는
-  containment은 `railroad_relation_N` Scene/provenance slot을 사용합니다. 모든 nonterminal reference가
-  존재하는 rule을 가리키는지 검사하지만 native SVG에 없는 reference connector는 만들지 않습니다.
-  Rule label은 실제 runtime text인 `native_name =`, terminal/nonterminal은 runtime-visible label,
-  special은 `? text ?`이고 operator node는 표시 text가 없습니다. Canonical compatibility text는 ASCII
-  `<`/`>`를 `〈`/`〉`, 모든 ASCII `#`를 `＃`, entity-like `&` prefix를 `＆`, NFKC quote/backslash hazard를
-  `″`/`∖`로 표시하고 compatibility warning을 남기며 원 semantic text는 typed IR/sidecar에 유지합니다.
-  전역 `encodeEntities`가 변형하는 bare `#word;`와 `#35;`도 같은 hash 계약을 적용합니다. Active token용
-  zero-width separator는 source에만 넣고 `style...:#...;`/`classDef...:#...;` preprocessor substring도
-  분리하며, raw와 NFKC-normalized emitted source를 모두 strict scan합니다. Scanner/preprocessor
-  source-active rule name뿐 아니라 case-folded expression-word namespace, `railroad-beta`, case-folded lowercase
-  `title*` prefix도 collision-safe
-  `rrmapped_N[_suffix]` native name으로 mapping하고 visible change warning을 남깁니다. 모든 safe source name을
-  먼저 reserve해 collision을 피하며, raw source name은 typed IR에, normalized name은 nonterminal label에
-  유지합니다. Scene/OCR은 separator 없는 동일 compatibility text를 사용하고 direct Scene은 null/생략 또는
-  string list가 아닌 `evidence_ids`를 fail closed합니다.
-- ZenUML은 pinned runtime에 extension이 없어 Sequence fallback을 사용합니다. Strict nested
-  participant/message 계약과 공유 plan이 `zenuml_participant_*` emitted ID, alias, endpoint,
-  단방향 message만 방출합니다. Mermaid message에는 ID 문법이 없으므로
-  `zenuml_message_*`는 Scene/provenance slot에만 부여합니다. Sequence grammar에서 statement·actor
-  주입을 막기 위해 visible `#`·`;`·entity-like literal은 `＃`·`⁏`·`＆`/`＃`로
-  대체 사실을 warning으로 남기고, active keyword·URL token은 화면 text를 유지한 채
-  source에서만 비활성화합니다. Sequence accessibility에서만 double-escape되는
-  `<`·`>`는 화면에 보이는 `〈`·`〉` glyph로 공개하며 participant/message의 angle bracket는
-  원문으로 렌더됩니다.
-- Organization은 strict recursive `root/children` 계약과 frozen plan으로 TreeView fallback의
-  logical `treeview_node_*` identity, 화면 label, parent→child reporting relation을 고정합니다.
-  TreeView가 runtime validation에서 거절되면 같은 candidate slot에서
-  `organization → treeview → flowchart` chain으로 다시 검증합니다. native와
-  nested fallback의 depth 배치 방향에 맞춰 generated Scene은 `LR`로 표시하며,
-  terminal native TreeView의 marker 없는 connector/shape 미지정과 Flowchart의
-  rectangle/end-arrow를 구분합니다. Source bbox/group/style은 재현되지 않으므로
-  geometry 0/group 없음으로 표시합니다.
-- Data Lineage는 strict dataset/process/relation 계약과 frozen plan으로
-  `data_lineage_dataset_*`·`data_lineage_process_*` node와
-  `data_lineage_relation_*` provenance slot을 만듭니다. Flowchart fallback은 dataset을
-  cylinder, process를 rectangle, relation을 단방향 data-flow edge로 방출하고
-  `TB`/`BT`/`LR`/`RL`만 받으며 기본은 `LR`입니다.
-- 두 plan은 ID/label의 control·format·lone-surrogate와 normalization 충돌을 거절합니다.
-  기존 partial/direct IR에서 Organization ID가 누락되면 preorder `node_N`을,
-  Data Lineage label이 누락되면 검증된 source ID를 사용해 예전 의미를 보존합니다.
-  Organization relation은 검증된 `children`에서만 파생하고, Data Lineage는 explicit
-  relation의 unresolved/self/duplicate endpoint를 거절합니다. 두 경로 모두 합계 500 record와
-  50,000자·5,000줄 output 예산을 적용합니다.
-  quote/backslash/entity-like literal과 edge `|`/`;`/`()[]{}@`는 실제 SVG에 보이는
-  `″`·`∖`·`＆`/`＃`·`∣`·`⁏`·`❨❩`·`⟦⟧`·`⦃⦄`·`＠` compatibility glyph로 출력하고
-  warning, OCR, generated Scene에 같은 손실을 공개합니다. Fullwidth `＠`는
-  NFKC 후 active `@import`가 복원되지 않도록 source에서만 zero-width separator를 더합니다.
+- Packet requires integer `start`/`end` values for every field under a strict nested `fields[]` contract.
+  It rejects overlapping, reversed, or missing ranges. A non-contiguous range is preserved as a disconnected
+  Flowchart fallback without inventing gap values or arrows between fields.
+  Native Packet, the same-candidate-slot Flowchart fallback, and semantic-repair proposals share one field
+  plan and field-local numeric association. Each field's label/range is verified only from directly cited
+  `ocr_token`/`vector_text` evidence that the candidate is authorized to use for publication. Source-wide
+  `ocr_texts` grants no field-binding authority. Field and evidence bboxes must have positive area within the
+  actual image, and the entire evidence bbox must lie inside its field.
+  When all labels and `start`/`end` values bind exactly, the score is `1.0`. A bound label with different
+  range numbers or extra unnecessary numbers produces `0.0` and review. A field with `start == end` requires
+  one occurrence of the endpoint number. Duplicate OCR/vector observations with the same normalized
+  text+bbox within one field count once, while spatially distinct repetitions are preserved. Field overlap,
+  broad evidence crossing multiple fields, shared evidence IDs, ambiguous observations at the same
+  position, missing or invalid authority/bbox/image bounds, or an exhausted association budget makes the
+  whole association unavailable/review without a partial result. Conflicting text at the same bbox within
+  candidate authority remains ambiguous even if the field cites only one version.
+- Ishikawa and TreeView post-validate effect/category/cause or root/children through strict recursive
+  contracts. A shared hierarchy planner decides IDs, normalized collisions, cycles, reuse of the same
+  dictionary object, and maximum depth/node budgets exactly once.
+- Event Modeling passes a strict nested lane/frame/relation contract before emitting a lane-aware Flowchart.
+  The pinned renderer currently returns a native AST error, so the result is not presented as a native
+  success. A shared frozen plan fixes emitted `eventmodeling_lane_*` and `eventmodeling_frame_*` IDs, lane
+  membership, typed/time labels, and explicit relations. Because Mermaid edges have no ID syntax,
+  `eventmodeling_relation_*` is assigned only as a Scene/provenance slot; topology, labels, and evidence are
+  shared by fallback, Scene, and OCR. Keywords and URL-like tokens prohibited by the strict scanner are
+  neutralized only in source with a zero-width separator. In compatibility labels visible in the SVG,
+  quotes, backslashes, and entity-like literals become `″`, `∖`, and `＆`/`＃`; relation-label `|` and `;`
+  additionally become `∣` and `⁏`, disclosing the loss. OCR projection uses these visible labels instead of
+  pretending the originals rendered successfully.
+- Wardley validates each component's `x`/`y` in the range 0–1 and strict boolean `anchor` under a strict
+  nested component/link contract. It never infers missing coordinates with a layout algorithm. A shared
+  plan applies component-ID/display-label collisions, endpoints, self/duplicate links, and record budgets
+  identically to native output, Scene, and OCR. Character and line budgets receive a separate source
+  preflight before serializer return.
+- Cynefin permits only the five official domains and explicit domain transitions under a strict nested
+  domain/item/transition contract. A canonical item is an object with `label`/bbox/evidence. Legacy scalar
+  string items remain accepted for input compatibility but create no provenance. A shared plan fixes domain,
+  item, and transition IDs, visible text, and membership. If native `cynefin-beta` is rejected at runtime,
+  `flowchart LR` is revalidated once in the same candidate slot rather than creating a new candidate.
+- Railroad serializes terminal/nonterminal/special/sequence/choice/optional/repetition ASTs with a strict
+  nested rule/expression contract and frozen preorder plan. Rules use `railroad_rule_*`, expressions use
+  `railroad_expression_N`, and containment without ID syntax in native source uses
+  `railroad_relation_N` Scene/provenance slots. Every nonterminal reference must identify an existing rule,
+  but no reference connector absent from native SVG is invented. A rule label is the actual runtime text
+  `native_name =`; terminal/nonterminal nodes use runtime-visible labels, special nodes use `? text ?`, and
+  operator nodes have no visible text. Canonical compatibility text displays ASCII `<`/`>` as `〈`/`〉`, every
+  ASCII `#` as `＃`, entity-like `&` prefixes as `＆`, and NFKC quote/backslash hazards as `″`/`∖`, with a
+  compatibility warning; original semantic text remains in typed IR/sidecars. Bare `#word;` and `#35;`,
+  which global `encodeEntities` transforms, follow the same hash contract. Zero-width separators for active
+  tokens are source-only and also split `style...:#...;`/`classDef...:#...;` preprocessor substrings; both raw
+  and NFKC-normalized emitted source are strict-scanned. Scanner/preprocessor source-active rule names,
+  case-folded expression-word namespaces, `railroad-beta`, and case-folded lowercase `title*` prefixes map to
+  collision-safe `rrmapped_N[_suffix]` native names with a visible-change warning. All safe source names are
+  reserved first to prevent collisions; raw source names remain in typed IR and normalized names remain in
+  nonterminal labels. Scene/OCR use the same compatibility text without separators, and direct Scene fails
+  closed when `evidence_ids` is neither null/omitted nor a string list.
+- ZenUML uses a Sequence fallback because the pinned runtime has no extension. A strict nested
+  participant/message contract and shared plan emit only `zenuml_participant_*` IDs, aliases, endpoints, and
+  one-way messages. Mermaid messages have no ID syntax, so `zenuml_message_*` is assigned only as a
+  Scene/provenance slot. To prevent statement or actor injection into Sequence grammar, visible `#`, `;`,
+  and entity-like literals become `＃`, `⁏`, and `＆`/`＃` with a warning; active keyword and URL tokens retain
+  visible text but are neutralized in source only. `<`/`>` values that double-escape only in Sequence
+  accessibility are exposed as visible `〈`/`〉` glyphs, while angle brackets in participant/message text
+  render as the originals.
+- Organization uses a strict recursive `root/children` contract and frozen plan to fix the TreeView
+  fallback's logical `treeview_node_*` identity, visible labels, and parent-to-child reporting relations. If
+  TreeView fails runtime validation, it is revalidated in the same candidate slot through the
+  `organization → treeview → flowchart` chain. Generated Scene uses `LR` to match native and nested-fallback
+  depth layout, while distinguishing terminal native TreeView's marker-free, unspecified-shape connectors
+  from Flowchart rectangles/end arrows. Because source bbox/group/style are not reconstructed, it reports
+  zero geometry and no groups.
+- Data Lineage uses a strict dataset/process/relation contract and frozen plan to create
+  `data_lineage_dataset_*` and `data_lineage_process_*` nodes plus `data_lineage_relation_*` provenance slots.
+  Its Flowchart fallback emits datasets as cylinders, processes as rectangles, and relations as one-way
+  data-flow edges. It accepts only `TB`/`BT`/`LR`/`RL`, defaulting to `LR`.
+- Both plans reject control/format/lone-surrogate characters in IDs/labels and normalization collisions. For
+  legacy partial/direct IR, a missing Organization ID becomes preorder `node_N`; a missing Data Lineage
+  label uses the validated source ID, preserving previous semantics. Organization relations derive only
+  from validated `children`; Data Lineage rejects unresolved, self-referential, or duplicate explicit
+  relation endpoints. Both paths enforce 500 aggregate records and output budgets of 50,000 characters and
+  5,000 lines. Quotes, backslashes, entity-like literals, and edge `|`/`;`/`()[]{}@` are emitted as the
+  SVG-visible compatibility glyphs `″`, `∖`, `＆`/`＃`, `∣`, `⁏`, `❨❩`, `⟦⟧`, `⦃⦄`, and `＠`; warnings, OCR,
+  and generated Scene disclose the same loss. Fullwidth `＠` receives an additional source-only zero-width
+  separator so NFKC cannot reactivate `@import`.
 
-Packet·TreeView·Ishikawa는 하나의 HTML entity encoder를 공유하지 않습니다. pinned native grammar별로
-실제 SVG text를 보존하는 quoting을 적용하고, TreeView의 quote/backslash나 Ishikawa의 ampersand/angle처럼
-native renderer가 원문 glyph를 보존하지 못하는 label은 명시적 Flowchart fallback으로 전환합니다.
-Ishikawa raw-line label이 `ishikawa` 또는 `ishikawa-beta` 예약 헤더로 시작하면 화면 글자는 유지하면서
-header token만 비활성 분리합니다.
-Flowchart 자체가 literal quote/backslash를 보존하지 못하는 경우에는 `″`/`∖` compatibility glyph와 warning을
-사용합니다. unsafe URL/HTML/control token이 접근성 문구에 들어오면 원문은 typed IR/review metadata에 남기고
-자동 SVG에는 generic title/description과 warning을 넣습니다. fallback IR은 원본 type-specific root를 다시
-전달하지 않아 접근성 파생 과정에서 unsafe label이 재유입되지 않습니다.
+Packet, TreeView, and Ishikawa do not share one HTML-entity encoder. Each pinned native grammar uses quoting
+that preserves actual SVG text. A label that the native renderer cannot preserve—such as a quote/backslash
+in TreeView or ampersand/angle bracket in Ishikawa—switches to an explicit Flowchart fallback. When an
+Ishikawa raw-line label starts with the reserved `ishikawa` or `ishikawa-beta` header, only the header token
+is split and neutralized while visible text remains unchanged. When Flowchart itself cannot preserve a
+literal quote/backslash, it uses `″`/`∖` with a compatibility warning. If an unsafe URL/HTML/control token
+appears in accessibility text, the original remains in typed IR/review metadata while automatic SVG uses a
+generic title/description and warning. Fallback IR does not pass the original type-specific root back into
+accessibility derivation, preventing an unsafe label from being reintroduced.
 
-Packet·Ishikawa·TreeView의 `label`/`name` compatibility alias는 둘 다 있을 때 같은
-의미여야 하며, 충돌하면 임의의 우선순위로 선택하지 않습니다. Ishikawa effect의
-`children`도 category root를 조용히 덮어쓰지 않고 거부합니다. 공유 plan이 identity와
-parent를 한 번만 검증하고 native는 그 label/range/depth를 사용합니다. ID를 표현하는
-fallback과 generated Scene만 예약어 안전 namespace `packet_field_`, `ishikawa_node_`,
-`treeview_node_`를 공유합니다. Scene은 원 record의 bbox/evidence를 그 순서로 보존하며, Packet에는
-입력에 없는 relation을 만들지 않고 hierarchy에는 공유 parent에서만 containment를
-만듭니다. Packet도 generated-node provenance 80% 게이트의 대상이며 별도 source
-OCR/vector numeric gate를 계속 적용합니다. 이 gate는 source 전역 숫자 multiset이 아니라 위 field-local
-association이며 native/fallback 문법에 따라 달라지지 않습니다.
+If both `label` and `name` compatibility aliases are present for Packet, Ishikawa, or TreeView, they must
+mean the same thing; a conflict is not resolved by arbitrary precedence. Ishikawa effect `children` likewise
+cannot silently overwrite category roots. A shared plan validates identity and parent exactly once, and the
+native serializer uses that label/range/depth. Only ID-expressing fallbacks and generated Scene share the
+reserved-word-safe namespaces `packet_field_`, `ishikawa_node_`, and `treeview_node_`. Scene preserves each
+original record's bbox/evidence in order. Packet invents no relations; hierarchies create containment only
+from the shared parent. Packet is also subject to the 80% generated-node provenance gate and retains its
+separate source OCR/vector numeric gate. That gate is the field-local association described above, not a
+source-global numeric multiset, and does not vary between native and fallback grammar.
 
-Organization의 입력 호환용 `name`도 `label`과 같이 있으면 같은 의미여야 하지만,
-canonical provider prompt에는 `label`만 노출합니다. Organization fallback은 source bbox를
-재현하지 않으므로 위 계층 Scene의 bbox 보존 규칙을 공유하지 않습니다.
+Organization's input-compatibility `name` must also match `label` when both are present, but the canonical
+provider prompt exposes only `label`. Because Organization fallback does not reproduce source bboxes, it
+does not share the hierarchy Scene bbox-preservation rule above.
 
-엄격한 source preflight가 구현된 Packet·Ishikawa·TreeView·Event Modeling·Wardley·Cynefin·ZenUML·
-Organization·Data Lineage·Railroad
-serializer는 native/fallback과 무관하게 50,000자·5,000줄 hard budget을 반환 전에
-검사합니다. Entity-like literal을 Mermaid 11.16이 정확히
-보존하지 못하는 문법에서는 보이는 `＆`/`＃` compatibility glyph를 사용하고 warning을
-남기며, 원문·geometry·evidence는 typed IR과 sidecar에 그대로 남깁니다.
+Packet, Ishikawa, TreeView, Event Modeling, Wardley, Cynefin, ZenUML, Organization, Data Lineage, and
+Railroad serializers implement strict source preflight. Regardless of native/fallback selection, they check
+the 50,000-character and 5,000-line hard budgets before returning. In grammars where Mermaid 11.16 does not
+preserve entity-like literals exactly, visible `＆`/`＃` compatibility glyphs and a warning disclose the loss,
+while original text, geometry, and evidence remain unchanged in typed IR and sidecars.
 
-Wardley generated Scene의 좌표는 native 세로축을 화면 좌표로 바꾼 `(x, 1-y)`를
-`normalized` coordinate space에 저장합니다. IR의 `x`/`y`는 수평/수직 값이지만 Mermaid
-Wardley source는 `[visibility, evolution]` 순서이므로 serializer는 `[y, x]`를 방출합니다.
-소수 token 반올림도 plan 좌표에 동일하게 반영하며, typed record의 별도 bbox나 임의 extra
-geometry가 layout 점수를 오염시키지 않습니다. Wardley `->`는 Mermaid 11.16에서 화살촉 없는
-일반 link이므로 generated Scene에서도 무방향 relation으로 평가합니다.
-Native runtime이 `wardley-beta`를 거부하면 같은 plan의 component를 순서 기반
-`wardley_component_N` rectangle로, explicit link를 무방향 `---`로 옮긴 `flowchart LR`를 같은
-candidate slot에서 한 번 재검증합니다. 이 fallback Scene은 zero bbox와 `pixels` coordinate space를
-써서 좌표·축·anchor 손실을 layout 보존으로 오인하지 않으며, 해당 손실과 compatibility glyph를
-warning에 공개합니다. Native title은 fallback canvas에 별도 node로 발명하지 않고 접근성 metadata에만
-남기며, 이 visible-title 손실도 별도 warning으로 공개합니다. 서로 다른 명시적 `acc_title`이 있으면
-그 접근성 값만 `accTitle`에 보존되고 visible title은 typed IR/review metadata에만 남는다고 구분합니다.
+Wardley generated Scene stores native vertical-axis coordinates as screen-space `(x, 1-y)` in the
+`normalized` coordinate space. IR `x`/`y` are horizontal/vertical, but Mermaid Wardley source orders values
+as `[visibility, evolution]`, so the serializer emits `[y, x]`. Decimal-token rounding is applied identically
+to plan coordinates; a typed record's separate bbox or arbitrary extra geometry cannot contaminate layout
+scoring. Mermaid 11.16 renders Wardley `->` as a plain link without an arrowhead, so generated Scene evaluates
+it as an undirected relation as well.
 
-Event Modeling·ZenUML generated Scene은 requested type을 유지하면서 실제
-Flowchart·Sequence fallback의 namespaced ID, `LR` 방향, end-arrow topology, visible label만
-재구성합니다. Source bbox·shape·style·direction·bidirectional extra를 재현한 것처럼
-복사하지 않고 zero geometry를 사용하며, frame/participant/relation/message의 evidence는
-각 source record에서만 가져옵니다.
+If the native runtime rejects `wardley-beta`, the same plan's components become ordered
+`wardley_component_N` rectangles and explicit links become undirected `---` in a `flowchart LR`, revalidated
+once in the same candidate slot. This fallback Scene uses zero bboxes and `pixels` coordinate space, so loss
+of coordinates, axes, and anchors is not mistaken for preserved layout. Warnings disclose those losses and
+compatibility glyphs. Native title is not invented as a separate fallback-canvas node; it remains only in
+accessibility metadata, with a separate warning for the visible-title loss. If an explicit, different
+`acc_title` exists, only that accessibility value is retained in `accTitle`; the visible title remains in
+typed IR/review metadata, and this distinction is documented.
 
-Cynefin native grammar은 item의 명시적 배치를 제공하지 않으므로 layout metric을
-unavailable로 남겨 둡니다. Native 성공 결과에는 입력 여부와 무관한 다섯 domain,
-practice/response와 disorder 고정 template가 나타납니다. Native Scene/OCR은 이 element를
-무근거로 명시하고, `confusion`의 네 번째 이후 item은 실제 runtime처럼 `+N more`로 축약합니다.
-입력 membership을 containment edge로 만들지 않으며, 고정 template provenance 계약이 없는 native
-후보는 점수와 무관하게 항상 review를 요구합니다.
+Event Modeling and ZenUML generated Scene retain the requested type while reconstructing only the actual
+Flowchart/Sequence fallback's namespaced IDs, `LR` direction, end-arrow topology, and visible labels. They use
+zero geometry instead of pretending to reproduce source bbox, shape, style, direction, or bidirectional
+extras. Frame/participant/relation/message evidence comes only from its own source record.
 
-Native runtime이 거부한 경우의 Flowchart fallback은 이 template를 재현하지 않습니다. Source에 명시된
-domain만 입력 순서대로 각각 하나의 subgraph로 만들며, 선택적 다섯 번째 `confusion`도 실제로 공급됐을
-때만 만듭니다. 각 subgraph는 명시된 item을 모두 개별 node로 보존하므로 `+N more` 축약이 없고,
-명시적 transition만 source/target domain subgraph 사이의 단방향 edge로 방출합니다. Domain-item membership을
-별도 connector로 만들거나 입력에 없는 fixed domain/practice/response/disorder node를 추가하지 않습니다.
-Fallback Scene은 같은 domain ID를 conceptual element와 group에 사용하고, domain/item/transition을 실제
-fallback visibility와 record-local provenance 그대로 연결합니다. Domain label은 OCR에서 한 번만 세며,
-모든 geometry는 zero bbox이고 direction은 실제 fallback의 `LR`입니다. 이 projection은 원래 quadrant 배치와
-Cynefin 공간 의미를 보존했다고 주장하지 않으며 손실 warning을 남깁니다. 생성 domain/item node가 80%
-attribution threshold를 충족하고 security·parse·render·semantic gate를 통과하면 fallback은 일반 게시 정책으로
-게시할 수 있지만,
-native 결과의 review hold는 그대로입니다.
+Cynefin native grammar provides no explicit item placement, so the layout metric remains unavailable. A
+native success shows all five domains and a fixed practice/response and disorder template regardless of
+input. Native Scene/OCR explicitly marks these elements as unsupported by evidence, and the fourth and later
+`confusion` items collapse to `+N more` as they do at runtime. It does not create containment edges for input
+membership. Because the fixed-template provenance contract is absent, every native candidate requires
+review regardless of score.
 
-대표 native/fallback fixture는 pinned Mermaid 11.16에서 실제 strict security scan, parse, render, SVG
-inspection을 통과하는 integration test로 고정합니다. Packet/Ishikawa/TreeView와 Treemap/Venn은 native
-runtime rejection 뒤 같은 candidate slot에서 evidence-preserving portable fallback을 한 번 재검증합니다.
-Kanban/GitGraph도 같은 방식으로 native rejection 뒤 공용 planning plan의 Flowchart를 한 번 재검증합니다.
-Organization은 실제 TreeView runtime fixture와 simulated rejection→Flowchart pipeline fixture를 함께
-고정합니다. Data Lineage Flowchart fallback도 실제 strict runtime fixture에서
-parse/render, visible label, accessibility, security 계약을 검사합니다. experimental native도
-validation hard gate를 우회하지 않습니다. Railroad native fixture는 재귀 choice/sequence와
-terminal/nonterminal/special의 compatibility text, 접근성, source-only active-token neutralization,
-raw/NFKC-normalized strict scan, raw CandidateValidator parse/render hard gate, NFKC grammar-injection safety
-probe, scanner/preprocessor source-active·grammar-reserved rule-name mapping, bare `#word;`/`#35;`,
-`style`/`classDef` substring, NFKC quote injection neutralization과 runtime 종료를 고정합니다.
-Wardley도 native runtime rejection 뒤 공용 plan의 무방향 Flowchart를 같은 candidate slot에서
-재검증하고, terminal type·visible compatibility text·marker 없는 link를 실제 runtime fixture로
-확인합니다. Cynefin도 native runtime rejection 뒤 명시 domain/item/transition만 보존하는 Flowchart를
-같은 candidate slot에서 재검증합니다. 이 fallback은 fixed template·confusion 축약·membership connector가
-없는지, terminal type과 directed transition을 실제 runtime fixture로 확인합니다. Native 성공은 위 고정
-template 경계 때문에 계속 자동 Markdown 게시 대신 review workspace/sidecar로 routing합니다. 두 terminal
-경로 모두 candidate budget, requested/emitted/runtime metadata, strict security와 requested-type 접근성 계약을
-그대로 유지합니다.
+The Flowchart fallback after native runtime rejection does not reproduce that template. It creates one
+subgraph, in input order, only for each explicitly supplied domain; the optional fifth `confusion` domain is
+created only when supplied. Every explicit item remains a separate node without `+N more` truncation, and
+only explicit transitions become one-way edges between source/target domain subgraphs. It adds no separate
+domain-item membership connector and no absent fixed domain/practice/response/disorder node. Fallback Scene
+uses the same domain ID for the conceptual element and group, connecting domain/item/transition with actual
+fallback visibility and record-local provenance. A domain label counts once in OCR. All geometry is zero
+bbox, and direction is the fallback's actual `LR`. The projection does not claim to preserve original
+quadrant layout or Cynefin spatial meaning and records a loss warning. If generated domain/item nodes meet
+the 80% attribution threshold and pass security, parse, render, and semantic gates, the fallback may follow
+the normal publication policy; the native result's review hold remains unchanged.
+
+Representative native/fallback fixtures are pinned by integration tests that run real strict security
+scanning, parse, render, and SVG inspection under Mermaid 11.16. Packet/Ishikawa/TreeView and Treemap/Venn
+revalidate an evidence-preserving portable fallback once in the same candidate slot after native runtime
+rejection. Kanban/GitGraph do the same with Flowchart from the shared planning plan. Organization pins both
+a real TreeView runtime fixture and a simulated rejection-to-Flowchart pipeline fixture. The Data Lineage
+Flowchart fallback is also checked for parse/render, visible labels, accessibility, and security in a real
+strict runtime fixture. Experimental native output never bypasses the validation hard gate.
+
+The Railroad native fixture pins recursive choices/sequences, compatibility text for
+terminal/nonterminal/special nodes, accessibility, source-only active-token neutralization, strict scanning
+of raw and NFKC-normalized source, the raw CandidateValidator parse/render hard gate, an NFKC grammar-injection
+safety probe, scanner/preprocessor source-active and grammar-reserved rule-name mapping, bare
+`#word;`/`#35;`, `style`/`classDef` substrings, NFKC quote-injection neutralization, and runtime termination.
+Wardley likewise revalidates an undirected Flowchart from the shared plan in the same candidate slot after
+native rejection, and verifies terminal type, visible compatibility text, and marker-free links in a real
+runtime fixture. Cynefin revalidates a Flowchart retaining only explicit domains/items/transitions in the
+same slot after native rejection. Its real runtime fixture verifies the absence of fixed templates,
+`confusion` truncation, and membership connectors, along with terminal type and directed transitions. A
+native success continues routing to review workspace/sidecars instead of automatic Markdown because of the
+fixed-template boundary above. Both terminal paths retain candidate budgets, requested/emitted/runtime
+metadata, strict security, and the requested-type accessibility contract.

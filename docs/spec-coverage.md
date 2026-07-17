@@ -1,76 +1,149 @@
-# MMX-001 v0.3 대응표
+# MMX-001 v0.3 coverage
 
-이 문서는 기술 스펙 v0.3을 구현 상태별로 구분합니다. `구현`은 test가 있는 실행 경로,
-`기반`은 model/protocol/config가 있으나 전체 자동화가 없는 상태, `후속`은 아직 제공하지 않는
-기능입니다.
+This matrix maps the experimental MMX-001 v0.3 specification to the current repository. It is a
+statement of implemented behavior, not a claim that all specification-level quality targets have
+been achieved.
 
-| 스펙 영역 | 상태 | 현재 구현 |
+Status terms:
+
+- **Implemented**: an executable path is covered by automated tests.
+- **Partially implemented**: the main path exists, but at least one specified fallback, extraction
+  path, quality gate, or corpus requirement remains incomplete.
+- **Foundation only**: models, protocols, or bounded seams exist, but the full automated feature
+  does not.
+- **Planned**: no supported implementation is currently provided.
+
+## Pipeline and publication
+
+| Specification area | Status | Current implementation |
 | --- | --- | --- |
-| strict/extended/maximal | 구현 | mode-derived top-k/candidate/repair budget |
-| 4개 게시 정책 | 구현 | hard gate와 등급/threshold truth table |
-| Figure/Picture/ComplexRegion | 구현 | Marker discovery와 원본 추출 |
-| full-page candidate | 구현 | coverage/edge 판정과 Marker source 분류/출력 |
-| page missed detector | 구현 | bounded proposal/crop, occupied exclusion, anchored Markdown 또는 unanchored page sidecar queue |
-| composite split | 구현 | proposal, raw-fragment crop, virtual 원본/결과 출력 |
-| fragment/multi-page merge | 구현 | caption/continued proposal, canvas assembly, first-fragment anchor 출력 |
-| Scene IR/provenance | 구현 | Pydantic 무결성, record별 256 evidence reference와 post-fusion 재검증, node-eligible kind allowlist와 재사용 ID 전체 revoke를 적용한 collision-free 생성 node attribution, Extended 80% 게시 gate, sidecar |
-| aggregate provenance resource gate | 구현 | Core runtime의 exact-list/hook-free detached `VisualEvidence` snapshot과 JSON/dict record별 canonical admission, duplicate를 포함한 `source_block_ids` 20,000 occurrence·8,000,000 Python-character 상한과 독립 full-evidence 8,000,000-character 상한, exact/+1 atomic collection·whole-new-ID batch 판정, initial/custom-engine·fusion ingress/output·final publication/Markdown·sidecar/output·Marker OCR producer·Review root/revision read/trusted replacement/digest/commit/structured-add·standalone Structured VLM prior-evidence preflight; prompt selection 전 whole-input 판정과 provider no-call 격리; evaluation raw prediction은 같은 source-block 상한과 atomic manifest-error/no-report gate를 사용하면서 공개 100,000-record/64 MiB artifact 계약을 보존; 공개 config/schema/manifest version 변경 없음 |
-| accessibility | 구현 | requested type 기반 title/description 파생, direct revalidation, 비지원 grammar warning/IR 보존; Pie·XY·Quadrant·Radar explicit `title`/`acc_title`/`description`/`acc_description` 네 필드는 출력 shadowing과 관계없이 data record와 분리된 candidate-authorized spatial OCR/vector 또는 reconstruction 초기 입력의 exact user-edit provenance gate를 적용하며 engine-emitted user-edit self-authorization은 금지; Sankey native는 title/description 미방출로 면제하고 same-slot Flowchart가 실제 방출하는 non-derived resolved SVG title/description 두 역할에만 모든 node/flow record와 독립된 spatial evidence/initial user-edit gate를 적용하며 shadow된 legacy field와 derived default/experimental notice는 면제; Quadrant 기본 description은 최대 다섯 point label을 포함하고 immutable metadata role 부재는 best-effort warning/strict review로 공개 |
-| Sankey terminal accessibility attribution | 구현 | native 미방출 metadata는 면제; same-slot Flowchart가 실제 방출하는 non-derived resolved title/description 두 역할은 candidate-authorized spatial OCR/vector 또는 승인된 reconstruction 초기 user-edit를 각각 요구하고 output에서 shadow된 legacy text는 면제; node/flow record evidence ID·normalized observation 재사용·ambiguity·metadata/data bbox overlap·missing/invalid data geometry·budget 초과·engine user-edit self-authorization은 review; repair에서 새 IR/scoped evidence로 재평가 |
-| Sankey raw accessibility metadata boundary | 구현 | pipeline 후보와 public typed serializer 모두 enrichment 전에 raw `title`/`description`/`acc_title`/`acc_description`을 검사; non-`None`은 exact built-in `str`이고 normalization 전 raw `MAX_TEXT_CHARS`와 normalization 후 non-empty·bounded·valid UTF-8·`Cc`/`Cf`/`Zl`/`Zp` 부재를 요구해 huge-whitespace/overlong raw·normalized text, whitespace-only·ZWSP/control-only·lone-surrogate를 provider별 Mermaid 직렬화/runtime 전에 거부; `null`은 absent이고 exact `""`은 Pie/XY 호환 accepted-as-omitted로 deterministic text를 파생 |
-| type-aware visual priors | 구현 | edge/Hough/arrow/OCR/contour/threshold/grayscale, source-resolution tile과 view manifest |
-| color cluster/vector primitive | 구현 | PIL color map, Marker PyMuPDF/duck-typed provider, observe-local 1회 build exact-dict placement-reference index의 O(1) page/block/page+block lookup·256/+1 atomic placement/ID gate·unique 선택 후 transform 지연 파싱·invalid-transform ambiguity 보존, reconstruction-global 256 source·2,048 primitive·5,000 text·8,000,000 text-character raw-work budget, custom span pre-parse 문자 accounting, one-lookahead streaming, malformed/crop/dedupe/nested-container work accounting, 256/512 per-record·100,000 aggregate point gate, 256-char metadata token, exact hash+250,000 approximate-dedup·각 1,000,000 text/endpoint comparison cap, huge-int와 hook-free fixed scalar normalization, custom/direct observation backstop, 20,000-reference·8,000,000-character aggregate source-block provenance preflight와 초과 시 whole-observation atomic isolation·sidecar generation diagnostic, bounded label/provenance enrichment fallback |
-| structured Marker VLM | 구현 | engine별 격리 source snapshot, enabled-type root contract와 Phase 1·stable State/Class/ER·모든 Phase 2 native/fallback·Phase 3 chart(Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn)·planning Journey/Kanban/GitGraph·special Packet/Ishikawa/TreeView/Wardley/Cynefin/Event Modeling/ZenUML/Organization/Data Lineage/Railroad nested record 후검증/prompt contract, chart finite JSON number와 closed token, planning strict score/order와 GitGraph closed token, special strict bit range/effect leaf/recursive hierarchy/positioned component/official domain/frame/expression type, C4 token/legacy `type`, Deployment/Component canonical relation/port, Use-case open relation label과 fixed Flowchart proxy 형, optional partial field/evidence와 원본 IR/extra metadata 보존, 알려진 semantic record별 256 evidence reference prompt/schema 상한, typed IR의 3-field envelope와 hook-free exact-built-in snapshot, candidate UTF-8 1 MB/escaped JSON 4 MB·observation 및 fused-output JSON 8 MB/64개 집계 예산, pipeline/fusion/accessibility/repair/sidecar sink 재검증, Marker 1.10.2 schema reserve와 stock Ollama inline-schema 호환을 포함한 request text/item/view budget, standalone prior-evidence aggregate snapshot, reconstruction-global evidence budget, structural quota/backfill, prompt-selected prior만의 게시 권한, durable budget notice; generic `ir` envelope의 discriminated schema는 후속 |
-| Direct Mermaid | 구현 | extended/maximal, 동일 hard gate |
-| Fusion engine | 구현 | source-explicit Scene consensus; 원자적 bounded element/relation/source-block evidence union, overflow winner fallback 및 exact-list/20,000-item pipeline canonical backstop; prior payload의 bbox/text 정합 source evidence와 owner-local spatial contour, 최소 IoU 0.45, noncolliding provenance를 요구하는 flat Flowchart/Generic Network full/injective node-ID remap, atomic refusal, direction-conflict 전파와 hash-bound mapping/provenance sidecar. nested/non-flow remap은 후속 |
-| Flowchart | 구현 | typed serializer, validated flat/disjoint group→subgraph emission과 SceneGroup round-trip + real render fixture |
-| Architecture | 구현 | native·runtime Flowchart와 C4/Deployment/Component 공용 service/group/relation semantic-source-canvas plan 및 collision-safe identity/membership/endpoint, exact-string endpoint·falsey label non-laundering·exact-boolean direction·record-local bounded evidence, quoted-Markdown source-only neutralization 및 조건부 quote/Markdown/entity compatibility warning, exact SVG accessibility numeric codec, 전 계열 raw metadata pre-enrichment snapshot·accepted-repair regeneration/warning reconciliation, Scene/OCR canvas/provenance·terminal direction 분리, missing endpoint fail-closed, plan line-count/statement별 UTF-16 누적 preflight, 동일 candidate slot nested fallback과 pinned Mermaid 11.16 양쪽 SVG fixture |
-| Sequence | 구현 | participant/message/accessibility semantic-source-canvas plan, token-free ordered emitted IDs와 shared endpoints, unknown/null endpoint·unknown style fail-closed, style별 operator/line/marker Scene projection, raw accessibility pre-enrichment snapshot·repair regeneration, record-local Scene/OCR/provenance, 조건부 angle compatibility warning, 50,000 UTF-16 unit/5,000줄 preflight, pinned Mermaid 11.16 SVG/runtime fixture |
-| Mindmap | 구현 | bounded recursive semantic-source-canvas plan, quoted root/child terminal과 source-only Markdown/security neutralization, 조건부 quote/emphasis/code/entity compatibility warning, duplicate logical ID와 분리된 preorder `root`/`node_N`, radial marker-less containment Scene, record-local bbox/evidence 및 exact OCR projection, raw accessibility pre-enrichment snapshot·repair regeneration/warning reconciliation, whole-plan malformed/depth/node/50,000 UTF-16 unit/5,000줄 fail-closed, pinned Mermaid 11.16 SVG/runtime fixture; native accessibility directive limitation 유지 |
-| Timeline/Gantt | 구현 | Timeline title/period/event exact semantic-source-canvas plan, grammar-isolated ASCII numeric source, raw metadata snapshot, stable Scene identity/provenance/OCR, 50,000 UTF-16 unit/5,000줄 gate와 pinned runtime fixture; Gantt typed terminal/schedule plan + real render fixture |
-| Gantt terminal-visible text | 구현 | title·section·task record semantic/source/Mermaid 11.16 canvas plan + semantic label 기반 별도 accessibility plan, explicit metadata 우선·exact-empty omitted raw snapshot·pre-enrichment/repair gate, `Tasks`·section-local `Task N` fallback, empty-section skip/all-empty fail-closed, collision-free section Scene identity와 globally unique/reserved-safe task ID, closed/non-contradictory status·exactly-one end/duration·보수적 numeric date subset·12-hour/meridiem pair·`Z/ZZ/S/SS` reject+`SSS`·`X` reject+canonical bounded `x`와 resolved-end range·end ordering·integer-calendar/millisecond-exact bounded duration gate, existing+source-earlier-target `after` validation과 `until`/after+end fail-closed, runtime-type-scoped final SVG `class~=task` finite positive geometry hard gate, task `:`/`%`의 `∶`/`％`와 title/accessibility `<`의 `‹` warning, visually inert source neutralization(separator는 normalized canvas/Scene/OCR에서 제거되나 raw SVG DOM에는 잔존 가능); broader Mermaid date formats와 dependency SceneRelation/path attribution은 후속 |
-| State terminal-visible text | 구현 | 일반 node·transition·resolved accessibility text의 grammar별 semantic/source/Mermaid 11.16 canvas plan; exact-empty ID fallback/transition omitted와 textless pseudo-state 유지, 그 외 exact built-in str·raw/normalized `MAX_TEXT_CHARS`·UTF-8·Unicode whitespace collapse·non-whitespace control/format/surrogate/normalized-empty fail-closed; quoted node `"`의 `″` 및 node/transition grammar-active `\`의 선택적 `∖`, bounded linear active Markdown delimiter/entity-like literal compatibility와 inactive punctuation 보존, bare email/`www` autolink source-only neutralization, directive raw quote/backslash/Markdown/named entity 보존 및 numeric entity/`<` compatibility, State grammar/scanner-active token source-only separator, lexer/security 예약 및 `iconify` substring source ID의 token-free collision-safe emitted alias와 Scene/edge mapping, hidden pseudo-label의 accessibility 격리, node/transition Scene·OCR와 accessibility SVG metadata projection 분리, raw 접근성 4필드 pre-enrichment/exact-empty omitted persisted snapshot, exact pseudo-state strict scanner allowlist, 조건부 warning 및 accepted-repair warning 재조정 |
-| ER terminal-visible text | 구현 | entity·attribute(type/name/key/comment)·relationship·resolved accessibility의 semantic/source/Mermaid 11.16 canvas plan; multiword role의 항상-quoted 단일 terminal, exact built-in bounded text·Unicode whitespace collapse와 malformed/non-whitespace-control/format/surrogate fail-closed, 자리별 `″`/`％`/`∖`/`｀`·active Markdown/entity compatibility glyph와 source-only scanner/lexer neutralization, ER lexer/security 예약 및 `iconify` source ID의 collision-safe `mmx_er_id_…` alias, serializer/Scene/OCR 공용 emitted endpoint·canvas label·collision-free relation slot·record provenance, attribute의 semantic OCR 전용 projection, raw 접근성 4필드 pre-enrichment/exact-empty omitted persisted snapshot, accepted repair의 derived accessibility 재생성과 조건부 warning 재조정, quoted-role phantom-entity 방지·terminal/accessibility SVG text·reserved ID pinned runtime fixture |
-| BPMN/Swimlane | 구현 | portable flowchart subgraph fallback |
-| Phase 2 software types | 구현 | State/Class/ER/Requirement/Block native와 C4/Deployment/Component/Use-case fallback 모두 strict nested extraction contract 구현; C4와 Deployment/Component는 bounded record/Architecture plan의 emitted identity·group·unlabeled topology를 사용하고 runtime 거부 시 nested Flowchart로 재시도하며 특수 notation과 relation label은 typed IR에 보존, 진단용 native C4는 publication metric에서 분리; Use-case는 strict relation/endpoint plan을 serializer와 Scene이 공유하고 unsupported group을 억제하며 stadium actor와 round use-case를 구분하는 Flowchart 명시 fallback |
-| Phase 3 charts | 부분 구현 | Quadrant는 serializer/Scene/OCR 공용 bounded `QuadrantPlan`으로 axis·slot·point source identity·fixed-decimal coordinate·record provenance를 고정하고 zero-or-normal binary64·pinned 500×500 canvas의 finite/distinct point/text visibility gate를 통과한 axis-endpoint/point/four-region native Scene과 최대 256 point의 zero-geometry `TB` title/axis/slot/exact-coordinate cell/no-edge Flowchart를 구분하며 native runtime 거부를 same-slot fallback하고 50,000 UTF-16 code-unit/5,000줄 preflight·compatibility warning·record-local axis/point 및 독립 slot/explicit-metadata association gate를 적용; XY는 serializer/Scene/OCR 공용 bounded `XYPlan`으로 axis·series·point source identity·fixed-decimal x/y·record provenance를 고정하고 zero-or-normal binary64·positive normal span·bounded exact renderer-loop·visible line/bar·10-series gate를 통과한 normalized axis/category/data geometry와 marker-less line topology native, 최대 256 point의 zero-geometry `TB` title/axis/category/exact-value cell/no-edge Flowchart를 구분하며 non-uniform/drop/stall/occlusion·native runtime 거부를 same-slot fallback하고 50,000 UTF-16 code-unit/5,000줄 preflight·compatibility warning·record-local association/explicit metadata gate를 적용; Pie는 serializer/Scene/OCR 공용 bounded `PiePlan`으로 `pie_slice_N`·fixed-decimal value·record provenance를 고정하고 12-slice·zero-or-normal binary64·left-to-right finite total·positive slice 1% visibility·`showData` exactness gate를 통과한 normalized radial sector/legend/percentage native와 최대 256 slice의 zero-geometry `TB` exact-value cell/no-edge Flowchart를 구분하며 native runtime 거부를 same-slot 재검증하고 50,000 UTF-16 code-unit/5,000줄 preflight·compatibility warning을 적용; Sankey는 native/fallback 공용 bounded plan으로 source/emitted ID·record provenance·exact weight를 고정하고 native terminal의 renderer 합계·marker-less LR topology와 Flowchart terminal의 exact edge label·end-arrow·requested direction을 Scene/OCR에 각각 투영하며 native runtime 거부 시 같은 candidate slot에서 재검증, malformed provenance를 record-local 격리하고 Flowchart 500-edge limit을 terminal별 적용하며 flow별 positive contained bbox 안의 candidate-authorized OCR/vector exact `value_text`·전역 숫자 exactness·cross-flow reuse/ambiguity/swap/budget review gate를 native·same-slot fallback·repair에 공통 적용하고 direct/untyped는 review-only로 유지; Radar는 serializer/Scene/OCR 공용 `RadarPlan`으로 reserved-safe cross-terminal ID·fixed-decimal value·record-local provenance를 고정하고 zero-or-normal binary64/positive finite span·radius 및 12-series gate를 통과한 normalized radial axis/data-point/closed marker-less curve Scene과 최대 256 point의 zero-geometry `TB` visible-title/anonymous-or-labeled-series-group/value-cell/no-edge Flowchart를 구분하며 terminal-visible title·axis·conditional legend/group·cell만 OCR에 투영, native runtime 거부를 same-slot 재검증하고 50,000 UTF-16 code-unit/5,000줄 preflight·compatibility warning·non-finite SVG hard gate·dimension 공간 순서/series ordered-value record-local association gate를 적용; Treemap은 serializer/Scene/OCR 공용 preorder plan에 source/reserved-safe ID·record provenance·native section/leaf·d3 reverse-binary64 `format(",")` 합계를 고정하고 source bbox는 typed/review provenance에만 보존하며 marker/connector 없는 unknown-layout native와 `N1..Nn`/`TB`/end-arrow/exact-value-suffix Flowchart를 zero-geometry Scene으로 투영하고 internal value·unsafe numeric·runtime 거부를 same-slot fallback, malformed evidence를 record-local 격리하고 Flowchart 500-relation·source 50,000자/5,000줄 limit을 적용; Venn은 serializer/Scene/OCR 공용 bounded plan으로 collision-safe set/intersection ID·canonical membership·record provenance·지수 없는 exact value를 고정하고 positive normal binary64·`200:1` visibility·exact-containment 제외·higher-order complete explicit pair gate를 통과한 marker-less/unknown-layout native와 exact-value/`intersects`/end-arrow/`LR` Flowchart를 zero-geometry Scene으로 구분, 누락 pair/value를 합성하지 않으며 native runtime 거부를 same-slot 재검증하고 fallback-only 500-edge·공통 50,000자·5,000줄 limit을 적용; 7개 유형 모두 별도 source OCR/vector numeric gate 적용; missing/unreadable chart value의 structured table + description fallback은 후속 |
-| Phase 3 Treemap attribution | 구현 | 공용 preorder plan의 모든 node를 finite·positive·in-image source bbox와 candidate-authorized OCR/vector exact label/explicit-value record에 injective하게 결합; boundary-sharing을 허용하는 contained-but-non-equal parent-child geometry, edge-touch를 허용하는 direct-sibling interior non-overlap, internal-node cited-text exclusivity, duplicate/same-bbox ambiguity·reuse·20,000 ref/50,000 text/1,000,000 char/100,000 token/100,000 spatial work fail-closed와 전역 numeric exactness를 native/same-slot Flowchart/repair에 공통 적용하고 direct/untyped Treemap은 review-only로 유지; source bbox는 generated zero-geometry Scene에 복사하지 않음 |
-| Treemap terminal metadata attribution | 구현 | native visible title + non-derived resolved accessibility title/description과 Flowchart가 실제 방출하는 resolved accessibility metadata만 terminal별로 요구; shadowed legacy/derived default/experimental notice 면제, 동일 visible+acc title owner collapse와 title-description owner 분리, node 밖 candidate-authorized spatial OCR/vector 또는 승인된 초기 user-edit, node-owned/overlap/ambiguity/reuse/engine-edit/shared-budget review gate, proven metadata numeric occurrence의 data reference 제외, fallback/repair 재평가 |
-| Treemap raw explicit metadata boundary | 구현 | pipeline typed candidate, public typed/runtime fallback, typed direct `serialize_treemap()`에서 enrichment/planning 전 raw `title`/`description`/`acc_title`/`acc_description` 공통 검사; `None`/absent와 exact-empty omitted 호환, 그 외 exact built-in str·raw/normalized `MAX_TEXT_CHARS`·normalized non-empty·valid UTF-8·raw `Cc`/`Cf`/`Zl`/`Zp` 부재 요구; subclass/non-text/whitespace-only/huge-whitespace/newline-tab laundering/zero-width/lone-surrogate를 Mermaid runtime 전에 fail closed, repair 재검증 및 exact-empty 제거 snapshot의 직렬화·평가·저장 일치; typed metadata가 없는 Raw Direct Mermaid는 security·parse·render와 typed-plan 부재 시 review-only gate 유지 |
-| Phase 3 Venn attribution | 구현 | 공용 Venn plan의 모든 set/intersection을 candidate-authorized cited contour와 exact 일치하는 finite·positive·in-image source bbox, 별도 cited OCR/vector exact label/explicit-value record에 injective하게 결합; label/value가 없는 field는 합성하지 않고 text field가 전혀 없는 intersection은 review; Venn 의미상 record bbox overlap과 equal containment는 허용하되 declared-set inclusive containment·undeclared-set ambiguity·higher-order/explicit-strict-subset nesting, owner-local evidence containment, evidence ID·normalized observation 재사용/ambiguity, 20,000 ref/50,000 text/1,000,000 char/100,000 token/모든 set·intersection-pair scan을 포함한 100,000 shared spatial work fail-closed와 전역 numeric exactness를 native/same-slot Flowchart/repair에 공통 적용; runtime fallback repair는 같은 terminal로 canonical 재직렬화하며 direct/untyped Venn은 review-only |
-| Venn terminal metadata attribution | 구현 | native visible explicit title과 intrinsic/runtime Flowchart가 실제 방출하는 non-derived resolved accessibility title/description만 terminal별로 요구; native unsupported·fallback shadowed legacy·derived default·pipeline notice suffix 면제, experimental notice-only explicit description fail-closed 및 strict explicit notice 증명; 모든 area 밖 candidate-authorized OCR/vector 또는 승인된 초기 exact user-edit, data/metadata ID·observation 재사용·ambiguity·overlap·engine edit·shared-budget review gate, proven OCR/vector metadata numeric occurrence만 data reference에서 제외하고 user-edit는 미차감, 동일 proof의 source-channel 우선으로 ID-order 독립성 보장, fallback/repair 재평가 |
-| Venn raw explicit metadata boundary | 구현 | pipeline typed candidate, public typed/runtime fallback, typed direct chart-set `serialize_venn()`에서 enrichment/planning 전 raw `title`/`description`/`acc_title`/`acc_description` 공통 검사; `None`/absent와 exact-empty omitted 호환, 그 외 exact built-in str·raw/normalized `MAX_TEXT_CHARS`·normalized non-empty·valid UTF-8·raw `Cc`/`Cf`/`Zl`/`Zp` 부재 요구; subclass/non-text/whitespace-only/huge-whitespace/newline-tab laundering/zero-width/lone-surrogate를 Mermaid runtime 전에 fail closed, repair 재검증 및 exact-empty 제거 snapshot의 직렬화·평가·저장 일치; typed metadata가 없는 Raw Direct Mermaid는 security·parse·render와 typed-plan 부재 시 review-only gate 유지 |
-| Planning types | 구현 | 세 유형 strict nested extraction과 2,000-record cap; Journey→Timeline Scene/OCR projection 및 독립 score 숫자 gate, 공용 emitted-ID/topology plan을 쓰는 native Kanban/GitGraph와 generated Scene, runtime 거부 시 동일 candidate slot의 Flowchart fallback, GitGraph 실제 SVG text 보존 quoting |
-| Phase 5 special types | 구현 | Packet/Ishikawa/TreeView strict nested extraction, native+runtime fallback, reserved-safe 공유 plan, generated Scene/provenance·source budget; Packet native/fallback/repair 공용 field-local cited OCR/vector+bbox numeric binding과 ambiguity/budget review gate; Wardley/Cynefin strict nested extraction과 native/Scene/OCR 공유 plan, 실제 SVG text·source budget, Wardley `[y,x]`→normalized `(x,1-y)` layout·token 반올림·plain link 및 native rejection 시 좌표/anchor 손실을 공개하는 same-slot 무방향 Flowchart fallback·zero-layout Scene; Cynefin native는 고정 runtime template·`confusion +N more`·review-only gate를 유지하고 native rejection은 supplied domain별 subgraph·모든 explicit item·directed transition만 갖는 same-slot `flowchart LR`와 zero-layout terminal Scene/OCR로 재검증, generated-node attribution threshold를 통과한 fallback은 일반 gate 게시; Event Modeling/ZenUML strict nested extraction과 reserved-safe Flowchart/Sequence fallback·generated Scene/OCR 공유 plan; Organization/Data Lineage strict nested extraction과 reserved-safe TreeView/Flowchart fallback·generated Scene/OCR 공유 plan; Railroad strict recursive AST extraction과 native/Scene/OCR 공유 plan |
-| Organization/Data Lineage | 구현 | canonical recursive hierarchy/dataset·process·relation 계약, frozen logical/emitted identity·visible-label·topology plan, record-local provenance, zero generated geometry, terminal-aware TreeView/Flowchart shape·arrow, grammar-safe lineage edge glyph, exact OCR projection, 500-record·50,000자·5,000줄 예산; Organization runtime rejection은 중첩 Flowchart fallback으로 재검증 |
-| Railroad | 구현 | canonical rule와 discriminated recursive expression 계약, frozen preorder rule/expression/containment plan, markerless LR Scene·record-local provenance·exact compatibility OCR, unresolved reference·depth 20·rule/expression 500개·50,000자·5,000줄 예산, ASCII angle·모든 ASCII `#`·entity-like `&` prefix·NFKC quote/backslash compatibility glyph warning과 raw semantic IR 보존, scanner/preprocessor source-active token용 source-only ZWSP, raw/NFKC strict source scan·raw parse/render hard gate·NFKC grammar-injection safety probe, source-active·native grammar-reserved rule-name `rrmapped_N[_suffix]` allocation, malformed direct-Scene evidence fail-closed, normalized injection·bare hash·`style`/`classDef`·reserved-name runtime fixture |
-| AST repair/mermaid-ast | 기반 | pre-validation bounded repair, event/history, AST adapter seam; mermaid-ast package adapter 후속 |
-| style recovery | 기반 | trusted PDF vector origin 기반 Flowchart node/group fill·border, bold label, edge color/style와 attribution 구현; raster group/lane과 chart series 후속 |
-| OCR recall | 구현 | bounded occurrence multisets, spatial/bbox-less dedup, structural/Gantt/Class/ER/Timeline/Journey/Kanban/GitGraph/Packet/Pie/XY/Quadrant/Sankey/Radar/Treemap/Venn/Ishikawa/TreeView 및 emitted Architecture group·C4 fallback boundary/service·Requirement·Deployment/Component·Use-case·EventModeling·Wardley·Cynefin·ZenUML·Organization·Data Lineage·Railroad serializer-visible labels; Block collision-safe emitted-ID/`[unreadable]`, State normalized ID/endpoint·textless pseudo-state·boundary label projection·malformed-transition fail-closed, Sequence `[unreadable]` message, Gantt collision-free section Scene identity·globally unique task ID·section-local `Task N` default·separator-stripped normalized canvas, Packet native-title/Flowchart-title-loss terminal 분리, Pie native visible-title+legend+percentage/Flowchart exact `label: value` cell terminal 분리·accessibility/native-only title 배제, XY native visible-title+axis+category/Flowchart title+axis+category+exact data cell terminal 분리·hidden value/accessibility metadata 배제, Quadrant native visible-title+axis endpoint+supplied slot+point/Flowchart title+axis+slot+exact-coordinate cell terminal 분리·native coordinate/accessibility metadata 배제, Sankey native node-label+renderer-total/Flowchart node-label+exact-weight terminal 분리, Radar native visible-title+axis+conditional legend/Flowchart visible-title+anonymous-or-labeled series-group+exact `dimension: value` cell terminal 분리·hidden value/options/accessibility metadata 배제, Treemap native visible-title+section/leaf+d3-total/Flowchart exact value-suffix terminal 분리·accessibility metadata 배제·small-cell `display:none` 렌더 제한, Venn native visible-title+area-label/Flowchart exact value-suffix+`intersects` terminal 분리·native geometry value/accessibility metadata 배제; Cynefin native fixed template/confusion summary와 terminal Flowchart supplied-domain-once/all-item/transition 분리 projection, non-emitted metadata 배제, compatibility glyph의 실제 SVG text 투영, invalid/error/over-budget review gate |
-| Sequence terminal OCR/provenance | 구현 | shared plan의 participant/message canvas label과 emitted endpoint/order만 투영, 무라벨 message `[unreadable]`, accessibility/raw ID/source-only separator·hidden metadata 배제, participant evidence→element와 message evidence→relation의 record-local 결합, malformed/unknown endpoint whole-Scene fail-closed |
-| Mindmap terminal OCR/provenance | 구현 | shared preorder plan의 root/child compatibility canvas label과 `root`/`node_N` identity만 투영, root circle·child rectangle·radial marker-less containment, `[unreadable]` fallback, child evidence→element/relation 결합, accessibility/raw logical ID·role·shape·direction·source-only separator 배제, malformed/alias-conflict/object-reuse/depth/node/source-budget whole-Scene fail-closed |
-| Timeline terminal OCR/provenance | 구현 | shared plan의 canvas title/period/모든 event label만 투영, source-order `timeline_event_N` element와 record-local bbox/evidence, `[unreadable]` fallback, raw ID/role/shape/direction/hidden alias·source sentinel/numeric entity·accessibility metadata 배제, malformed/alias-conflict/duplicate/budget whole-Scene fail-closed |
-| numeric consistency | 구현 | 일반 numeric type은 source/generated occurrence multiset을 비교하고 Journey score도 독립 source gate 적용; Pie는 전역 occurrence exactness와 candidate-authorized cited OCR/vector의 non-overlapping slice별 punctuation-preserving full label/value binding을 함께 요구하며 value/label swap·suffix/uncited slice 누락·extra=`0.0` 또는 unavailable/review; XY는 axis/series/explicit-point별 bbox-contained cited record와 전역 숫자를 함께 검증해 category/value/x swap·observation reuse·invalid geometry를 review; Quadrant는 axis/point별 low-high 및 label-x-y record, source-quadrant 안의 supplied slot, explicit metadata 독립 근거와 전역 숫자를 함께 검증하며 slot/record swap·reuse·invalid/over-budget 입력을 review; Sankey는 flow별 positive contained bbox의 candidate-authorized exact `value_text`와 전역 occurrence exactness를 함께 검증해 cross-flow reuse·ambiguity·weight swap·invalid/over-budget 입력 및 direct/untyped 후보를 review; Radar는 dimension label·공간 순서와 series label·ordered values를 non-overlapping owner-local cited record에 결합하고 전역 occurrence exactness를 추가해 dimension/series permutation·reuse·same-bbox contradiction·invalid/over-budget 입력을 review; Packet은 field-local label/range gate 적용 |
-| edge agreement | 구현 | aligned topology F1, 불가 시 source/render edge IoU fallback |
-| visual entailment | 기반 | 생성 node evidence coverage proxy와 게시 gate; model scorer 후속 |
-| arrow/layout/path score | 구현 | explicit-arrow/path F1, relative layout; 근거 부족 시 unavailable |
-| render-and-compare repair | 기반 | trusted text label, unique built-in Geometry connector와 결합한 existing conditional edge label-only, conflict-free reversed·unlabeled-missing edge repair, IR/code/resource 재검증과 공통 재평가; Pie/Packet/Radar proposal도 slice/field/dimension-series-local numeric association을 새 typed IR에서 다시 계산; node/conditional topology·endpoint·direction·new branch·Yes-No inference·parallel/layout patch 후속 |
-| publication validation receipt | 구현 | 최종 Mermaid/SVG/선택적 PNG digest와 policy/security/status 결정을 두 공개 receipt 및 process-local certificate/seal로 결합하고 Markdown·Marker·게시 sidecar 경계에서 재확인 |
-| atomic sidecars | 구현 | preflight, manifest/hash/validation receipt/alternatives/provenance/source affine map |
-| Review Workspace | 구현 | source-sized Scene-coordinate provenance/node overlay와 OCR/vector label 선택, bounds-normalized difference blend, 실패 bundle bootstrap, summary mutation lock, guarded draft/conflict reload, dirty-discard·stale-response 방어, 대안 선택, 승인/거절, active revision timeline과 canonical append-only log를 보존하는 newest-first 100개 audit view |
-| code/IR/provenance revision | 구현 | strict code/Scene/evidence schema, content-addressed provenance, 0.3 lazy migration, rollback/undo/redo와 active timeline restore |
-| NL patch | 구현 | 품질 invalidation, 명시 ID 기반 patch와 구조화 audit history |
-| structured operations | 구현 | linked OCR/vector evidence 기반 node relabel, provenance-backed edge 추가, stable relation ID 기반 label 추가·교체·제거와 exact-ID edge 재연결·삭제, node 삭제, group 생성·삭제, screen-space endpoint drag와 accessible forms, global IR↔Mermaid node/edge/group 1:1 gate, pre-interpretation optimistic lock |
-| source-anchored node add | 구현 | bounded canvas bbox, server-created user_edit evidence, code/IR/provenance transaction |
-| layout drag-and-drop | 구현 | source bbox와 분리된 normalized advisory node move, screen-space edge endpoint snap, pointer/keyboard fallback, content-addressed revision과 undo/redo |
-| release evaluation | 기반 | hash-bound manifest, micro metrics, hard/fixture/22-type/quality gate, case-local collision-free node provenance, 100,000-record 호환 aggregate prediction ingress와 JSON/Markdown report; 대규모 corpus·격리 runner는 후속 |
+| `strict`, `extended`, `maximal` modes | Implemented | Mode-derived type, candidate, and repair budgets |
+| Four publication policies | Implemented | Security/render hard gates plus grade and semantic-threshold policy tables |
+| Original-image preservation | Implemented | Required in Marker rendering, Markdown, and sidecar output |
+| Candidate failure isolation | Implemented | Engine, source, candidate, runtime, and page-detector failures are isolated |
+| Direct Mermaid | Implemented | Enabled in extended/maximal and subject to the same hard gates |
+| Publication receipts | Implemented | Mermaid, SVG, optional PNG, scores, policy, and status are digest-bound and process-sealed |
+| Atomic sidecars | Implemented | Preflight, exclusive publication, manifests, hashes, alternatives, provenance, and affine maps |
+| Render-and-compare repair | Foundation only | Deterministic evidence-backed text and limited flow-edge repair; broader visual patching is planned |
+| Mermaid AST adapter | Foundation only | Bounded lexical/structural repair and adapter seam; `mermaid-ast` package integration is planned |
 
-## 릴리스 해석
+## Discovery, views, and evidence
 
-현재 버전은 Phase 1~5 serializer를 제공하는 experimental engineering baseline이지 MMX-001의 모든
-end-to-end 기능 gate를 달성한 production `extended` 릴리스가 아닙니다. 특히
-generic `ir` envelope의 discriminated extraction schema, 아직 fallback
-adapter가 없는 experimental grammar, 연구 데이터셋 규모의 실제 corpus와 trusted runner 측정이
-필요합니다. precision/recall 목표와 유형별 최소 fixture 수량을 판정하는 고정 평가기는
-제공합니다. 자동 게시 hard gate, 원본 보존, candidate failure
-isolation, budget, sidecar/review 가능성은 현재 test 대상으로 삼습니다.
+| Specification area | Status | Current implementation |
+| --- | --- | --- |
+| Figure/Picture/ComplexRegion discovery | Implemented | Marker block and `current_children` traversal with source deduplication |
+| Full-page candidates | Implemented | Coverage classification and original/full-page source output |
+| Missed-diagram detector | Implemented | Bounded edge/component proposals, occupied-region exclusion, anchor or sidecar queue |
+| Composite split | Implemented | Whitespace/separator proposals, raw crops, and virtual-source output |
+| Adjacent and multi-page merge | Implemented | Caption/continued signals, bounded canvas assembly, first-fragment anchoring |
+| Type-aware visual priors | Implemented | Edge, Hough, arrow, OCR, contour, threshold, grayscale, color, vector, and source-resolution tiles |
+| Scene IR and provenance | Implemented | Pydantic integrity, bounded references, collision-safe generated-node attribution, and sidecars |
+| Aggregate evidence budgets | Implemented | Hook-free snapshots; atomic item, reference, character, and whole-new-ID limits at every sink |
+| Vector primitive extraction | Implemented | Duck-typed/PyMuPDF inputs, global raw-work budgets, bounded placement index, affine mapping |
+| Geometry extraction | Implemented | Conservative contours, lines, endpoints, arrowheads, and unresolved relations |
+| Evidence fusion | Implemented | Explicit-source precedence, atomic unions, conflict tracking, and limited flow-node ID reconciliation |
+| Visual-entailment model score | Foundation only | Provenance-coverage proxy and publication gate; a dedicated model scorer is planned |
+
+Detailed invariants and exact resource limits are documented in
+[Architecture](architecture.md), [Vector extraction and fusion](vector-fusion.md),
+[Visual priors](visual-priors.md), and [Security](security.md).
+
+## Extraction and serialization
+
+| Family or type | Status | Emission strategy |
+| --- | --- | --- |
+| Flowchart / Generic Network | Implemented | Typed Flowchart with validated flat/disjoint subgraphs and Scene round-trip |
+| Sequence | Implemented | Native Sequence with shared participant/message/source-canvas plan |
+| State | Implemented | Native State with terminal-text normalization and pseudo-state handling |
+| Class | Implemented | Native Class with typed members and relations |
+| ER | Implemented | Native ER with entity, attribute, role, cardinality, and terminal-text plan |
+| Requirement / Block | Implemented | Native typed serializers |
+| Architecture | Implemented | Native `architecture-beta`, then same-slot nested Flowchart fallback |
+| C4 / Deployment / Component | Implemented | Architecture projection with preserved typed data, then Flowchart fallback |
+| BPMN / Swimlane | Implemented | Portable Flowchart subgraph fallback |
+| Use-case | Implemented | Explicit Flowchart projection with distinct actor/use-case shapes |
+| Mindmap | Implemented | Native bounded recursive Mindmap with generated containment Scene |
+| Timeline | Implemented | Native title/period/event plan and pinned runtime fixture |
+| Gantt | Implemented | Native task/date/dependency plan with conservative date grammar |
+| Journey / Kanban / GitGraph | Implemented | Strict extraction; native or planning projection with same-slot fallback |
+| Pie / XY / Quadrant | Partially implemented | Native numeric plans with same-slot exact-value Flowchart fallback |
+| Sankey / Radar / Treemap / Venn | Partially implemented | Native plans, evidence-bound numeric/set semantics, and same-slot Flowchart fallbacks |
+| Packet / Ishikawa / TreeView | Implemented | Strict extraction, native/shared plans, and portable fallbacks |
+| Wardley / Cynefin | Implemented | Experimental native plans and explicit loss-disclosed Flowchart fallbacks |
+| Event Modeling / ZenUML | Implemented | Strict extraction with Flowchart/Sequence fallback |
+| Organization / Data Lineage | Implemented | Recursive hierarchy or dataset/process contracts with TreeView/Flowchart fallback |
+| Railroad | Implemented | Bounded recursive grammar AST and native Scene/OCR plan |
+
+The chart family remains **Partially implemented** because the specification's structured-table
+plus-description fallback for unreadable or missing numeric values is not complete. The current
+implementation does not invent numbers: candidates with missing, ambiguous, reused, or
+geometrically inconsistent numeric evidence are routed to review or sidecars.
+
+Structured Marker VLM extraction is implemented for the supported roots above. It uses isolated
+source snapshots, type-specific nested schemas, exact JSON scalars, bounded depth/items/text,
+request/view budgets, reconstruction-global evidence budgets, and prompt-selected prior-evidence
+authority. The generic `ir` envelope still lacks a fully discriminated extraction schema.
+
+See [Typed extraction](typed-extraction.md), [Serializer contracts](serialization.md),
+[Charts](charts.md), and [Specialized diagrams](specialized-diagrams.md) for per-record semantics,
+terminal grammar, runtime fallbacks, and provenance gates.
+
+## Accessibility, quality, and repair
+
+| Specification area | Status | Current implementation |
+| --- | --- | --- |
+| Accessible title/description | Implemented | Requested-type derivation, emitted-grammar support checks, explicit metadata provenance gates |
+| OCR recall | Implemented | Bounded occurrence multisets projected from terminal-visible serializer plans |
+| Numeric consistency | Implemented | Global occurrence checks plus record-local evidence binding for supported numeric diagrams |
+| Edge agreement | Implemented | Aligned topology F1 with edge-map IoU fallback |
+| Arrow agreement | Implemented | Explicit-arrow comparison; unavailable without source direction evidence |
+| Layout similarity | Implemented | Relative node placement when both Scenes expose usable geometry |
+| Path consistency | Implemented | Root-to-terminal path comparison for supported directed structures |
+| Style recovery | Foundation only | Trusted vector-backed Flowchart node/group/edge style and bold; raster lanes and chart series are planned |
+| Semantic repair | Partially implemented | Trusted label repair and limited conflict-free flow edges; topology inference and layout repair are planned |
+
+Raw explicit accessibility metadata is checked before enrichment and serialization. Non-null
+metadata must be an exact bounded string with valid UTF-8 and no prohibited control/format/line
+separator characters. Exact empty strings retain documented accepted-as-omitted compatibility;
+derived defaults and experimental notices do not masquerade as source-proven metadata. Chart and
+fallback terminal plans separately decide which titles, descriptions, labels, values, and
+percentages are actually visible and therefore eligible for OCR scoring.
+
+## Review workspace
+
+| Feature | Status | Current implementation |
+| --- | --- | --- |
+| Source/render/difference views | Implemented | Source-sized overlays, bounded difference blend, and candidate comparison |
+| Code, IR, and provenance revisions | Implemented | Strict schemas, content-addressed provenance, immutable versions, undo/redo/rollback |
+| Candidate approval/rejection | Implemented | Guarded drafts, optimistic locking, audit history, and active revision timeline |
+| Natural-language patch | Implemented | Bounded explicit-ID commands with quality invalidation and structured history |
+| Structured edit operations | Implemented | Relabel, node add/delete, evidence-backed edge add/delete/reconnect/relabel, group add/delete |
+| Drag-and-drop layout | Implemented | Advisory normalized layout hints separate from source bounding boxes |
+
+Natural-language patches do not bypass deterministic validation. Every stored revision must pass
+the same source security, Mermaid parse/render, SVG inspection, and integrity checks as an
+ordinary candidate.
+
+## Release evaluation
+
+| Specification area | Status | Current implementation |
+| --- | --- | --- |
+| Fixed manifest and artifact hashes | Implemented | Hash-bound JSON contract and deterministic report inputs |
+| Hard and fixture gates | Implemented | Parse/render/original preservation, type fixtures, and quality summaries |
+| Reference-free metrics | Implemented | OCR, numeric, provenance, topology, arrow, layout, and path availability |
+| Production-scale corpus runner | Foundation only | Local aggregation exists; isolated trusted runner and required corpus scale remain planned |
+| MMX-001 quality targets | Not yet demonstrated | The evaluator exists, but this repository does not ship the full required real-world corpus |
+
+## Release interpretation
+
+Version `0.1.0` is an experimental engineering baseline with Phase 1–5 serializer coverage. It is
+not a production `extended` release that has satisfied every MMX-001 end-to-end functional and
+quality gate. Remaining work includes the discriminated generic-IR extraction schema, adapters for
+some experimental grammars, structured non-Mermaid fallbacks for unreadable charts, and measured
+results on the specification-scale scientific, enterprise, specialized, multilingual, negative,
+and hand-drawn corpora.
+
+The repository does test the boundaries already relied upon for automatic output: source-image
+preservation, security/parse/render hard gates, failure isolation, bounded resources, sidecar
+integrity, provenance, and reviewability. The fixed evaluator can judge precision/recall targets
+and minimum fixture counts once an appropriately licensed corpus and trusted runner are supplied.
