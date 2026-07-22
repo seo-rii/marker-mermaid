@@ -404,6 +404,70 @@ def test_assembly_page_to_canvas_mapping_overrides_bbox_fallback() -> None:
     assert not any("bbox fallback" in warning for warning in result.warnings)
 
 
+def test_affine_mapping_without_page_bbox_transforms_bboxes_and_points_together() -> None:
+    class Block:
+        id = "target"
+        page_id = 1
+        vector_coordinate_space = "page"
+        vector_texts = [{"text": "Mapped", "bbox": (10, 20, 30, 40)}]
+        vector_primitives = [
+            {
+                "kind": "line",
+                "bbox": (10, 20, 30, 40),
+                "points": [(10, 20), (30, 40)],
+            }
+        ]
+
+    observation = extract_vector_observation(
+        Block(),
+        (400, 400),
+        source_mapping={
+            "assembly": {
+                "placements": [
+                    {
+                        "page_id": 1,
+                        "source_block_ids": ["target"],
+                        "page_to_canvas": [1, 0, 100, 0, 1, 200],
+                    }
+                ]
+            }
+        },
+    )
+
+    assert observation.texts[0].bbox == (110.0, 220.0, 130.0, 240.0)
+    assert observation.primitives[0].bbox == (110.0, 220.0, 130.0, 240.0)
+    assert observation.primitives[0].points == ((110.0, 220.0), (130.0, 240.0))
+
+
+def test_affine_mapping_bounds_all_four_corners_after_rotation() -> None:
+    class Block:
+        id = "target"
+        page_id = 1
+        vector_coordinate_space = "page"
+        vector_texts = [{"text": "Rotated", "bbox": (10, 20, 30, 40)}]
+        vector_primitives = [{"kind": "rectangle", "bbox": (10, 20, 30, 40)}]
+
+    observation = extract_vector_observation(
+        Block(),
+        (100, 100),
+        source_mapping={
+            "assembly": {
+                "placements": [
+                    {
+                        "page_id": 1,
+                        "source_block_ids": ["target"],
+                        "page_bbox": [0, 0, 100, 100],
+                        "page_to_canvas": [0, -1, 100, 1, 0, 0],
+                    }
+                ]
+            }
+        },
+    )
+
+    assert observation.texts[0].bbox == (60.0, 10.0, 80.0, 30.0)
+    assert observation.primitives[0].bbox == (60.0, 10.0, 80.0, 30.0)
+
+
 def test_marker_block_id_selects_the_matching_same_page_vector_placement() -> None:
     marker_schema = pytest.importorskip("marker.schema")
     marker_blocks = pytest.importorskip("marker.schema.blocks.base")

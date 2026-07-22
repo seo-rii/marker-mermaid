@@ -71,6 +71,16 @@ def test_identifier_collision_is_reported_instead_of_guessed() -> None:
     assert [issue.code for issue in result.issues] == ["nonportable_identifier"]
 
 
+def test_identifier_normalization_does_not_collide_with_implicit_node() -> None:
+    source = 'flowchart LR\n    a-b["Declared"]\n    x --> a_b\n    a-b --> y\n'
+
+    result = DeterministicMermaidRepair().repair(source)
+
+    assert result.source == source
+    assert not any(event.operation == "normalize_identifier" for event in result.events)
+    assert any(issue.code == "nonportable_identifier" for issue in result.issues)
+
+
 def test_removes_only_exact_duplicate_and_reports_conflicting_duplicate() -> None:
     source = 'flowchart LR\n    A["One"]\n    A["One"]\n    A["Different"]\n'
 
@@ -88,6 +98,16 @@ def test_duplicate_declarations_with_distinct_comments_are_not_removed() -> None
 
     assert result.source == source
     assert not result.changed
+    assert [issue.code for issue in result.issues] == ["duplicate_node_declaration"]
+
+
+def test_duplicate_node_in_a_subgraph_keeps_its_membership() -> None:
+    source = 'flowchart LR\n    A["One"]\n    subgraph G["Group"]\n        A["One"]\n    end\n'
+
+    result = DeterministicMermaidRepair().repair(source)
+
+    assert result.source == source
+    assert not any(event.operation == "remove_exact_duplicate_node" for event in result.events)
     assert [issue.code for issue in result.issues] == ["duplicate_node_declaration"]
 
 

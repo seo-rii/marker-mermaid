@@ -925,6 +925,7 @@ class FusionEngine:
             evidence,
             base_box,
             geometry.scene,
+            geometry.trusted_canvas_size or geometry.scene.canvas_size,
         )
         result.text = label
         if label_warning:
@@ -1701,7 +1702,8 @@ def _select_label(
     records: Sequence[_ElementRecord],
     evidence: Sequence[VisualEvidence],
     unit_bbox: tuple[float, float, float, float],
-    output_scene: DiagramSceneIR,
+    comparison_scene: DiagramSceneIR,
+    pixel_canvas_size: tuple[float, float] | None,
 ) -> tuple[str | None, str | None]:
     text_records: list[tuple[FusionSource, str, str | None, float]] = [
         (record.source, record.owner, record.element.text, record.element.confidence)
@@ -1711,10 +1713,23 @@ def _select_label(
     for item in evidence:
         if item.kind not in {"vector_text", "ocr_token"} or not item.text or item.bbox is None:
             continue
-        # Evidence boxes are expected in the fused scene's coordinate space.
-        # Requiring the token centre to lie in the node avoids broad OCR boxes
-        # contributing labels to adjacent nodes.
-        evidence_bbox = _unit_bbox(item.bbox, output_scene)
+        # Visual evidence is recorded in source-image pixels even when a VLM
+        # winner describes its scene in normalized coordinates. Normalize from
+        # that pixel canvas explicitly instead of inheriting the winner's space.
+        if pixel_canvas_size is not None:
+            width, height = pixel_canvas_size
+            if not math.isfinite(width) or not math.isfinite(height) or width <= 0 or height <= 0:
+                continue
+            evidence_bbox = (
+                item.bbox[0] / width,
+                item.bbox[1] / height,
+                item.bbox[2] / width,
+                item.bbox[3] / height,
+            )
+        elif comparison_scene.coordinate_space == "pixels":
+            evidence_bbox = item.bbox
+        else:
+            continue
         centre = (
             (evidence_bbox[0] + evidence_bbox[2]) / 2,
             (evidence_bbox[1] + evidence_bbox[3]) / 2,
@@ -1724,7 +1739,7 @@ def _select_label(
         if not (inside_x and inside_y):
             continue
         source: FusionSource = "vector" if item.kind == "vector_text" else "ocr"
-        text_records.append((source, item.id, item.text, item.score or 0.5))
+        text_records.append((source, item.id, item.text, 0.5 if item.score is None else item.score))
     return _select_text_records(text_records)
 
 

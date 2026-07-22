@@ -35,7 +35,9 @@ _EDGE = re.compile(
     r"([A-Za-z_][A-Za-z0-9_]*)\s*$",
     re.MULTILINE,
 )
-_EDGE_OPERATOR = re.compile(r"<-->|-->|-\.->|==>|---|--?>\|")
+# Detect every Mermaid link family before assigning declaration-order indexes.
+# Operators outside our narrow exact parser make style attribution fail closed.
+_EDGE_OPERATOR = re.compile(r"(?:-{2,}|-\.+-|={2,}|~{3,})")
 _SUBGRAPH_DECLARATION = re.compile(r"^\s*subgraph\s+([A-Za-z_][A-Za-z0-9_]*)\s*\[", re.MULTILINE)
 
 

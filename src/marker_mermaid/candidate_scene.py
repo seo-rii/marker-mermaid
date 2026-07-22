@@ -10,6 +10,7 @@ origin so layout scoring remains unavailable.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Iterator
 from typing import Any
@@ -2324,8 +2325,8 @@ def _bbox(value: Any) -> tuple[float, float, float, float]:
     if isinstance(value, list | tuple) and len(value) == 4:
         try:
             bbox = tuple(float(item) for item in value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return (0.0, 0.0, 0.0, 0.0)
-        if bbox[2] >= bbox[0] and bbox[3] >= bbox[1]:
+        if all(math.isfinite(item) for item in bbox) and bbox[2] >= bbox[0] and bbox[3] >= bbox[1]:
             return bbox  # type: ignore[return-value]
     return (0.0, 0.0, 0.0, 0.0)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from PIL import Image
 
 from marker_mermaid.geometry import (
@@ -60,6 +61,34 @@ def test_arrow_at_line_start_reverses_canonical_relation():
     assert relation.target_id == "geometry-node-001"
     assert relation.polyline == [(80.0, 15.0), (20.0, 15.0)]
     assert result.scene_ir.reading_direction == "RL"
+
+
+def test_relation_confidence_uses_only_the_matched_arrowhead() -> None:
+    geometry = GeometryObservation(
+        canvas_size=(100, 60),
+        contours=(
+            ContourObservation(bbox=(0, 5, 20, 25)),
+            ContourObservation(bbox=(80, 5, 100, 25)),
+        ),
+        lines=(LineObservation(start=(20, 15), end=(80, 15), confidence=0.4),),
+        arrowheads=(
+            ArrowheadObservation(
+                bbox=(77, 12, 83, 18),
+                tip=(80, 15),
+                confidence=0.2,
+            ),
+            ArrowheadObservation(
+                bbox=(47, 47, 53, 53),
+                tip=(50, 50),
+                confidence=0.99,
+            ),
+        ),
+    )
+
+    result = geometry.to_engine_observation(["figure-1"])
+
+    assert result.scene_ir is not None
+    assert result.scene_ir.relations[0].confidence == pytest.approx(0.34)
 
 
 def test_unattached_line_is_evidence_but_not_a_scene_relation():

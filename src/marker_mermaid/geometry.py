@@ -9,7 +9,7 @@ empty observation with a warning so another candidate engine can continue.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -155,13 +155,13 @@ class GeometryObservation:
             if start_id is None or end_id is None or start_id == end_id:
                 continue
 
-            arrow_at_start, start_arrow_id = _endpoint_arrow(
+            arrow_at_start, start_arrow_id, start_arrowhead = _endpoint_arrow(
                 line.start,
                 arrowheads,
                 arrow_evidence_ids,
                 endpoint_tolerance,
             )
-            arrow_at_end, end_arrow_id = _endpoint_arrow(
+            arrow_at_end, end_arrow_id, end_arrowhead = _endpoint_arrow(
                 line.end,
                 arrowheads,
                 arrow_evidence_ids,
@@ -203,8 +203,11 @@ class GeometryObservation:
                     arrow_at_end=relation_arrow_end,
                     confidence=_relation_confidence(
                         line,
-                        arrowheads,
-                        arrow_at_start or arrow_at_end,
+                        tuple(
+                            arrowhead
+                            for arrowhead in (start_arrowhead, end_arrowhead)
+                            if arrowhead is not None
+                        ),
                     ),
                     evidence_ids=evidence_ids,
                 )
@@ -479,30 +482,32 @@ def _endpoint_arrow(
     arrowheads: list[ArrowheadObservation],
     evidence_ids: list[str],
     tolerance: float,
-) -> tuple[bool, str | None]:
+) -> tuple[bool, str | None, ArrowheadObservation | None]:
     matches = sorted(
         (
-            (math.dist(point, arrowhead.tip), evidence_id)
+            (math.dist(point, arrowhead.tip), evidence_id, arrowhead)
             for arrowhead, evidence_id in zip(arrowheads, evidence_ids, strict=True)
         ),
         key=lambda item: (item[0], item[1]),
     )
     if not matches or matches[0][0] > tolerance:
-        return False, None
+        return False, None, None
     if len(matches) > 1 and math.isclose(matches[0][0], matches[1][0], abs_tol=1e-6):
-        return False, None
-    return True, matches[0][1]
+        return False, None, None
+    return True, matches[0][1], matches[0][2]
 
 
 def _relation_confidence(
     line: LineObservation,
-    arrowheads: list[ArrowheadObservation],
-    has_arrow: bool,
+    matched_arrowheads: Sequence[ArrowheadObservation],
 ) -> float:
     base = _probability(line.confidence)
-    if not has_arrow or not arrowheads:
+    if not matched_arrowheads:
         return base
-    return min(1.0, base * 0.7 + max(_probability(item.confidence) for item in arrowheads) * 0.3)
+    return min(
+        1.0,
+        base * 0.7 + max(_probability(item.confidence) for item in matched_arrowheads) * 0.3,
+    )
 
 
 def _prediction(

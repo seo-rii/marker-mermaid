@@ -183,18 +183,19 @@ def numeric_consistency(
     acc_descr_block_pattern = re.compile(r"^\s*accDescr\s*\{", re.IGNORECASE)
     semantic_lines: list[str] = []
     in_acc_descr_block = False
-    in_quoted_text = False
     pending_lines = deque(
         (line, _MAX_METADATA_SUFFIXES_PER_LINE) for line in mermaid_code.splitlines()
     )
     while pending_lines:
         raw_line, suffix_budget = pending_lines.popleft()
+        # Mermaid quoted strings are line-local. A malformed quote on one line
+        # must not suppress comments or metadata detection on later lines.
+        in_quoted_text = False
         if in_acc_descr_block:
             close_index = raw_line.find("}")
             if close_index < 0:
                 continue
             in_acc_descr_block = False
-            in_quoted_text = False
             raw_line = raw_line[close_index + 1 :]
             if not raw_line.strip():
                 continue

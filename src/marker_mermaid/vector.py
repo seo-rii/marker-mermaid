@@ -1314,11 +1314,17 @@ class _Transform:
         )
 
     def bbox(self, bbox: BBox) -> BBox:
-        if self.crop is None:
+        if self.affine is None and self.crop is None:
             return bbox
-        left, top = self.point((bbox[0], bbox[1]))
-        right, bottom = self.point((bbox[2], bbox[3]))
-        return left, top, right, bottom
+        corners = (
+            self.point((bbox[0], bbox[1])),
+            self.point((bbox[0], bbox[3])),
+            self.point((bbox[2], bbox[1])),
+            self.point((bbox[2], bbox[3])),
+        )
+        xs = tuple(point[0] for point in corners)
+        ys = tuple(point[1] for point in corners)
+        return min(xs), min(ys), max(xs), max(ys)
 
     def intersects(self, bbox: BBox) -> bool:
         if self.crop is None:

@@ -210,6 +210,17 @@ def test_numeric_consistency_comments_cannot_copy_source_numbers() -> None:
     assert numeric_consistency(["Actual 2 20"], code) == 1
 
 
+def test_numeric_consistency_resets_unclosed_quote_state_on_each_line() -> None:
+    code = """pie
+    "Broken 1
+    %% copied 999 from source
+    "Actual" : 2
+"""
+
+    assert numeric_consistency(["1 2"], code) == 1
+    assert numeric_consistency(["999"], code) == 0
+
+
 @pytest.mark.parametrize(
     ("header", "data_line", "source_text"),
     [

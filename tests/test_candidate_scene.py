@@ -43,6 +43,19 @@ def test_flowchart_typed_ir_preserves_explicit_direction_and_arrows():
     assert scene.relations[0].arrow_at_end
 
 
+def test_non_finite_typed_bbox_degrades_to_unknown_geometry() -> None:
+    scene = typed_ir_to_scene(
+        "flowchart",
+        {
+            "nodes": [{"id": "A", "label": "Start", "bbox": [0, 0, float("inf"), 10]}],
+            "edges": [],
+        },
+    )
+
+    assert scene is not None
+    assert scene.elements[0].bbox == (0.0, 0.0, 0.0, 0.0)
+
+
 def test_generated_scene_arrows_follow_serializer_visible_direction() -> None:
     flowchart = typed_ir_to_scene(
         "flowchart",
@@ -1717,8 +1730,8 @@ def test_c4_scene_matches_fallback_identity_topology_and_visible_evidence() -> N
                 "boundary": "결제 영역",
                 "bbox": [50, 60, 70, 80],
             },
-            {"id": "same", "label": "First duplicate", "boundary": "결제 영역"},
-            {"id": "same", "label": "Second duplicate", "boundary": "결제 영역"},
+            {"id": "same-left", "label": "First duplicate", "boundary": "결제 영역"},
+            {"id": "same-right", "label": "Second duplicate", "boundary": "결제 영역"},
             {"kind": "person", "boundary": "결제 영역"},
         ],
         "relations": [
@@ -1736,7 +1749,7 @@ def test_c4_scene_matches_fallback_identity_topology_and_visible_evidence() -> N
             },
             {
                 "id": "raw-duplicate-id",
-                "source": "same",
+                "source": "same-left",
                 "target": "A-B",
             },
         ],
@@ -1748,8 +1761,8 @@ def test_c4_scene_matches_fallback_identity_topology_and_visible_evidence() -> N
     assert [(element.id, element.text) for element in scene.elements] == [
         ("A_B", "API"),
         ("A_B_2", "Database"),
-        ("same", "First duplicate"),
-        ("same_2", "Second duplicate"),
+        ("same_left", "First duplicate"),
+        ("same_right", "Second duplicate"),
         ("S5", "S5"),
     ]
     assert all(element.role == "node" and element.shape is None for element in scene.elements)
@@ -1759,7 +1772,7 @@ def test_c4_scene_matches_fallback_identity_topology_and_visible_evidence() -> N
         (
             "group_1",
             "G1",
-            ["A_B", "A_B_2", "same", "same_2", "S5"],
+            ["A_B", "A_B_2", "same_left", "same_right", "S5"],
             (1, 2, 99, 100),
         )
     ]
@@ -1770,7 +1783,7 @@ def test_c4_scene_matches_fallback_identity_topology_and_visible_evidence() -> N
     ]
     assert [(relation.source_id, relation.target_id) for relation in scene.relations] == [
         ("A_B", "A_B_2"),
-        ("same", "A_B"),
+        ("same_left", "A_B"),
     ]
     assert [(relation.arrow_at_start, relation.arrow_at_end) for relation in scene.relations] == [
         (True, True),

@@ -94,6 +94,8 @@ _EDGE = re.compile(
     r"(?P<target>[^\s\[\](){}]+)(?P<trail>\s*(?:%%.*)?)$"
 )
 _VALID_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SUBGRAPH_START = re.compile(r"^\s*subgraph(?:\s|$)", re.IGNORECASE)
+_SUBGRAPH_END = re.compile(r"^\s*end\s*(?:%%.*)?$", re.IGNORECASE)
 
 
 def normalize_identifier(value: str, fallback: str = "node") -> str:
@@ -304,7 +306,11 @@ class DeterministicMermaidRepair:
             if _VALID_IDENTIFIER.fullmatch(raw):
                 continue
             normalized = normalize_identifier(raw)
-            if normalized in occupied or normalized in rename.values():
+            normalized_appears = re.search(
+                rf"(?<![A-Za-z0-9_]){re.escape(normalized)}(?![A-Za-z0-9_])",
+                source,
+            )
+            if normalized in occupied or normalized in rename.values() or normalized_appears:
                 continue
             rename[raw] = normalized
 
@@ -363,22 +369,31 @@ class DeterministicMermaidRepair:
         self, source: str, budget: int
     ) -> tuple[str, list[SourceRepairEvent], bool]:
         lines = source.splitlines(keepends=True)
-        first_by_id: dict[str, tuple[str, int]] = {}
+        first_by_id: dict[str, tuple[str, int, tuple[int, ...]]] = {}
         remove: set[int] = set()
         events: list[SourceRepairEvent] = []
         exhausted = False
+        subgraph_stack: list[int] = []
         for index, line in enumerate(lines):
             content, _ = self._line_parts(line)
+            if _SUBGRAPH_START.match(content):
+                subgraph_stack.append(index)
+                continue
+            if _SUBGRAPH_END.fullmatch(content):
+                if subgraph_stack:
+                    subgraph_stack.pop()
+                continue
             match = _NODE.fullmatch(content)
             if not match:
                 continue
             node_id = match.group("id")
             signature = f"{match.group('body')}{match.group('trail').strip()}"
+            context = tuple(subgraph_stack)
             previous = first_by_id.get(node_id)
             if previous is None:
-                first_by_id[node_id] = (signature, index)
+                first_by_id[node_id] = (signature, index, context)
                 continue
-            if previous[0] != signature:
+            if previous[0] != signature or previous[2] != context:
                 continue
             if len(events) >= budget:
                 exhausted = True

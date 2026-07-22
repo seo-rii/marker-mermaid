@@ -1086,6 +1086,91 @@ def test_ocr_evidence_can_enrich_a_scene_without_an_ocr_scene() -> None:
     assert fused.scene_ir.elements[0].text == "Verified label"
 
 
+def test_zero_confidence_vector_text_is_not_promoted_as_missing_confidence() -> None:
+    semantic_scene = _scene(
+        SceneElement(
+            id="node",
+            role="process",
+            text="Semantic guess",
+            bbox=(10, 10, 60, 40),
+            confidence=0.9,
+        )
+    )
+    vector_evidence = _observation(
+        "unknown",
+        1.0,
+        evidence=[
+            VisualEvidence(
+                id="zero-confidence",
+                kind="vector_text",
+                bbox=(20, 15, 30, 25),
+                text="Rejected label",
+                score=0.0,
+            ),
+            VisualEvidence(
+                id="measured-confidence",
+                kind="vector_text",
+                bbox=(35, 15, 50, 25),
+                text="Measured label",
+                score=0.4,
+            ),
+        ],
+    )
+
+    fused = FusionEngine().fuse(
+        [
+            FusionInput("vlm", _observation("flowchart", 0.9, scene=semantic_scene), "vlm"),
+            FusionInput("vector", vector_evidence, "pdf"),
+        ]
+    )
+
+    assert fused.scene_ir is not None
+    assert fused.scene_ir.elements[0].text == "Measured label"
+
+
+def test_pixel_evidence_is_normalized_with_trusted_canvas_for_normalized_scene() -> None:
+    normalized_scene = DiagramSceneIR(
+        elements=[
+            SceneElement(
+                id="node",
+                role="process",
+                text="Semantic guess",
+                bbox=(0.1, 0.1, 0.6, 0.4),
+                confidence=0.9,
+            )
+        ],
+        coordinate_space="normalized",
+    )
+    ocr = _observation(
+        "unknown",
+        1.0,
+        evidence=[
+            VisualEvidence(
+                id="ocr-token",
+                kind="ocr_token",
+                bbox=(20, 15, 50, 30),
+                text="Verified label",
+                score=0.8,
+            )
+        ],
+    )
+
+    fused = FusionEngine().fuse(
+        [
+            FusionInput(
+                "vlm",
+                _observation("flowchart", 0.9, scene=normalized_scene),
+                "vlm",
+                trusted_canvas_size=(100, 100),
+            ),
+            FusionInput("ocr", ocr, "surya", trusted_canvas_size=(100, 100)),
+        ]
+    )
+
+    assert fused.scene_ir is not None
+    assert fused.scene_ir.elements[0].text == "Verified label"
+
+
 def test_vector_direction_and_vlm_relation_semantics_are_combined() -> None:
     vector_scene = DiagramSceneIR(
         elements=[

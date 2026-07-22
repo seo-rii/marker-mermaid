@@ -835,6 +835,23 @@ def test_link_style_is_skipped_when_preceding_edge_order_is_not_fully_mappable()
     assert any("edge ordering" in warning for warning in result.warnings)
 
 
+@pytest.mark.parametrize("unmapped_edge", ["A --o B", "A --x B", "A -.- B", "A === B", "A ~~~ B"])
+def test_link_style_is_skipped_when_preceded_by_any_unmapped_mermaid_edge(
+    unmapped_edge: str,
+) -> None:
+    result = recover_flowchart_styles(
+        f'flowchart LR\n    {unmapped_edge}\n    API["API"]\n    DB[("DB")]\n    API --> DB\n',
+        scene(),
+        scene(),
+        compatibility_profile=CompatibilityProfile.STYLE_RICH,
+        security_profile=SecurityProfile.STYLE_ONLY,
+        known_edge_style_evidence=_edge_style_registry(),
+    )
+
+    assert "linkStyle" not in result.code
+    assert any("edge ordering" in warning for warning in result.warnings)
+
+
 def test_pipeline_rejects_self_declared_node_and_edge_styles(fake_runtime):
     observation = EngineObservation(
         prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[0.9]),
