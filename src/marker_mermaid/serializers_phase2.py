@@ -145,6 +145,8 @@ def plan_phase2_record_ids(
         if not isinstance(record, dict):
             raise SerializationError(f"{field} entries must be objects")
         source_id = str(record.get("id") or f"{fallback_prefix}{index}")
+        if source_id in id_map:
+            raise SerializationError(f"{field} ids must be unique")
         output_id = _identifier(source_id, f"{fallback_prefix}{index}")
         base = output_id
         suffix = 2
@@ -152,7 +154,7 @@ def plan_phase2_record_ids(
             output_id = f"{base}_{suffix}"
             suffix += 1
         used.add(output_id)
-        id_map.setdefault(source_id, output_id)
+        id_map[source_id] = output_id
         normalized.append((record, source_id, output_id))
     return normalized, id_map
 
@@ -180,11 +182,23 @@ def plan_requirement_records(
         )
     if set(requirement_ids) & set(element_ids):
         raise SerializationError("requirement and element source ids must be distinct")
-    if set(requirement_ids.values()) & set(element_ids.values()):
-        elements = [
-            (record, source_id, f"element_{output_id}") for record, source_id, output_id in elements
-        ]
-        element_ids = {source_id: output_id for _, source_id, output_id in elements}
+    occupied_ids = set(requirement_ids.values())
+    remapped_elements: list[tuple[dict[str, Any], str, str]] = []
+    remapped_element_ids: dict[str, str] = {}
+    for record, source_id, output_id in elements:
+        emitted_id = output_id
+        if emitted_id in occupied_ids:
+            emitted_id = f"element_{output_id}"
+            base = emitted_id
+            suffix = 2
+            while emitted_id in occupied_ids:
+                emitted_id = f"{base}_{suffix}"
+                suffix += 1
+        occupied_ids.add(emitted_id)
+        remapped_elements.append((record, source_id, emitted_id))
+        remapped_element_ids[source_id] = emitted_id
+    elements = remapped_elements
+    element_ids = remapped_element_ids
     return requirements, elements, {**requirement_ids, **element_ids}
 
 

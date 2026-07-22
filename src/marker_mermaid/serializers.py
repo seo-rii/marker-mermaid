@@ -224,7 +224,44 @@ def _identifier(value: str, fallback: str = "node") -> str:
 
 
 def _text(value: Any) -> str:
-    return str(value).replace("\\", "\\\\").replace('"', "&quot;").replace("\n", " ").strip()
+    text = (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace('"', "&quot;")
+        .replace("\r", " ")
+        .replace("\n", " ")
+        .strip()
+    )
+    source = _SEQUENCE_DIRECTIVE_OPEN.sub(
+        lambda match: f"%{_SEQUENCE_ZERO_WIDTH_SPACE}%{match.group('gap')}{{",
+        text,
+    )
+    source = source.replace("//", f"/{_SEQUENCE_ZERO_WIDTH_SPACE}/")
+    source = source.replace("<", f"<{_SEQUENCE_ZERO_WIDTH_SPACE}")
+    source = _SEQUENCE_CSS_IMPORT.sub(
+        lambda match: f"{match.group(0)[:3]}{_SEQUENCE_ZERO_WIDTH_SPACE}{match.group(0)[3:]}",
+        source,
+    )
+    source = _SEQUENCE_DANGEROUS_SCHEME.sub(
+        lambda match: f"{match.group(0)[:-1]}{_SEQUENCE_ZERO_WIDTH_SPACE}:",
+        source,
+    )
+    source = _SEQUENCE_REMOTE_ICON.sub(
+        lambda match: (
+            f"{match.group(0)[:4]}{_SEQUENCE_ZERO_WIDTH_SPACE}{match.group(0)[4:]}"
+            if match.group(0).casefold() == "iconify"
+            else match.group(0).replace(":", f"{_SEQUENCE_ZERO_WIDTH_SPACE}:")
+        ),
+        source,
+    )
+    source = _SEQUENCE_CALLBACK.sub(
+        lambda match: match.group(0).replace(
+            "(",
+            f"{_SEQUENCE_ZERO_WIDTH_SPACE}(",
+        ),
+        source,
+    )
+    return source
 
 
 def _accessibility(
@@ -242,6 +279,8 @@ def serialize_flowchart(ir: dict[str, Any], *, experimental: bool = False) -> st
     edges = ir.get("edges", [])
     if not isinstance(nodes, list) or not nodes:
         raise SerializationError("flowchart IR requires at least one node")
+    if not isinstance(edges, list):
+        raise SerializationError("flowchart edges must be a list")
     direction = ir.get("direction", "TB")
     if direction not in {"TB", "BT", "LR", "RL"}:
         direction = "TB"
@@ -276,6 +315,8 @@ def serialize_flowchart(ir: dict[str, Any], *, experimental: bool = False) -> st
     for node, placement in zip(nodes, structure.nodes, strict=True):
         source_id = placement.source_id
         node_id = placement.emitted_id
+        if source_id in id_map:
+            raise SerializationError("flowchart node ids must be unique")
         id_map[source_id] = node_id
         label = _text(node.get("label") or node.get("text") or "[unreadable]")
         shape = str(node.get("shape") or "rectangle").lower()
@@ -300,18 +341,25 @@ def serialize_flowchart(ir: dict[str, Any], *, experimental: bool = False) -> st
         for source_id, _node_id, line in node_declarations
         if source_id not in grouped_source_ids
     )
-    for edge in edges:
+    for index, edge in enumerate(edges, start=1):
         if not isinstance(edge, dict):
-            continue
+            raise SerializationError("flowchart edges must be objects")
         source = id_map.get(str(edge.get("source")))
         target = id_map.get(str(edge.get("target")))
         if source is None or target is None:
-            continue
+            raise SerializationError(f"flowchart edge {index} references an unknown endpoint")
         arrow = "-.->" if edge.get("style") == "dashed" else "-->"
         if edge.get("bidirectional"):
             arrow = "<-->"
         label = edge.get("label")
-        connector = f"{arrow}|{_text(label)}|" if label else arrow
+        label_text = _text(label).replace("|", "∣") if label is not None else ""
+        if label_text and (
+            _SEQUENCE_ZERO_WIDTH_SPACE in label_text
+            or any(character in label_text for character in "()[]{};<>\\")
+        ):
+            connector = f'{arrow}|"{label_text}"|'
+        else:
+            connector = f"{arrow}|{label_text}|" if label_text else arrow
         lines.append(f"    {source} {connector} {target}")
     return "\n".join(lines) + "\n"
 
@@ -3479,17 +3527,23 @@ def scene_to_flowchart(
         {"id": element.id, "label": element.text or "[unreadable]", "shape": element.shape}
         for element in scene.elements
     ]
-    edges = [
-        {
-            "source": relation.source_id,
-            "target": relation.target_id,
-            "label": relation.label,
-            "style": relation.line_style,
-            "bidirectional": relation.arrow_at_start and relation.arrow_at_end,
-        }
-        for relation in scene.relations
-        if relation.source_id is not None and relation.target_id is not None
-    ]
+    edges: list[dict[str, Any]] = []
+    for relation in scene.relations:
+        if relation.source_id is None or relation.target_id is None:
+            continue
+        source = relation.source_id
+        target = relation.target_id
+        if relation.arrow_at_start and not relation.arrow_at_end:
+            source, target = target, source
+        edges.append(
+            {
+                "source": source,
+                "target": target,
+                "label": relation.label,
+                "style": relation.line_style,
+                "bidirectional": relation.arrow_at_start and relation.arrow_at_end,
+            }
+        )
     ir = enrich_accessibility_ir(
         {
             "nodes": nodes,

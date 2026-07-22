@@ -783,12 +783,12 @@ def _gitgraph_commit_metadata(
     operation: Mapping[str, Any], *, field: str
 ) -> tuple[str | None, str | None]:
     tag = None
-    if "tag" in operation:
+    if operation.get("tag") is not None:
         tag = _gitgraph_semantic_text(operation.get("tag"), field=f"{field}.tag")
     commit_type = None
-    if "commit_type" in operation or "style" in operation:
-        commit_type_value = operation.get("commit_type")
-        style_value = operation.get("style")
+    commit_type_value = operation.get("commit_type")
+    style_value = operation.get("style")
+    if commit_type_value is not None or style_value is not None:
         if commit_type_value is not None and style_value is not None:
             normalized_commit_type = str(commit_type_value).upper()
             normalized_style = str(style_value).upper()

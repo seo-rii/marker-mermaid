@@ -35,7 +35,8 @@ _CONTROL_WORD = re.compile(r"\b(?:click|style|classDef|linkStyle)\b", re.IGNOREC
 _CONFIG = re.compile(r"\bconfig\s*:", re.IGNORECASE)
 _ISHIKAWA_HEADER = re.compile(r"^ishikawa(?:-beta)?(?=$|\W)", re.IGNORECASE)
 _ENTITY_LITERAL = re.compile(
-    r"&(?P<body>#[0-9]+|#x[0-9A-F]+|[A-Z][A-Z0-9]+);",
+    r"&(?P<body>#[0-9]+|#x[0-9A-F]+|[A-Z][A-Z0-9]+);"
+    r"|(?<!&)#(?P<standalone>[A-Z0-9_]+);",
     re.IGNORECASE,
 )
 _FRAME_TYPES = {
@@ -193,6 +194,9 @@ def _entity_compatibility_text(text: str) -> tuple[str, bool]:
     return (
         _ENTITY_LITERAL.sub(
             lambda match: (
+                f"＃{match.group('standalone')};"
+                if match.group("standalone") is not None
+                else
                 f"＆＃{match.group('body')[1:]};"
                 if match.group("body").startswith("#")
                 else f"＆{match.group('body')};"
@@ -272,7 +276,7 @@ def _flowchart_source_text(value: Any, *, context: str) -> str:
     text = _directive_text(value, context=context)
     return (
         text.replace("&", f"&{_ZERO_WIDTH_SPACE}")
-        .replace("#", f"{_ZERO_WIDTH_SPACE}#")
+        .replace("#", f"#{_ZERO_WIDTH_SPACE}")
         .replace('"', "″")
         .replace("\\", "∖")
     )

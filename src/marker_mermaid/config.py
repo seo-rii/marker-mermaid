@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
@@ -113,8 +114,13 @@ class ScoreWeights(BaseModel):
     @model_validator(mode="after")
     def weights_are_valid(self) -> ScoreWeights:
         values = list(self.model_dump().values())
-        if any(value < 0 for value in values) or sum(values) <= 0:
-            raise ValueError("score weights must be non-negative and not all zero")
+        total = sum(values)
+        if (
+            any(not math.isfinite(value) or value < 0 for value in values)
+            or not math.isfinite(total)
+            or total <= 0
+        ):
+            raise ValueError("score weights must be finite, non-negative, and not all zero")
         return self
 
 
@@ -231,7 +237,6 @@ class MermaidConfig(BaseModel):
         return value
 
     @field_validator(
-        "max_mermaid_chars",
         "max_mermaid_lines",
         "max_virtual_source_dimension",
         "max_virtual_source_pixels",
@@ -240,6 +245,20 @@ class MermaidConfig(BaseModel):
     def resource_limit_is_positive(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("resource limits must be positive")
+        return value
+
+    @field_validator("max_mermaid_chars")
+    @classmethod
+    def mermaid_character_limit_matches_runtime(cls, value: int) -> int:
+        if not 1 <= value <= 50_000:
+            raise ValueError("max_mermaid_chars must be between 1 and 50000")
+        return value
+
+    @field_validator("render_timeout_seconds")
+    @classmethod
+    def render_timeout_is_finite_and_positive(cls, value: float) -> float:
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("render_timeout_seconds must be finite and positive")
         return value
 
     @model_validator(mode="after")

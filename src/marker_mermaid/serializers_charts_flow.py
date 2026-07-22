@@ -551,7 +551,7 @@ def plan_sankey_records(ir: Mapping[str, Any]) -> SankeyPlan:
     fallback_direction = (
         raw_direction
         if isinstance(raw_direction, str) and raw_direction in {"TB", "BT", "LR", "RL"}
-        else "TB"
+        else "LR"
     )
     return SankeyPlan(
         nodes,

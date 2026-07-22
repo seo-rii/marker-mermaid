@@ -1,6 +1,7 @@
 import pytest
 
 from marker_mermaid.candidate_scene import typed_ir_to_scene
+from marker_mermaid.config import SecurityProfile
 from marker_mermaid.models import (
     MAX_TEXT_CHARS,
     DiagramSceneIR,
@@ -9,8 +10,10 @@ from marker_mermaid.models import (
     VisualEvidence,
 )
 from marker_mermaid.pipeline import _generated_node_provenance_score
+from marker_mermaid.security import MermaidSecurityScanner
 from marker_mermaid.serializers import (
     SerializationError,
+    scene_to_flowchart,
     serialize_flowchart,
     serialize_swimlane,
 )
@@ -95,6 +98,99 @@ def test_flowchart_groups_reject_normalized_and_duplicate_node_id_ambiguity():
     duplicate_node["nodes"].append({"id": "A", "label": "Duplicate"})
     with pytest.raises(SerializationError, match="require unique node ids"):
         serialize_flowchart(duplicate_node)
+
+
+def test_flowchart_rejects_duplicate_node_ids_without_groups() -> None:
+    with pytest.raises(SerializationError, match="node ids must be unique"):
+        serialize_flowchart(
+            {
+                "nodes": [
+                    {"id": "A", "label": "First"},
+                    {"id": "A", "label": "Second"},
+                ]
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("edges", "message"),
+    [
+        ({"source": "A", "target": "B"}, "edges must be a list"),
+        (["not-an-object"], "edges must be objects"),
+        ([{"source": "A", "target": "missing"}], "unknown endpoint"),
+        ([{"source": None, "target": "B"}], "unknown endpoint"),
+    ],
+)
+def test_flowchart_rejects_malformed_or_unresolved_edges(edges, message) -> None:
+    with pytest.raises(SerializationError, match=message):
+        serialize_flowchart(
+            {
+                "nodes": [{"id": "A"}, {"id": "B"}],
+                "edges": edges,
+            }
+        )
+
+
+def test_flowchart_edge_labels_replace_pipe_and_omit_whitespace_only_text() -> None:
+    code = serialize_flowchart(
+        {
+            "nodes": [{"id": "A"}, {"id": "B"}],
+            "edges": [
+                {"source": "A", "target": "B", "label": "yes|no"},
+                {"source": "B", "target": "A", "label": " \t "},
+            ],
+        }
+    )
+
+    assert "A -->|yes∣no| B" in code
+    assert "B --> A" in code
+    assert "||" not in code
+
+
+def test_flowchart_text_neutralizes_active_scanner_tokens_and_carriage_returns() -> None:
+    hostile = (
+        "See https://example.invalid fa:user iconify call(x) // @import %%{init}"
+        "\rnext"
+    )
+    code = serialize_flowchart(
+        {
+            "acc_title": hostile,
+            "acc_description": hostile,
+            "nodes": [{"id": "A", "label": hostile}, {"id": "B", "label": "End"}],
+            "edges": [{"source": "A", "target": "B", "label": hostile}],
+        }
+    )
+
+    assert "\r" not in code
+    rendered_title = code.replace("\u200b", "").split("accTitle: ", 1)[1].splitlines()[0]
+    assert hostile.replace("\r", " ") == rendered_title
+    assert '    A -->|"' in code
+    report = MermaidSecurityScanner(SecurityProfile.STRICT).scan(code)
+    assert report.safe, report.findings
+
+
+def test_scene_flowchart_reverses_start_only_arrow_endpoints() -> None:
+    scene = DiagramSceneIR(
+        elements=[
+            SceneElement(id="A", role="node", text="Start", bbox=(0, 0, 1, 1)),
+            SceneElement(id="B", role="node", text="End", bbox=(2, 0, 3, 1)),
+        ],
+        relations=[
+            SceneRelation(
+                id="E",
+                source_id="A",
+                target_id="B",
+                relation_type="edge",
+                arrow_at_start=True,
+                arrow_at_end=False,
+            )
+        ],
+    )
+
+    code = scene_to_flowchart(scene)
+
+    assert "    B --> A" in code
+    assert "    A --> B" not in code
 
 
 def test_flowchart_candidate_scene_round_trips_group_membership_and_bbox():

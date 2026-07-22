@@ -857,6 +857,8 @@ def _class_member(member: dict[str, Any], *, context: str) -> str:
         ):
             raise SerializationError(f"{context} parameter contains unsupported syntax")
         return_type = _text(member.get("return_type") or type_name)
+        if any(character in return_type for character in ("{", "}", ";")):
+            raise SerializationError(f"{context} return type contains unsupported syntax")
         body = f"{name}({', '.join(rendered_parameters)})"
         if return_type:
             body = f"{body} {return_type}"

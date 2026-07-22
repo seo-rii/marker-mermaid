@@ -182,6 +182,22 @@ def test_sankey_cycle_uses_exact_weighted_flowchart_fallback() -> None:
     assert result.warnings and "weighted flowchart" in result.warnings[0]
 
 
+@pytest.mark.parametrize("direction", ["XY", None, 7])
+def test_sankey_invalid_direction_uses_the_lr_fallback_default(direction: object) -> None:
+    cyclic = {
+        "direction": direction,
+        "nodes": [{"id": "A"}, {"id": "B"}],
+        "flows": [
+            {"source": "A", "target": "B", "value": 2},
+            {"source": "B", "target": "A", "value": 1},
+        ],
+    }
+
+    result = serialize_sankey(cyclic)
+
+    assert result.code.startswith("flowchart LR\n")
+
+
 def test_sankey_non_ascii_labels_fall_back_without_dropping_text() -> None:
     result = serialize_sankey(
         {

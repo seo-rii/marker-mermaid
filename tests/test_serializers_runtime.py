@@ -331,6 +331,22 @@ def test_labeled_flowchart_connector_styles_parse_and_render_in_real_mermaid():
             },
             "A <-->|Sync| B",
         ),
+        (
+            {
+                "source": "A",
+                "target": "B",
+                "label": "yes|no",
+            },
+            "A -->|yes∣no| B",
+        ),
+        (
+            {
+                "source": "A",
+                "target": "B",
+                "label": "call(x)",
+            },
+            'A -->|"call\u200b(x)"| B',
+        ),
     ]
     runtime = NodeMermaidRuntime()
     validator = CandidateValidator(runtime, SecurityProfile.STRICT)

@@ -129,19 +129,88 @@ def test_requirement_output_is_deterministic_and_escaped() -> None:
     assert "accTitle: Payment requirements" in first
 
 
-def test_duplicate_and_non_ascii_ids_are_stably_normalized() -> None:
+def test_distinct_non_ascii_ids_are_stably_normalized() -> None:
     code = serialize_phase2(
         "block",
         {
             "blocks": [
                 {"id": "결제", "label": "첫째"},
-                {"id": "결제", "label": "둘째"},
+                {"id": "승인", "label": "둘째"},
             ]
         },
     )[0]
 
     assert 'B1["첫째"]' in code
     assert 'B2["둘째"]' in code
+
+
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "requirement",
+            {
+                "requirements": [
+                    {"id": "same", "text": "First"},
+                    {"id": "same", "text": "Second"},
+                ]
+            },
+        ),
+        (
+            "block",
+            {"blocks": [{"id": "same"}, {"id": "same"}]},
+        ),
+        (
+            "c4",
+            {"elements": [{"id": "same"}, {"id": "same"}]},
+        ),
+        (
+            "deployment",
+            {
+                "nodes": [{"id": "same"}],
+                "artifacts": [{"id": "same"}],
+            },
+        ),
+        (
+            "component",
+            {
+                "components": [{"id": "same"}],
+                "interfaces": [{"id": "same"}],
+            },
+        ),
+        (
+            "usecase",
+            {
+                "actors": [{"id": "same"}, {"id": "same"}],
+                "use_cases": [{"id": "case"}],
+            },
+        ),
+    ],
+)
+def test_phase2_families_reject_duplicate_source_ids(
+    diagram_type: str,
+    ir: dict[str, object],
+) -> None:
+    with pytest.raises(SerializationError, match="ids must be unique"):
+        serialize_phase2(diagram_type, ir)
+
+
+def test_requirement_collision_remap_reserves_all_emitted_ids() -> None:
+    ir = {
+        "requirements": [
+            {"id": "E-1", "text": "Primary"},
+            {"id": "element_E_1", "text": "Reserved remap"},
+        ],
+        "elements": [{"id": "E 1", "type": "component"}],
+        "relations": [{"source": "E 1", "target": "E-1", "type": "satisfies"}],
+    }
+
+    code = serialize_phase2("requirement", ir)[0]
+
+    assert "requirement E_1 {" in code
+    assert "requirement element_E_1 {" in code
+    assert "element element_E_1_2 {" in code
+    assert "element_E_1_2 - satisfies -> E_1" in code
 
 
 def test_block_keeps_native_syntax_without_unsupported_accessibility_directives() -> None:
@@ -478,14 +547,14 @@ def test_c4_architecture_and_nested_flowchart_share_planned_identity_and_topolog
                 "kind": "container_database",
                 "boundary": "결제 영역",
             },
-            {"id": "same", "label": "First duplicate", "boundary": "결제 영역"},
-            {"id": "same", "label": "Second duplicate", "boundary": "결제 영역"},
+            {"id": "same-a", "label": "First collision", "boundary": "결제 영역"},
+            {"id": "same a", "label": "Second collision", "boundary": "결제 영역"},
             {"kind": "person", "boundary": "결제 영역"},
         ],
         "boundaries": [{"id": "결제 영역"}],
         "relations": [
             {"source": "A-B", "target": "A B", "bidirectional": True},
-            {"source": "same", "target": "A-B"},
+            {"source": "same-a", "target": "A-B"},
         ],
     }
 
@@ -496,21 +565,21 @@ def test_c4_architecture_and_nested_flowchart_share_planned_identity_and_topolog
     assert 'group group_1(cloud)["G1"]' in architecture_code
     assert 'service A_B(server)["API"] in group_1' in architecture_code
     assert 'service A_B_2(database)["Database"] in group_1' in architecture_code
-    assert 'service same(server)["First duplicate"] in group_1' in architecture_code
-    assert 'service same_2(server)["Second duplicate"] in group_1' in architecture_code
+    assert 'service same_a(server)["First collision"] in group_1' in architecture_code
+    assert 'service same_a_2(server)["Second collision"] in group_1' in architecture_code
     assert 'service S5(internet)["S5"] in group_1' in architecture_code
     assert "A_B:R <--> L:A_B_2" in architecture_code
-    assert "same:R --> L:A_B" in architecture_code
+    assert "same_a:R --> L:A_B" in architecture_code
 
     assert flowchart_type == "flowchart"
     assert 'subgraph group_1["G1"]' in flowchart_code
     assert 'A_B["API"]' in flowchart_code
     assert 'A_B_2["Database"]' in flowchart_code
-    assert 'same["First duplicate"]' in flowchart_code
-    assert 'same_2["Second duplicate"]' in flowchart_code
+    assert 'same_a["First collision"]' in flowchart_code
+    assert 'same_a_2["Second collision"]' in flowchart_code
     assert 'S5["S5"]' in flowchart_code
     assert "A_B <--> A_B_2" in flowchart_code
-    assert "same --> A_B" in flowchart_code
+    assert "same_a --> A_B" in flowchart_code
 
 
 @pytest.mark.parametrize(
@@ -628,7 +697,7 @@ def test_c4_nested_contract_leaves_semantic_validation_to_serializer(
         serialize_phase2("c4", ir)
 
 
-def test_c4_nested_contract_preserves_duplicate_identity_and_empty_boundary_semantics() -> None:
+def test_c4_nested_contract_defers_duplicate_identity_rejection_to_serializer() -> None:
     duplicate_ir = {
         "elements": [
             {"id": "same", "label": "First"},
@@ -636,16 +705,16 @@ def test_c4_nested_contract_preserves_duplicate_identity_and_empty_boundary_sema
         ],
         "relations": [{"source": "same", "target": "same"}],
     }
+    assert TypedIRCandidate(diagram_type="c4", ir=duplicate_ir).ir == duplicate_ir
+    with pytest.raises(SerializationError, match="ids must be unique"):
+        serialize_phase2("c4", duplicate_ir)
+
+
+def test_c4_nested_contract_preserves_empty_boundary_semantics() -> None:
     empty_boundary_ir = {
         "elements": [{"id": "api"}],
         "boundaries": [{"id": "empty", "label": "Empty"}],
     }
-
-    assert TypedIRCandidate(diagram_type="c4", ir=duplicate_ir).ir == duplicate_ir
-    duplicate_code = serialize_phase2("c4", duplicate_ir)[0]
-    assert 'service same(server)["First"]' in duplicate_code
-    assert 'service same_2(server)["Second"]' in duplicate_code
-    assert "same:R --> L:same" in duplicate_code
 
     assert TypedIRCandidate(diagram_type="c4", ir=empty_boundary_ir).ir == empty_boundary_ir
     architecture_code, emitted_type, _reason = serialize_phase2("c4", empty_boundary_ir)
@@ -794,7 +863,7 @@ def test_architecture_fallback_relation_alias_precedence_is_not_merged(
         ("component", "components", "interfaces"),
     ],
 )
-def test_architecture_fallback_secondary_records_share_identity_and_duplicate_semantics(
+def test_architecture_fallback_secondary_records_reject_duplicate_source_ids(
     diagram_type: str,
     root_field: str,
     secondary_field: str,
@@ -806,10 +875,8 @@ def test_architecture_fallback_secondary_records_share_identity_and_duplicate_se
     }
 
     assert TypedIRCandidate(diagram_type=diagram_type, ir=ir).ir == ir
-    code = serialize_phase2(diagram_type, ir)[0]
-    assert 'service same(server)["Primary"]' in code
-    assert 'service same_2(server)["Secondary"]' in code
-    assert "same:R --> L:same" in code
+    with pytest.raises(SerializationError, match="ids must be unique"):
+        serialize_phase2(diagram_type, ir)
 
 
 @pytest.mark.parametrize(

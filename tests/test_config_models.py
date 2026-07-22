@@ -7,7 +7,13 @@ import pytest
 from pydantic import ValidationError
 
 import marker_mermaid.models as models
-from marker_mermaid.config import MermaidConfig, Mode, quality_grade
+from marker_mermaid.config import (
+    MermaidConfig,
+    Mode,
+    ScoreWeights,
+    SecurityProfile,
+    quality_grade,
+)
 from marker_mermaid.models import (
     DiagramSceneIR,
     DiagramTypePrediction,
@@ -43,6 +49,73 @@ def test_original_image_cannot_be_disabled():
         MermaidConfig(extract_images=False)
     with pytest.raises(ValidationError):
         MermaidConfig(include_original_image=False)
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+def test_score_weights_reject_non_finite_values(value: float) -> None:
+    with pytest.raises(ValidationError, match="finite"):
+        ScoreWeights(syntax=value)
+
+
+def test_score_weights_reject_a_non_finite_total() -> None:
+    with pytest.raises(ValidationError, match="finite"):
+        ScoreWeights(syntax=1e308, render=1e308)
+
+
+@pytest.mark.parametrize("value", [0, -1, 50_001])
+def test_mermaid_character_limit_matches_the_runtime_ceiling(value: int) -> None:
+    with pytest.raises(ValidationError, match="max_mermaid_chars"):
+        MermaidConfig(max_mermaid_chars=value)
+
+
+@pytest.mark.parametrize("value", [0, -1, math.nan, math.inf, -math.inf])
+def test_render_timeout_must_be_finite_and_positive(value: float) -> None:
+    with pytest.raises(ValidationError, match="render_timeout_seconds"):
+        MermaidConfig(render_timeout_seconds=value)
+
+
+@pytest.mark.parametrize(
+    ("runtime_type", "canonical_type"),
+    [
+        ("classDiagram", "class"),
+        ("classDiagram-v2", "class"),
+        ("stateDiagram", "state"),
+        ("stateDiagram-v2", "state"),
+    ],
+)
+def test_runtime_diagram_aliases_match_internal_types(
+    runtime_type: str,
+    canonical_type: str,
+) -> None:
+    assert models._canonical_runtime_diagram_type(runtime_type) == canonical_type
+
+
+def test_classdiagram_runtime_alias_can_seal_publication_artifacts() -> None:
+    code = "classDiagram\n    class Service\n"
+    svg = '<svg xmlns="http://www.w3.org/2000/svg"><text>Service</text></svg>'
+    candidate = MermaidCandidate(
+        candidate_id="class-candidate",
+        generation_method="typed_ir",
+        diagram_type="class",
+        emitted_diagram_type="class",
+        runtime_diagram_type="classDiagram",
+        mermaid_code=code,
+        svg=svg,
+        syntax_valid=True,
+        render_valid=True,
+    )
+    certificate = models._issue_validated_artifact_certificate(
+        code=code,
+        svg=svg,
+        png=None,
+        profile=SecurityProfile.STRICT,
+        runtime_diagram_type="classDiagram",
+    )
+
+    candidate._seal_validation_receipt(certificate)
+
+    assert candidate.validation_receipt is not None
+    assert candidate.has_validated_publication_artifacts()
 
 
 @pytest.mark.parametrize(

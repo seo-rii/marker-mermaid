@@ -839,7 +839,7 @@ def test_gitgraph_merge_ids_share_the_global_commit_namespace() -> None:
         )
 
 
-@pytest.mark.parametrize("tag", [None, "", "bad\x00tag", "bad\u200btag"])
+@pytest.mark.parametrize("tag", ["", "bad\x00tag", "bad\u200btag"])
 def test_gitgraph_rejects_empty_or_control_bearing_tags(tag: object) -> None:
     with pytest.raises(SerializationError, match="tag"):
         plan_gitgraph_records(
@@ -848,6 +848,27 @@ def test_gitgraph_rejects_empty_or_control_bearing_tags(tag: object) -> None:
                 "operations": [{"type": "commit", "branch": "main", "id": "root", "tag": tag}],
             }
         )
+
+
+def test_gitgraph_omits_explicit_null_optional_commit_metadata() -> None:
+    operation = {
+        "type": "commit",
+        "branch": "main",
+        "id": "root",
+        "tag": None,
+        "commit_type": None,
+        "style": None,
+    }
+
+    plan = plan_gitgraph_records(
+        {
+            "initial_branch": "main",
+            "operations": [operation],
+        }
+    )
+
+    assert plan.commits[0].tag is None
+    assert plan.commits[0].commit_type is None
 
 
 @pytest.mark.parametrize(

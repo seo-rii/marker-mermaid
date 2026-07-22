@@ -122,6 +122,29 @@ def test_class_serializer_emits_members_and_evidenced_relation():
     assert 'payment_service "1" ..> "0..*" gateway : authorizes' in code
 
 
+@pytest.mark.parametrize("return_type", ["Result}", "Result{", "Result;"])
+def test_class_method_return_type_rejects_block_terminating_syntax(return_type: str) -> None:
+    ir = {
+        "classes": [
+            {
+                "id": "service",
+                "evidence_ids": evidence(1),
+                "members": [
+                    {
+                        "name": "run",
+                        "kind": "method",
+                        "return_type": return_type,
+                        "evidence_ids": evidence(2),
+                    }
+                ],
+            }
+        ]
+    }
+
+    with pytest.raises(SerializationError, match="return type contains unsupported syntax"):
+        serialize_class(ir)
+
+
 def test_class_inheritance_uses_child_to_parent_input_semantics():
     ir = {
         "classes": [
@@ -211,9 +234,15 @@ def test_uml_serializers_parse_and_render_in_mermaid_11_16():
     runtime = NodeMermaidRuntime()
     validator = CandidateValidator(runtime, SecurityProfile.STRICT)
     try:
-        for code in (serialize_state(STATE_IR), serialize_class(CLASS_IR), serialize_er(ER_IR)):
+        cases = (
+            (serialize_state(STATE_IR), {"stateDiagram"}),
+            (serialize_class(CLASS_IR), {"class", "classDiagram"}),
+            (serialize_er(ER_IR), {"er"}),
+        )
+        for code, expected_runtime_types in cases:
             outcome = validator.validate(code, 20)
             assert outcome.runtime.syntax_valid, (code, outcome.runtime.error)
             assert outcome.runtime.render_valid, (code, outcome.runtime.error, outcome.warnings)
+            assert outcome.runtime.diagram_type in expected_runtime_types
     finally:
         runtime.close()

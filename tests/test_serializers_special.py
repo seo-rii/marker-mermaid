@@ -669,6 +669,39 @@ def test_special_entity_literals_use_disclosed_visible_compatibility_glyphs(
     assert normalized_report.safe, normalized_report.findings
 
 
+@pytest.mark.parametrize(
+    ("diagram_type", "ir"),
+    [
+        (
+            "packet",
+            {"fields": [{"start": 0, "end": 0, "label": "Step #65; #quot; done"}]},
+        ),
+        (
+            "ishikawa",
+            {
+                "effect": {"label": "Effect"},
+                "categories": [{"label": "Step #65; #quot; done"}],
+            },
+        ),
+        (
+            "treeview",
+            {
+                "root": {
+                    "label": "Root",
+                    "children": [{"label": "Step #65; #quot; done"}],
+                }
+            },
+        ),
+    ],
+)
+def test_special_bare_entity_literals_remain_visible_text(diagram_type, ir) -> None:
+    result = serialize_special(diagram_type, ir)
+
+    assert "Step ＃65; ＃quot; done" in result.code
+    assert "Step #65; #quot; done" not in result.code
+    assert any("Entity-like literal text" in warning for warning in result.warnings)
+
+
 def test_eventmodeling_entity_and_edge_delimiters_use_visible_compatibility_glyphs() -> None:
     ir = deepcopy(EVENTMODELING_IR)
     ir["lanes"][0]["label"] = "Customer &#35;"
@@ -757,36 +790,59 @@ def test_native_packet_and_treeview_preserve_safe_visible_and_accessible_text() 
 @pytest.mark.integration
 def test_special_entity_compatibility_glyphs_remain_visible_in_mermaid_11_16() -> None:
     cases = [
-        serialize_special(
-            "packet",
-            {"fields": [{"start": 0, "end": 0, "label": "A &#34; &amp; B"}]},
+        (
+            serialize_special(
+                "packet",
+                {"fields": [{"start": 0, "end": 0, "label": "A &#34; &amp; B"}]},
+            ),
+            "A ＆＃34; ＆amp; B",
+            "A &#34; &amp; B",
         ),
-        serialize_special(
-            "ishikawa",
-            {
-                "effect": {"label": "Effect"},
-                "categories": [{"label": "A &#34; &amp; B"}],
-            },
+        (
+            serialize_special(
+                "ishikawa",
+                {
+                    "effect": {"label": "Effect"},
+                    "categories": [{"label": "A &#34; &amp; B"}],
+                },
+            ),
+            "A ＆＃34; ＆amp; B",
+            "A &#34; &amp; B",
         ),
-        serialize_special(
-            "treeview",
-            {
-                "root": {
-                    "label": "Root",
-                    "children": [{"label": "A &#34; &amp; B"}],
-                }
-            },
+        (
+            serialize_special(
+                "treeview",
+                {
+                    "root": {
+                        "label": "Root",
+                        "children": [{"label": "A &#34; &amp; B"}],
+                    }
+                },
+            ),
+            "A ＆＃34; ＆amp; B",
+            "A &#34; &amp; B",
+        ),
+        (
+            serialize_special(
+                "packet",
+                {"fields": [{"start": 0, "end": 0, "label": "Step #65; #quot; done"}]},
+            ),
+            "Step ＃65; ＃quot; done",
+            "Step #65; #quot; done",
         ),
     ]
     runtime = NodeMermaidRuntime()
     validator = CandidateValidator(runtime, SecurityProfile.STRICT)
 
     try:
-        outcomes = [(result, validator.validate(result.code, 20)) for result in cases]
+        outcomes = [
+            (result, validator.validate(result.code, 20), expected, forbidden)
+            for result, expected, forbidden in cases
+        ]
     finally:
         runtime.close()
 
-    for result, outcome in outcomes:
+    for result, outcome, expected, forbidden in outcomes:
         assert outcome.runtime.syntax_valid, (result.code, outcome.runtime.error)
         assert outcome.runtime.render_valid, (result.code, outcome.runtime.error)
         visible_text = " ".join(
@@ -794,8 +850,8 @@ def test_special_entity_compatibility_glyphs_remain_visible_in_mermaid_11_16() -
             .replace("\u200b", "")
             .split()
         )
-        assert "A ＆＃34; ＆amp; B" in visible_text
-        assert "A &#34; &amp; B" not in visible_text
+        assert expected in visible_text
+        assert forbidden not in visible_text
 
 
 @pytest.mark.integration
