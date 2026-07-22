@@ -1266,9 +1266,7 @@ class ReconstructionPipeline:
                 if repair_view_pixels > MAX_VLM_TOTAL_VIEW_PIXELS:
                     raise ValueError("visual priors exceed the aggregate pixel boundary")
                 repair_views[name] = snapshot
-            repair_image = _canonical_rgb_image_snapshot(repair_views["original"])
         except Exception as exc:
-            repair_image = Image.new("RGB", (1, 1), "white")
             repair_views = {"original": Image.new("RGB", (1, 1), "white")}
             view_warnings = list(
                 dict.fromkeys(
@@ -2789,17 +2787,27 @@ class ReconstructionPipeline:
 
         selected = self._select(candidates)
         if selected is not None and self.repair_engine is not None:
-            context.image = _canonical_rgb_image_snapshot(repair_image)
+            context.image = _canonical_rgb_image_snapshot(
+                source_image,
+                max_dimension=self.config.max_virtual_source_dimension,
+                max_pixels=self.config.max_virtual_source_pixels,
+            )
             context.views = {
                 name: _canonical_rgb_image_snapshot(view) for name, view in repair_views.items()
             }
+            pre_repair_selected = selected
             selected = self._repair(
                 context,
                 selected,
                 approved_user_edit_evidence_ids,
             )
-            if selected not in candidates:
-                candidates.append(selected)
+            if selected is not pre_repair_selected:
+                if selected.candidate_id == pre_repair_selected.candidate_id:
+                    candidates = [
+                        selected if item is pre_repair_selected else item for item in candidates
+                    ]
+                elif all(item is not selected for item in candidates):
+                    candidates.append(selected)
         if selected is not None:
             bounded_warnings: list[str] = []
             warnings_truncated = False
@@ -3039,10 +3047,15 @@ class ReconstructionPipeline:
                     if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
                         spatial_evidence_safe = False
                         break
-                    bbox = tuple(float(value) for value in raw_bbox)
+                    try:
+                        bbox = tuple(float(value) for value in raw_bbox)
+                    except (TypeError, ValueError, OverflowError):
+                        spatial_evidence_safe = False
+                        break
                     x1, y1, x2, y2 = bbox
                     if (
-                        x2 <= x1
+                        not all(math.isfinite(value) for value in bbox)
+                        or x2 <= x1
                         or y2 <= y1
                         or x1 < 0
                         or y1 < 0
@@ -3602,7 +3615,10 @@ class ReconstructionPipeline:
                     raw_bbox = slice_plan.source_record.get("bbox")
                     if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
                         continue
-                    slice_bbox = tuple(float(value) for value in raw_bbox)
+                    try:
+                        slice_bbox = tuple(float(value) for value in raw_bbox)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
                     if all(math.isfinite(value) for value in slice_bbox):
                         title_exclusion_boxes.append(slice_bbox)
                 accessibility_texts_by_bbox: dict[tuple[float, float, float, float], set[str]] = {}
@@ -3741,7 +3757,11 @@ class ReconstructionPipeline:
                 if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
                     spatial_evidence_safe = False
                     break
-                bbox = tuple(float(value) for value in raw_bbox)
+                try:
+                    bbox = tuple(float(value) for value in raw_bbox)
+                except (TypeError, ValueError, OverflowError):
+                    spatial_evidence_safe = False
+                    break
                 x1, y1, x2, y2 = bbox
                 if (
                     not all(math.isfinite(value) for value in bbox)
@@ -6483,7 +6503,11 @@ class ReconstructionPipeline:
                 if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
                     spatial_evidence_safe = False
                     break
-                bbox = tuple(float(value) for value in raw_bbox)
+                try:
+                    bbox = tuple(float(value) for value in raw_bbox)
+                except (TypeError, ValueError, OverflowError):
+                    spatial_evidence_safe = False
+                    break
                 x1, y1, x2, y2 = bbox
                 if (
                     not all(math.isfinite(value) for value in bbox)
@@ -6986,7 +7010,6 @@ class ReconstructionPipeline:
                     trusted_label_ids.intersection_update(evidence_authority)
                     trusted_connector_ids.intersection_update(evidence_authority)
                 source_mapping = canonical_source_mapping_snapshot(context.source_mapping)
-                repair_image = _canonical_rgb_image_snapshot(context.image)
                 if (
                     type(context.views) is not dict
                     or not context.views
@@ -7003,6 +7026,7 @@ class ReconstructionPipeline:
                     if repair_view_pixels > MAX_VLM_TOTAL_VIEW_PIXELS:
                         raise ValueError("repair views exceed the aggregate pixel boundary")
                     repair_views[name] = view_snapshot
+                repair_image = _canonical_rgb_image_snapshot(repair_views["original"])
                 # Opaque Marker blocks and vector-provider objects are intentionally not
                 # forwarded: the semantic repair contract uses the isolated source snapshot.
                 repair_context = SourceContext(

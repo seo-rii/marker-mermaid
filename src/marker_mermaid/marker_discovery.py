@@ -14,6 +14,7 @@ tests and for compatible downstream document implementations.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from hashlib import sha256
@@ -36,6 +37,8 @@ from marker_mermaid.models import BBox
 from marker_mermaid.page_detector import PageDiagramDetection, detect_page_diagram_regions
 
 _TARGET_BLOCK_NAMES = frozenset({"figure", "picture", "complexregion"})
+_SAME_PAGE_MERGE_SCALE_REL_TOLERANCE = 1e-3
+_SAME_PAGE_MERGE_SCALE_ABS_TOLERANCE = 1e-6
 
 
 @dataclass(slots=True)
@@ -398,9 +401,11 @@ def merge_proposal_to_source(
     """Convert one merge proposal into positioned registry metadata.
 
     Same-page fragments use their page bounding boxes to retain relative placement.
-    Consecutive-page fragments are stacked in reading order because page coordinate
-    systems reset at each page boundary.  The fragment-id image registry remains
-    unchanged because merged sources reuse the original raw fragments.
+    They must also share one pixel-to-page scale: merged sources reuse original raw
+    fragments, so accepting incompatible scales would place unscaled pixels in one
+    corrupt coordinate system. Consecutive-page fragments are stacked in reading
+    order because page coordinate systems reset at each page boundary. The
+    fragment-id image registry remains unchanged.
     """
 
     block_ids = proposal.block_ids
@@ -439,6 +444,31 @@ def merge_proposal_to_source(
         )
         scale_x = (first_crop[2] - first_crop[0]) / (first_box[2] - first_box[0])
         scale_y = (first_crop[3] - first_crop[1]) / (first_box[3] - first_box[1])
+        for (_, fragment), page_box in zip(ordered[1:], page_boxes[1:], strict=True):
+            assert page_box is not None
+            crop = fragment.crop_bbox or (
+                0.0,
+                0.0,
+                float(fragment.image_size[0]),
+                float(fragment.image_size[1]),
+            )
+            fragment_scale_x = (crop[2] - crop[0]) / (page_box[2] - page_box[0])
+            fragment_scale_y = (crop[3] - crop[1]) / (page_box[3] - page_box[1])
+            if not (
+                math.isclose(
+                    fragment_scale_x,
+                    scale_x,
+                    rel_tol=_SAME_PAGE_MERGE_SCALE_REL_TOLERANCE,
+                    abs_tol=_SAME_PAGE_MERGE_SCALE_ABS_TOLERANCE,
+                )
+                and math.isclose(
+                    fragment_scale_y,
+                    scale_y,
+                    rel_tol=_SAME_PAGE_MERGE_SCALE_REL_TOLERANCE,
+                    abs_tol=_SAME_PAGE_MERGE_SCALE_ABS_TOLERANCE,
+                )
+            ):
+                raise ValueError("same-page merge fragments use incompatible pixel scales")
         left = min(box[0] for box in page_boxes if box is not None)
         top = min(box[1] for box in page_boxes if box is not None)
         offsets = [
