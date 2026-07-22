@@ -46,6 +46,9 @@ MAX_HISTORY_ENTRIES = 10_000
 MAX_REASON_LENGTH = 4_096
 MAX_LIST_BUNDLES = 1_000
 MAX_LIST_CANDIDATES = 5_000
+MAX_TRANSACTION_ARTIFACTS = 256
+REVIEW_TRANSACTION_SCHEMA_VERSION = "mmx-review-transaction-1"
+_REVIEW_TRANSACTION_FILE = ".review-transaction.json"
 _BUNDLE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}\Z")
 
 
@@ -174,6 +177,7 @@ class ReviewBundleSummary(BaseModel):
     version: int
     decision: ReviewDecision
     code_digest: str
+    error: str | None = None
 
 
 class ReviewBundle(BaseModel):
@@ -258,6 +262,10 @@ class ReviewStore:
     """Read and mutate review sidecars with bounded, append-only audit history."""
 
     def __init__(self, output_root: str | Path, *, validator: ValidationCallback | None = None):
+        if os.name != "posix":
+            raise RuntimeError(
+                "the review store supports POSIX platforms only (Linux and macOS)"
+            )
         self.output_root = Path(output_root).resolve()
         self.diagrams_root = self.output_root / "diagrams"
         self.validator = validator
@@ -289,14 +297,27 @@ class ReviewStore:
         for bundle_id in bundle_ids:
             try:
                 summary = self._load_summary(bundle_id)
-            except ReviewStoreError:
-                continue
+            except ReviewStoreError as exc:
+                summary = ReviewBundleSummary(
+                    bundle_id=bundle_id,
+                    source_id=bundle_id,
+                    status="error",
+                    grade="U",
+                    version=0,
+                    decision="pending",
+                    code_digest="0" * 64,
+                    error=str(exc),
+                )
             summaries.append(summary)
             if len(summaries) >= limit:
                 break
         return summaries
 
     def _load_summary(self, bundle_id: str) -> ReviewBundleSummary:
+        with self._locked_bundle(bundle_id):
+            return self._load_summary_unlocked(bundle_id)
+
+    def _load_summary_unlocked(self, bundle_id: str) -> ReviewBundleSummary:
         bundle = self._bundle_path(bundle_id)
         manifest = self._read_json(bundle, "manifest.json", expected=dict)
         self._validate_manifest(manifest)
@@ -344,6 +365,10 @@ class ReviewStore:
         )
 
     def load_bundle(self, bundle_id: str) -> ReviewBundle:
+        with self._locked_bundle(bundle_id):
+            return self._load_bundle_unlocked(bundle_id)
+
+    def _load_bundle_unlocked(self, bundle_id: str) -> ReviewBundle:
         bundle = self._bundle_path(bundle_id)
         manifest = self._read_json(bundle, "manifest.json", expected=dict)
         self._validate_manifest(manifest)
@@ -553,7 +578,7 @@ class ReviewStore:
             elif valid is False:
                 raise ReviewValidationError("Mermaid validation rejected the edit")
         with self._locked_bundle(bundle_id):
-            bundle = self.load_bundle(bundle_id)
+            bundle = self._load_bundle_unlocked(bundle_id)
             self._check_expected(bundle, expected_version, expected_digest)
             if validation_result is not None:
                 validated_svg, validated_png = self._snapshot_validation_artifacts(
@@ -639,7 +664,7 @@ class ReviewStore:
         self._check_expected(current, expected_version, expected_digest)
         self._require_scene_node(current.scene_ir, requested.node_id)
         with self._locked_bundle(bundle_id):
-            bundle = self.load_bundle(bundle_id)
+            bundle = self._load_bundle_unlocked(bundle_id)
             self._check_expected(bundle, expected_version, expected_digest)
             self._require_scene_node(bundle.scene_ir, requested.node_id)
             current_layout = bundle.layout_hints or ReviewLayoutHints()
@@ -787,7 +812,7 @@ class ReviewStore:
     ) -> ReviewBundle:
         self._validate_reason(reason)
         with self._locked_bundle(bundle_id):
-            bundle = self.load_bundle(bundle_id)
+            bundle = self._load_bundle_unlocked(bundle_id)
             self._check_expected(bundle, expected_version, expected_digest)
             validation_result: ReviewValidationResult | None = None
             if decision == "approved":
@@ -851,7 +876,7 @@ class ReviewStore:
     ) -> ReviewBundle:
         self._validate_reason(reason)
         with self._locked_bundle(bundle_id):
-            bundle = self.load_bundle(bundle_id)
+            bundle = self._load_bundle_unlocked(bundle_id)
             self._check_expected(bundle, expected_version, expected_digest)
             if delta is None:
                 if not isinstance(target_revision, str) or not re.fullmatch(
@@ -988,7 +1013,7 @@ class ReviewStore:
                 quality_status=quality_status,
             )
             self._atomic_replace_many(bundle_path, files)
-        return self.load_bundle(bundle_id)
+            return self._load_bundle_unlocked(bundle_id)
 
     def _commit_new_revision(
         self,
@@ -1171,7 +1196,7 @@ class ReviewStore:
             quality_status=("unscored_user_revision" if content_changed else None),
         )
         self._atomic_replace_many(bundle_path, files)
-        return self.load_bundle(bundle.bundle_id)
+        return self._load_bundle_unlocked(bundle.bundle_id)
 
     @staticmethod
     def _state_value(
@@ -1786,25 +1811,223 @@ class ReviewStore:
     def _locked_bundle(self, bundle_id: str) -> Iterator[Path]:
         bundle = self._bundle_path(bundle_id)
         bundle_fd = self._open_bundle_directory(bundle)
-        flags = os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW
-        try:
-            fd = os.open(".review.lock", flags, 0o600, dir_fd=bundle_fd)
-        except OSError as exc:
-            os.close(bundle_fd)
-            raise UnsafeReviewPathError("could not safely open the review lock") from exc
         try:
             import fcntl
 
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            fcntl.flock(bundle_fd, fcntl.LOCK_EX)
+            self._recover_transaction(bundle, bundle_fd)
             yield bundle
         finally:
             try:
                 import fcntl
 
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                fcntl.flock(bundle_fd, fcntl.LOCK_UN)
             finally:
-                os.close(fd)
                 os.close(bundle_fd)
+
+    def _recover_transaction(self, bundle: Path, bundle_fd: int) -> None:
+        """Roll forward a bounded transaction interrupted between artifact renames."""
+
+        try:
+            journal_fd = os.open(
+                _REVIEW_TRANSACTION_FILE,
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=bundle_fd,
+            )
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise ReviewConflictError("unfinished review transaction is unreadable") from exc
+        try:
+            journal_stat = os.fstat(journal_fd)
+            if not stat.S_ISREG(journal_stat.st_mode) or journal_stat.st_size > MAX_JSON_BYTES:
+                raise ReviewConflictError("unfinished review transaction is invalid")
+            with os.fdopen(journal_fd, "rb") as handle:
+                journal_fd = -1
+                encoded = handle.read(MAX_JSON_BYTES + 1)
+            if len(encoded) > MAX_JSON_BYTES:
+                raise ReviewConflictError("unfinished review transaction exceeds its size limit")
+            try:
+                journal = json.loads(encoded)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ReviewConflictError("unfinished review transaction is invalid JSON") from exc
+        finally:
+            if journal_fd >= 0:
+                os.close(journal_fd)
+        if type(journal) is not dict or journal.get("schema_version") != (
+            REVIEW_TRANSACTION_SCHEMA_VERSION
+        ):
+            raise ReviewConflictError("unfinished review transaction has an invalid schema")
+        entries = journal.get("entries")
+        if (
+            type(entries) is not list
+            or not entries
+            or len(entries) > MAX_TRANSACTION_ARTIFACTS
+        ):
+            raise ReviewConflictError("unfinished review transaction has invalid entries")
+
+        for entry in entries:
+            if type(entry) is not dict:
+                raise ReviewConflictError("unfinished review transaction has an invalid entry")
+            relative = entry.get("path")
+            temporary = entry.get("temporary")
+            expected_digest = entry.get("digest")
+            if type(relative) is not str:
+                raise ReviewConflictError("unfinished review transaction has an invalid path")
+            parts = Path(relative).parts
+            if (
+                not parts
+                or Path(relative).is_absolute()
+                or any(part in {"", ".", ".."} for part in parts)
+                or relative == _REVIEW_TRANSACTION_FILE
+            ):
+                raise ReviewConflictError("unfinished review transaction has an unsafe path")
+            if expected_digest is not None and (
+                type(expected_digest) is not str
+                or re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None
+            ):
+                raise ReviewConflictError("unfinished review transaction has an invalid digest")
+            if expected_digest is None:
+                if temporary is not None:
+                    raise ReviewConflictError(
+                        "unfinished delete transaction has an unexpected temporary"
+                    )
+            elif type(temporary) is not str:
+                raise ReviewConflictError(
+                    "unfinished replace transaction has no temporary artifact"
+                )
+            if temporary is not None:
+                temporary_parts = Path(temporary).parts
+                temporary_name = temporary_parts[-1] if temporary_parts else ""
+                if (
+                    len(temporary_parts) != len(parts)
+                    or temporary_parts[:-1] != parts[:-1]
+                    or not temporary_name.startswith(f".{parts[-1]}.")
+                    or not temporary_name.endswith(".tmp")
+                ):
+                    raise ReviewConflictError(
+                        "unfinished review transaction has an unsafe temporary path"
+                    )
+            else:
+                temporary_name = None
+
+            parent_fd = os.dup(bundle_fd)
+            try:
+                for component in parts[:-1]:
+                    try:
+                        child_fd = os.open(
+                            component,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=parent_fd,
+                        )
+                    except OSError as exc:
+                        raise ReviewConflictError(
+                            "unfinished review transaction directory is unavailable"
+                        ) from exc
+                    os.close(parent_fd)
+                    parent_fd = child_fd
+                target_name = parts[-1]
+                if expected_digest is None:
+                    with suppress(FileNotFoundError):
+                        os.unlink(target_name, dir_fd=parent_fd)
+                    os.fsync(parent_fd)
+                    continue
+
+                if target_name.endswith(".mmd"):
+                    artifact_limit = MAX_MERMAID_BYTES
+                elif target_name.endswith((".svg", ".png")):
+                    artifact_limit = MAX_RENDER_BYTES
+                else:
+                    artifact_limit = MAX_JSON_BYTES
+                try:
+                    target_fd = os.open(
+                        target_name,
+                        os.O_RDONLY | os.O_NOFOLLOW,
+                        dir_fd=parent_fd,
+                    )
+                except FileNotFoundError:
+                    target_matches = False
+                except OSError as exc:
+                    raise ReviewConflictError(
+                        "unfinished review transaction target is unsafe"
+                    ) from exc
+                else:
+                    try:
+                        target_stat = os.fstat(target_fd)
+                        if (
+                            not stat.S_ISREG(target_stat.st_mode)
+                            or target_stat.st_size > artifact_limit
+                        ):
+                            raise ReviewConflictError(
+                                "unfinished review transaction target is invalid"
+                            )
+                        with os.fdopen(target_fd, "rb") as handle:
+                            target_fd = -1
+                            target_payload = handle.read(artifact_limit + 1)
+                        target_matches = (
+                            len(target_payload) <= artifact_limit
+                            and _bytes_digest(target_payload) == expected_digest
+                        )
+                    finally:
+                        if target_fd >= 0:
+                            os.close(target_fd)
+                if target_matches:
+                    assert temporary_name is not None
+                    with suppress(FileNotFoundError):
+                        os.unlink(temporary_name, dir_fd=parent_fd)
+                    os.fsync(parent_fd)
+                    continue
+
+                assert temporary_name is not None
+                try:
+                    temporary_fd = os.open(
+                        temporary_name,
+                        os.O_RDONLY | os.O_NOFOLLOW,
+                        dir_fd=parent_fd,
+                    )
+                except OSError as exc:
+                    raise ReviewConflictError(
+                        "unfinished review transaction lost a staged artifact"
+                    ) from exc
+                try:
+                    temporary_stat = os.fstat(temporary_fd)
+                    if (
+                        not stat.S_ISREG(temporary_stat.st_mode)
+                        or temporary_stat.st_size > artifact_limit
+                    ):
+                        raise ReviewConflictError(
+                            "unfinished review transaction staged artifact is invalid"
+                        )
+                    with os.fdopen(temporary_fd, "rb") as handle:
+                        temporary_fd = -1
+                        temporary_payload = handle.read(artifact_limit + 1)
+                    if (
+                        len(temporary_payload) > artifact_limit
+                        or _bytes_digest(temporary_payload) != expected_digest
+                    ):
+                        raise ReviewConflictError(
+                            "unfinished review transaction staged digest changed"
+                        )
+                finally:
+                    if temporary_fd >= 0:
+                        os.close(temporary_fd)
+                os.replace(
+                    temporary_name,
+                    target_name,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                )
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
+        os.fsync(bundle_fd)
+        try:
+            os.unlink(_REVIEW_TRANSACTION_FILE, dir_fd=bundle_fd)
+        except OSError as exc:
+            raise ReviewConflictError(
+                "recovered review transaction marker could not be removed"
+            ) from exc
+        os.fsync(bundle_fd)
 
     def _open_bundle_directory(self, bundle: Path) -> int:
         """Open one verified bundle directory without following a swapped path."""
@@ -1858,9 +2081,13 @@ class ReviewStore:
         """Commit files through one no-follow bundle descriptor with safe rollback."""
 
         bundle_fd = self._open_bundle_directory(bundle)
-        staged: list[tuple[int, str, str | None, bytes | None]] = []
-        committed: list[tuple[int, str, str | None, bytes | None]] = []
+        staged: list[tuple[int, str, str, str | None, bytes | None, bytes | None]] = []
+        committed: list[tuple[int, str, str, str | None, bytes | None, bytes | None]] = []
+        journal_created = False
+        journal_temporary_name: str | None = None
+        preserve_staged = False
         try:
+            self._recover_transaction(bundle, bundle_fd)
             for relative, payload in files.items():
                 parts = Path(relative).parts
                 if (
@@ -1965,13 +2192,63 @@ class ReviewStore:
                             with suppress(FileNotFoundError):
                                 os.unlink(temporary_name, dir_fd=parent_fd)
                             raise
-                    staged.append((parent_fd, target_name, temporary_name, original))
+                    staged.append(
+                        (parent_fd, relative, target_name, temporary_name, original, payload)
+                    )
                 except BaseException:
                     os.close(parent_fd)
                     raise
 
+            if not staged or len(staged) > MAX_TRANSACTION_ARTIFACTS:
+                raise ReviewValidationError("review transaction has an invalid artifact count")
+            journal_payload = _json_bytes(
+                {
+                    "schema_version": REVIEW_TRANSACTION_SCHEMA_VERSION,
+                    "entries": [
+                        {
+                            "path": relative,
+                            "temporary": (
+                                str(Path(relative).with_name(temporary_name))
+                                if temporary_name is not None
+                                else None
+                            ),
+                            "digest": _bytes_digest(payload) if payload is not None else None,
+                        }
+                        for _, relative, _, temporary_name, _, payload in staged
+                    ],
+                }
+            )
+            for _ in range(64):
+                candidate = f".{_REVIEW_TRANSACTION_FILE}.{secrets.token_hex(12)}.tmp"
+                try:
+                    journal_fd = os.open(
+                        candidate,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                        0o600,
+                        dir_fd=bundle_fd,
+                    )
+                except FileExistsError:
+                    continue
+                journal_temporary_name = candidate
+                break
+            else:
+                raise ReviewStoreError("could not allocate a review transaction marker")
+            with os.fdopen(journal_fd, "wb") as handle:
+                handle.write(journal_payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(
+                journal_temporary_name,
+                _REVIEW_TRANSACTION_FILE,
+                src_dir_fd=bundle_fd,
+                dst_dir_fd=bundle_fd,
+            )
+            journal_created = True
+            journal_temporary_name = None
+            os.fsync(bundle_fd)
+
             for entry in staged:
-                parent_fd, target_name, temporary_name, _ = entry
+                parent_fd, _, target_name, temporary_name, _, _ = entry
                 if temporary_name is None:
                     with suppress(FileNotFoundError):
                         os.unlink(target_name, dir_fd=parent_fd)
@@ -1983,13 +2260,29 @@ class ReviewStore:
                         dst_dir_fd=parent_fd,
                     )
                 committed.append(entry)
-            for parent_fd, _, _, _ in staged:
+            for parent_fd, _, _, _, _, _ in staged:
                 os.fsync(parent_fd)
             os.fsync(bundle_fd)
+            os.unlink(_REVIEW_TRANSACTION_FILE, dir_fd=bundle_fd)
+            os.fsync(bundle_fd)
+            journal_created = False
         except BaseException as exc:
             rollback_error: OSError | None = None
-            for parent_fd, target_name, _, original in reversed(committed):
+            for parent_fd, _, target_name, temporary_name, original, payload in reversed(
+                committed
+            ):
                 try:
+                    if temporary_name is not None and payload is not None:
+                        forward_fd = os.open(
+                            temporary_name,
+                            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                            0o600,
+                            dir_fd=parent_fd,
+                        )
+                        with os.fdopen(forward_fd, "wb") as handle:
+                            handle.write(payload)
+                            handle.flush()
+                            os.fsync(handle.fileno())
                     if original is None:
                         with suppress(FileNotFoundError):
                             os.unlink(target_name, dir_fd=parent_fd)
@@ -2027,14 +2320,26 @@ class ReviewStore:
                     os.fsync(parent_fd)
                 except OSError as restore_exc:
                     rollback_error = rollback_error or restore_exc
+            if journal_created and rollback_error is None:
+                try:
+                    with suppress(FileNotFoundError):
+                        os.unlink(_REVIEW_TRANSACTION_FILE, dir_fd=bundle_fd)
+                    os.fsync(bundle_fd)
+                    journal_created = False
+                except OSError as marker_exc:
+                    rollback_error = marker_exc
             if rollback_error is not None:
+                preserve_staged = journal_created
                 raise ReviewStoreError(
                     "review transaction failed and rollback was incomplete"
                 ) from exc
             raise
         finally:
-            for parent_fd, _, temporary_name, _ in staged:
-                if temporary_name is not None:
+            if journal_temporary_name is not None:
+                with suppress(FileNotFoundError):
+                    os.unlink(journal_temporary_name, dir_fd=bundle_fd)
+            for parent_fd, _, _, temporary_name, _, _ in staged:
+                if temporary_name is not None and not preserve_staged:
                     with suppress(FileNotFoundError):
                         os.unlink(temporary_name, dir_fd=parent_fd)
                 os.close(parent_fd)

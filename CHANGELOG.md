@@ -6,6 +6,24 @@
 
 - Pillow 12.3 compatibility for canonical image-core snapshots used by structured VLM and
   repair contexts, while preserving the existing size, type, and caller-hook isolation checks.
+- Candidate isolation and repair bookkeeping now reject malformed/non-finite chart geometry,
+  keep full-resolution evaluation coordinates, avoid selected-candidate duplication, and refuse
+  incompatible fragment pixel scales instead of corrupting merged sources.
+- Flowchart, UML, Phase-2, planning, chart, and specialized serializers now fail closed on unknown
+  endpoints or duplicate IDs, preserve reversed arrows, neutralize active-looking and entity-like
+  label text, and validate previously unchecked relation/member metadata.
+- Vector affine mapping now covers all transformed corners; fusion, geometry, Scene recovery,
+  deterministic source repair, style attribution, and numeric scoring preserve zero confidence,
+  reject non-finite values and identifier collisions, and retain subgraph/link semantics.
+- Mermaid worker requests now use deadline-bound non-blocking writes, bounded stderr diagnostics,
+  immediate crash/protocol reporting, and graceful EOF shutdown before process-group escalation.
+- Output preflight now rejects invalid Mermaid metadata rows, unwritable image suffixes, and every
+  existing document/metadata/image artifact before writing; source image handles close promptly.
+- Review reads and writes now share a bundle-directory lock, interrupted multi-file commits recover
+  through a digest-checked roll-forward journal, unloadable bundles remain visible as errors, and
+  `HEAD` cannot bypass Host validation or the artifact allowlist.
+- Configuration rejects non-finite weights/timeouts and values beyond the pinned worker limit;
+  unsupported Windows runtime/review entry points now fail fast with an explicit POSIX-platform error.
 
 ### Added
 

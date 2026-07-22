@@ -73,7 +73,13 @@ def command_validate(args) -> int:
 
 def command_reconstruct(args) -> int:
     _, config = _load_config(args.config)
-    image = Image.open(args.image)
+    with Image.open(args.image) as source_image:
+        source_image.load()
+        image = (
+            source_image.copy()
+            if source_image.mode == "RGB"
+            else source_image.convert("RGB")
+        )
     engine = JsonFixtureEngine.from_path(args.fixture)
     runtime = _runtime(config)
     try:

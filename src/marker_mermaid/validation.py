@@ -29,6 +29,7 @@ from marker_mermaid.render_artifacts import MAX_RENDER_BYTES, png_inspection_err
 from marker_mermaid.security import MermaidSecurityScanner
 
 MAX_RUNTIME_RESPONSE_BYTES = 64_000_000
+MAX_RUNTIME_STDERR_BYTES = 64_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,10 +137,17 @@ class NodeMermaidRuntime(MermaidRuntime):
     """JSONL bridge to a reusable, network-isolated Playwright Chromium worker."""
 
     def __init__(self, runtime_dir: str | Path | None = None):
+        if os.name != "posix":
+            raise RuntimeError(
+                "the Mermaid browser runtime supports POSIX platforms only "
+                "(Linux and macOS)"
+            )
         self.runtime_dir = Path(runtime_dir) if runtime_dir else default_runtime_dir()
         self._process: subprocess.Popen[bytes] | None = None
         self._process_group_id: int | None = None
         self._stdout_buffer = bytearray()
+        self._stderr_buffer = bytearray()
+        self._stderr_truncated = False
         self._lock = threading.RLock()
         self._next_id = 0
         atexit.register(self.close)
@@ -153,30 +161,63 @@ class NodeMermaidRuntime(MermaidRuntime):
             cwd=self.runtime_dir,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             bufsize=0,
             start_new_session=True,
         )
         self._process = process
         self._process_group_id = process.pid
         self._stdout_buffer.clear()
-        assert process.stdout is not None
+        self._stderr_buffer.clear()
+        self._stderr_truncated = False
+        assert (
+            process.stdin is not None
+            and process.stdout is not None
+            and process.stderr is not None
+        )
+        os.set_blocking(process.stdin.fileno(), False)
         os.set_blocking(process.stdout.fileno(), False)
+        os.set_blocking(process.stderr.fileno(), False)
         return process
 
     def validate_and_render(self, code: str, timeout_seconds: float) -> RuntimeResult:
         with self._lock:
+            if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+                return RuntimeResult(
+                    False,
+                    False,
+                    error="Mermaid runtime timeout must be finite and positive",
+                )
             process = self._process
             if process is None or process.poll() is not None:
-                process = self._start()
+                if process is not None:
+                    self.close()
+                try:
+                    process = self._start()
+                except (OSError, RuntimeError) as exc:
+                    self.close()
+                    return RuntimeResult(
+                        False,
+                        False,
+                        error=(
+                            "Mermaid runtime could not start; run `marker-mermaid doctor`: "
+                            f"{exc}"
+                        ),
+                    )
             self._next_id += 1
             request_id = str(self._next_id)
-            assert process.stdin is not None and process.stdout is not None
-            process.stdin.write((json.dumps({"id": request_id, "code": code}) + "\n").encode())
-            process.stdin.flush()
+            assert (
+                process.stdin is not None
+                and process.stdout is not None
+                and process.stderr is not None
+            )
+            request = (json.dumps({"id": request_id, "code": code}) + "\n").encode()
+            request_offset = 0
             selector = selectors.DefaultSelector()
-            selector.register(process.stdout, selectors.EVENT_READ)
             deadline = time.monotonic() + timeout_seconds
+            selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
+            selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+            selector.register(process.stderr, selectors.EVENT_READ, "stderr")
             try:
                 while time.monotonic() < deadline:
                     while b"\n" in self._stdout_buffer:
@@ -192,7 +233,16 @@ class NodeMermaidRuntime(MermaidRuntime):
                                 error=f"Mermaid runtime returned invalid JSON: {exc}",
                             )
                         if payload.get("id") != request_id:
-                            continue
+                            detail = payload.get("error")
+                            self.close()
+                            return RuntimeResult(
+                                False,
+                                False,
+                                error=(
+                                    "Mermaid runtime returned a mismatched response id"
+                                    + (f": {detail}" if isinstance(detail, str) and detail else "")
+                                ),
+                            )
                         if not payload.get("ok"):
                             return RuntimeResult(
                                 syntax_valid=bool(payload.get("syntaxValid")),
@@ -222,20 +272,91 @@ class NodeMermaidRuntime(MermaidRuntime):
                     events = selector.select(max(0, deadline - time.monotonic()))
                     if not events:
                         break
-                    try:
-                        chunk = os.read(process.stdout.fileno(), 65_536)
-                    except BlockingIOError:
-                        continue
-                    if not chunk:
-                        break
-                    self._stdout_buffer.extend(chunk)
-                    if len(self._stdout_buffer) > MAX_RUNTIME_RESPONSE_BYTES:
-                        self.close()
-                        return RuntimeResult(
-                            False,
-                            False,
-                            error="Mermaid runtime response exceeds the size limit",
-                        )
+                    for key, _ in events:
+                        if key.data == "stdin":
+                            try:
+                                written = os.write(
+                                    process.stdin.fileno(), request[request_offset:]
+                                )
+                            except (BrokenPipeError, OSError) as exc:
+                                try:
+                                    stderr_chunk = os.read(process.stderr.fileno(), 65_536)
+                                except (BlockingIOError, OSError):
+                                    stderr_chunk = b""
+                                remaining = MAX_RUNTIME_STDERR_BYTES - len(self._stderr_buffer)
+                                if stderr_chunk and remaining > 0:
+                                    self._stderr_buffer.extend(stderr_chunk[:remaining])
+                                if len(stderr_chunk) > max(0, remaining):
+                                    self._stderr_truncated = True
+                                detail = self._stderr_buffer.decode("utf-8", errors="replace")
+                                detail = " ".join(detail.split())
+                                self.close()
+                                return RuntimeResult(
+                                    False,
+                                    False,
+                                    error=(
+                                        "Mermaid runtime could not accept the request; "
+                                        "run `marker-mermaid doctor`"
+                                        + (f": {detail}" if detail else f": {exc}")
+                                    ),
+                                )
+                            request_offset += written
+                            if request_offset >= len(request):
+                                selector.unregister(process.stdin)
+                        elif key.data == "stderr":
+                            try:
+                                chunk = os.read(process.stderr.fileno(), 65_536)
+                            except (BlockingIOError, OSError):
+                                continue
+                            if not chunk:
+                                selector.unregister(process.stderr)
+                                continue
+                            remaining = MAX_RUNTIME_STDERR_BYTES - len(self._stderr_buffer)
+                            if chunk and remaining > 0:
+                                self._stderr_buffer.extend(chunk[:remaining])
+                            if len(chunk) > max(0, remaining):
+                                self._stderr_truncated = True
+                        else:
+                            try:
+                                chunk = os.read(process.stdout.fileno(), 65_536)
+                            except BlockingIOError:
+                                continue
+                            if not chunk:
+                                try:
+                                    stderr_chunk = os.read(process.stderr.fileno(), 65_536)
+                                except (BlockingIOError, OSError):
+                                    stderr_chunk = b""
+                                remaining = MAX_RUNTIME_STDERR_BYTES - len(self._stderr_buffer)
+                                if stderr_chunk and remaining > 0:
+                                    self._stderr_buffer.extend(stderr_chunk[:remaining])
+                                if len(stderr_chunk) > max(0, remaining):
+                                    self._stderr_truncated = True
+                                detail = self._stderr_buffer.decode("utf-8", errors="replace")
+                                detail = " ".join(detail.split())
+                                exit_code = process.poll()
+                                self.close()
+                                return RuntimeResult(
+                                    False,
+                                    False,
+                                    error=(
+                                        "Mermaid runtime exited unexpectedly"
+                                        + (
+                                            f" with exit code {exit_code}"
+                                            if exit_code is not None
+                                            else ""
+                                        )
+                                        + "; run `marker-mermaid doctor`"
+                                        + (f": {detail}" if detail else "")
+                                    ),
+                                )
+                            self._stdout_buffer.extend(chunk)
+                            if len(self._stdout_buffer) > MAX_RUNTIME_RESPONSE_BYTES:
+                                self.close()
+                                return RuntimeResult(
+                                    False,
+                                    False,
+                                    error="Mermaid runtime response exceeds the size limit",
+                                )
             finally:
                 selector.close()
             self.close()
@@ -246,17 +367,38 @@ class NodeMermaidRuntime(MermaidRuntime):
             process, self._process = self._process, None
             process_group_id, self._process_group_id = self._process_group_id, None
             self._stdout_buffer.clear()
-            if process_group_id is None:
+            self._stderr_buffer.clear()
+            self._stderr_truncated = False
+            if process is None:
                 return
             try:
-                os.killpg(process_group_id, signal.SIGTERM)
-                if process is not None and process.poll() is None:
-                    process.wait(timeout=3)
-            except (ProcessLookupError, subprocess.TimeoutExpired):
-                with suppress(ProcessLookupError):
-                    os.killpg(process_group_id, signal.SIGKILL)
-                if process is not None and process.poll() is None:
-                    process.wait(timeout=3)
+                if process.stdin is not None:
+                    with suppress(OSError):
+                        process.stdin.close()
+                if process.poll() is None:
+                    try:
+                        process.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        if process_group_id is not None:
+                            with suppress(ProcessLookupError):
+                                os.killpg(process_group_id, signal.SIGTERM)
+                        else:  # pragma: no cover - defensive partial-start fallback
+                            process.terminate()
+                        try:
+                            process.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            if process_group_id is not None:
+                                with suppress(ProcessLookupError):
+                                    os.killpg(process_group_id, signal.SIGKILL)
+                            else:  # pragma: no cover - defensive partial-start fallback
+                                process.kill()
+                            with suppress(subprocess.TimeoutExpired):
+                                process.wait(timeout=3)
+            finally:
+                for stream in (process.stdout, process.stderr):
+                    if stream is not None:
+                        with suppress(OSError):
+                            stream.close()
 
 
 class CandidateValidator:

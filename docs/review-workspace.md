@@ -249,13 +249,21 @@ most 1,000 summaries and deeply validates at most 5,000 bundle candidates. Listi
 Scene IR, or review history; full digests are checked only when an individual bundle opens. Undo/redo also
 removes optional Scene IR/SVG/PNG/provenance/layout files that did not exist in the target revision and
 cleans their manifest hashes. Static provenance in a `0.3` review timeline is pinned to a validated legacy
-digest on first mutation/undo; immutable historical snapshots are not rewritten. Review revisions roll back
-on handled I/O errors, but replacing multiple files is not a crash-atomic transaction against process or
-power loss. Immutable revision directories with a single pointer swap remain future work.
+digest on first mutation/undo; immutable historical snapshots are not rewritten. Bundle summaries and
+detail reads take the same descriptor lock as writers, so a reader cannot observe a partially replaced set
+of files. Before the first rename, each multi-file commit persists a bounded roll-forward journal containing
+the staged paths and SHA-256 digests. The next locked read completes an interrupted transaction, verifies
+every staged or already-replaced artifact, fsyncs the directories, and removes the journal. A journal that
+cannot be verified is surfaced in the diagram list as an errored bundle instead of silently hiding it.
 
 The review server is not an authentication system. Loopback binding is recommended. Binding to a
 non-loopback host lets other users on the same network view the workspace; never expose it to a public
 network without a separate authenticated reverse proxy.
+
+The review workspace currently supports Linux and macOS. Startup fails with an explicit platform error on
+systems without the required POSIX directory-descriptor, no-follow, flock, and process-group semantics.
+HTTP `HEAD` is rejected after the same Host validation as other requests; it cannot bypass the static
+artifact allowlist to probe private review files.
 
 ## Current Limitations
 

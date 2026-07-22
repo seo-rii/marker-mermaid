@@ -276,7 +276,7 @@ def augment_accessibility_directives(
 
     if not supports_accessibility_directives(emitted_type):
         return None
-    existing = {line.strip().split(":", 1)[0] for line in code.splitlines()}
+    existing = {line.strip().split(":", 1)[0].rstrip() for line in code.splitlines()}
     if {"accTitle", "accDescr"} <= existing:
         return None
     resolved = resolve_accessibility(ir, semantic_type, experimental=experimental)

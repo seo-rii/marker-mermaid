@@ -79,7 +79,8 @@ and report vulnerabilities according to [SECURITY.md](SECURITY.md).
 
 - Python 3.11 or newer
 - Node.js 20 or newer
-- Linux or macOS for atomic no-replace sidecar publication
+- Linux or macOS; the browser runtime, atomic output, and review store require POSIX process and
+  descriptor semantics and fail fast on unsupported platforms
 - Optional Marker and vision dependencies for end-to-end PDF reconstruction
 
 Atomic publication uses `renameat2(RENAME_NOREPLACE)` on Linux and

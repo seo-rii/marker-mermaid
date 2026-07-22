@@ -322,6 +322,27 @@ def test_review_rejects_dns_rebinding_host_before_bootstrap_or_mutation(tmp_path
     assert post_error.value.code == HTTPStatus.MISDIRECTED_REQUEST
 
 
+def test_review_head_enforces_host_check_and_rejects_all_routes(tmp_path):
+    make_bundle(tmp_path)
+    with running_server(tmp_path) as (base, _):
+        rebinding = urllib.request.Request(
+            f"{base}/diagrams/diagram-a/review-state.json",
+            headers={"Host": "attacker.example"},
+            method="HEAD",
+        )
+        with pytest.raises(urllib.error.HTTPError) as host_error:
+            urllib.request.urlopen(rebinding, timeout=3)
+        allowed = urllib.request.Request(
+            f"{base}/images/source.png",
+            method="HEAD",
+        )
+        with pytest.raises(urllib.error.HTTPError) as method_error:
+            urllib.request.urlopen(allowed, timeout=3)
+
+    assert host_error.value.code == HTTPStatus.MISDIRECTED_REQUEST
+    assert method_error.value.code == HTTPStatus.METHOD_NOT_ALLOWED
+
+
 def test_api_loads_complete_bundle_without_exposing_revision_files(tmp_path):
     make_bundle(tmp_path)
     with running_server(tmp_path) as (base, _):
@@ -338,6 +359,20 @@ def test_api_loads_complete_bundle_without_exposing_revision_files(tmp_path):
     assert diagram["alternatives"][0]["candidate_id"] == "candidate-b"
     assert diagram["issues"] == ["check edge direction"]
     assert error.value.code == 404
+
+
+@pytest.mark.parametrize("failures", [None, 7, "failure"])
+def test_api_ignores_non_list_manifest_failures(tmp_path, failures):
+    diagram = make_bundle(tmp_path)
+    manifest_path = diagram / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["failures"] = failures
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with running_server(tmp_path) as (base, _):
+        loaded, _ = read_json(f"{base}/api/diagrams/diagram-a")
+
+    assert loaded["diagram"]["issues"] == ["check edge direction"]
 
 
 def test_diff_descriptor_requires_current_png_and_safe_source_url(tmp_path):

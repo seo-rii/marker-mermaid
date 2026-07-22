@@ -277,8 +277,10 @@ Requested and emitted/runtime types remain separate, so a portable fallback is n
 reconstruction.
 
 Before creating files, the writer checks source/image/sidecar/alternative name collisions, a missing source
-image, an existing bundle, metadata JSON serializability, and the final-result evidence budget. Each
-source-specific bundle is then published atomically from a temporary directory.
+image, writable image extensions, existing document/metadata/image/bundle artifacts, strictly structured
+Mermaid metadata rows, metadata JSON serializability, and the final-result evidence budget. Document output
+is no-overwrite: callers must choose a new output directory or explicitly remove an earlier output before
+rerunning. Each source-specific bundle is then published atomically from a temporary directory.
 
 ## JSON Serialization
 

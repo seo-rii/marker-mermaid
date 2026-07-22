@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from io import BytesIO
 from pathlib import Path
 
@@ -48,6 +49,104 @@ def make_bundle(tmp_path, bundle_id="diagram-a", code="flowchart LR\n  A --> B\n
     (bundle / "final.mmd").write_text(code, encoding="utf-8")
     (bundle / "review-history.json").write_text("[]\n", encoding="utf-8")
     return bundle
+
+
+def write_transaction_marker(bundle, entries):
+    (bundle / review_store_module._REVIEW_TRANSACTION_FILE).write_text(
+        json.dumps(
+            {
+                "schema_version": review_store_module.REVIEW_TRANSACTION_SCHEMA_VERSION,
+                "entries": entries,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_review_store_rolls_forward_an_interrupted_transaction(tmp_path):
+    bundle = make_bundle(tmp_path)
+    replacement = b"flowchart LR\n  B --> A\n"
+    temporary = ".final.mmd.recovery.tmp"
+    (bundle / temporary).write_bytes(replacement)
+    write_transaction_marker(
+        bundle,
+        [
+            {
+                "path": "final.mmd",
+                "temporary": temporary,
+                "digest": hashlib.sha256(replacement).hexdigest(),
+            }
+        ],
+    )
+
+    loaded = ReviewStore(tmp_path).load_bundle("diagram-a")
+
+    assert loaded.mermaid_code == replacement.decode()
+    assert not (bundle / temporary).exists()
+    assert not (bundle / review_store_module._REVIEW_TRANSACTION_FILE).exists()
+
+
+def test_review_store_finishes_a_transaction_whose_target_was_already_replaced(tmp_path):
+    replacement = b"flowchart LR\n  B --> A\n"
+    bundle = make_bundle(tmp_path, code=replacement.decode())
+    temporary = ".final.mmd.already-replaced.tmp"
+    write_transaction_marker(
+        bundle,
+        [
+            {
+                "path": "final.mmd",
+                "temporary": temporary,
+                "digest": hashlib.sha256(replacement).hexdigest(),
+            }
+        ],
+    )
+
+    loaded = ReviewStore(tmp_path).load_bundle("diagram-a")
+
+    assert loaded.mermaid_code == replacement.decode()
+    assert not (bundle / review_store_module._REVIEW_TRANSACTION_FILE).exists()
+
+
+def test_list_bundles_surfaces_an_unrecoverable_transaction(tmp_path):
+    bundle = make_bundle(tmp_path)
+    (bundle / review_store_module._REVIEW_TRANSACTION_FILE).write_text(
+        "{}", encoding="utf-8"
+    )
+
+    [summary] = ReviewStore(tmp_path).list_bundles()
+
+    assert summary.bundle_id == "diagram-a"
+    assert summary.status == "error"
+    assert summary.grade == "U"
+    assert "invalid schema" in (summary.error or "")
+
+
+def test_bundle_reads_wait_for_the_bundle_lock(tmp_path):
+    make_bundle(tmp_path)
+    store = ReviewStore(tmp_path)
+    started = threading.Event()
+    finished = threading.Event()
+
+    def read_bundle():
+        started.set()
+        store.load_bundle("diagram-a")
+        finished.set()
+
+    with store._locked_bundle("diagram-a"):
+        reader = threading.Thread(target=read_bundle)
+        reader.start()
+        assert started.wait(timeout=1)
+        assert not finished.wait(timeout=0.1)
+    reader.join(timeout=2)
+
+    assert finished.is_set()
+
+
+def test_review_store_fails_fast_on_unsupported_platform(monkeypatch, tmp_path):
+    monkeypatch.setattr(review_store_module.os, "name", "nt")
+
+    with pytest.raises(RuntimeError, match="POSIX platforms only"):
+        ReviewStore(tmp_path)
 
 
 def write_v05_generation_manifest(bundle):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import asdict
 
 import pytest
@@ -100,6 +101,15 @@ def test_page_to_canvas_affine_is_serialized_for_attribution():
         2.0,
         -20.0,
     ]
+
+
+@pytest.mark.parametrize("non_finite", [math.nan, math.inf, -math.inf])
+@pytest.mark.parametrize("field", ["page_bbox", "crop_bbox"])
+def test_source_fragment_rejects_non_finite_bboxes(field, non_finite):
+    kwargs = {field: (0, 0, non_finite, 10)}
+
+    with pytest.raises(ValueError, match="finite coordinates"):
+        _fragment("invalid", (10, 10), **kwargs)
 
 
 def test_merged_source_uses_input_order_as_z_order_and_alpha_composites():

@@ -220,6 +220,15 @@ class ReviewHandler(SimpleHTTPRequestHandler):
             return
         self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
 
+    def do_HEAD(self):  # noqa: N802 - stdlib handler API
+        if not self._authorized_host():
+            return
+        self._send_bytes(
+            b"",
+            "application/json; charset=utf-8",
+            status=HTTPStatus.METHOD_NOT_ALLOWED,
+        )
+
     def do_POST(self):  # noqa: N802 - stdlib handler API
         if not self._authorized_host():
             return
@@ -603,6 +612,8 @@ class ReviewHandler(SimpleHTTPRequestHandler):
         )
         warnings = scores.get("warnings", []) if isinstance(scores, dict) else []
         failures = manifest.get("failures", [])
+        if not isinstance(failures, list):
+            failures = []
         issues = [*warnings, *failures] if isinstance(warnings, list) else list(failures)
         if manifest.get("review_quality_status") == "unscored_user_revision":
             issues.insert(0, "User-edited revision has not been rescored against the source.")
@@ -654,6 +665,7 @@ class ReviewHandler(SimpleHTTPRequestHandler):
             "decision": summary.decision,
             "version": summary.version,
             "digest": summary.code_digest,
+            "error": summary.error,
         }
 
     def _alternatives(self, bundle_id: str) -> list[dict[str, Any]]:
@@ -796,6 +808,10 @@ def serve_review(
 ) -> None:
     """Serve the interactive workspace until interrupted, closing Chromium cleanly."""
 
+    if os.name != "posix":
+        raise RuntimeError(
+            "the review workspace supports POSIX platforms only (Linux and macOS)"
+        )
     root = Path(output_dir).resolve()
     if not (root / "diagrams").is_dir():
         raise FileNotFoundError(f"no diagrams directory below {root}")

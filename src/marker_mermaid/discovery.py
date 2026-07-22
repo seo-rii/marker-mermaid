@@ -7,6 +7,7 @@ blocks, page-level proposals, and user-selected regions.
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from collections.abc import Iterable, Sequence
 from typing import Literal
@@ -74,8 +75,11 @@ class SourceFragment(BaseModel):
         if self.image_size[0] <= 0 or self.image_size[1] <= 0:
             raise ValueError("image size must have positive dimensions")
         for name, bbox in (("page", self.page_bbox), ("crop", self.crop_bbox)):
-            if bbox is not None and (bbox[2] <= bbox[0] or bbox[3] <= bbox[1]):
-                raise ValueError(f"{name} bbox must have positive area")
+            if bbox is not None:
+                if not all(math.isfinite(value) for value in bbox):
+                    raise ValueError(f"{name} bbox must contain finite coordinates")
+                if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+                    raise ValueError(f"{name} bbox must have positive area")
         if len(set(self.source_block_ids)) != len(self.source_block_ids):
             raise ValueError("source block ids must be unique")
         return self

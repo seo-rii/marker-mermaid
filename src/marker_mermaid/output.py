@@ -17,10 +17,29 @@ from marker_mermaid.sidecars import SidecarStore, safe_artifact_component
 
 def _preflight_output(
     root: Path,
+    filename: str,
     images: dict[str, Image.Image],
     metadata: dict,
     reconstructions: list[ReconstructionResult],
 ) -> list[tuple[ReconstructionResult, ReconstructionResult]]:
+    if not isinstance(metadata, dict):
+        raise TypeError("output metadata must be a dictionary")
+    metadata_rows = metadata.get("mermaid", [])
+    if not isinstance(metadata_rows, list):
+        raise TypeError("metadata Mermaid rows must be a list")
+    if any(not isinstance(row, dict) for row in metadata_rows):
+        raise TypeError("metadata Mermaid rows must contain dictionaries")
+
+    document_path = root / f"{filename}.md"
+    metadata_path = root / f"{filename}_meta.json"
+    for target in (document_path, metadata_path):
+        if target.exists() or target.is_symlink():
+            raise FileExistsError(f"output artifact already exists: {target.name}")
+    image_dir = root / "images"
+    if image_dir.is_symlink() or (image_dir.exists() and not image_dir.is_dir()):
+        raise FileExistsError("output images path is not a safe directory")
+
+    registered_extensions = Image.registered_extensions()
     image_names: set[str] = set()
     for name, image in images.items():
         if Path(name).name != name or name in {"", ".", ".."}:
@@ -29,6 +48,12 @@ def _preflight_output(
             raise ValueError(f"duplicate image basename: {name}")
         if not isinstance(image, Image.Image):
             raise TypeError(f"image payload for {name!r} is not a Pillow image")
+        image_format = registered_extensions.get(Path(name).suffix.lower())
+        if image_format is None or image_format not in Image.SAVE:
+            raise ValueError(f"image name has no supported writable extension: {name!r}")
+        image_target = image_dir / name
+        if image_target.exists() or image_target.is_symlink():
+            raise FileExistsError(f"output image already exists: {name}")
         image_names.add(name)
 
     source_ids: set[str] = set()
@@ -69,8 +94,8 @@ def _preflight_output(
 
     metadata_ids = [
         row.get("source_id")
-        for row in metadata.get("mermaid", [])
-        if isinstance(row, dict) and row.get("source_id") is not None
+        for row in metadata_rows
+        if row.get("source_id") is not None
     ]
     if len(metadata_ids) != len(set(metadata_ids)):
         raise ValueError("metadata contains duplicate Mermaid source rows")
@@ -91,7 +116,7 @@ def save_document_output(
     root = Path(output_dir)
     if Path(filename).name != filename or filename in {"", ".", ".."}:
         raise ValueError("filename must be a single safe path component")
-    reconstruction_pairs = _preflight_output(root, images, metadata, reconstructions)
+    reconstruction_pairs = _preflight_output(root, filename, images, metadata, reconstructions)
     root.mkdir(parents=True, exist_ok=True)
     image_dir = root / "images"
     image_dir.mkdir(exist_ok=True)

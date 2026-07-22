@@ -117,3 +117,18 @@ def test_directive_augmentation_is_emitted_grammar_aware():
         )
         is None
     )
+
+
+def test_directive_augmentation_recognizes_whitespace_before_colons():
+    code = "flowchart LR\n    accTitle : Existing title\n    accDescr : Existing description\n"
+
+    assert (
+        augment_accessibility_directives(
+            code,
+            "flowchart",
+            {},
+            semantic_type="flowchart",
+            experimental=False,
+        )
+        is None
+    )

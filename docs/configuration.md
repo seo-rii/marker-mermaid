@@ -60,8 +60,8 @@ can be combined only with `review_required` or `sidecar_only`.
 | `enable_page_detector` | `true` | Full-page coverage and missed structural-region proposals |
 | `enable_style_recovery` | `true` | Emit node/edge/trusted-vector-group style evidence when compatibility/security permits |
 | `runtime_dir` | Automatic cache lookup | Location of the Node worker and dependencies |
-| `render_timeout_seconds` | `20` | Parse/render limit per candidate |
-| `max_mermaid_chars` | `50000` | Source character limit before browser delivery |
+| `render_timeout_seconds` | `20` | Finite, positive parse/render limit per candidate |
+| `max_mermaid_chars` | `50000` | Source character limit before browser delivery (`1`–`50000`, matching the pinned worker) |
 | `max_mermaid_lines` | `5000` | Source line limit before browser delivery |
 | `max_vlm_prompt_chars` | `100000` | Combined limit for the provider-visible prompt and Marker 1.10.2 response-schema reserve (`32768`–`1000000`) |
 | `max_vlm_evidence_items` | `256` | Provenance evidence limit in the prompt (`1`–`4096`) |
