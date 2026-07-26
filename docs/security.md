@@ -50,10 +50,26 @@ URLs and CSS. `trusted-local` output cannot be published to automatic Markdown.
 Runtime-produced SVG and PNG artifacts are each limited to 16,000,000 bytes, measured as UTF-8 or
 raw bytes respectively. SVG must pass XML and external-resource inspection. PNG must have a real
 PNG signature/format, no dimension greater than 8,192 pixels, and no more than 50,000,000 pixels in
-total. Invalid or oversized SVG fails the render hard gate. If only an optional PNG is invalid,
-Mermaid/SVG publication remains valid but the preview bytes are discarded. Newly returned Review
-validator PNGs use the same checks, while compatibility for reading existing bundles is retained
-separately.
+total. Before Chromium screenshot, the worker rejects an oversized rendered SVG string and inspects
+an inert DOM for at most 20,000 SVG nodes, 1,000,000 text characters, 10,000 paths, and 4,000,000
+path-data characters. It also checks layout bounds, viewBox, intrinsic/content dimensions, pixel
+area, event handlers, external references/CSS, non-finite geometry, and active or embedding
+elements. HTML `img` source attributes are rejected before the inert tree can enter the live page.
+This worker scan is an early resource/security guard, not publication authority; Python rechecks
+the original SVG string after the worker returns.
+
+Invalid or oversized SVG fails the render hard gate. If only screenshot eligibility or an optional
+PNG fails, Mermaid/SVG publication can remain valid, but the worker returns no PNG and records a
+bounded omission reason. The screenshot buffer is checked before Base64 encoding, and Python bounds
+the encoded field before decoding it. Newly returned Review validator PNGs use the same final
+checks, while compatibility for reading existing bundles is retained separately.
+
+The reusable worker starts through a small POSIX launcher that disables core dumps and applies
+hard `RLIMIT_DATA` (2 GiB per process) and `RLIMIT_CPU` (600 seconds per process) before replacing
+itself with Node; Chromium children inherit those limits. Per-request wall-clock timeout and
+process-group termination remain the primary cleanup boundary. POSIX rlimits are per process rather
+than an aggregate cgroup/container RSS budget, so deployments handling hostile multi-tenant input
+should still place the worker in a memory/CPU-limited container or service.
 
 Validation/publication HMAC seals are process-local capabilities that prevent public model
 constructors, JSON round trips, and ordinary post-validation mutation from impersonating a

@@ -11,7 +11,8 @@ pytest
 
 Default unit tests use a fake runtime and fixture engines and require no network access. Tests
 marked `integration` exercise either real Mermaid in Chromium or the Marker 1.10.2 import. The
-real Mermaid tests also block network routes.
+real Mermaid tests also block network routes and assert that pre-screenshot resource limits omit
+unsafe previews before `screenshot()` or Base64 work.
 
 Install the `marker` extra only for Marker 1.10.2 compatibility work and keep that environment
 isolated from untrusted documents. Its upstream Pillow constraint currently prevents resolving a

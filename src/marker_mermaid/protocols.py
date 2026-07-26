@@ -63,6 +63,7 @@ class RuntimeResult:
     svg: str | None = None
     png: bytes | None = None
     error: str | None = None
+    png_omitted_reason: str | None = None
 
 
 class MermaidRuntime(Protocol):

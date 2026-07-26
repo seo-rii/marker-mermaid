@@ -11,6 +11,7 @@ import re
 import selectors
 import signal
 import subprocess
+import sys
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -25,11 +26,21 @@ from marker_mermaid.models import (
     _issue_validated_artifact_certificate,
 )
 from marker_mermaid.protocols import MermaidRuntime, RuntimeResult
-from marker_mermaid.render_artifacts import MAX_RENDER_BYTES, png_inspection_error
+from marker_mermaid.render_artifacts import (
+    MAX_RENDER_BASE64_CHARS,
+    MAX_RENDER_BYTES,
+    RenderArtifactLimits,
+    png_inspection_error,
+)
+from marker_mermaid.resource_limits import (
+    MAX_RUNTIME_WORKER_CPU_SECONDS,
+    MAX_RUNTIME_WORKER_DATA_BYTES,
+)
 from marker_mermaid.security import MermaidSecurityScanner
 
 MAX_RUNTIME_RESPONSE_BYTES = 64_000_000
 MAX_RUNTIME_STDERR_BYTES = 64_000
+MAX_PNG_OMITTED_REASON_CHARS = 256
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,13 +147,21 @@ def inspect_svg(
 class NodeMermaidRuntime(MermaidRuntime):
     """JSONL bridge to a reusable, network-isolated Playwright Chromium worker."""
 
-    def __init__(self, runtime_dir: str | Path | None = None):
+    def __init__(
+        self,
+        runtime_dir: str | Path | None = None,
+        *,
+        render_limits: RenderArtifactLimits | None = None,
+    ):
         if os.name != "posix":
             raise RuntimeError(
                 "the Mermaid browser runtime supports POSIX platforms only "
                 "(Linux and macOS)"
             )
         self.runtime_dir = Path(runtime_dir) if runtime_dir else default_runtime_dir()
+        if render_limits is not None and type(render_limits) is not RenderArtifactLimits:
+            raise TypeError("render_limits must be an exact RenderArtifactLimits")
+        self.render_limits = render_limits or RenderArtifactLimits()
         self._process: subprocess.Popen[bytes] | None = None
         self._process_group_id: int | None = None
         self._stdout_buffer = bytearray()
@@ -156,8 +175,18 @@ class NodeMermaidRuntime(MermaidRuntime):
         worker = self.runtime_dir / "worker.mjs"
         if not worker.is_file():
             raise RuntimeError(f"Mermaid worker not found: {worker}")
+        launcher = Path(__file__).with_name("runtime_launcher.py")
+        if not launcher.is_file():  # pragma: no cover - installed-package invariant
+            raise RuntimeError(f"Mermaid runtime launcher not found: {launcher}")
         process = subprocess.Popen(
-            ["node", str(worker)],
+            [
+                sys.executable,
+                str(launcher),
+                str(MAX_RUNTIME_WORKER_DATA_BYTES),
+                str(MAX_RUNTIME_WORKER_CPU_SECONDS),
+                "node",
+                str(worker),
+            ],
             cwd=self.runtime_dir,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -211,7 +240,16 @@ class NodeMermaidRuntime(MermaidRuntime):
                 and process.stdout is not None
                 and process.stderr is not None
             )
-            request = (json.dumps({"id": request_id, "code": code}) + "\n").encode()
+            request = (
+                json.dumps(
+                    {
+                        "id": request_id,
+                        "code": code,
+                        "limits": self.render_limits.worker_payload(),
+                    }
+                )
+                + "\n"
+            ).encode()
             request_offset = 0
             selector = selectors.DefaultSelector()
             deadline = time.monotonic() + timeout_seconds
@@ -232,6 +270,13 @@ class NodeMermaidRuntime(MermaidRuntime):
                                 False,
                                 error=f"Mermaid runtime returned invalid JSON: {exc}",
                             )
+                        if type(payload) is not dict:
+                            self.close()
+                            return RuntimeResult(
+                                False,
+                                False,
+                                error="Mermaid runtime returned a non-object response",
+                            )
                         if payload.get("id") != request_id:
                             detail = payload.get("error")
                             self.close()
@@ -249,10 +294,44 @@ class NodeMermaidRuntime(MermaidRuntime):
                                 render_valid=False,
                                 error=payload.get("error", "Mermaid runtime failed"),
                             )
+                        png_omitted_reason = payload.get("pngOmittedReason")
+                        if png_omitted_reason is not None and not (
+                            type(png_omitted_reason) is str
+                            and bool(png_omitted_reason.strip())
+                            and len(png_omitted_reason) <= MAX_PNG_OMITTED_REASON_CHARS
+                        ):
+                            self.close()
+                            return RuntimeResult(
+                                False,
+                                False,
+                                error=(
+                                    "Mermaid runtime returned an invalid PNG omission reason"
+                                ),
+                            )
+                        encoded_png = payload.get("png")
+                        if encoded_png is not None and png_omitted_reason is not None:
+                            self.close()
+                            return RuntimeResult(
+                                False,
+                                False,
+                                error=(
+                                    "Mermaid runtime returned both PNG data and an omission reason"
+                                ),
+                            )
+                        if encoded_png is not None and (
+                            type(encoded_png) is not str
+                            or len(encoded_png) > MAX_RENDER_BASE64_CHARS
+                        ):
+                            self.close()
+                            return RuntimeResult(
+                                False,
+                                False,
+                                error="Mermaid runtime returned oversized PNG data",
+                            )
                         try:
                             png = (
-                                base64.b64decode(payload["png"], validate=True)
-                                if payload.get("png")
+                                base64.b64decode(encoded_png, validate=True)
+                                if encoded_png is not None
                                 else None
                             )
                         except (ValueError, TypeError) as exc:
@@ -268,6 +347,7 @@ class NodeMermaidRuntime(MermaidRuntime):
                             diagram_type=payload.get("diagramType"),
                             svg=payload.get("svg"),
                             png=png,
+                            png_omitted_reason=png_omitted_reason,
                         )
                     events = selector.select(max(0, deadline - time.monotonic()))
                     if not events:
@@ -452,6 +532,11 @@ class CandidateValidator:
         runtime_result = self.runtime.validate_and_render(code, timeout_seconds)
         warnings: list[str] = []
         if runtime_result.render_valid:
+            if runtime_result.png_omitted_reason is not None:
+                warnings.append(
+                    "rendered PNG artifact was omitted before screenshot: "
+                    f"{runtime_result.png_omitted_reason}"
+                )
             if type(runtime_result.svg) is not str or not runtime_result.svg.strip():
                 warnings.append("rendered SVG artifact is missing or empty")
                 runtime_result = RuntimeResult(

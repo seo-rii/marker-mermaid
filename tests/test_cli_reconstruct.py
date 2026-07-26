@@ -4,6 +4,10 @@ from types import SimpleNamespace
 from PIL import Image
 
 import marker_mermaid.cli as cli
+import marker_mermaid.engines as engines_module
+import marker_mermaid.markdown as markdown_module
+import marker_mermaid.output as output_module
+import marker_mermaid.pipeline as pipeline_module
 from marker_mermaid.models import ReconstructionResult
 
 
@@ -54,12 +58,16 @@ def test_reconstruct_closes_the_source_image_before_pipeline_output(monkeypatch,
         saved.update(kwargs)
         return tmp_path / "document.md"
 
-    monkeypatch.setattr(cli.Image, "open", lambda _path: opened)
-    monkeypatch.setattr(cli, "JsonFixtureEngine", FixtureEngine)
+    monkeypatch.setattr(Image, "open", lambda _path: opened)
+    monkeypatch.setattr(engines_module, "JsonFixtureEngine", FixtureEngine)
     monkeypatch.setattr(cli, "_runtime", lambda _config: runtime)
-    monkeypatch.setattr(cli, "ReconstructionPipeline", Pipeline)
-    monkeypatch.setattr(cli, "standalone_document_markdown", lambda *_args, **_kwargs: "")
-    monkeypatch.setattr(cli, "save_document_output", save_document_output)
+    monkeypatch.setattr(pipeline_module, "ReconstructionPipeline", Pipeline)
+    monkeypatch.setattr(
+        markdown_module,
+        "standalone_document_markdown",
+        lambda *_args, **_kwargs: "",
+    )
+    monkeypatch.setattr(output_module, "save_document_output", save_document_output)
     args = SimpleNamespace(
         config=None,
         image="source.png",

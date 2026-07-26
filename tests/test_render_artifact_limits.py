@@ -8,11 +8,15 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
-from marker_mermaid.config import MermaidConfig, SecurityProfile
+from marker_mermaid.config import MermaidConfig, PublishPolicy, SecurityProfile
 from marker_mermaid.models import MermaidCandidate, ReconstructionResult
 from marker_mermaid.pipeline import certify_publication_result
 from marker_mermaid.protocols import RuntimeResult
-from marker_mermaid.render_artifacts import MAX_RENDER_BYTES
+from marker_mermaid.render_artifacts import (
+    MAX_RENDER_BYTES,
+    MAX_RENDERED_SVG_NODES,
+    RenderArtifactLimits,
+)
 from marker_mermaid.review_store import ReviewValidationResult
 from marker_mermaid.sidecars import SidecarStore
 from marker_mermaid.validation import CandidateValidator
@@ -51,9 +55,16 @@ def _bad_png(kind: str) -> bytes:
 
 
 class _ArtifactRuntime:
-    def __init__(self, *, svg: str = _SVG, png: bytes | None = None):
+    def __init__(
+        self,
+        *,
+        svg: str = _SVG,
+        png: bytes | None = None,
+        png_omitted_reason: str | None = None,
+    ):
         self.svg = svg
         self.png = png
+        self.png_omitted_reason = png_omitted_reason
 
     def validate_and_render(self, code: str, timeout_seconds: float) -> RuntimeResult:
         return RuntimeResult(
@@ -62,6 +73,7 @@ class _ArtifactRuntime:
             diagram_type="flowchart-v2",
             svg=self.svg,
             png=self.png,
+            png_omitted_reason=self.png_omitted_reason,
         )
 
     def close(self) -> None:
@@ -101,7 +113,10 @@ def _published_result(*, png: bytes | None = None) -> ReconstructionResult:
         review_required=False,
         status="success",
     )
-    assert certify_publication_result(result, MermaidConfig())
+    assert certify_publication_result(
+        result,
+        MermaidConfig(publish_policy=PublishPolicy.BEST_EFFORT_VALIDATED),
+    )
     assert result.has_authorized_publication()
     return result
 
@@ -176,6 +191,42 @@ def test_validator_retains_small_valid_png() -> None:
     assert outcome.runtime.svg == _SVG
     assert outcome.runtime.png == png
     assert outcome.warnings == []
+
+
+def test_validator_preserves_worker_png_omission_reason() -> None:
+    outcome = CandidateValidator(
+        _ArtifactRuntime(
+            png_omitted_reason="rendered SVG DOM exceeds the node limit",
+        ),
+        SecurityProfile.STRICT,
+    ).validate(_CODE, 1)
+
+    assert outcome.runtime.render_valid
+    assert outcome.runtime.svg == _SVG
+    assert outcome.runtime.png is None
+    assert outcome.runtime.png_omitted_reason == (
+        "rendered SVG DOM exceeds the node limit"
+    )
+    assert outcome.warnings == [
+        "rendered PNG artifact was omitted before screenshot: "
+        "rendered SVG DOM exceeds the node limit"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"max_svg_bytes": 0}, "max_svg_bytes"),
+        ({"max_png_bytes": MAX_RENDER_BYTES + 1}, "max_png_bytes"),
+        ({"max_svg_nodes": MAX_RENDERED_SVG_NODES + 1}, "max_svg_nodes"),
+        ({"max_pixels": True}, "max_pixels"),
+    ],
+)
+def test_browser_render_limits_cannot_exceed_publication_policy(
+    overrides: dict[str, int], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        RenderArtifactLimits(**overrides)
 
 
 def test_published_sidecar_png_opt_out_ignores_invalid_optional_preview(tmp_path) -> None:
