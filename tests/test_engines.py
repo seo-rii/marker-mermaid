@@ -1050,8 +1050,8 @@ def test_marker_vlm_rejects_oversized_views_before_loading_them():
     class ProbeImage(Image.Image):
         def __init__(self, size):
             super().__init__()
-            self._mode = "RGB"
-            self._size = size
+            source = Image.new("RGB", size)
+            self.__dict__.update(source.__dict__)
             self.load_count = 0
 
         def load(self):
@@ -1077,9 +1077,7 @@ def test_marker_vlm_rejects_aggregate_overflow_before_loading_overflow_view():
     class ProbeImage(Image.Image):
         def __init__(self, source):
             super().__init__()
-            self.im = source.im
-            self._mode = source.mode
-            self._size = source.size
+            self.__dict__.update(source.__dict__)
             self.load_count = 0
 
         def load(self):
@@ -1105,11 +1103,15 @@ def test_marker_vlm_rejects_aggregate_overflow_before_loading_overflow_view():
 def test_marker_vlm_provider_receives_only_bounded_plain_view_snapshots():
     class StatefulImage(Image.Image):
         def __init__(self):
-            super().__init__()
+            self.__dict__.update(
+                {
+                    "mode": "RGB",
+                    "_mode": "RGB",
+                    "_size": (1, 1),
+                }
+            )
             self._size_reads = 0
             self._mode_reads = 0
-            self._mode = "RGB"
-            self._size = (1, 1)
             self.load_count = 0
             self.copy_count = 0
 
@@ -1195,6 +1197,14 @@ def test_marker_vlm_rejects_unloaded_pillow_imagefile_without_calling_loader():
     Image.new("RGB", (3, 2), "purple").save(encoded, format="PNG")
     encoded.seek(0)
     source_view = Image.open(encoded)
+    load_calls = 0
+
+    def hostile_load():
+        nonlocal load_calls
+        load_calls += 1
+        raise AssertionError("caller-owned load hook must not run")
+
+    source_view.load = hostile_load
     called = False
 
     def service(**_kwargs):
@@ -1214,8 +1224,7 @@ def test_marker_vlm_rejects_unloaded_pillow_imagefile_without_calling_loader():
         )
 
     assert not called
-    image_state = engines_module._PIL_IMAGE_DICT_DESCRIPTOR.__get__(source_view, Image.Image)
-    assert image_state.get(engines_module._PIL_IMAGING_CORE_STATE_KEY) is None
+    assert load_calls == 0
 
 
 def test_marker_vlm_ignores_image_subclass_shared_copy_override():
@@ -1223,9 +1232,7 @@ def test_marker_vlm_ignores_image_subclass_shared_copy_override():
         def __init__(self):
             super().__init__()
             source = Image.new("RGB", (1, 1), "purple")
-            self.im = type(source.im).copy(source.im)
-            self._mode = source.mode
-            self._size = source.size
+            self.__dict__.update(source.__dict__)
             self.shared = Image.new("RGB", (1, 1), "white")
             self.load_count = 0
             self.copy_count = 0

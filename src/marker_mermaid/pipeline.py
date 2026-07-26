@@ -73,6 +73,18 @@ from marker_mermaid.models import (
 from marker_mermaid.models import (
     _canonical_runtime_diagram_type as _canonical_runtime_type,
 )
+from marker_mermaid.pillow_compat import (
+    PillowImageCopyError,
+    PillowImageCoreError,
+    PillowImageSnapshotBoundaryError,
+    PillowImageSnapshotLoadError,
+    PillowImageSnapshotTypeError,
+    PillowImageStateAccessError,
+    PillowImageStateShapeError,
+    prepare_pillow_image,
+    read_pillow_image_state,
+    snapshot_pillow_image,
+)
 from marker_mermaid.protocols import (
     CandidateEngine,
     RepairEngine,
@@ -208,20 +220,6 @@ _MAX_TREEMAP_NODE_OVERLAP_COMPARISONS = 100_000
 _MAX_VENN_ASSOCIATION_REFERENCES = MAX_OBSERVATION_EVIDENCE
 _MAX_VENN_RECORD_COMPARISONS = 100_000
 _MAX_XY_RECORD_OVERLAP_COMPARISONS = 100_000
-_PIL_IMAGE_DICT_DESCRIPTOR = Image.Image.__dict__["__dict__"]
-_PIL_REFERENCE_IMAGE = Image.new("RGB", (1, 1))
-_PIL_IMAGING_CORE_TYPE = type(_PIL_REFERENCE_IMAGE.im)
-_PIL_REFERENCE_IMAGE_STATE = _PIL_IMAGE_DICT_DESCRIPTOR.__get__(
-    _PIL_REFERENCE_IMAGE, Image.Image
-)
-# Pillow 12 moved the core from ``im`` to ``_im``. Bind the trusted base
-# implementation's storage key once so caller-owned subclasses cannot choose it.
-_PIL_IMAGING_CORE_STATE_KEY = next(
-    key
-    for key in ("_im", "im")
-    if type(_PIL_REFERENCE_IMAGE_STATE.get(key)) is _PIL_IMAGING_CORE_TYPE
-)
-del _PIL_REFERENCE_IMAGE, _PIL_REFERENCE_IMAGE_STATE
 
 
 def _reference_text_sets(ocr_texts: list[str], evidence: list[VisualEvidence]) -> _ReferenceTexts:
@@ -304,14 +302,13 @@ def _canonical_rgb_image_snapshot(
     if not isinstance(image, Image.Image):
         raise ValueError("repair images must be Pillow images")
     try:
-        image_state = _PIL_IMAGE_DICT_DESCRIPTOR.__get__(image, Image.Image)
-    except Exception as exc:
+        image_state = read_pillow_image_state(image)
+    except PillowImageStateAccessError as exc:
         raise ValueError("repair image has no readable Pillow state") from exc
-    if type(image_state) is not dict:
-        raise ValueError("repair image has no canonical Pillow state")
-    declared_mode = image_state.get("_mode")
-    declared_size = image_state.get("_size")
-    source_core = image_state.get(_PIL_IMAGING_CORE_STATE_KEY)
+    except PillowImageStateShapeError as exc:
+        raise ValueError("repair image has no canonical Pillow state") from exc
+    declared_mode = image_state.mode
+    declared_size = image_state.size
     if (
         type(declared_mode) is not str
         or not declared_mode
@@ -328,26 +325,26 @@ def _canonical_rgb_image_snapshot(
         or width > max_dimension
         or height > max_dimension
         or width * height > max_pixels
-        or type(source_core) is not _PIL_IMAGING_CORE_TYPE
-        or source_core.mode != declared_mode
-        or source_core.size != declared_size
     ):
         raise ValueError("repair image exceeds the RGB pixel boundary")
     try:
-        snapshot_core = _PIL_IMAGING_CORE_TYPE.copy(source_core)
-    except Exception as exc:
+        prepared = prepare_pillow_image(
+            image_state,
+            expected_mode=declared_mode,
+            expected_size=declared_size,
+        )
+    except PillowImageCoreError as exc:
+        raise ValueError("repair image exceeds the RGB pixel boundary") from exc
+    try:
+        snapshot = snapshot_pillow_image(prepared)
+    except PillowImageCopyError as exc:
         raise ValueError("repair image pixels could not be snapshotted") from exc
-    if (
-        type(snapshot_core) is not _PIL_IMAGING_CORE_TYPE
-        or snapshot_core is source_core
-        or snapshot_core.mode != declared_mode
-        or snapshot_core.size != declared_size
-    ):
-        raise ValueError("repair image snapshot changed its RGB boundary")
-    snapshot = Image.Image._new(Image.Image(), snapshot_core)
-    if type(snapshot) is not Image.Image:  # pragma: no cover - Pillow invariant
-        raise ValueError("repair image snapshot must be a plain Pillow image")
-    Image.Image.load(snapshot)
+    except PillowImageSnapshotBoundaryError as exc:
+        raise ValueError("repair image snapshot changed its RGB boundary") from exc
+    except PillowImageSnapshotTypeError as exc:
+        raise ValueError("repair image snapshot must be a plain Pillow image") from exc
+    except PillowImageSnapshotLoadError as exc:
+        raise ValueError("repair image snapshot is closed or invalid") from exc
     if declared_mode != "RGB":
         try:
             converted = Image.Image.convert(snapshot, "RGB")

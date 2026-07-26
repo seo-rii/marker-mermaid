@@ -29,6 +29,19 @@ from marker_mermaid.models import (
     PromptBudgetNotice,
     canonical_evidence_collection_snapshot,
 )
+from marker_mermaid.pillow_compat import (
+    PillowImageCopyError,
+    PillowImageCoreError,
+    PillowImageSnapshotBoundaryError,
+    PillowImageSnapshotLoadError,
+    PillowImageSnapshotTypeError,
+    PillowImageStateAccessError,
+    PillowImageStateShapeError,
+    PreparedPillowImage,
+    prepare_pillow_image,
+    read_pillow_image_state,
+    snapshot_pillow_image,
+)
 from marker_mermaid.protocols import SourceContext
 from marker_mermaid.resource_limits import MAX_EVIDENCE_INPUT_CHARS
 from marker_mermaid.typed_contracts import typed_ir_contract_prompt
@@ -49,20 +62,6 @@ MAX_VLM_RESPONSE_SCHEMA_CHARS = 65_536
 MAX_VLM_VIEW_NAME_CHARS = 128
 MAX_VLM_EVIDENCE_INPUT_CHARS = MAX_EVIDENCE_INPUT_CHARS
 MAX_VLM_OCR_INPUT_CHARS = 8_000_000
-_PIL_IMAGE_DICT_DESCRIPTOR = Image.Image.__dict__["__dict__"]
-_PIL_REFERENCE_IMAGE = Image.new("RGB", (1, 1))
-_PIL_IMAGING_CORE_TYPE = type(_PIL_REFERENCE_IMAGE.im)
-_PIL_REFERENCE_IMAGE_STATE = _PIL_IMAGE_DICT_DESCRIPTOR.__get__(
-    _PIL_REFERENCE_IMAGE, Image.Image
-)
-# Pillow 12 moved the core from ``im`` to ``_im``. Bind the trusted base
-# implementation's storage key once so caller-owned subclasses cannot choose it.
-_PIL_IMAGING_CORE_STATE_KEY = next(
-    key
-    for key in ("_im", "im")
-    if type(_PIL_REFERENCE_IMAGE_STATE.get(key)) is _PIL_IMAGING_CORE_TYPE
-)
-del _PIL_REFERENCE_IMAGE, _PIL_REFERENCE_IMAGE_STATE
 _VIEW_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]*\Z")
 _STRUCTURAL_KINDS = ("arrowhead", "line_segment", "contour", "vector_text")
 _SELECTION_PROFILE = "structural-quota-v1"
@@ -274,7 +273,7 @@ class MarkerStructuredVLMEngine:
         if type(first_view_name) is not str or first_view_name != "original":
             raise RuntimeError("Structured VLM views must start with the original image")
         total_view_pixels = 0
-        validated_view_cores: list[tuple[str, _PIL_IMAGING_CORE_TYPE, int, int]] = []
+        validated_view_sources: list[tuple[str, PreparedPillowImage, int, int]] = []
         for name, view in view_items:
             if (
                 type(name) is not str
@@ -286,16 +285,17 @@ class MarkerStructuredVLMEngine:
             if not isinstance(view, Image.Image):
                 raise RuntimeError("Structured VLM views must contain PIL images")
             try:
-                image_state = _PIL_IMAGE_DICT_DESCRIPTOR.__get__(view, Image.Image)
-            except Exception as exc:
+                image_state = read_pillow_image_state(view)
+            except PillowImageStateAccessError as exc:
                 raise RuntimeError(
                     "Structured VLM view has no readable Pillow image state"
                 ) from exc
-            if type(image_state) is not dict:
-                raise RuntimeError("Structured VLM view has no canonical Pillow image state")
-            declared_mode = image_state.get("_mode")
-            declared_size = image_state.get("_size")
-            source_core = image_state.get(_PIL_IMAGING_CORE_STATE_KEY)
+            except PillowImageStateShapeError as exc:
+                raise RuntimeError(
+                    "Structured VLM view has no canonical Pillow image state"
+                ) from exc
+            declared_mode = image_state.mode
+            declared_size = image_state.size
             if (
                 type(declared_mode) is not str
                 or declared_mode != "RGB"
@@ -317,14 +317,18 @@ class MarkerStructuredVLMEngine:
             next_total_view_pixels = total_view_pixels + width * height
             if next_total_view_pixels > MAX_VLM_TOTAL_VIEW_PIXELS:
                 raise RuntimeError("Structured VLM views exceed the aggregate pixel boundary")
-            if (
-                type(source_core) is not _PIL_IMAGING_CORE_TYPE
-                or source_core.mode != "RGB"
-                or source_core.size != (width, height)
-            ):
-                raise RuntimeError("Structured VLM view has no canonical RGB pixel core")
+            try:
+                prepared = prepare_pillow_image(
+                    image_state,
+                    expected_mode="RGB",
+                    expected_size=(width, height),
+                )
+            except PillowImageCoreError as exc:
+                raise RuntimeError(
+                    "Structured VLM view has no canonical RGB pixel core"
+                ) from exc
             total_view_pixels = next_total_view_pixels
-            validated_view_cores.append((name, source_core, width, height))
+            validated_view_sources.append((name, prepared, width, height))
 
         # Provider adapters may retain or inspect their image arguments after this
         # method returns.  Never hand them the caller-owned objects that were checked
@@ -332,24 +336,20 @@ class MarkerStructuredVLMEngine:
         # concurrent owner can otherwise mutate a valid image after the size gate.
         validated_view_items: list[tuple[str, Image.Image]] = []
         snapshot_total_pixels = 0
-        for name, source_core, expected_width, expected_height in validated_view_cores:
+        for name, prepared, expected_width, expected_height in validated_view_sources:
             try:
-                snapshot_core = _PIL_IMAGING_CORE_TYPE.copy(source_core)
-            except Exception as exc:
+                snapshot = snapshot_pillow_image(prepared)
+            except PillowImageCopyError as exc:
                 raise RuntimeError("Structured VLM view image could not be snapshotted") from exc
-            if (
-                type(snapshot_core) is not _PIL_IMAGING_CORE_TYPE
-                or snapshot_core is source_core
-                or snapshot_core.mode != "RGB"
-                or snapshot_core.size != (expected_width, expected_height)
-            ):
-                raise RuntimeError("Structured VLM view snapshot changed its RGB size boundary")
-            snapshot = Image.Image._new(Image.Image(), snapshot_core)
-            if type(snapshot) is not Image.Image:  # pragma: no cover - Pillow _new invariant
-                raise RuntimeError("Structured VLM view snapshot must be a plain Pillow image")
-            try:
-                Image.Image.load(snapshot)
-            except Exception as exc:
+            except PillowImageSnapshotBoundaryError as exc:
+                raise RuntimeError(
+                    "Structured VLM view snapshot changed its RGB size boundary"
+                ) from exc
+            except PillowImageSnapshotTypeError as exc:
+                raise RuntimeError(
+                    "Structured VLM view snapshot must be a plain Pillow image"
+                ) from exc
+            except PillowImageSnapshotLoadError as exc:
                 raise RuntimeError("Structured VLM view snapshot is closed or invalid") from exc
             width, height = snapshot.size
             if (
