@@ -81,9 +81,12 @@ also disable behavior for ordinary `<b>` text and the `<` in formulas.
 
 Accessibility-prefix inspection in the statement scanner is limited to 128 characters and does
 not repeatedly compare later `:`/`{` characters with the full prefix. HTML-like source is also
-found with a linear per-line scan, preventing repeated punctuation in a maximum-size label from
-amplifying regex/statement work beyond the candidate budget. Abnormal indentation past the limit
-is not relaxed into accessibility-text state; it fails closed as an ordinary statement.
+found with a linear per-line scan over complete tag, closing-tag, comment, doctype, or processing
+instruction candidates. The scanner does not skip whitespace after `<` and does not borrow an
+unrelated later `>` from `-->`; comparison labels such as `x < y`, `0 < x < 10`, and
+`x < y > z` therefore remain text. Repeated punctuation in a maximum-size label cannot amplify
+regex/statement work beyond the candidate budget. Abnormal indentation past the limit is not
+relaxed into accessibility-text state; it fails closed as an ordinary statement.
 
 If a State node ID collides with lexer/security-reserved tokens such as `state`, `class`, `click`,
 `accTitle`, or `as`, or its normalized ID contains the strict remote-icon rule's `iconify`

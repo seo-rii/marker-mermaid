@@ -96,6 +96,7 @@ from marker_mermaid.scoring import (
     ocr_recall,
     ocr_token_multiset,
     semantic_score,
+    svg_visible_texts,
 )
 from marker_mermaid.security import MermaidSecurityScanner
 from marker_mermaid.serialization import SerializationContractError, SerializationResult
@@ -2965,6 +2966,7 @@ class ReconstructionPipeline:
         generated_texts = None
         generated_texts_over_budget = False
         generated_text_projection_failed = False
+        semantic_labels = None
         if generated_scene is not None:
             if typed_ir is not None:
                 semantic_labels = typed_ir_semantic_texts(
@@ -2979,6 +2981,17 @@ class ReconstructionPipeline:
                     (relation.label for relation in generated_scene.relations if relation.label),
                     (group.label for group in generated_scene.groups if group.label),
                 )
+        elif method == "direct_mermaid":
+            try:
+                semantic_labels = svg_visible_texts(runtime.svg)
+            except Exception as exc:
+                generated_text_projection_failed = True
+                warnings.append(f"rendered SVG text projection was isolated: {exc}")
+            if semantic_labels is None and not generated_text_projection_failed:
+                generated_text_projection_failed = True
+                warnings.append("rendered SVG text projection is unavailable; review is required")
+
+        if semantic_labels is not None:
             try:
                 generated_texts = bounded_ocr_token_multiset(
                     semantic_labels,

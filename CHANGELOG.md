@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- Strict HTML scanning now recognizes complete tag tokens instead of borrowing a later Mermaid
+  arrow's `>`, so comparison labels such as `x < y` remain valid while real tags stay blocked.
+  Direct Mermaid OCR recall now uses painted text from the security-inspected SVG, covering
+  unquoted labels without counting accessibility metadata or hidden definitions.
 - Pillow 12.3 compatibility for canonical image-core snapshots used by structured VLM and
   repair contexts, while preserving the existing size, type, and caller-hook isolation checks.
 - Candidate isolation and repair bookkeeping now reject malformed/non-finite chart geometry,

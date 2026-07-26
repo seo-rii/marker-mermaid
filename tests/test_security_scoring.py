@@ -15,6 +15,7 @@ from marker_mermaid.scoring import (
     numeric_token_multiset,
     ocr_recall,
     semantic_score,
+    svg_visible_texts,
 )
 from marker_mermaid.security import MermaidSecurityScanner
 from marker_mermaid.validation import CandidateValidator, NodeMermaidRuntime, inspect_svg
@@ -50,6 +51,69 @@ def test_strict_scanner_allows_only_exact_state_pseudostate_declarations() -> No
     assert not scanner.scan("flowchart LR\n    state decision <<choice>>\n").safe
     assert not scanner.scan("stateDiagram-v2\n    state decision <<script>>\n").safe
     assert not scanner.scan("stateDiagram-v2\n    state decision <<choice>> <b>\n").safe
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "x < y",
+        "0 < x < 10",
+        "x < y > z",
+    ],
+)
+def test_comparison_labels_are_not_detected_as_html(label: str) -> None:
+    code = f'flowchart TD\nA["{label}"] --> B["ok"]'
+    report = MermaidSecurityScanner(SecurityProfile.STRICT).scan(code)
+
+    assert not any(item.rule == "html" for item in report.findings)
+
+
+def test_non_tag_comparison_variants_never_borrow_mermaid_arrow_closers() -> None:
+    scanner = MermaidSecurityScanner(SecurityProfile.STRICT)
+    whitespace = ("", " ", "\t", "\u2003")
+    operands = ("y", "10", "_value")
+    tails = ("", " > z", " --> next", " --- next", " -->> next")
+
+    for before in whitespace:
+        for after in whitespace:
+            for operand in operands:
+                for tail in tails:
+                    if (
+                        not after
+                        and operand[0].isascii()
+                        and operand[0].isalpha()
+                        and ">" in tail
+                    ):
+                        # ``<y …>`` is itself a syntactically complete HTML tag token,
+                        # regardless of whether a human intended it as a comparison.
+                        continue
+                    label = f"x{before}<{after}{operand}{tail}"
+                    code = f'flowchart TD\nA["{label}"] --> B["ok"]'
+                    findings = scanner.scan(code).findings
+                    assert not any(item.rule == "html" for item in findings), label
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "<script>",
+        "<b>",
+        "</b>",
+        "<img/>",
+        '<img src="local.png">',
+        "<img disabled />",
+        "<script @nonce>",
+        "<!-- comment -->",
+        "<!doctype html>",
+        "<?target value?>",
+    ],
+)
+def test_complete_html_tokens_remain_blocked(token: str) -> None:
+    report = MermaidSecurityScanner(SecurityProfile.STRICT).scan(
+        f'flowchart TD\nA["before {token} after"]'
+    )
+
+    assert any(item.rule == "html" for item in report.findings)
 
 
 @pytest.mark.parametrize(
@@ -419,6 +483,40 @@ def test_direct_ocr_recall_ignores_accessibility_metadata_headers_and_node_ids()
 
     assert ocr_recall(["Payment"], code) == 0
     assert ocr_recall(["Other"], code) == 1
+
+
+def test_svg_visible_texts_count_painted_text_once_and_exclude_metadata() -> None:
+    svg = """
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <title>Hidden accessible title</title>
+  <desc>Hidden accessible description</desc>
+  <defs><text>Hidden template</text></defs>
+  <g>
+    <text><tspan>Start</tspan></text>
+    <text><tspan>Review</tspan><tspan> payment</tspan></text>
+    <g display="none"><text>Hidden display</text></g>
+    <text style="visibility: hidden"><tspan>Hidden visibility</tspan></text>
+  </g>
+</svg>
+"""
+
+    texts = svg_visible_texts(svg)
+
+    assert texts == ["Start", "Review payment"]
+    assert ocr_recall(["Start Review payment"], "", generated_texts=texts) == 1
+    assert (
+        ocr_recall(
+            ["Hidden accessible template display visibility"],
+            "",
+            generated_texts=texts,
+        )
+        == 0
+    )
+
+
+def test_svg_visible_texts_rejects_malformed_or_non_svg_input() -> None:
+    assert svg_visible_texts("<svg>") is None
+    assert svg_visible_texts("<html><text>Forged</text></html>") is None
 
 
 def test_direct_gantt_recall_counts_visible_labels_not_schedule_fields():

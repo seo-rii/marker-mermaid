@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+import xml.etree.ElementTree as ET
 from collections import Counter, deque
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
@@ -126,6 +127,70 @@ def _direct_mermaid_label_texts(code: str) -> list[str]:
             if suffix.strip():
                 labels.append(suffix.strip())
     return labels
+
+
+def svg_visible_texts(svg: str) -> list[str] | None:
+    """Return painted SVG text terminals, excluding accessibility-only metadata."""
+
+    if type(svg) is not str:
+        return None
+    try:
+        root = ET.fromstring(svg)
+    except (ET.ParseError, RecursionError):
+        return None
+    if root.tag.rsplit("}", 1)[-1].casefold() != "svg":
+        return None
+
+    texts: list[str] = []
+    stack: list[tuple[ET.Element, bool]] = [(root, False)]
+    non_painted_containers = {"defs", "clippath", "mask", "marker", "pattern", "symbol"}
+    while stack:
+        element, ancestor_hidden = stack.pop()
+        tag = element.tag.rsplit("}", 1)[-1].casefold()
+        hidden = ancestor_hidden or tag in non_painted_containers
+        if not hidden:
+            display = (element.get("display") or "").strip().casefold()
+            visibility = (element.get("visibility") or "").strip().casefold()
+            opacity = (element.get("opacity") or "").strip().casefold()
+            hidden = (
+                display == "none"
+                or visibility in {"hidden", "collapse"}
+                or opacity in {"0", "0.0", "0%"}
+            )
+            if not hidden and (style := element.get("style")):
+                for declaration in style.split(";"):
+                    name, separator, value = declaration.partition(":")
+                    if not separator:
+                        continue
+                    normalized_name = name.strip().casefold()
+                    normalized_value = value.strip().casefold()
+                    if normalized_value.endswith("!important"):
+                        normalized_value = normalized_value[: -len("!important")].rstrip()
+                    if (
+                        (normalized_name == "display" and normalized_value == "none")
+                        or (
+                            normalized_name == "visibility"
+                            and normalized_value in {"hidden", "collapse"}
+                        )
+                        or (
+                            normalized_name == "opacity"
+                            and normalized_value in {"0", "0.0", "0%"}
+                        )
+                    ):
+                        hidden = True
+                        break
+
+        if tag == "text":
+            if not hidden:
+                text = "".join(element.itertext()).replace("\u200b", "")
+                if text.strip():
+                    texts.append(text)
+            # A text subtree is one painted terminal. Walking nested tspans would
+            # count the same token once per ancestor.
+            continue
+        for child in reversed(element):
+            stack.append((child, hidden))
+    return texts
 
 
 def ocr_recall(

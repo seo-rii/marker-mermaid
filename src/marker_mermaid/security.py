@@ -68,23 +68,137 @@ class MermaidSecurityScanner:
 
     @staticmethod
     def _contains_html_tag(line: str) -> bool:
-        """Detect tag-like angle syntax in one linear pass."""
+        """Detect complete HTML-like tokens without borrowing a later Mermaid arrow."""
 
-        final_close = line.rfind(">")
-        if final_close < 0:
-            return False
+        length = len(line)
         search_from = 0
-        while (opening := line.find("<", search_from, final_close)) >= 0:
+        while (opening := line.find("<", search_from)) >= 0:
             cursor = opening + 1
-            while cursor < final_close and line[cursor].isspace():
-                cursor += 1
-            if cursor < final_close and line[cursor] == "/":
-                cursor += 1
-                while cursor < final_close and line[cursor].isspace():
-                    cursor += 1
-            if cursor < final_close and ("A" <= line[cursor] <= "Z" or "a" <= line[cursor] <= "z"):
+            if cursor >= length:
+                return False
+
+            # These prefixes are unambiguously markup even when malformed or split
+            # across lines. Rejecting them early also keeps comment/PI inspection
+            # bounded.
+            if line.startswith("<!--", opening) or line.startswith("<?", opening):
                 return True
-            search_from = opening + 1
+            if line[cursor] == "!":
+                declaration_end = cursor + len("!doctype")
+                if (
+                    line[cursor:declaration_end].casefold() == "!doctype"
+                    and (
+                        declaration_end == length
+                        or line[declaration_end].isspace()
+                        or line[declaration_end] == ">"
+                    )
+                ):
+                    return True
+                search_from = cursor + 1
+                continue
+
+            closing = line[cursor] == "/"
+            if closing:
+                cursor += 1
+            if cursor >= length or not (
+                "A" <= line[cursor] <= "Z" or "a" <= line[cursor] <= "z"
+            ):
+                search_from = cursor if cursor < length and line[cursor] == "<" else cursor + 1
+                continue
+
+            # Parse one complete tag candidate. Every cursor advance is retained by
+            # the outer scan, so quote-dense or repeated '<name' input stays linear.
+            cursor += 1
+            while cursor < length and (
+                "A" <= line[cursor] <= "Z"
+                or "a" <= line[cursor] <= "z"
+                or "0" <= line[cursor] <= "9"
+                or line[cursor] in "_:-"
+            ):
+                cursor += 1
+
+            if closing:
+                while cursor < length and line[cursor].isspace():
+                    cursor += 1
+                if cursor < length and line[cursor] == ">":
+                    return True
+                search_from = cursor if cursor < length and line[cursor] == "<" else cursor + 1
+                continue
+
+            if cursor < length and line[cursor] == ">":
+                return True
+            if cursor < length and line[cursor] == "/":
+                cursor += 1
+                while cursor < length and line[cursor].isspace():
+                    cursor += 1
+                if cursor < length and line[cursor] == ">":
+                    return True
+                search_from = cursor if cursor < length and line[cursor] == "<" else cursor + 1
+                continue
+            if cursor >= length or not line[cursor].isspace():
+                search_from = cursor if cursor < length and line[cursor] == "<" else cursor + 1
+                continue
+
+            complete = False
+            while cursor < length:
+                while cursor < length and line[cursor].isspace():
+                    cursor += 1
+                if cursor >= length:
+                    break
+                if line[cursor] == ">":
+                    complete = True
+                    break
+                if line[cursor] == "/":
+                    cursor += 1
+                    while cursor < length and line[cursor].isspace():
+                        cursor += 1
+                    if cursor < length and line[cursor] == ">":
+                        complete = True
+                    break
+                if line[cursor].isspace() or line[cursor] in "\x00\"'><=/":
+                    break
+
+                cursor += 1
+                while (
+                    cursor < length
+                    and not line[cursor].isspace()
+                    and line[cursor] not in "\x00\"'><=/"
+                ):
+                    cursor += 1
+                while cursor < length and line[cursor].isspace():
+                    cursor += 1
+                if cursor >= length or line[cursor] != "=":
+                    continue
+
+                cursor += 1
+                while cursor < length and line[cursor].isspace():
+                    cursor += 1
+                if cursor >= length:
+                    break
+                if line[cursor] in "\"'":
+                    quote = line[cursor]
+                    cursor += 1
+                    while cursor < length and line[cursor] != quote:
+                        cursor += 1
+                    if cursor >= length:
+                        break
+                    cursor += 1
+                    continue
+                value_start = cursor
+                while (
+                    cursor < length
+                    and not line[cursor].isspace()
+                    and line[cursor] != ">"
+                    and line[cursor] not in "\"'<="
+                ):
+                    cursor += 1
+                if cursor == value_start or (
+                    cursor < length and line[cursor] in "\"'<="
+                ):
+                    break
+
+            if complete:
+                return True
+            search_from = cursor if cursor < length and line[cursor] == "<" else cursor + 1
         return False
 
     @classmethod

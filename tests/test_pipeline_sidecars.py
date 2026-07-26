@@ -2666,6 +2666,55 @@ def test_direct_structural_candidate_without_attribution_requires_review(fake_ru
     assert any("attribution is unavailable" in warning for warning in result.selected.warnings)
 
 
+def test_direct_unquoted_flowchart_labels_use_validated_svg_for_ocr_recall() -> None:
+    class DirectOnlyEngine:
+        name = "direct-only"
+
+        def observe(self, context):
+            return EngineObservation(
+                prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[0.9]),
+                direct_candidates=[
+                    DirectMermaidCandidate(
+                        diagram_type="flowchart",
+                        code="flowchart LR\n    A[Start] --> B[End]\n",
+                    )
+                ],
+            )
+
+    class VisibleTextRuntime:
+        def validate_and_render(self, code, timeout_seconds):
+            return RuntimeResult(
+                True,
+                True,
+                diagram_type="flowchart-v2",
+                svg=(
+                    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+                    "<title>Copied metadata must not count</title>"
+                    "<text><tspan>Start</tspan></text><text>End</text>"
+                    "</svg>"
+                ),
+            )
+
+        def close(self):
+            pass
+
+    config = MermaidConfig(candidate_count=1)
+    result = ReconstructionPipeline(
+        config,
+        [DirectOnlyEngine()],
+        CandidateValidator(VisibleTextRuntime(), config.security_profile),
+    ).reconstruct(
+        "source",
+        "source.png",
+        Image.new("RGB", (100, 50), "white"),
+        ocr_texts=["Start End"],
+    )
+
+    assert result.selected is not None
+    assert result.selected.generation_method == "direct_mermaid"
+    assert result.selected.scores["ocr_recall"] == 1
+
+
 def test_candidate_budget_is_shared_fairly_across_engines(fake_runtime):
     class DirectEngine:
         name = "direct"

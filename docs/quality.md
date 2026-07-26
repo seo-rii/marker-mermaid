@@ -252,8 +252,11 @@ keeping semantic-score improvement and SVG metadata on the same revision.
   count per token is used. Same-text evidence without a bbox cannot prove spatially distinct
   occurrences and is merged. Typed/Scene candidates compare generated-Scene node, relation, and
   group labels, including Gantt task and section semantic labels. Mermaid IDs, schedule fields,
-  headers, `accTitle`, and `accDescr` cannot increase recall. A direct candidate without a Scene
-  adapter uses quoted labels and a conservative grammar-specific label fallback.
+  headers, `accTitle`, and `accDescr` cannot increase recall. A parse/render-valid direct candidate
+  without a Scene adapter reads painted `<text>`/`<tspan>` terminals from the security-inspected
+  final SVG. It excludes accessibility-only `title`/`desc`, hidden definition containers, and
+  explicitly non-painted subtrees, so ordinary unquoted labels contribute without treating
+  metadata as canvas evidence.
 - OCR/vector references and generated semantic labels each have evaluation budgets of 50,000
   observations, 1,000,000 characters, and 100,000 tokens. Exceeding any limit does not produce a
   truncated score; semantic evaluation becomes unavailable, blocking automatic publication. Token
