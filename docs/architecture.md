@@ -53,7 +53,7 @@ flowchart TB
 | `accessibility.py` | Requested-type descriptions and emitted-grammar support checks |
 | `pipeline.py` | Budgets, failure isolation, selection, and repair accepted only on improvement |
 | `marker_integration.py` | Processor ordering, Marker OCR provenance, and the dedicated renderer/converter |
-| `sidecars.py`, `output.py` | Atomic diagram bundles and document output |
+| `sidecars.py`, `output.py`, `output_transaction.py` | Atomic diagram bundles and whole-document publication |
 | `review_layout.py`, `review_store.py` | Bounded layout hints kept separate from source geometry, and review revisions |
 
 `CandidateEngine`, `RepairEngine`, and `MermaidRuntime` are injected as protocols. The default

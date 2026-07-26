@@ -213,7 +213,12 @@ class SidecarStore:
         self.write_alternatives = write_alternatives
         self.write_provenance = write_provenance
 
-    def write(self, result: ReconstructionResult) -> str:
+    def write(
+        self,
+        result: ReconstructionResult,
+        *,
+        output_root_fd: int | None = None,
+    ) -> str:
         if type(result) is not ReconstructionResult:
             raise TypeError("sidecar writes require a ReconstructionResult")
         try:
@@ -764,17 +769,28 @@ class SidecarStore:
         relative = PurePosixPath("diagrams") / name
         if relative.is_absolute() or ".." in relative.parts:
             raise ValueError("sidecar path must remain inside the output root")
-        self.output_root.mkdir(parents=True, exist_ok=True)
         directory_flags = (
             os.O_RDONLY
             | getattr(os, "O_CLOEXEC", 0)
             | getattr(os, "O_DIRECTORY", 0)
             | getattr(os, "O_NOFOLLOW", 0)
         )
-        try:
-            output_fd = os.open(self.output_root, directory_flags)
-        except OSError as exc:
-            raise ValueError("sidecar output root must be a real directory") from exc
+        if output_root_fd is None:
+            self.output_root.mkdir(parents=True, exist_ok=True)
+            try:
+                output_fd = os.open(self.output_root, directory_flags)
+            except OSError as exc:
+                raise ValueError("sidecar output root must be a real directory") from exc
+        else:
+            try:
+                output_fd = os.dup(output_root_fd)
+                output_stat = os.fstat(output_fd)
+                if not stat.S_ISDIR(output_stat.st_mode):
+                    raise ValueError("sidecar output descriptor must reference a directory")
+            except Exception:
+                with suppress(UnboundLocalError):
+                    os.close(output_fd)
+                raise
         try:
             with suppress(FileExistsError):
                 os.mkdir("diagrams", mode=0o700, dir_fd=output_fd)

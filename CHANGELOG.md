@@ -17,8 +17,10 @@
   reject non-finite values and identifier collisions, and retain subgraph/link semantics.
 - Mermaid worker requests now use deadline-bound non-blocking writes, bounded stderr diagnostics,
   immediate crash/protocol reporting, and graceful EOF shutdown before process-group escalation.
-- Output preflight now rejects invalid Mermaid metadata rows, unwritable image suffixes, and every
-  existing document/metadata/image artifact before writing; source image handles close promptly.
+- Document output now builds Markdown, metadata, source images, and all sidecars in one private
+  descriptor-anchored staging tree, syncs it, and publishes the complete tree with a no-replace
+  rename. Failed or concurrent writes leave no partial document and do not mutate caller results.
+  Preflight also rejects invalid Mermaid metadata rows and unwritable image suffixes.
 - Review reads and writes now share a bundle-directory lock, interrupted multi-file commits recover
   through a digest-checked roll-forward journal, unloadable bundles remain visible as errors, and
   `HEAD` cannot bypass Host validation or the artifact allowlist.

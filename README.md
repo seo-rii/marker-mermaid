@@ -204,6 +204,7 @@ output/document/
 `final.svg` is required for an automatically published bundle. `final.png`, review state,
 layout hints, and several typed/evaluation artifacts are conditional. See the
 [output format](docs/output-format.md) for schemas and atomic-write rules.
+The output directory is a single-document transaction target and must not already exist.
 
 ## Documentation
 

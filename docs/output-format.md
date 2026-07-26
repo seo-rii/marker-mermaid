@@ -278,9 +278,19 @@ reconstruction.
 
 Before creating files, the writer checks source/image/sidecar/alternative name collisions, a missing source
 image, writable image extensions, existing document/metadata/image/bundle artifacts, strictly structured
-Mermaid metadata rows, metadata JSON serializability, and the final-result evidence budget. Document output
-is no-overwrite: callers must choose a new output directory or explicitly remove an earlier output before
-rerunning. Each source-specific bundle is then published atomically from a temporary directory.
+Mermaid metadata rows, metadata JSON serializability, and the final-result evidence budget. The output
+directory is a single-document transaction target and must not already exist.
+
+The writer creates a mode-`0700` staging directory beside that target through an already-open parent
+directory descriptor. Images, source-specific bundles, Markdown, and metadata are written beneath the
+staging descriptor with exclusive, no-follow file creation. Sidecar writers receive a duplicate of the same
+staging descriptor rather than reopening the eventual output path. After every regular file and directory
+has been synced, the whole tree is published with descriptor-anchored
+`renameat2(RENAME_NOREPLACE)` on Linux or `renameatx_np(RENAME_EXCL)` on macOS. A target created after
+preflight therefore wins without being overwritten. Any failure before that rename removes the staging tree,
+leaves no document artifacts, and does not change caller-owned `sidecar_dir` or metadata rows. Caller objects
+are updated only after the directory rename commits. A post-rename parent-sync failure is reported as a
+durability error while leaving the already complete, visible output intact.
 
 ## JSON Serialization
 
