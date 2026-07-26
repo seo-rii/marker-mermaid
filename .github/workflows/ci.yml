@@ -99,8 +99,6 @@ jobs:
     name: Mermaid and Chromium integration
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      MARKER_MERMAID_RUNTIME_DIR: ${{ runner.temp }}/marker-mermaid-runtime
 
     steps:
       - name: Check out repository
@@ -120,6 +118,8 @@ jobs:
           cache: pip
 
       - name: Install project and pinned browser runtime
+        env:
+          MARKER_MERMAID_RUNTIME_DIR: ${{ runner.temp }}/marker-mermaid-runtime
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e '.[vision,dev]'
@@ -127,6 +127,8 @@ jobs:
           marker-mermaid doctor
 
       - name: Run real Mermaid grammar, security, and resource fixtures
+        env:
+          MARKER_MERMAID_RUNTIME_DIR: ${{ runner.temp }}/marker-mermaid-runtime
         run: |
           pytest -q -m integration \
             --ignore=tests/test_marker_compat.py \
@@ -202,8 +204,6 @@ jobs:
     name: Wheel installation smoke
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      MARKER_MERMAID_RUNTIME_DIR: ${{ runner.temp }}/marker-mermaid-wheel-runtime
 
     steps:
       - name: Check out repository
@@ -228,6 +228,8 @@ jobs:
           python -m build
 
       - name: Install and exercise the wheel in a fresh environment
+        env:
+          MARKER_MERMAID_RUNTIME_DIR: ${{ runner.temp }}/marker-mermaid-wheel-runtime
         run: |
           SMOKE_VENV="${RUNNER_TEMP}/marker-mermaid-wheel-venv"
           SMOKE_OUTPUT="${RUNNER_TEMP}/marker-mermaid-wheel-output"
