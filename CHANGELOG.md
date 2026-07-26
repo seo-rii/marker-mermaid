@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Publication source normalization and mutation-resistant policy certification now live behind a
+  dedicated module while retaining the existing pipeline import compatibility.
 - Alpha installations now default to `review_required`; automatic publication must be enabled
   explicitly. The unused `sidecar_root` option now fails closed instead of silently violating the
   whole-document atomic-output contract.

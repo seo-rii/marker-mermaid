@@ -52,6 +52,7 @@ flowchart TB
 | `candidate_scene.py` | Conversion of serializer-emitted nodes, relations, and subgraphs into an evaluation Scene |
 | `accessibility.py` | Requested-type descriptions and emitted-grammar support checks |
 | `pipeline.py` | Budgets, failure isolation, selection, and repair accepted only on improvement |
+| `publication.py` | Canonical publication source and mutation-resistant policy certification |
 | `marker_integration.py` | Processor ordering, Marker OCR provenance, and the dedicated renderer/converter |
 | `sidecars.py`, `output.py`, `output_transaction.py` | Atomic diagram bundles and whole-document publication |
 | `review_layout.py`, `review_store.py` | Bounded layout hints kept separate from source geometry, and review revisions |
