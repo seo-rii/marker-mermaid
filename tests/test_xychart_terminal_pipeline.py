@@ -6,7 +6,7 @@ import pytest
 from PIL import Image
 
 from marker_mermaid import pipeline as pipeline_module
-from marker_mermaid.config import MermaidConfig, Mode
+from marker_mermaid.config import MermaidConfig, Mode, PublishPolicy
 from marker_mermaid.engines import JsonFixtureEngine
 from marker_mermaid.models import (
     DiagramTypePrediction,
@@ -19,6 +19,12 @@ from marker_mermaid.pipeline import ReconstructionPipeline
 from marker_mermaid.protocols import RepairProposal, RuntimeResult
 from marker_mermaid.serializers import serialize_typed_ir_result
 from marker_mermaid.validation import CandidateValidator
+
+
+def _best_effort_config(**values: object) -> MermaidConfig:
+    values.setdefault("publish_policy", PublishPolicy.BEST_EFFORT_VALIDATED)
+    return MermaidConfig(**values)
+
 
 XY_IR = {
     "title": "Sales trend",
@@ -163,7 +169,7 @@ def _reconstruct_xy(
     repair_engine: object | None = None,
 ) -> tuple[object, _XYRuntime]:
     runtime = _XYRuntime(reject_native=reject_native)
-    config = MermaidConfig(candidate_count=1, publish_min_score=0)
+    config = _best_effort_config(candidate_count=1, publish_min_score=0)
     observation = EngineObservation(
         prediction=DiagramTypePrediction(candidates=["xychart"], scores=[1]),
         typed_candidates=[TypedIRCandidate(diagram_type="xychart", ir=deepcopy(ir or XY_IR))],
@@ -463,7 +469,7 @@ def test_xy_accessibility_overlap_budget_fails_closed(monkeypatch: pytest.Monkey
 
 def test_direct_xy_candidate_remains_review_only_without_typed_plan() -> None:
     runtime = _XYRuntime()
-    config = MermaidConfig(mode=Mode.MAXIMAL, candidate_count=1, publish_min_score=0)
+    config = _best_effort_config(mode=Mode.MAXIMAL, candidate_count=1, publish_min_score=0)
     observation = EngineObservation(
         prediction=DiagramTypePrediction(candidates=["xychart"], scores=[1]),
         direct_candidates=[

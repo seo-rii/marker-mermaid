@@ -8,7 +8,7 @@ from PIL import Image
 
 import marker_mermaid.models as model_module
 import marker_mermaid.sidecars as sidecar_module
-from marker_mermaid.config import MermaidConfig, SecurityProfile
+from marker_mermaid.config import MermaidConfig, PublishPolicy, SecurityProfile
 from marker_mermaid.markdown import (
     reconstruction_markdown,
     reconstruction_markdown_from_snapshot,
@@ -28,6 +28,10 @@ _SAFE_CODE = 'flowchart LR\n    A["Start"] --> B["End"]\n'
 _MALICIOUS_CODE = 'flowchart LR\n    A --> B; click A "https://evil.example"\n'
 _SAFE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text>safe</text></svg>'
 _MALICIOUS_SVG = '<svg xmlns="http://www.w3.org/2000/svg"><script>evil()</script></svg>'
+
+
+def _automatic_config() -> MermaidConfig:
+    return MermaidConfig(publish_policy=PublishPolicy.BEST_EFFORT_VALIDATED)
 
 
 def _png(color: str, *, size: tuple[int, int] = (4, 3)) -> bytes:
@@ -84,7 +88,7 @@ def _published_result(
         review_required=False,
         status="success",
     )
-    assert certify_publication_result(result, MermaidConfig())
+    assert certify_publication_result(result, _automatic_config())
     assert candidate.has_validated_publication_artifacts()
     assert result.has_authorized_publication()
     return result
@@ -260,7 +264,7 @@ def test_markdown_uses_a_longer_fence_for_backtick_lines_inside_mermaid_labels()
         review_required=False,
         status="success",
     )
-    assert certify_publication_result(result, MermaidConfig())
+    assert certify_publication_result(result, _automatic_config())
 
     markdown = reconstruction_markdown(result, show_warning=False)
 
@@ -278,14 +282,14 @@ def test_publication_certifier_recomputes_policy_and_has_no_unchecked_model_seal
     result.review_required = True
     result.status = "review_required"
 
-    assert not certify_publication_result(result, MermaidConfig())
+    assert not certify_publication_result(result, _automatic_config())
     assert result.publication_receipt is None
     assert reconstruction_markdown(result) == ""
 
 
 def test_publication_certifier_rejects_mutated_config_without_side_effects() -> None:
     result = _published_result()
-    config = MermaidConfig()
+    config = _automatic_config()
     config.publish_min_score = -1.0
 
     assert not certify_publication_result(result, config)

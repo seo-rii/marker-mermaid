@@ -10,6 +10,7 @@ import marker_mermaid.models as models
 from marker_mermaid.config import (
     MermaidConfig,
     Mode,
+    PublishPolicy,
     ScoreWeights,
     SecurityProfile,
     quality_grade,
@@ -35,13 +36,27 @@ from marker_mermaid.models import (
 
 
 def test_mode_budgets_and_marker_prefixes():
-    assert MermaidConfig().candidate_count == 3
+    default = MermaidConfig()
+    assert default.candidate_count == 3
+    assert default.publish_policy is PublishPolicy.REVIEW_REQUIRED
     assert MermaidConfig(mode=Mode.MAXIMAL).max_repair_iterations == 10
     strict = MermaidConfig.from_marker_config(
         {"MermaidDiagramProcessor_mode": "strict", "candidate_count": 1}
     )
     assert strict.mode == Mode.STRICT
     assert strict.candidate_count == 1
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["sidecar_root", "MermaidDiagramProcessor_sidecar_root"],
+)
+def test_removed_sidecar_root_fails_closed(key: str) -> None:
+    with pytest.raises(ValueError, match="single atomic output transaction"):
+        MermaidConfig.from_marker_config({key: "/var/lib/marker-mermaid/artifacts"})
+
+    with pytest.raises(ValidationError, match="sidecar_root"):
+        MermaidConfig.model_validate({"sidecar_root": "/tmp/artifacts"})
 
 
 def test_original_image_cannot_be_disabled():

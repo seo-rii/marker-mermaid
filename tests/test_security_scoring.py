@@ -601,6 +601,23 @@ def test_best_effort_never_publishes_grade_d_even_with_zero_threshold() -> None:
     assert decision.review_required
 
 
+def test_alpha_default_routes_a_valid_candidate_to_review() -> None:
+    candidate = MermaidCandidate(
+        candidate_id="c",
+        generation_method="typed_ir",
+        diagram_type="flowchart",
+        syntax_valid=True,
+        render_valid=True,
+        scores={"type_fitness": 0.9},
+        aggregate_score=0.9,
+    )
+
+    decision = decide_publication(candidate, MermaidConfig())
+
+    assert not decision.publish
+    assert decision.review_required
+
+
 def test_invalid_candidate_is_never_published():
     candidate = MermaidCandidate(
         candidate_id="c",

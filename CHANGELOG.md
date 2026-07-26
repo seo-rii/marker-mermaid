@@ -4,12 +4,21 @@
 
 ### Fixed
 
+- Alpha installations now default to `review_required`; automatic publication must be enabled
+  explicitly. The unused `sidecar_root` option now fails closed instead of silently violating the
+  whole-document atomic-output contract.
+- The browser worker now receives bounded render limits on every request and checks SVG bytes,
+  DOM/text/path counts, unsafe preview content, layout/viewBox dimensions, and pixel area before
+  calling Chromium screenshot. Oversized previews carry an explicit omission reason without
+  weakening final SVG inspection; PNG bytes are capped before Base64 encoding. The Node/Chromium
+  process tree also inherits POSIX data-memory, CPU, and core-dump limits.
 - Strict HTML scanning now recognizes complete tag tokens instead of borrowing a later Mermaid
   arrow's `>`, so comparison labels such as `x < y` remain valid while real tags stay blocked.
   Direct Mermaid OCR recall now uses painted text from the security-inspected SVG, covering
   unquoted labels without counting accessibility metadata or hidden definitions.
-- Pillow 12.3 compatibility for canonical image-core snapshots used by structured VLM and
-  repair contexts, while preserving the existing size, type, and caller-hook isolation checks.
+- Pillow 10.0 through current image-core layouts now use a lazy compatibility adapter for
+  structured VLM and repair snapshots. Unsupported future layouts raise a controlled error only
+  when snapshots are requested, so lightweight CLI diagnostics remain available.
 - Candidate isolation and repair bookkeeping now reject malformed/non-finite chart geometry,
   keep full-resolution evaluation coordinates, avoid selected-candidate duplication, and refuse
   incompatible fragment pixel scales instead of corrupting merged sources.

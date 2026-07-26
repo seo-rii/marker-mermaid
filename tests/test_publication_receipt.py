@@ -31,6 +31,11 @@ from marker_mermaid.sidecars import SidecarStore
 from marker_mermaid.validation import CandidateValidator
 
 
+def _best_effort_config(**values: object) -> MermaidConfig:
+    values.setdefault("publish_policy", PublishPolicy.BEST_EFFORT_VALIDATED)
+    return MermaidConfig(**values)
+
+
 def _observation() -> EngineObservation:
     return EngineObservation(
         prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[0.9]),
@@ -104,7 +109,7 @@ def _pipeline_result(runtime, config: MermaidConfig) -> ReconstructionResult:
 
 
 def _validated_result(fake_runtime) -> ReconstructionResult:
-    config = MermaidConfig(candidate_count=1, type_candidate_count=1)
+    config = _best_effort_config(candidate_count=1, type_candidate_count=1)
     result = _pipeline_result(fake_runtime, config)
     assert result.publish
     assert result.selected is not None
@@ -233,7 +238,7 @@ def test_mutated_aggregate_evidence_provenance_invalidates_publication(
 
     assert not certify_publication_result(
         result,
-        MermaidConfig(candidate_count=1, type_candidate_count=1),
+        _best_effort_config(candidate_count=1, type_candidate_count=1),
     )
     assert not result.has_authorized_publication()
     assert reconstruction_markdown(result) == ""
@@ -304,7 +309,7 @@ def test_valid_pipeline_result_is_emitted_exactly_once(fake_runtime) -> None:
 
 
 def test_missing_runtime_type_downgrades_automatic_publication(tmp_path) -> None:
-    config = MermaidConfig(candidate_count=1, type_candidate_count=1)
+    config = _best_effort_config(candidate_count=1, type_candidate_count=1)
 
     result = _pipeline_result(_MissingTypeRuntime(), config)
 
@@ -330,7 +335,7 @@ def test_selection_prefers_a_certified_publishable_candidate(fake_runtime) -> No
     unsealed.candidate_id = "higher-score-without-private-seal"
     unsealed.aggregate_score = 1.0
     assert not unsealed.has_validated_publication_artifacts()
-    config = MermaidConfig(candidate_count=2, type_candidate_count=1)
+    config = _best_effort_config(candidate_count=2, type_candidate_count=1)
     pipeline = ReconstructionPipeline(
         config,
         [],
@@ -345,7 +350,7 @@ def test_selection_prefers_a_certified_publishable_candidate(fake_runtime) -> No
 def test_malformed_engine_warning_is_sink_safe(fake_runtime, tmp_path) -> None:
     observation = _observation()
     observation.warnings = ["bad\ud800warning"]
-    config = MermaidConfig(candidate_count=1, type_candidate_count=1)
+    config = _best_effort_config(candidate_count=1, type_candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [JsonFixtureEngine(observation)],
@@ -375,7 +380,7 @@ def test_malformed_typed_ir_isolated_without_losing_good_candidate(fake_runtime,
         confidence=1.0,
     )
     observation.typed_candidates.insert(0, malformed)
-    config = MermaidConfig(candidate_count=1, type_candidate_count=1)
+    config = _best_effort_config(candidate_count=1, type_candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [JsonFixtureEngine(observation)],
@@ -486,7 +491,7 @@ def test_sidecar_rejects_tampered_published_candidate_atomically(fake_runtime, t
 def test_mutating_nonautomatic_policy_result_cannot_authorize_publication(
     fake_runtime, tmp_path, policy, profile
 ) -> None:
-    config = MermaidConfig(
+    config = _best_effort_config(
         candidate_count=1,
         type_candidate_count=1,
         publish_policy=policy,
@@ -508,7 +513,7 @@ def test_mutating_nonautomatic_policy_result_cannot_authorize_publication(
 
 
 def test_swapped_valid_png_is_omitted_and_rejected_by_published_sidecar(tmp_path) -> None:
-    config = MermaidConfig(candidate_count=1, type_candidate_count=1)
+    config = _best_effort_config(candidate_count=1, type_candidate_count=1)
     result = _pipeline_result(_PngRuntime("white"), config)
     assert result.publish
     assert result.selected is not None
@@ -539,7 +544,7 @@ def test_published_sidecar_forces_sealed_svg_when_write_svg_is_disabled(
 
 
 def test_sidecar_png_opt_out_keeps_receipts_referentially_consistent(tmp_path) -> None:
-    config = MermaidConfig(candidate_count=1, type_candidate_count=1)
+    config = _best_effort_config(candidate_count=1, type_candidate_count=1)
     result = _pipeline_result(_PngRuntime("white"), config)
 
     relative = SidecarStore(tmp_path, write_png=False).write(result)
@@ -566,7 +571,7 @@ def test_sidecar_png_opt_out_keeps_receipts_referentially_consistent(tmp_path) -
 def test_nonpublished_svg_opt_out_does_not_leave_orphan_publication_receipt(
     fake_runtime, tmp_path
 ) -> None:
-    config = MermaidConfig(
+    config = _best_effort_config(
         candidate_count=1,
         type_candidate_count=1,
         publish_policy=PublishPolicy.REVIEW_REQUIRED,
@@ -584,7 +589,7 @@ def test_nonpublished_svg_opt_out_does_not_leave_orphan_publication_receipt(
 def test_deserialized_nonautomatic_result_remains_reviewable_sidecar(
     fake_runtime, tmp_path
 ) -> None:
-    config = MermaidConfig(
+    config = _best_effort_config(
         candidate_count=1,
         type_candidate_count=1,
         publish_policy=PublishPolicy.REVIEW_REQUIRED,

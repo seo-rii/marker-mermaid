@@ -134,7 +134,7 @@ class MermaidConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mode: Mode = Mode.EXTENDED
-    publish_policy: PublishPolicy = PublishPolicy.BEST_EFFORT_VALIDATED
+    publish_policy: PublishPolicy = PublishPolicy.REVIEW_REQUIRED
     enabled_types: set[str] = Field(default_factory=lambda: set(ALL_TYPES))
 
     enable_page_detector: bool = True
@@ -180,7 +180,6 @@ class MermaidConfig(BaseModel):
     score_weights: ScoreWeights = Field(default_factory=ScoreWeights)
 
     runtime_dir: Path | None = None
-    sidecar_root: Path | None = None
     render_timeout_seconds: float = 20.0
     max_mermaid_chars: int = 50_000
     max_mermaid_lines: int = 5_000
@@ -298,6 +297,12 @@ class MermaidConfig(BaseModel):
             return cls()
         raw = config.model_dump() if isinstance(config, BaseModel) else dict(config)
         prefix = "MermaidDiagramProcessor_"
+        removed_sidecar_keys = {"sidecar_root", f"{prefix}sidecar_root"}
+        if removed_sidecar_keys.intersection(raw):
+            raise ValueError(
+                "sidecar_root is not supported: document artifacts must remain in the "
+                "single atomic output transaction"
+            )
         known = set(cls.model_fields)
         selected = {key: value for key, value in raw.items() if key in known}
         selected.update(

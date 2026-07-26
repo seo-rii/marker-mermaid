@@ -36,6 +36,8 @@ parallel relations, and layout repair are not yet wired into the default engine.
 | `review_required` | Do not insert into Markdown; create sidecars/review data only |
 | `sidecar_only` | Do not insert into Markdown; create sidecars only |
 
+The alpha default is `review_required`. Automatic publication is an explicit opt-in until
+production-scale corpus results demonstrate the automatic-publication precision target.
 Under `sidecar_only`, saving a validated candidate to a sidecar records a successful result without
 publishing it or requesting review.
 
@@ -47,7 +49,7 @@ can be combined only with `review_required` or `sidecar_only`.
 | Name | Default | Description |
 | --- | --- | --- |
 | `mode` | `extended` | Safety/feature/budget preset |
-| `publish_policy` | `best_effort_validated` | Automatic Markdown publication policy |
+| `publish_policy` | `review_required` | Automatic Markdown publication policy |
 | `enabled_types` | All known types | Allowlist for typed/direct candidates |
 | `publish_min_score` | `0.50` | Minimum best-effort score |
 | `review_below_score` | `0.70` | Strict minimum score and review boundary |
@@ -71,6 +73,16 @@ can be combined only with `review_required` or `sidecar_only`.
 | `max_virtual_source_dimension` | `32768` | Maximum side length for panel/merge canvases |
 | `max_virtual_source_pixels` | `100000000` | Pixel budget for panel/merge canvases |
 | `max_views` | `8` | Maximum views passed to the VLM (`1`–`16`) |
+
+Runtime lookup is consistent across the CLI: an explicit `--runtime-dir` on `doctor` or
+`install-runtime` takes precedence over `runtime_dir` in `--config`, then
+`MARKER_MERMAID_RUNTIME_DIR`, then the automatic cache location. Validation and reconstruction use
+the same order without the command-only override.
+
+`sidecar_root` is not a supported option. Both its concise and Marker-prefixed forms fail closed:
+sidecars, source images, Markdown, and metadata must stay inside one whole-document atomic output
+transaction. A future external artifact backend will need an explicit cross-filesystem commit
+contract rather than a path-only setting.
 
 `write_ir`, `write_svg`, `write_png`, `write_alternatives`, and `write_provenance` control the
 creation of their respective sidecar artifacts. The selected `final.mmd`, `scores.json`,

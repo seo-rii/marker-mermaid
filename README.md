@@ -37,8 +37,9 @@ document conversion.
 
 ## Project status
 
-The default mode is `extended` and the default publication policy is
-`best_effort_validated`. The implementation includes the Phase 1–5 serializer and safety
+The default mode is `extended` and the alpha default publication policy is
+`review_required`. Automatic publication, including `best_effort_validated`, is an explicit
+opt-in. The implementation includes the Phase 1–5 serializer and safety
 baseline, but it does not claim complete semantic extraction for every type in the MMX-001
 specification.
 

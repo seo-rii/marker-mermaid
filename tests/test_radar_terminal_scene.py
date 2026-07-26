@@ -11,7 +11,7 @@ from PIL import Image
 
 import marker_mermaid.serializers_charts_flow as chart_flow_module
 from marker_mermaid.candidate_scene import typed_ir_semantic_texts, typed_ir_to_scene
-from marker_mermaid.config import MermaidConfig
+from marker_mermaid.config import MermaidConfig, PublishPolicy
 from marker_mermaid.engines import JsonFixtureEngine
 from marker_mermaid.models import (
     MAX_ID_CHARS,
@@ -33,6 +33,12 @@ from marker_mermaid.serializers_charts_flow import (
     serialize_radar,
 )
 from marker_mermaid.validation import CandidateValidator, NodeMermaidRuntime
+
+
+def _best_effort_config(**values: object) -> MermaidConfig:
+    values.setdefault("publish_policy", PublishPolicy.BEST_EFFORT_VALIDATED)
+    return MermaidConfig(**values)
+
 
 NATIVE_RADAR_IR = {
     "title": "Model comparison",
@@ -719,7 +725,7 @@ def test_native_radar_direct_component_provenance_can_pass_publication_gate() ->
             ),
         ],
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -790,7 +796,7 @@ def test_native_radar_rejection_retries_flowchart_in_same_candidate_slot() -> No
         ],
     )
     runtime = _RadarRejectingRuntime()
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,

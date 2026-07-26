@@ -6,7 +6,7 @@ import pytest
 from PIL import Image
 
 import marker_mermaid.pipeline as pipeline_module
-from marker_mermaid.config import MermaidConfig, Mode
+from marker_mermaid.config import MermaidConfig, Mode, PublishPolicy
 from marker_mermaid.engines import JsonFixtureEngine
 from marker_mermaid.models import (
     DiagramTypePrediction,
@@ -23,6 +23,12 @@ from marker_mermaid.serializers import (
     serialize_typed_ir_result,
 )
 from marker_mermaid.validation import CandidateValidator
+
+
+def _best_effort_config(**values: object) -> MermaidConfig:
+    values.setdefault("publish_policy", PublishPolicy.BEST_EFFORT_VALIDATED)
+    return MermaidConfig(**values)
+
 
 VENN_IR = {
     "sets": [
@@ -373,7 +379,7 @@ def _reconstruct_venn(
     evaluation_mode: Mode = Mode.EXTENDED,
 ) -> tuple[object, _VennRuntime]:
     runtime = _VennRuntime(reject_native=reject_native)
-    config = MermaidConfig(candidate_count=1, publish_min_score=0)
+    config = _best_effort_config(candidate_count=1, publish_min_score=0)
     config.mode = evaluation_mode
     active_evidence = evidence if evidence is not None else _venn_evidence()
     observation = EngineObservation(
@@ -1883,7 +1889,7 @@ def test_venn_native_repair_cannot_switch_to_an_intrinsic_fallback() -> None:
 
 def test_direct_venn_candidate_remains_review_only_without_typed_plan() -> None:
     runtime = _VennRuntime()
-    config = MermaidConfig(mode=Mode.MAXIMAL, candidate_count=1, publish_min_score=0)
+    config = _best_effort_config(mode=Mode.MAXIMAL, candidate_count=1, publish_min_score=0)
     observation = EngineObservation(
         prediction=DiagramTypePrediction(candidates=["venn"], scores=[1]),
         direct_candidates=[
@@ -1922,7 +1928,7 @@ def test_direct_venn_candidate_remains_review_only_without_typed_plan() -> None:
 
 def test_direct_venn_metadata_evidence_cannot_replace_a_typed_terminal_plan() -> None:
     runtime = _VennRuntime()
-    config = MermaidConfig(mode=Mode.MAXIMAL, candidate_count=1, publish_min_score=0)
+    config = _best_effort_config(mode=Mode.MAXIMAL, candidate_count=1, publish_min_score=0)
     observation = EngineObservation(
         prediction=DiagramTypePrediction(candidates=["venn"], scores=[1]),
         direct_candidates=[

@@ -12,7 +12,7 @@ from PIL import Image
 
 import marker_mermaid.serializers_charts_core as chart_core_module
 from marker_mermaid.candidate_scene import typed_ir_semantic_texts, typed_ir_to_scene
-from marker_mermaid.config import MermaidConfig
+from marker_mermaid.config import MermaidConfig, PublishPolicy
 from marker_mermaid.engines import JsonFixtureEngine
 from marker_mermaid.models import (
     DiagramTypePrediction,
@@ -36,6 +36,12 @@ from marker_mermaid.serializers_charts_core import (
     serialize_pie,
 )
 from marker_mermaid.validation import CandidateValidator, NodeMermaidRuntime
+
+
+def _best_effort_config(**values: object) -> MermaidConfig:
+    values.setdefault("publish_policy", PublishPolicy.BEST_EFFORT_VALIDATED)
+    return MermaidConfig(**values)
+
 
 NATIVE_PIE_IR = {
     "title": "Decision split",
@@ -462,7 +468,7 @@ def _reconstruct_pie(
     ocr_texts: list[str] | None = None,
 ) -> tuple[object, _PieRuntime]:
     runtime = _PieRuntime(reject_native=reject_native)
-    config = MermaidConfig(candidate_count=1, publish_min_score=0)
+    config = _best_effort_config(candidate_count=1, publish_min_score=0)
     result = ReconstructionPipeline(
         config,
         [

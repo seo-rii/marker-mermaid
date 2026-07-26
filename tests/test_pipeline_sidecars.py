@@ -44,6 +44,11 @@ from marker_mermaid.vector import (
 )
 
 
+def _best_effort_config(**values: object) -> MermaidConfig:
+    values.setdefault("publish_policy", PublishPolicy.BEST_EFFORT_VALIDATED)
+    return MermaidConfig(**values)
+
+
 class _ExplosiveList(list):
     def __len__(self):
         raise AssertionError("non-canonical collection length must not be inspected")
@@ -103,7 +108,7 @@ def observation():
 
 
 def test_pipeline_selects_valid_candidate_and_respects_budget(fake_runtime):
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     pipeline = ReconstructionPipeline(
         config,
         [JsonFixtureEngine(observation())],
@@ -159,7 +164,7 @@ def test_pipeline_publishes_the_exact_per_record_evidence_reference_limit(fake_r
             )
         ],
     )
-    config = MermaidConfig(
+    config = _best_effort_config(
         candidate_count=1,
         enable_fusion=False,
         enable_generic_scene_ir=False,
@@ -202,7 +207,7 @@ def test_pipeline_publishes_and_writes_sidecars_after_vector_budget_truncation(
             ),
         )
 
-    config = MermaidConfig(
+    config = _best_effort_config(
         candidate_count=1,
         enable_typed_ir=False,
         enable_generic_scene_ir=True,
@@ -258,7 +263,7 @@ def test_vector_provenance_overflow_does_not_block_sibling_publication_or_sideca
             ),
         )
 
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [
@@ -346,7 +351,7 @@ def test_pipeline_admits_each_engine_evidence_batch_atomically_under_global_prov
         def observe(self, _context):
             return self.result
 
-    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    config = _best_effort_config(candidate_count=1, enable_fusion=False)
     result = ReconstructionPipeline(
         config,
         [
@@ -407,7 +412,7 @@ def test_pipeline_isolates_initial_evidence_provenance_overflow_atomically(
             source_block_ids=["source", "b"],
         ),
     ]
-    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    config = _best_effort_config(candidate_count=1, enable_fusion=False)
     result = ReconstructionPipeline(
         config,
         [CaptureEngine()],
@@ -457,7 +462,7 @@ def test_pipeline_revalidates_mutated_custom_engine_evidence_provenance_atomical
         def observe(self, _context):
             return oversized
 
-    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    config = _best_effort_config(candidate_count=1, enable_fusion=False)
     result = ReconstructionPipeline(
         config,
         [CustomEngine(), JsonFixtureEngine(observation())],
@@ -532,7 +537,7 @@ def test_pipeline_publishes_only_canonical_fused_scene_evidence_unions(
     engines[1].name = "right"
     engines[1].fusion_source = "vlm"
     all_ids = [*left_ids, *right_ids]
-    config = MermaidConfig(
+    config = _best_effort_config(
         candidate_count=1,
         enable_typed_ir=False,
         enable_generic_scene_ir=True,
@@ -624,7 +629,7 @@ def test_pipeline_revalidates_internal_fused_payload_before_generation(
         return invalid_fused
 
     monkeypatch.setattr(FusionEngine, "fuse", invalid_fuse)
-    config = MermaidConfig(
+    config = _best_effort_config(
         candidate_count=1,
         enable_generic_scene_ir=False,
         enable_direct_mermaid=False,
@@ -690,7 +695,7 @@ def test_pipeline_ocr_recall_uses_generated_labels_and_spatial_occurrence_max(fa
             ),
         ],
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -739,7 +744,7 @@ def test_pipeline_ocr_recall_includes_generated_relation_and_group_labels(fake_r
             )
         ],
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -762,7 +767,7 @@ def test_pipeline_deduplicates_bboxless_evidence_occurrences(fake_runtime):
         VisualEvidence(id="ocr-a", kind="ocr_token", text="Start"),
         VisualEvidence(id="ocr-b", kind="vector_text", text="Start"),
     ]
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -780,7 +785,7 @@ def test_pipeline_deduplicates_bboxless_evidence_occurrences(fake_runtime):
 
 def test_pipeline_marks_oversized_ocr_reference_scoring_unavailable(fake_runtime, monkeypatch):
     monkeypatch.setattr("marker_mermaid.pipeline._MAX_OCR_REFERENCE_CHARS", 3)
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -804,7 +809,7 @@ def test_pipeline_marks_oversized_generated_semantic_labels_unavailable(fake_run
     oversized = observation()
     oversized.typed_candidates[0].ir["nodes"][0]["label"] = "Very long generated label"
     monkeypatch.setattr("marker_mermaid.pipeline._MAX_OCR_REFERENCE_CHARS", 10)
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -830,7 +835,7 @@ def test_pipeline_isolates_generated_scene_conversion_failure(fake_runtime, monk
         raise ValueError("oversized generated scene")
 
     monkeypatch.setattr("marker_mermaid.pipeline.typed_ir_to_scene", fail_scene_conversion)
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -854,7 +859,7 @@ def test_pipeline_isolates_generated_semantic_text_projection_failure(fake_runti
         raise ValueError("invalid semantic projection")
 
     monkeypatch.setattr("marker_mermaid.pipeline.typed_ir_semantic_texts", fail_text_projection)
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -910,7 +915,7 @@ def test_pipeline_isolates_generated_semantic_text_projection_failure(fake_runti
 def test_automatic_policy_selects_publishable_candidate_before_higher_aggregate(
     fake_runtime, policy, sparse_semantic, rich_semantic
 ):
-    config = MermaidConfig(publish_policy=policy)
+    config = _best_effort_config(publish_policy=policy)
     sparse_scores = {"syntax": 1.0, "render": 1.0, **sparse_semantic}
     rich_scores = {"syntax": 1.0, "render": 1.0, **rich_semantic}
     sparse = MermaidCandidate(
@@ -945,7 +950,7 @@ def test_automatic_policy_selects_publishable_candidate_before_higher_aggregate(
 
 @pytest.mark.parametrize("policy", [PublishPolicy.REVIEW_REQUIRED, PublishPolicy.SIDECAR_ONLY])
 def test_nonautomatic_policy_preserves_aggregate_candidate_order(fake_runtime, policy):
-    config = MermaidConfig(publish_policy=policy)
+    config = _best_effort_config(publish_policy=policy)
     high = MermaidCandidate(
         candidate_id="higher-total",
         generation_method="direct_mermaid",
@@ -974,7 +979,7 @@ def test_nonautomatic_policy_preserves_aggregate_candidate_order(fake_runtime, p
 
 
 def test_sidecar_only_reconstruction_succeeds_without_requesting_review(fake_runtime):
-    config = MermaidConfig(publish_policy=PublishPolicy.SIDECAR_ONLY)
+    config = _best_effort_config(publish_policy=PublishPolicy.SIDECAR_ONLY)
     result = ReconstructionPipeline(
         config,
         [JsonFixtureEngine(observation())],
@@ -994,7 +999,7 @@ def test_sidecar_only_reconstruction_succeeds_without_requesting_review(fake_run
 
 @pytest.mark.parametrize(("scores", "expected_id"), [((0.9, 0.8), "first"), ((0.2, 0.1), "first")])
 def test_same_publication_class_keeps_aggregate_order(fake_runtime, scores, expected_id):
-    config = MermaidConfig()
+    config = _best_effort_config()
     candidates = [
         MermaidCandidate(
             candidate_id=candidate_id,
@@ -1020,7 +1025,7 @@ def test_generated_node_provenance_gate_holds_unattributed_typed_nodes(fake_runt
     source = observation()
     source.typed_candidates[0].ir["nodes"].append({"id": "C", "label": "Invented"})
     source.typed_candidates[0].ir["edges"].append({"source": "B", "target": "C"})
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -1079,7 +1084,7 @@ def test_shared_node_evidence_cannot_publish_an_organization_candidate():
             )
         ],
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -1134,7 +1139,7 @@ def test_marker_vlm_omitted_prior_cannot_satisfy_publication_provenance(fake_run
         VisualEvidence(id="selected-edit", kind="user_edit", text="Confirmed"),
         VisualEvidence(id="omitted-secret", kind="ocr_token", text="Payment"),
     ]
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [
@@ -1202,7 +1207,7 @@ def test_marker_vlm_self_declared_evidence_is_review_only(fake_runtime):
             ],
         ).model_dump(mode="json")
 
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [MarkerStructuredVLMEngine(service, enabled_types={"flowchart"})],
@@ -1252,7 +1257,7 @@ def test_pipeline_fusion_receives_only_marker_prompt_selected_prior(
             evidence=[VisualEvidence(id="self-declared", kind="vlm_observation", score=1.0)],
         ).model_dump(mode="json")
 
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     ReconstructionPipeline(
         config,
         [
@@ -1309,7 +1314,7 @@ def test_fused_direct_candidate_cannot_inherit_later_engine_evidence(fake_runtim
                 ],
             )
 
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [
@@ -1334,7 +1339,7 @@ def test_prompt_budget_notice_survives_prediction_only_result_and_sidecar(
             prediction=DiagramTypePrediction(candidates=["flowchart"], scores=[1.0])
         ).model_dump(mode="json")
 
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [
@@ -1374,7 +1379,7 @@ def test_prompt_budget_notice_survives_provider_failure_and_sidecar(
     def service(**_kwargs):
         raise TimeoutError("provider timeout")
 
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [MarkerStructuredVLMEngine(service, enabled_types={"flowchart"})],
@@ -1436,7 +1441,7 @@ def test_attributed_timeline_typed_candidate_can_pass_extended_provenance_gate()
             )
         ],
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -1515,7 +1520,7 @@ def test_c4_pipeline_scores_only_architecture_fallback_visible_labels():
             ),
         ],
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -1588,7 +1593,7 @@ def test_eventmodeling_pipeline_scores_lane_typed_frame_and_relation_labels():
             ),
         ],
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -1698,7 +1703,7 @@ def test_experimental_typed_pipeline_scores_emitted_visible_text(
             ),
         ],
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -1804,7 +1809,7 @@ def test_railroad_generated_scene_controls_publication_review_and_sidecar(
             ),
         ],
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -1984,7 +1989,7 @@ def test_eventmodeling_and_zenuml_generated_scene_controls_provenance_and_sideca
             ),
         ],
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -2171,7 +2176,7 @@ def test_organization_and_data_lineage_generated_scene_control_provenance_and_si
             VisualEvidence(id="line-scene", kind="line_segment"),
         ],
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -2283,7 +2288,7 @@ def test_wardley_layout_score_uses_native_xy_instead_of_source_bbox_metadata():
             VisualEvidence(id="ocr-b", kind="ocr_token", text="B", bbox=(90, 90, 100, 100)),
         ],
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -2364,7 +2369,7 @@ def test_cynefin_generated_scene_controls_provenance_publication_and_sidecar(
         typed_candidates=[TypedIRCandidate(diagram_type="cynefin", ir=ir)],
         evidence=evidence,
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -2497,7 +2502,7 @@ def test_cynefin_native_rejection_retries_explicit_flowchart_in_same_candidate_s
         evidence=evidence,
     )
     runtime = CynefinRejectingRuntime()
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -2617,7 +2622,7 @@ def test_cynefin_fixed_runtime_template_requires_review_even_above_provenance_th
         typed_candidates=[TypedIRCandidate(diagram_type="cynefin", ir=ir)],
         evidence=evidence,
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -2653,7 +2658,7 @@ def test_direct_structural_candidate_without_attribution_requires_review(fake_ru
                 ],
             )
 
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [DirectOnlyEngine()],
@@ -2698,7 +2703,7 @@ def test_direct_unquoted_flowchart_labels_use_validated_svg_for_ocr_recall() -> 
         def close(self):
             pass
 
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [DirectOnlyEngine()],
@@ -2730,7 +2735,7 @@ def test_candidate_budget_is_shared_fairly_across_engines(fake_runtime):
                 ],
             )
 
-    config = MermaidConfig(candidate_count=2)
+    config = _best_effort_config(candidate_count=2)
     result = ReconstructionPipeline(
         config,
         [JsonFixtureEngine(observation()), DirectEngine()],
@@ -2780,7 +2785,7 @@ def test_direct_accessibility_augmentation_is_discarded_on_runtime_type_drift():
         def close(self):
             pass
 
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [DirectEngine()],
@@ -2806,7 +2811,7 @@ def test_typed_accessibility_enrichment_is_revalidated_before_serialization(
 
     monkeypatch.setattr(pipeline_module, "enrich_accessibility_ir", invalid_enrichment)
     monkeypatch.setattr(pipeline_module, "serialize_typed_ir_result", forbidden_serializer)
-    config = MermaidConfig(
+    config = _best_effort_config(
         candidate_count=1,
         enable_fusion=False,
         enable_generic_scene_ir=False,
@@ -2841,7 +2846,7 @@ def test_pipeline_preserves_requested_type_when_serializer_falls_back(fake_runti
             )
         ],
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -2871,7 +2876,7 @@ def test_direct_mermaid_is_reclassified_when_runtime_detects_another_type(fake_r
                 ],
             )
 
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [MislabeledDirectEngine()],
@@ -2899,7 +2904,7 @@ def test_typed_serializer_runtime_type_mismatch_fails_the_render_gate():
         def close(self):
             pass
 
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [JsonFixtureEngine(observation())],
@@ -2946,7 +2951,7 @@ def test_native_runtime_rejection_retries_declared_portable_fallback():
         ],
     )
     runtime = NativeRejectingRuntime()
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -3040,7 +3045,7 @@ def test_wardley_native_rejection_retries_loss_disclosed_plain_flowchart() -> No
         ],
     )
     runtime = WardleyRejectingRuntime()
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -3162,7 +3167,7 @@ def _reconstruct_packet_candidate(
     ocr_texts: list[str] | None = None,
 ) -> tuple[ReconstructionResult, _PacketRuntime]:
     runtime = _PacketRuntime(reject_native=reject_native)
-    active_config = config or MermaidConfig(candidate_count=1)
+    active_config = config or _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         active_config,
         [
@@ -3304,7 +3309,7 @@ def test_packet_range_swap_is_rejected_even_when_the_global_numeric_multiset_mat
         fields,
         evidence,
         reject_native=reject_native,
-        config=MermaidConfig(candidate_count=1, publish_min_score=0),
+        config=_best_effort_config(candidate_count=1, publish_min_score=0),
         ocr_texts=["Version 0 3 IHL 4 7"],
     )
 
@@ -3558,7 +3563,7 @@ def test_direct_packet_candidate_requires_typed_field_association() -> None:
             )
         ],
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [JsonFixtureEngine(observation)],
@@ -3647,7 +3652,7 @@ def test_special_hierarchy_missing_id_collision_cannot_inflate_provenance(
             VisualEvidence(id="ocr-first", kind="ocr_token", text="First"),
         ],
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -3732,7 +3737,7 @@ def test_nested_organization_runtime_rejection_retries_flowchart_fallback():
         ],
     )
     runtime = TreeViewRejectingRuntime()
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -3894,7 +3899,7 @@ def test_architecture_family_runtime_rejection_retries_flowchart_in_same_candida
 ):
     case = _ARCHITECTURE_RUNTIME_CASES[diagram_type]
     runtime = _ArchitectureRejectingRuntime()
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -3979,7 +3984,7 @@ def test_gitgraph_generated_scene_controls_default_extended_provenance_gate(
             )
         ],
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -4085,7 +4090,7 @@ def test_planning_runtime_rejection_retries_flowchart_in_same_candidate_slot(
     )
     assert " ".join(text for _evidence_id, text in node_evidence) == ocr_text
     runtime = NativeRejectingRuntime()
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -4113,7 +4118,7 @@ def test_runtime_fallback_validator_exception_is_isolated_to_the_candidate():
     runtime = _ArchitectureRejectingRuntime(
         fallback_error=RuntimeError("fallback validator exploded")
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -4156,7 +4161,7 @@ def test_runtime_fallback_validator_exception_is_isolated_to_the_candidate():
 @pytest.mark.parametrize("terminal_type", ["sequence", None])
 def test_runtime_fallback_rejects_wrong_or_missing_terminal_runtime_type(terminal_type):
     runtime = _ArchitectureRejectingRuntime(terminal_type=terminal_type)
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -4224,7 +4229,7 @@ def test_runtime_fallback_does_not_revalidate_an_identical_portable_candidate():
         ],
     )
     runtime = RejectingRuntime()
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -4266,7 +4271,7 @@ def test_numeric_diagram_without_source_numeric_evidence_requires_review():
         def close(self):
             pass
 
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [PieEngine()],
@@ -4335,7 +4340,7 @@ def test_numeric_diagram_with_conflicting_source_values_requires_review():
         def close(self):
             pass
 
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [PieEngine()],
@@ -4427,7 +4432,7 @@ def test_numeric_reference_preserves_occurrences_without_recounting_spatial_dupl
         def close(self):
             pass
 
-    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    config = _best_effort_config(candidate_count=1, enable_fusion=False)
     result = ReconstructionPipeline(
         config,
         [RepeatedNumberEngine()],
@@ -4470,7 +4475,7 @@ def test_repeated_source_number_missing_from_generated_code_is_penalized() -> No
         def close(self):
             pass
 
-    config = MermaidConfig(
+    config = _best_effort_config(
         candidate_count=1,
         enable_fusion=False,
         publish_min_score=0.7,
@@ -4519,7 +4524,7 @@ def test_direct_runtime_numeric_type_drift_uses_validated_type_for_scoring() -> 
         def close(self):
             pass
 
-    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    config = _best_effort_config(candidate_count=1, enable_fusion=False)
     result = ReconstructionPipeline(
         config,
         [MislabeledFlowchartEngine()],
@@ -4567,7 +4572,7 @@ def test_direct_runtime_structural_type_drift_drops_requested_numeric_gate() -> 
         def close(self):
             pass
 
-    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    config = _best_effort_config(candidate_count=1, enable_fusion=False)
     result = ReconstructionPipeline(
         config,
         [MislabeledPieEngine()],
@@ -4629,7 +4634,7 @@ def test_quadrant_without_record_local_evidence_remains_review_only(
         prediction=DiagramTypePrediction(candidates=[diagram_type], scores=[1.0]),
         typed_candidates=[TypedIRCandidate(diagram_type=diagram_type, ir=ir)],
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [JsonFixtureEngine(observation)],
@@ -4709,7 +4714,7 @@ def test_journey_scores_use_independent_source_numeric_gate(
             )
         ],
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
 
     result = ReconstructionPipeline(
         config,
@@ -4753,7 +4758,7 @@ def test_geometry_evidence_is_available_to_later_engines(fake_runtime):
             assert "vector_overlay" in context.views
             return observation()
 
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [EvidenceEngine(), CapturingEngine()],
@@ -4767,7 +4772,7 @@ def test_unlabeled_geometry_only_candidate_requires_review(fake_runtime):
         canvas_size=(100, 50),
         contours=(ContourObservation(bbox=(10, 10, 40, 40), confidence=0.9),),
     )
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [GeometryEngine(detector=lambda image: geometry)],
@@ -4787,7 +4792,7 @@ def test_engine_failure_is_isolated(fake_runtime):
         def observe(self, context):
             raise RuntimeError("offline")
 
-    config = MermaidConfig()
+    config = _best_effort_config()
     pipeline = ReconstructionPipeline(
         config,
         [Broken(), JsonFixtureEngine(observation())],
@@ -4806,7 +4811,7 @@ def test_validator_failure_is_isolated():
         def close(self):
             pass
 
-    config = MermaidConfig()
+    config = _best_effort_config()
     result = ReconstructionPipeline(
         config,
         [JsonFixtureEngine(observation())],
@@ -4817,7 +4822,7 @@ def test_validator_failure_is_isolated():
 
 
 def test_sidecar_tree_and_markdown(tmp_path, fake_runtime):
-    config = MermaidConfig(candidate_count=2)
+    config = _best_effort_config(candidate_count=2)
     result = ReconstructionPipeline(
         config,
         [JsonFixtureEngine(observation())],
@@ -5386,7 +5391,7 @@ def test_sidecar_rejects_torn_snapshot_created_by_deepcopy_side_effect(
     tmp_path,
     fake_runtime,
 ):
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [JsonFixtureEngine(observation())],
@@ -5424,7 +5429,7 @@ def test_sidecar_rejects_typed_ir_mutation_during_deepcopy_snapshot(
     tmp_path,
     fake_runtime,
 ):
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [JsonFixtureEngine(observation())],
@@ -5461,7 +5466,7 @@ def test_sidecar_rejects_prompt_notice_mutation_during_deepcopy_snapshot(
     tmp_path,
     fake_runtime,
 ):
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [JsonFixtureEngine(observation())],
@@ -5510,7 +5515,7 @@ def test_sidecar_rejects_pre_mutated_prompt_budget_notice(
     tmp_path,
     fake_runtime,
 ):
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [JsonFixtureEngine(observation())],
@@ -5547,7 +5552,7 @@ def test_sidecar_rejects_pre_mutated_prompt_budget_notice(
 
 
 def test_sidecar_write_flags_are_honored(tmp_path, fake_runtime):
-    config = MermaidConfig(candidate_count=2)
+    config = _best_effort_config(candidate_count=2)
     result = ReconstructionPipeline(
         config,
         [JsonFixtureEngine(observation())],
@@ -5591,7 +5596,7 @@ def test_pipeline_isolates_non_plain_source_collections_without_touching_them(fa
             )
 
     hostile = _ExplosiveList()
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [CaptureEngine()],
@@ -5644,7 +5649,7 @@ def test_pipeline_drops_each_oversized_source_collection_as_one_unit(
                 prediction=DiagramTypePrediction(candidates=["unknown"], scores=[1.0])
             )
 
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [CaptureEngine()],
@@ -5692,7 +5697,7 @@ def test_pipeline_canonicalizes_initial_evidence_without_model_dump(
         raise AssertionError("live evidence model_dump must not be used")
 
     monkeypatch.setattr(VisualEvidence, "model_dump", forbidden_model_dump)
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [],
@@ -5731,7 +5736,7 @@ def test_pipeline_drops_aggregate_oversized_evidence_and_ocr_collections(
                 prediction=DiagramTypePrediction(candidates=["unknown"], scores=[1.0])
             )
 
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [CaptureEngine()],
@@ -5774,7 +5779,7 @@ def test_pipeline_reports_global_engine_evidence_limit_only_once(monkeypatch, fa
                 evidence=[VisualEvidence(id=self.evidence_id, kind="contour")],
             )
 
-    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    config = _best_effort_config(candidate_count=1, enable_fusion=False)
     result = ReconstructionPipeline(
         config,
         [
@@ -5817,7 +5822,7 @@ def test_engine_name_cannot_spoof_internal_fusion_authority(fake_runtime):
                 ],
             )
 
-    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    config = _best_effort_config(candidate_count=1, enable_fusion=False)
     result = ReconstructionPipeline(
         config,
         [SpoofedFusionEngine()],
@@ -5864,7 +5869,7 @@ def test_pipeline_isolates_source_mapping_subclass_without_running_hooks(fake_ru
                 prediction=DiagramTypePrediction(candidates=["unknown"], scores=[1.0])
             )
 
-    config = MermaidConfig(candidate_count=1)
+    config = _best_effort_config(candidate_count=1)
     result = ReconstructionPipeline(
         config,
         [CaptureEngine()],
@@ -5927,7 +5932,7 @@ def test_pipeline_restores_plain_repair_context_after_candidate_engine_mutation(
             captured["evidence"] = [item.id for item in context.evidence]
             return None
 
-    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    config = _best_effort_config(candidate_count=1, enable_fusion=False)
     result = ReconstructionPipeline(
         config,
         [MutatingEngine()],
@@ -6026,7 +6031,7 @@ def test_each_candidate_engine_receives_an_independent_authoritative_context(fak
                 ],
             )
 
-    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    config = _best_effort_config(candidate_count=1, enable_fusion=False)
     result = ReconstructionPipeline(
         config,
         [MutatingEngine(), CapturingEngine()],
@@ -6082,7 +6087,7 @@ def test_pipeline_caps_reconstruction_global_evidence_characters(
                 ],
             )
 
-    config = MermaidConfig(candidate_count=1, enable_fusion=False)
+    config = _best_effort_config(candidate_count=1, enable_fusion=False)
     result = ReconstructionPipeline(
         config,
         [
@@ -6117,7 +6122,7 @@ def test_pipeline_canonicalizes_typed_candidates_without_live_model_dump(
         raise AssertionError("live typed candidate model_dump must not be used")
 
     monkeypatch.setattr(TypedIRCandidate, "model_dump", forbidden_model_dump)
-    config = MermaidConfig(
+    config = _best_effort_config(
         candidate_count=2,
         enable_fusion=False,
         enable_generic_scene_ir=False,
@@ -6146,7 +6151,7 @@ def test_pipeline_rejects_non_plain_typed_candidate_collection_without_hooks(
         def observe(self, _context):
             return source
 
-    config = MermaidConfig(
+    config = _best_effort_config(
         candidate_count=1,
         enable_fusion=False,
         enable_generic_scene_ir=False,
@@ -6183,7 +6188,7 @@ def test_pipeline_rejects_hostile_typed_candidate_keys_without_hooks(fake_runtim
         def observe(self, _context):
             return source
 
-    config = MermaidConfig(
+    config = _best_effort_config(
         candidate_count=1,
         enable_fusion=False,
         enable_generic_scene_ir=False,
@@ -6232,7 +6237,7 @@ def test_pipeline_charges_invalid_typed_ir_against_the_aggregate_budget(
         "MAX_OBSERVATION_TYPED_IR_JSON_BYTES",
         invalid_size + valid_size - 1,
     )
-    config = MermaidConfig(
+    config = _best_effort_config(
         candidate_count=2,
         enable_fusion=False,
         enable_generic_scene_ir=False,
@@ -6264,7 +6269,7 @@ def test_pipeline_rejects_mutated_diagram_type_before_typed_ir_scan(
         return original_snapshot(value)
 
     monkeypatch.setattr(pipeline_module, "canonical_typed_ir_snapshot", recording_snapshot)
-    config = MermaidConfig(
+    config = _best_effort_config(
         candidate_count=1,
         enable_fusion=False,
         enable_generic_scene_ir=False,
@@ -6329,7 +6334,7 @@ def test_large_source_keeps_full_coordinate_canvas_across_engines_and_fusion(
                 ],
             )
 
-    config = MermaidConfig(candidate_count=1, max_image_dimension=128)
+    config = _best_effort_config(candidate_count=1, max_image_dimension=128)
     result = ReconstructionPipeline(
         config,
         [EvidenceEngine(), CapturingEngine()],

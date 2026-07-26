@@ -9,7 +9,7 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
-from marker_mermaid.config import MermaidConfig, SecurityProfile
+from marker_mermaid.config import MermaidConfig, PublishPolicy, SecurityProfile
 from marker_mermaid.models import MermaidCandidate, PromptBudgetNotice, ReconstructionResult
 from marker_mermaid.pipeline import certify_publication_result
 from marker_mermaid.protocols import RuntimeResult
@@ -46,7 +46,10 @@ def _seal_test_candidate(candidate: MermaidCandidate) -> MermaidCandidate:
 def _seal_test_result(result: ReconstructionResult) -> ReconstructionResult:
     assert result.selected is not None
     result.selected.scores = {"ocr_recall": 0.8}
-    assert certify_publication_result(result, MermaidConfig())
+    assert certify_publication_result(
+        result,
+        MermaidConfig(publish_policy=PublishPolicy.BEST_EFFORT_VALIDATED),
+    )
     return result
 
 
