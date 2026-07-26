@@ -9,9 +9,169 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  unit:
+    name: Unit (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install development dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[vision,dev]'
+
+      - name: Lint
+        if: matrix.python-version == '3.11'
+        run: ruff check .
+
+      - name: Run unit tests with branch coverage
+        if: matrix.python-version == '3.11'
+        run: >-
+          pytest -q -m "not integration"
+          --cov=marker_mermaid
+          --cov-branch
+          --cov-fail-under=85
+          --cov-report=term-missing
+          --cov-report=xml
+
+      - name: Run unit tests
+        if: matrix.python-version != '3.11'
+        run: pytest -q -m "not integration"
+
+      - name: Upload coverage baseline
+        if: always() && matrix.python-version == '3.11'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-coverage
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  pillow-compatibility:
+    name: Pillow compatibility (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: minimum
+            pillow_spec: Pillow==10.0.*
+          - name: latest
+            pillow_spec: Pillow
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install the selected Pillow compatibility target
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]' '${{ matrix.pillow_spec }}'
+          python -c "import PIL; print(PIL.__version__)"
+
+      - name: Run lazy adapter and image snapshot regressions
+        run: |
+          pytest -q tests/test_pillow_compat.py tests/test_engines.py \
+            -k "pillow or snapshot or view"
+          pytest -q \
+            tests/test_pipeline_sidecars.py::test_repair_image_snapshot_checks_exact_mode_before_equality_hooks
+
+  mermaid-integration:
+    name: Mermaid and Chromium integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MARKER_MERMAID_RUNTIME_DIR: ${{ runner.temp }}/marker-mermaid-runtime
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Node 20
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: src/marker_mermaid/runtime/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install project and pinned browser runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[vision,dev]'
+          marker-mermaid install-runtime
+          marker-mermaid doctor
+
+      - name: Run real Mermaid grammar, security, and resource fixtures
+        run: |
+          pytest -q -m integration \
+            --ignore=tests/test_marker_compat.py \
+            --ignore=tests/test_publication_receipt.py \
+            --ignore=tests/test_publication_snapshot.py \
+            --ignore=tests/test_quadrant_terminal_pipeline.py \
+            --ignore=tests/test_render_artifact_limits.py
+          pytest -q \
+            tests/test_publication_snapshot.py::test_markdown_uses_a_longer_fence_for_backtick_lines_inside_mermaid_labels
+
+  marker-compatibility:
+    name: Marker 1.10.2 compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up isolated Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install the pinned Marker compatibility environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[marker,vision,dev]'
+          python -c "import importlib.metadata; assert importlib.metadata.version('marker-pdf') == '1.10.2'"
+
+      - name: Run pinned Marker compatibility fixtures
+        run: |
+          pytest -q -m integration -k marker
+          pytest -q \
+            tests/test_quadrant_terminal_pipeline.py::test_best_effort_grade_a_quadrant_is_disclosed_as_experimental_markdown
+
+  atomic-output:
+    name: Atomic output (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
 
     steps:
       - name: Check out repository
@@ -25,14 +185,58 @@ jobs:
 
       - name: Install development dependencies
         run: |
-          python -m pip install --upgrade pip build
+          python -m pip install --upgrade pip
           python -m pip install -e '.[vision,dev]'
 
-      - name: Lint
-        run: ruff check .
+      - name: Run document and review-store atomicity tests
+        run: pytest -q tests/test_output.py tests/test_review_store.py
 
-      - name: Run non-browser tests
-        run: pytest -q -m "not integration"
+      - name: Run descriptor-anchored sidecar race tests
+        run: >-
+          pytest -q tests/test_pipeline_sidecars.py
+          -k "sidecar_atomic_publish or sidecar_no_replace or
+          sidecar_rejects_symlinked or sidecar_rechecks or
+          sidecar_anchors or sidecar_publish_fails"
 
-      - name: Build source and wheel distributions
-        run: python -m build
+  release-smoke:
+    name: Wheel installation smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MARKER_MERMAID_RUNTIME_DIR: ${{ runner.temp }}/marker-mermaid-wheel-runtime
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Node 20
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: src/marker_mermaid/runtime/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Build distributions
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Install and exercise the wheel in a fresh environment
+        run: |
+          SMOKE_VENV="${RUNNER_TEMP}/marker-mermaid-wheel-venv"
+          SMOKE_OUTPUT="${RUNNER_TEMP}/marker-mermaid-wheel-output"
+          python -m venv "${SMOKE_VENV}"
+          "${SMOKE_VENV}/bin/python" -m pip install --upgrade pip
+          "${SMOKE_VENV}/bin/python" -m pip install dist/*.whl
+          "${SMOKE_VENV}/bin/marker-mermaid" install-runtime
+          "${SMOKE_VENV}/bin/marker-mermaid" doctor
+          "${SMOKE_VENV}/bin/marker-mermaid" validate tests/fixtures/smoke.mmd
+          "${SMOKE_VENV}/bin/marker-mermaid" reconstruct examples/flowchart.pbm \
+            --fixture examples/flowchart-observation.json \
+            --output "${SMOKE_OUTPUT}"
