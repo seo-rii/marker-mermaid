@@ -291,9 +291,7 @@ def _signal_runtime_process(
             raise
 
 
-def _close_runtime_process(
-    process: subprocess.Popen[bytes], process_group_id: int | None
-) -> None:
+def _close_runtime_process(process: subprocess.Popen[bytes], process_group_id: int | None) -> None:
     """Keep the leader waitable until every signal to its owned group is sent."""
     owned = True
 
@@ -344,17 +342,14 @@ class NodeMermaidRuntime(MermaidRuntime):
     ):
         if os.name != "posix":
             raise RuntimeError(
-                "the Mermaid browser runtime supports POSIX platforms only "
-                "(Linux and macOS)"
+                "the Mermaid browser runtime supports POSIX platforms only (Linux and macOS)"
             )
         if not hasattr(os, "waitid"):
             if sys.platform != "darwin":
                 raise RuntimeError("runtime cleanup requires non-reaping waitid with WNOWAIT")
             _darwin_waitid()
         self.runtime_dir = (
-            normalize_runtime_dir(runtime_dir)
-            if runtime_dir is not None
-            else default_runtime_dir()
+            normalize_runtime_dir(runtime_dir) if runtime_dir is not None else default_runtime_dir()
         )
         if render_limits is not None and type(render_limits) is not RenderArtifactLimits:
             raise TypeError("render_limits must be an exact RenderArtifactLimits")
@@ -406,9 +401,7 @@ class NodeMermaidRuntime(MermaidRuntime):
         self._stderr_buffer.clear()
         self._stderr_truncated = False
         assert (
-            process.stdin is not None
-            and process.stdout is not None
-            and process.stderr is not None
+            process.stdin is not None and process.stdout is not None and process.stderr is not None
         )
         os.set_blocking(process.stdin.fileno(), False)
         os.set_blocking(process.stdout.fileno(), False)
@@ -441,8 +434,7 @@ class NodeMermaidRuntime(MermaidRuntime):
                         False,
                         False,
                         error=(
-                            "Mermaid runtime could not start; run `marker-mermaid doctor`: "
-                            f"{exc}"
+                            f"Mermaid runtime could not start; run `marker-mermaid doctor`: {exc}"
                         ),
                     )
             self._next_id += 1
@@ -470,6 +462,34 @@ class NodeMermaidRuntime(MermaidRuntime):
             selector.register(process.stderr, selectors.EVENT_READ, "stderr")
             try:
                 while time.monotonic() < deadline:
+                    if sys.platform == "darwin":
+                        # Node inherits stdout from the Darwin memory guardian.
+                        # A surviving child must not supply a successful response
+                        # after that guardian has died and enforcement has stopped.
+                        try:
+                            guardian_exited = _runtime_worker_exit_code(process) is not None
+                        except ChildProcessError:
+                            guardian_exited = True
+                        if guardian_exited:
+                            try:
+                                stderr_chunk = os.read(process.stderr.fileno(), 65_536)
+                            except (BlockingIOError, OSError):
+                                stderr_chunk = b""
+                            remaining = MAX_RUNTIME_STDERR_BYTES - len(self._stderr_buffer)
+                            self._stderr_buffer.extend(stderr_chunk[: max(0, remaining)])
+                            detail = " ".join(
+                                self._stderr_buffer.decode("utf-8", errors="replace").split()
+                            )
+                            self.close()
+                            return RuntimeResult(
+                                False,
+                                False,
+                                error=(
+                                    "Mermaid runtime memory guardian exited unexpectedly; "
+                                    "run `marker-mermaid doctor`"
+                                    + (f": {detail}" if detail else "")
+                                ),
+                            )
                     while b"\n" in self._stdout_buffer:
                         raw_line, _, remainder = self._stdout_buffer.partition(b"\n")
                         self._stdout_buffer = bytearray(remainder)
@@ -516,9 +536,7 @@ class NodeMermaidRuntime(MermaidRuntime):
                             return RuntimeResult(
                                 False,
                                 False,
-                                error=(
-                                    "Mermaid runtime returned an invalid PNG omission reason"
-                                ),
+                                error=("Mermaid runtime returned an invalid PNG omission reason"),
                             )
                         encoded_png = payload.get("png")
                         if encoded_png is not None and png_omitted_reason is not None:
@@ -553,6 +571,12 @@ class NodeMermaidRuntime(MermaidRuntime):
                                 False,
                                 error=f"Mermaid runtime returned invalid PNG data: {exc}",
                             )
+                        if sys.platform == "darwin":
+                            try:
+                                if _runtime_worker_exit_code(process) is not None:
+                                    continue
+                            except ChildProcessError:
+                                continue
                         return RuntimeResult(
                             syntax_valid=True,
                             render_valid=True,
@@ -561,15 +585,18 @@ class NodeMermaidRuntime(MermaidRuntime):
                             png=png,
                             png_omitted_reason=png_omitted_reason,
                         )
-                    events = selector.select(max(0, deadline - time.monotonic()))
+                    remaining = max(0, deadline - time.monotonic())
+                    events = selector.select(
+                        min(0.05, remaining) if sys.platform == "darwin" else remaining
+                    )
                     if not events:
+                        if sys.platform == "darwin":
+                            continue
                         break
                     for key, _ in events:
                         if key.data == "stdin":
                             try:
-                                written = os.write(
-                                    process.stdin.fileno(), request[request_offset:]
-                                )
+                                written = os.write(process.stdin.fileno(), request[request_offset:])
                             except (BrokenPipeError, OSError) as exc:
                                 try:
                                     stderr_chunk = os.read(process.stderr.fileno(), 65_536)

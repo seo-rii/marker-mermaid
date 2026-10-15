@@ -217,7 +217,9 @@ jobs:
           cache-dependency-path: src/marker_mermaid/runtime/package-lock.json
 
       - name: Run POSIX worker ownership and lifecycle regressions
-        run: pytest -q -m "not integration" tests/test_runtime_protocol.py
+        run: >-
+          pytest -q -m "not integration" tests/test_runtime_protocol.py
+          tests/test_runtime_memory.py tests/test_runtime_supervisor.py
 
       - name: Install pinned native macOS browser runtime
         if: runner.os == 'macOS'

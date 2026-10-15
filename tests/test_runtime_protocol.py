@@ -66,9 +66,7 @@ rl.on("line", line => {
 
 
 @pytest.mark.parametrize("source", ["override", "cache"])
-def test_default_runtime_directory_normalizes_environment_paths(
-    monkeypatch, tmp_path, source
-):
+def test_default_runtime_directory_normalizes_environment_paths(monkeypatch, tmp_path, source):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("MARKER_MERMAID_RUNTIME_DIR", raising=False)
     if source == "override":
@@ -237,9 +235,7 @@ def _observe_worker_exit(process, timeout=5):
 
 
 @pytest.mark.parametrize("platform,exited", [("darwin", True), ("linux", True), ("darwin", False)])
-def test_zombie_only_group_permission_error_is_specific_to_darwin(
-    monkeypatch, platform, exited
-):
+def test_zombie_only_group_permission_error_is_specific_to_darwin(monkeypatch, platform, exited):
     source = "pass" if exited else "import time; time.sleep(30)"
     process = subprocess.Popen([sys.executable, "-c", source], start_new_session=True)
     if exited:
@@ -403,7 +399,9 @@ def test_close_kills_term_ignoring_descendants_after_worker_exit(
             f"['-e', {json.dumps(child_source)}], {{stdio: 'ignore'}}).unref();"
         )
     parent_action = {
-        "before_close": "process.exit(0);",
+        "before_close": (
+            "process.stdin.resume();" if sys.platform == "darwin" else "process.exit(0);"
+        ),
         "stdin_eof": "process.stdin.resume();",
         "sigterm": "process.stdin.resume(); setInterval(() => {}, 1000);",
     }[parent_exit]
@@ -432,7 +430,13 @@ const ready = setInterval(() => {{
         child_pid = int(marker.read_text(encoding="utf-8"))
         assert _pid_is_running(child_pid)
         if parent_exit == "before_close":
-            assert _observe_worker_exit(process) == 0
+            if sys.platform == "darwin":
+                # Kill the guardian independently: the Node worker and its
+                # descendants still hold protocol pipes and require close().
+                os.kill(process.pid, signal.SIGKILL)
+                assert _observe_worker_exit(process) == -signal.SIGKILL
+            else:
+                assert _observe_worker_exit(process) == 0
 
         runtime.close()
 
@@ -597,9 +601,7 @@ rl.on("line", line => {{
     assert runtime._process is None  # noqa: SLF001 - invalid protocol cleanup contract
 
 
-def test_runtime_rejects_png_base64_before_decoding_when_over_budget(
-    monkeypatch, tmp_path
-):
+def test_runtime_rejects_png_base64_before_decoding_when_over_budget(monkeypatch, tmp_path):
     _worker(
         tmp_path,
         """
@@ -628,11 +630,7 @@ rl.on("line", line => {
 
 
 def _render_limits_module() -> Path:
-    return (
-        Path(validation.__file__).resolve().parent
-        / "runtime"
-        / "render_limits.mjs"
-    )
+    return Path(validation.__file__).resolve().parent / "runtime" / "render_limits.mjs"
 
 
 def test_preflight_omission_never_calls_screenshot() -> None:
@@ -823,11 +821,11 @@ def test_runtime_launcher_applies_limits_without_preexec_fn(monkeypatch) -> None
 
     launcher.apply_worker_process_limits(123_456, 78)
 
-    assert calls == [
-        (resource.RLIMIT_CORE, (0, 0)),
-        (resource.RLIMIT_DATA, (123_456, 123_456)),
-        (resource.RLIMIT_CPU, (78, 78)),
-    ]
+    expected = [(resource.RLIMIT_CORE, (0, 0))]
+    if sys.platform != "darwin":
+        expected.append((resource.RLIMIT_DATA, (123_456, 123_456)))
+    expected.append((resource.RLIMIT_CPU, (78, 78)))
+    assert calls == expected
 
 
 @pytest.mark.integration
@@ -856,9 +854,7 @@ def test_real_worker_inherits_os_memory_and_cpu_limits() -> None:
 
 @pytest.mark.integration
 def test_real_worker_omits_png_when_svg_exceeds_pre_screenshot_node_limit() -> None:
-    runtime = NodeMermaidRuntime(
-        render_limits=RenderArtifactLimits(max_svg_nodes=1)
-    )
+    runtime = NodeMermaidRuntime(render_limits=RenderArtifactLimits(max_svg_nodes=1))
     try:
         result = runtime.validate_and_render("flowchart LR\nA-->B\n", 20)
     finally:
@@ -873,9 +869,7 @@ def test_real_worker_omits_png_when_svg_exceeds_pre_screenshot_node_limit() -> N
 
 @pytest.mark.integration
 def test_real_worker_rejects_svg_bytes_before_dom_and_screenshot() -> None:
-    runtime = NodeMermaidRuntime(
-        render_limits=RenderArtifactLimits(max_svg_bytes=1)
-    )
+    runtime = NodeMermaidRuntime(render_limits=RenderArtifactLimits(max_svg_bytes=1))
     try:
         result = runtime.validate_and_render("flowchart LR\nA-->B\n", 20)
     finally:
