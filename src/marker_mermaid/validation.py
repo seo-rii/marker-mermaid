@@ -212,7 +212,8 @@ class NodeMermaidRuntime(MermaidRuntime):
     ):
         if os.name != "posix":
             raise RuntimeError(
-                "the Mermaid browser runtime supports POSIX platforms only (Linux and macOS)"
+                "the Mermaid browser runtime supports POSIX platforms only "
+                "(Linux and macOS)"
             )
         self.runtime_dir = Path(runtime_dir) if runtime_dir else default_runtime_dir()
         if render_limits is not None and type(render_limits) is not RenderArtifactLimits:
@@ -256,7 +257,9 @@ class NodeMermaidRuntime(MermaidRuntime):
         self._stderr_buffer.clear()
         self._stderr_truncated = False
         assert (
-            process.stdin is not None and process.stdout is not None and process.stderr is not None
+            process.stdin is not None
+            and process.stdout is not None
+            and process.stderr is not None
         )
         os.set_blocking(process.stdin.fileno(), False)
         os.set_blocking(process.stdout.fileno(), False)
@@ -283,7 +286,8 @@ class NodeMermaidRuntime(MermaidRuntime):
                         False,
                         False,
                         error=(
-                            f"Mermaid runtime could not start; run `marker-mermaid doctor`: {exc}"
+                            "Mermaid runtime could not start; run `marker-mermaid doctor`: "
+                            f"{exc}"
                         ),
                     )
             self._next_id += 1
@@ -357,7 +361,9 @@ class NodeMermaidRuntime(MermaidRuntime):
                             return RuntimeResult(
                                 False,
                                 False,
-                                error=("Mermaid runtime returned an invalid PNG omission reason"),
+                                error=(
+                                    "Mermaid runtime returned an invalid PNG omission reason"
+                                ),
                             )
                         encoded_png = payload.get("png")
                         if encoded_png is not None and png_omitted_reason is not None:
@@ -406,7 +412,9 @@ class NodeMermaidRuntime(MermaidRuntime):
                     for key, _ in events:
                         if key.data == "stdin":
                             try:
-                                written = os.write(process.stdin.fileno(), request[request_offset:])
+                                written = os.write(
+                                    process.stdin.fileno(), request[request_offset:]
+                                )
                             except (BrokenPipeError, OSError) as exc:
                                 try:
                                     stderr_chunk = os.read(process.stderr.fileno(), 65_536)
