@@ -231,7 +231,10 @@ def svg_visible_texts(svg: str) -> list[str] | None:
                             normalized_name == "visibility"
                             and normalized_value in {"hidden", "collapse"}
                         )
-                        or (normalized_name == "opacity" and normalized_value in {"0", "0.0", "0%"})
+                        or (
+                            normalized_name == "opacity"
+                            and normalized_value in {"0", "0.0", "0%"}
+                        )
                     ):
                         hidden = True
                         break
