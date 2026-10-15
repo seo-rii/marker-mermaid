@@ -16,6 +16,7 @@ def test_reconstruct_closes_the_source_image_before_pipeline_output(monkeypatch,
 
     class OpenedImage:
         mode = "RGB"
+        size = (2, 2)
         exited = False
 
         def __enter__(self):
