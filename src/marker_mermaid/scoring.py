@@ -19,7 +19,7 @@ _NUMERIC_TOKEN_PATTERN = re.compile(
     r"(?<!\w)[+\-−]?(?:\d+(?:\.\d*)?|\.\d+)"
     rf"(?:[eE][+\-−]?\d+)?(?:{_NUMERIC_UNIT})?"
 )
-_AMBIGUOUS_NUMBER_PATTERN = re.compile(r"(?<!\w)[+\-−]?\d+(?:[.,]\d+)*,\d+(?:[.,]\d+)*")
+_SEPARATOR_NUMBER_PATTERN = re.compile(r"(?<!\w)[+\-−]?\d+(?:[.,]\d+)+")
 _SCORABLE_GRAMMAR_BY_HEADER = {
     # Numeric serializers can emit these portable fallbacks after runtime rejection.
     "flowchart": "flowchart",
@@ -76,7 +76,9 @@ def numeric_token_spellings(texts: Iterable[str]) -> Iterator[str]:
 
 def _numeric_tokens(text: str) -> Iterator[tuple[tuple[int, int], str]]:
     normalized = unicodedata.normalize("NFKC", text).replace("−", "-")
-    ambiguous = list(_AMBIGUOUS_NUMBER_PATTERN.finditer(normalized))
+    ambiguous = [
+        match for match in _SEPARATOR_NUMBER_PATTERN.finditer(normalized) if "," in match.group()
+    ]
     for match in ambiguous:
         yield match.span(), f"ambiguous:{match.group()}"
     ambiguous_index = 0
