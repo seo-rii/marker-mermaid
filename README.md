@@ -84,6 +84,11 @@ and report vulnerabilities according to [SECURITY.md](SECURITY.md).
   descriptor semantics and fail fast on unsupported platforms
 - Optional Marker and vision dependencies for end-to-end PDF reconstruction
 
+The browser runtime currently has a confirmed macOS limitation: Darwin can reject its 2 GiB
+`RLIMIT_DATA` budget before Node starts (`current limit exceeds maximum limit`). Rendering then
+fails closed; the launcher does not relax the memory limit. Use Linux for browser rendering until
+this platform compatibility issue is resolved. Atomic output and review-store support are separate.
+
 Atomic publication uses `renameat2(RENAME_NOREPLACE)` on Linux and
 `renameatx_np(RENAME_EXCL)` on macOS. On platforms without a safe no-replace primitive,
 marker-mermaid refuses to overwrite an existing sidecar bundle.

@@ -71,11 +71,12 @@ process-group termination remain the primary cleanup boundary. POSIX rlimits are
 than an aggregate cgroup/container RSS budget, so deployments handling hostile multi-tenant input
 should still place the worker in a memory/CPU-limited container or service.
 
-On macOS the launcher replaces Python with a fixed `/bin/sh` program before lowering
-`RLIMIT_DATA`, since Darwin can reject a limit below the Python launcher's existing data mappings.
-The shell inherits the core/CPU limits, applies the original bounded soft/hard data policy rounded
-down to KiB, and replaces itself with Node. Runtime command arguments remain quoted positional
-arguments; failure to install either data limit stops the launch.
+Native macOS CI confirmed a pre-existing incompatibility with the 2 GiB `RLIMIT_DATA` budget:
+Darwin rejects lowering it with `ValueError: current limit exceeds maximum limit` before Node
+starts. Its kernel checks the limit against the process's existing mapped address space.
+The launcher fails closed and retains the configured budget; macOS browser rendering remains
+unavailable on affected systems. The native lifecycle CI retains this failure rather than bypassing
+the memory policy.
 
 The Python parent observes worker exit without reaping the session leader until its final
 process-group signal has been sent. Keeping that PID reserved prevents a delayed close or garbage
