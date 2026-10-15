@@ -7,6 +7,7 @@ import importlib.metadata
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -68,9 +69,25 @@ def _validator(runtime: NodeMermaidRuntime, config: MermaidConfig) -> CandidateV
 
 def command_validate(args) -> int:
     _, config = _load_config(args.config)
+    # Open nonblocking before inspecting the descriptor: opening a FIFO for
+    # reading can otherwise wait forever before the regular-file check.
+    descriptor = os.open(args.file, os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("Mermaid input must be a regular file")
+        if info.st_size > config.max_mermaid_chars * 4:
+            raise ValueError("Mermaid input exceeds max_mermaid_chars")
+        with os.fdopen(descriptor, "r", encoding="utf-8", closefd=False) as source:
+            code = source.read(config.max_mermaid_chars + 1)
+        if len(code) > config.max_mermaid_chars:
+            raise ValueError("Mermaid input exceeds max_mermaid_chars")
+        if code.count("\n") + 1 > config.max_mermaid_lines:
+            raise ValueError("Mermaid input exceeds max_mermaid_lines")
+    finally:
+        os.close(descriptor)
     runtime = _runtime(config)
     try:
-        code = Path(args.file).read_text(encoding="utf-8")
         outcome = _validator(runtime, config).validate(code, config.render_timeout_seconds)
     finally:
         runtime.close()
@@ -101,6 +118,15 @@ def command_reconstruct(args) -> int:
 
     _, config = _load_config(args.config)
     with Image.open(args.image) as source_image:
+        width, height = source_image.size
+        if (
+            width <= 0
+            or height <= 0
+            or width > config.max_virtual_source_dimension
+            or height > config.max_virtual_source_dimension
+            or width * height > config.max_virtual_source_pixels
+        ):
+            raise ValueError("source image exceeds the configured dimension/pixel budget")
         source_image.load()
         image = (
             source_image.copy()
