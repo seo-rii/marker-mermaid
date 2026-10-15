@@ -96,6 +96,7 @@ from marker_mermaid.publication import (
     certify_publication_result,
 )
 from marker_mermaid.quality import (
+    LAYOUT_PAIR_BUDGET_WARNING,
     arrow_agreement,
     edge_topology_agreement,
     injective_node_provenance_counts,
@@ -569,6 +570,7 @@ _VENN_DESCRIPTION_ATTRIBUTION_UNAVAILABLE_WARNING = (
 
 _EVALUATION_WARNING_TEXT = frozenset(
     {
+        LAYOUT_PAIR_BUDGET_WARNING,
         "generated-node attribution is unavailable; review is required",
         "generated-node provenance gate requires at least 80% attribution",
         "more than 20% of generated nodes lack provenance",
@@ -6685,6 +6687,7 @@ class ReconstructionPipeline:
                 warnings.append("more than 20% of generated nodes lack provenance")
 
         structural_edge_available = False
+        layout_pair_budget_exceeded = False
         if source_scene is not None and generated_scene is not None:
             structural_metrics = []
             if self.config.enable_render_compare:
@@ -6699,6 +6702,12 @@ class ReconstructionPipeline:
             if self.config.enable_path_scoring:
                 structural_metrics.append(path_consistency(source_scene, generated_scene))
             for metric in structural_metrics:
+                if (
+                    metric.name == "layout_similarity"
+                    and metric.warning == LAYOUT_PAIR_BUDGET_WARNING
+                ):
+                    layout_pair_budget_exceeded = True
+                    warnings.append(LAYOUT_PAIR_BUDGET_WARNING)
                 if metric.available and metric.value is not None:
                     scores[metric.name] = metric.value
                     if metric.name == "edge_agreement":
@@ -6709,6 +6718,8 @@ class ReconstructionPipeline:
                 scores["edge_agreement"] = edge
 
         aggregate = aggregate_scores(scores, self.config)
+        if layout_pair_budget_exceeded:
+            aggregate = None
         if (
             generated_texts_over_budget
             or generated_scene_failed

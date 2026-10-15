@@ -33,6 +33,9 @@ from marker_mermaid.models import (
     VisualEvidence,
 )
 
+MAX_LAYOUT_PAIRS = 100_000
+LAYOUT_PAIR_BUDGET_WARNING = "layout pair comparison budget exceeded; review is required"
+
 _NODE_PROVENANCE_KINDS = frozenset(
     {
         "contour",
@@ -218,6 +221,7 @@ def relative_layout_similarity(
     generated: DiagramSceneIR,
     *,
     separation_ratio: float = 0.03,
+    max_pairs: int = MAX_LAYOUT_PAIRS,
 ) -> MetricResult:
     """Compare pairwise left/right and above/below ordering of aligned nodes.
 
@@ -225,26 +229,35 @@ def relative_layout_similarity(
     by more than ``separation_ratio`` of the source canvas extent on that axis.
     A generated tie does not satisfy a separated source relation.  At least two
     aligned nodes and one significant source-axis relation are required.
+    More than ``max_pairs`` aligned node pairs makes the metric unavailable;
+    no partial sample is scored.
     """
 
     if not 0 <= separation_ratio < 1:
         raise ValueError("separation_ratio must be between 0 (inclusive) and 1")
+    if type(max_pairs) is not int or max_pairs < 1:
+        raise ValueError("max_pairs must be a positive integer")
 
     alignment = align_scene_elements(source, generated)
     if len(alignment.generated_to_source) < 2:
         return _unavailable("layout_similarity", "fewer than two elements could be aligned")
+    aligned_count = len(alignment.generated_to_source)
+    if aligned_count * (aligned_count - 1) // 2 > max_pairs:
+        return _unavailable("layout_similarity", LAYOUT_PAIR_BUDGET_WARNING)
 
     source_by_id = {element.id: element for element in source.elements}
-    generated_by_source = {
-        source_id: next(element for element in generated.elements if element.id == generated_id)
+    generated_by_id = {element.id: element for element in generated.elements}
+    generated_centers = {
+        source_id: _center(generated_by_id[generated_id])
         for generated_id, source_id in alignment.generated_to_source.items()
     }
-    if len({_center(element) for element in generated_by_source.values()}) < 2:
+    if len(set(generated_centers.values())) < 2:
         return _unavailable(
             "layout_similarity",
             "generated scene has no explicit relative layout",
         )
-    common_ids = sorted(generated_by_source)
+    common_ids = sorted(generated_centers)
+    source_centers = {source_id: _center(source_by_id[source_id]) for source_id in common_ids}
     source_width, source_height = _scene_extent(source)
     generated_width, generated_height = _scene_extent(generated)
     source_thresholds = (source_width * separation_ratio, source_height * separation_ratio)
@@ -253,30 +266,30 @@ def relative_layout_similarity(
         generated_height * separation_ratio,
     )
 
-    agreements: list[float] = []
+    agreements = 0
+    comparisons = 0
     for left_id, right_id in combinations(common_ids, 2):
-        source_left = _center(source_by_id[left_id])
-        source_right = _center(source_by_id[right_id])
-        generated_left = _center(generated_by_source[left_id])
-        generated_right = _center(generated_by_source[right_id])
+        source_left = source_centers[left_id]
+        source_right = source_centers[right_id]
+        generated_left = generated_centers[left_id]
+        generated_right = generated_centers[right_id]
         for axis in (0, 1):
             source_delta = source_right[axis] - source_left[axis]
             if abs(source_delta) <= source_thresholds[axis]:
                 continue
+            comparisons += 1
             generated_delta = generated_right[axis] - generated_left[axis]
-            if abs(generated_delta) <= generated_thresholds[axis]:
-                agreements.append(0.0)
-            else:
-                agreements.append(float((source_delta > 0) == (generated_delta > 0)))
+            if abs(generated_delta) > generated_thresholds[axis]:
+                agreements += (source_delta > 0) == (generated_delta > 0)
 
-    if not agreements:
+    if not comparisons:
         return _unavailable(
             "layout_similarity",
             "aligned source elements have no significant relative separation",
         )
     return _available(
         "layout_similarity",
-        sum(agreements) / len(agreements),
+        agreements / comparisons,
         source,
         generated,
     )
