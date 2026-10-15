@@ -26,6 +26,7 @@ classifiers = [
 dependencies = [
   "Pillow>=10.0",
   "pydantic>=2.8,<3",
+  "tinycss2>=1.4,<2",
 ]
 
 [project.optional-dependencies]
