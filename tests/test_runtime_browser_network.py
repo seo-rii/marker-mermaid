@@ -34,6 +34,7 @@ def test_worker_context_blocks_service_workers_and_websocket_connections(tmp_pat
     assert dependencies.is_dir(), "browser CI requires installed runtime dependencies"
     (tmp_path / "node_modules").symlink_to(dependencies, target_is_directory=True)
     (tmp_path / "render_limits.mjs").write_bytes((packaged / "render_limits.mjs").read_bytes())
+    (tmp_path / "browser_process.mjs").write_bytes((packaged / "browser_process.mjs").read_bytes())
     source = (packaged / "worker.mjs").read_text(encoding="utf-8")
     bootstrap, separator, _handler = source.partition("async function handle(request) {")
     assert separator, "probe must execute the production worker context setup"

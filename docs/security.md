@@ -90,6 +90,14 @@ the supervisor while idle stops sampling; the next request or explicit close cle
 Processes that deliberately escape the session are outside this boundary. These controls isolate
 the pinned renderer; they do not sandbox hostile code running with the same account.
 
+On POSIX, the browser-launch helper temporarily overrides Node's child-process spawn options
+while the pinned Playwright Chromium launch is pending, setting `detached: false` and restoring
+the original spawn function in `finally`. Playwright otherwise detaches Chromium into a separate
+group, outside the owner's cleanup and memory accounting. Actual browser tests verify Chromium
+and its descendants retain the worker's group and are stopped after Node is forcibly killed.
+Playwright's own graceful browser-close protocol remains available; the parent owns final group
+termination if browser closure fails. Upgrading Playwright must preserve this tested launch contract.
+
 Per-request wall-clock timeout and process-group termination remain the primary cleanup boundary.
 Neither Linux's per-process rlimits nor macOS sampling provide a hard aggregate cgroup/container
 memory budget. Deployments requiring that guarantee should run the renderer in an externally

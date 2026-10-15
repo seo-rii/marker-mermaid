@@ -1,6 +1,7 @@
 import readline from "node:readline";
 import { createRequire } from "node:module";
 import { chromium } from "playwright";
+import { launchOwnedChromium } from "./browser_process.mjs";
 import {
   captureBoundedPng,
   geometryOmissionReason,
@@ -15,7 +16,7 @@ if (process.env.MARKER_MERMAID_CHROMIUM_EXECUTABLE) {
   launchOptions.executablePath = process.env.MARKER_MERMAID_CHROMIUM_EXECUTABLE;
 }
 
-const browser = await chromium.launch(launchOptions);
+const browser = await launchOwnedChromium(chromium, launchOptions);
 const context = await browser.newContext({
   javaScriptEnabled: true,
   serviceWorkers: "block",

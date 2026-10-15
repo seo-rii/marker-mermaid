@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import resource
+import signal
 import subprocess
 import sys
 import time
@@ -19,6 +21,59 @@ from marker_mermaid.resource_limits import (
 from marker_mermaid.validation import NodeMermaidRuntime, default_runtime_dir
 
 pytestmark = pytest.mark.integration
+
+
+def _owned_processes(leader):
+    snapshot = subprocess.run(
+        ["ps", "-axo", "pid=,ppid=,pgid=,stat=,comm="],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=5,
+    )
+    processes = {}
+    for line in snapshot.stdout.splitlines():
+        pid, parent, group, status, command = line.strip().split(maxsplit=4)
+        processes[int(pid)] = (int(parent), int(group), status, command)
+    owned = {leader}
+    while True:
+        descendants = {pid for pid, row in processes.items() if row[0] in owned}
+        if descendants <= owned:
+            break
+        owned.update(descendants)
+    return {pid: processes[pid] for pid in owned if pid in processes}
+
+
+def _assert_browser_group_is_owned(leader):
+    processes = _owned_processes(leader)
+    assert len(processes) >= 2, "real rendering must start a browser descendant"
+    assert any(
+        any(name in row[3].lower() for name in ("chromium", "chrome", "headless"))
+        for pid, row in processes.items()
+        if pid != leader
+    ), processes
+    assert all(row[1] == leader for row in processes.values()), processes
+    return processes
+
+
+def _assert_processes_stopped(pids):
+    deadline = time.monotonic() + 3
+    running = pids
+    while running and time.monotonic() < deadline:
+        running = []
+        for pid in pids:
+            status = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            ).stdout.strip()
+            if status and not status.startswith("Z"):
+                running.append(pid)
+        if running:
+            time.sleep(0.02)
+    assert not running, f"runtime left running owned processes: {running}"
 
 
 @pytest.mark.parametrize("worker_exit_code", [0, 7])
@@ -77,10 +132,33 @@ def test_native_browser_renders_png_and_restarts_under_process_budget():
                 image.verify()
                 assert image.format == "PNG" and image.width > 0 and image.height > 0
             assert process is not None
+            owned = _assert_browser_group_is_owned(process.pid)
             processes.append(process)
         assert process.returncode is not None
         assert all(stream.closed for stream in (process.stdin, process.stdout, process.stderr))
+        _assert_processes_stopped(owned)
     assert processes[0] is not processes[1]
+
+
+def test_native_browser_is_cleaned_up_after_node_is_killed():
+    with NodeMermaidRuntime(default_runtime_dir()) as runtime:
+        result = runtime.validate_and_render("flowchart LR\nA-->B\n", 30)
+        assert result.render_valid, result.error
+        process = runtime._process  # noqa: SLF001 - ownership regression
+        assert process is not None
+        owned = _assert_browser_group_is_owned(process.pid)
+        if sys.platform == "darwin":
+            node_pids = [
+                pid
+                for pid, row in owned.items()
+                if row[0] == process.pid and Path(row[3]).name == "node"
+            ]
+            assert len(node_pids) == 1, owned
+            node_pid = node_pids[0]
+        else:
+            node_pid = process.pid
+        os.kill(node_pid, signal.SIGKILL)
+    _assert_processes_stopped(owned)
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Darwin group footprint supervisor")
@@ -130,20 +208,4 @@ child.once('message', () => {{
     assert "budget" in (result.error or "").lower(), result.error
     assert marker.is_file(), "memory budget must leave enough headroom to start both Node processes"
     pids = json.loads(marker.read_text(encoding="utf-8"))
-    deadline = time.monotonic() + 3
-    running = pids
-    while running and time.monotonic() < deadline:
-        running = []
-        for pid in pids:
-            status = subprocess.run(
-                ["ps", "-o", "stat=", "-p", str(pid)],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=5,
-            ).stdout.strip()
-            if status and not status.startswith("Z"):
-                running.append(pid)
-        if running:
-            time.sleep(0.02)
-    assert not running, f"memory-budget failure left running owned processes: {running}"
+    _assert_processes_stopped(pids)
