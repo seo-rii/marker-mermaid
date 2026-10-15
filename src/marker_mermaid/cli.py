@@ -95,11 +95,12 @@ def command_reconstruct(args) -> int:
 
     from marker_mermaid.engines import JsonFixtureEngine
     from marker_mermaid.markdown import standalone_document_markdown
-    from marker_mermaid.output import save_document_output
+    from marker_mermaid.output import preflight_output_destination, save_document_output
     from marker_mermaid.pipeline import ReconstructionPipeline
     from marker_mermaid.semantic_repair import EvidenceBackedFlowchartRepair
 
     _, config = _load_config(args.config)
+    preflight_output_destination(output_dir=args.output, filename=args.name)
     with Image.open(args.image) as source_image:
         source_image.load()
         image = (
@@ -150,7 +151,10 @@ def command_reconstruct(args) -> int:
 
 
 def command_convert(args) -> int:
-    from marker_mermaid.output import save_document_output
+    from marker_mermaid.output import preflight_output_destination, save_document_output
+
+    filename = args.name or Path(args.pdf).stem
+    preflight_output_destination(output_dir=args.output, filename=filename)
 
     try:
         from marker.models import create_model_dict
@@ -173,7 +177,6 @@ def command_convert(args) -> int:
     rendered = converter(args.pdf)
     if not isinstance(rendered, MermaidMarkdownOutput):
         raise RuntimeError("unexpected Marker renderer output")
-    filename = args.name or Path(args.pdf).stem
     document = save_document_output(
         output_dir=args.output,
         filename=filename,
