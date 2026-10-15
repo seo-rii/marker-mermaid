@@ -188,7 +188,7 @@ class ReviewHandler(SimpleHTTPRequestHandler):
                     )
                     return
                 expected_digest = digest_values[0] if len(digest_values) == 1 else ""
-                if filename != "final.png" or not re.fullmatch(
+                if filename not in {"final.svg", "final.png"} or not re.fullmatch(
                     r"[0-9a-f]{64}", expected_digest
                 ):
                     os.close(descriptor)
@@ -197,25 +197,34 @@ class ReviewHandler(SimpleHTTPRequestHandler):
                         status=HTTPStatus.BAD_REQUEST,
                     )
                     return
-                actual_digest = hashlib.sha256()
                 try:
-                    while chunk := os.read(descriptor, 64 * 1024):
-                        actual_digest.update(chunk)
-                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    with os.fdopen(descriptor, "rb") as handle:
+                        payload = handle.read(MAX_RENDER_BYTES + 1)
                 except OSError:
-                    os.close(descriptor)
                     self._send_json(
                         {"error": "static artifact became unavailable"},
                         status=HTTPStatus.NOT_FOUND,
                     )
                     return
-                if not hmac.compare_digest(actual_digest.hexdigest(), expected_digest):
-                    os.close(descriptor)
+                if len(payload) > MAX_RENDER_BYTES:
+                    self._send_json(
+                        {"error": "static render exceeds the artifact size limit"},
+                        status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    )
+                    return
+                if not hmac.compare_digest(hashlib.sha256(payload).hexdigest(), expected_digest):
                     self._send_json(
                         {"error": "static artifact digest changed"},
                         status=HTTPStatus.CONFLICT,
                     )
                     return
+                # Send the exact bytes checked above, even if a concurrent edit
+                # replaces or rewrites the current artifact before the response.
+                self._send_bytes(
+                    payload,
+                    mimetypes.guess_type(filename)[0] or "application/octet-stream",
+                )
+                return
             self._send_static_file(descriptor, filename, size)
             return
         self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
@@ -624,7 +633,9 @@ class ReviewHandler(SimpleHTTPRequestHandler):
             "source_url": source_url,
             "rendered_url": (
                 f"/diagrams/{urllib.parse.quote(bundle.bundle_id, safe='')}/final.svg"
-                f"?v={bundle.state.version}"
+                f"?digest={bundle.state.svg_digest}"
+                if bundle.state.svg_digest is not None
+                else None
             ),
             "status": str(manifest.get("status", "unknown")),
             "grade": str(manifest.get("grade", "U")),
