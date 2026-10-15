@@ -134,7 +134,7 @@ jobs:
         env:
           MARKER_MERMAID_RUNTIME_DIR: ${{ runner.temp }}/marker-mermaid-runtime
         run: |
-          pytest -q -m integration \
+          pytest -q -m "integration and not review_browser" \
             --ignore=tests/test_marker_compat.py \
             --ignore=tests/test_publication_receipt.py \
             --ignore=tests/test_publication_snapshot.py \
@@ -142,6 +142,21 @@ jobs:
             --ignore=tests/test_render_artifact_limits.py
           pytest -q \
             tests/test_publication_snapshot.py::test_markdown_uses_a_longer_fence_for_backtick_lines_inside_mermaid_labels
+
+      - name: Run every review browser fixture without skips or deselection
+        env:
+          MARKER_MERMAID_RUNTIME_DIR: ${{ runner.temp }}/marker-mermaid-runtime
+        run: >-
+          pytest -q -m review_browser --require-review-browser
+          --junitxml=review-browser-results.xml
+
+      - name: Upload review browser results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-browser-results-node-${{ matrix.node-version || 'default' }}
+          path: review-browser-results.xml
+          if-no-files-found: error
 
   marker-compatibility:
     name: Marker 1.10.2 compatibility
