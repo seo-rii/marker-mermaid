@@ -695,3 +695,17 @@ follows after the grace period. `bindFunctions` is never called.
 
 `sandbox-experimental` is reserved in the configuration enum but has no separate OS-sandbox
 implementation yet. The current runtime maintains the same network isolation under every profile.
+
+SVG artifact inspection tokenizes CSS with tinycss2 instead of matching the raw
+spelling of `url()` or `@import`. Escaped function names and escaped URL values
+receive the same external-reference policy; fragment-only paint servers remain
+allowed. Image functions that can load bare string URLs are outside the static
+output contract. Chromium preflight also normalizes CSS escapes before its early
+reference check; the Python token inspection remains publication authority.
+
+Validated artifacts require the SVG namespace, a finite positive-area viewBox or
+both positive intrinsic dimensions, and static content. SVG `set`, `animate`,
+`animateMotion`, `animateTransform`, and `discard` are forbidden under every
+profile, because later attribute mutations would invalidate inspection of the
+original artifact. These checks address validator discrepancies; they do not
+claim an exploit through Mermaid's source scan and isolated browser.

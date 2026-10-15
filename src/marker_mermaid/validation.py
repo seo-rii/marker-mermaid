@@ -19,6 +19,8 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
+import tinycss2
+
 from marker_mermaid.config import SecurityProfile
 from marker_mermaid.models import (
     MermaidCandidate,
@@ -72,15 +74,48 @@ def inspect_svg(
         root = ET.fromstring(svg)
     except ET.ParseError as exc:
         return [f"rendered output is not XML: {exc}"]
-    if root.tag.rsplit("}", 1)[-1] != "svg":
+    if root.tag != "{http://www.w3.org/2000/svg}svg":
         findings.append("rendered output does not have an SVG root")
-    if not any(root.get(attribute) for attribute in ("viewBox", "width", "height")):
-        findings.append("rendered SVG has no dimensions")
+    if view_box := root.get("viewBox"):
+        try:
+            dimensions = [float(part) for part in re.split(r"[\s,]+", view_box.strip())]
+        except ValueError:
+            dimensions = []
+        if not (
+            len(dimensions) == 4
+            and all(math.isfinite(value) for value in dimensions)
+            and dimensions[2] > 0
+            and dimensions[3] > 0
+        ):
+            findings.append("rendered SVG has an invalid viewBox")
+    else:
+        length = re.compile(
+            r"(?P<number>\+?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
+            r"(?:%|px|pt|pc|mm|cm|in|em|ex|rem)?"
+        )
+        for attribute in ("width", "height"):
+            value = (root.get(attribute) or "").strip()
+            match = length.fullmatch(value)
+            if match is None or not 0 < float(match["number"]) < math.inf:
+                findings.append("rendered SVG has no positive dimensions")
+                break
     if diagram_type is None:
         is_gantt = (root.get("aria-roledescription") or "").strip().casefold() == "gantt"
     else:
         is_gantt = type(diagram_type) is str and diagram_type.strip().casefold() == "gantt"
-    forbidden = {"script", "iframe", "object", "embed", "link"}
+    forbidden = {
+        "script",
+        "iframe",
+        "object",
+        "embed",
+        "link",
+        "img",
+        "animate",
+        "animatemotion",
+        "animatetransform",
+        "set",
+        "discard",
+    }
     geometry_attributes = {
         "cx",
         "cy",
@@ -101,20 +136,40 @@ def inspect_svg(
         "y2",
     }
     if profile == SecurityProfile.STRICT:
-        forbidden.add("foreignObject")
+        forbidden.add("foreignobject")
 
     def has_external_css(value: str) -> bool:
-        lowered = value.casefold()
-        if "@import" in lowered:
-            return True
-        for match in re.finditer(r"url\s*\(\s*(['\"]?)(.*?)\1\s*\)", lowered):
-            if not match.group(2).strip().startswith("#"):
+        # CSS escapes are decoded by the tokenizer, including function names,
+        # quoted URLs and @import. Inspect nested blocks, not serialized text.
+        pending = list(tinycss2.parse_component_value_list(value, skip_comments=True))
+        while pending:
+            token = pending.pop()
+            if token.type == "at-keyword" and token.lower_value == "import":
                 return True
+            if token.type == "url" and not token.value.strip().startswith("#"):
+                return True
+            if token.type == "error" and token.kind in {"bad-url", "bad-string"}:
+                return True
+            if token.type == "function":
+                if token.lower_name == "url":
+                    args = [item for item in token.arguments if item.type != "whitespace"]
+                    if not (
+                        len(args) == 1
+                        and args[0].type == "string"
+                        and args[0].value.strip().startswith("#")
+                    ):
+                        return True
+                # These image-producing functions may load bare string URLs.
+                if token.lower_name in {"image", "image-set", "-webkit-image-set", "src"}:
+                    return True
+                pending.extend(token.arguments)
+            elif hasattr(token, "content"):
+                pending.extend(token.content)
         return False
 
     for element in root.iter():
         tag = element.tag.rsplit("}", 1)[-1]
-        if tag in forbidden:
+        if tag.casefold() in forbidden:
             findings.append(f"rendered SVG contains forbidden <{tag}>")
         if is_gantt and tag == "rect":
             classes = set((element.get("class") or "").split())
@@ -135,6 +190,8 @@ def inspect_svg(
                 findings.append(f"rendered SVG contains event handler {name}")
             if name == "href" and lowered and not lowered.startswith("#"):
                 findings.append("rendered SVG contains an external href")
+            if name in {"src", "srcset"} and lowered:
+                findings.append(f"rendered SVG contains external {name}")
             if has_external_css(lowered):
                 findings.append("rendered SVG contains external CSS")
             if name in geometry_attributes and ("nan" in lowered or "infinity" in lowered):
@@ -155,8 +212,7 @@ class NodeMermaidRuntime(MermaidRuntime):
     ):
         if os.name != "posix":
             raise RuntimeError(
-                "the Mermaid browser runtime supports POSIX platforms only "
-                "(Linux and macOS)"
+                "the Mermaid browser runtime supports POSIX platforms only (Linux and macOS)"
             )
         self.runtime_dir = Path(runtime_dir) if runtime_dir else default_runtime_dir()
         if render_limits is not None and type(render_limits) is not RenderArtifactLimits:
@@ -200,9 +256,7 @@ class NodeMermaidRuntime(MermaidRuntime):
         self._stderr_buffer.clear()
         self._stderr_truncated = False
         assert (
-            process.stdin is not None
-            and process.stdout is not None
-            and process.stderr is not None
+            process.stdin is not None and process.stdout is not None and process.stderr is not None
         )
         os.set_blocking(process.stdin.fileno(), False)
         os.set_blocking(process.stdout.fileno(), False)
@@ -229,8 +283,7 @@ class NodeMermaidRuntime(MermaidRuntime):
                         False,
                         False,
                         error=(
-                            "Mermaid runtime could not start; run `marker-mermaid doctor`: "
-                            f"{exc}"
+                            f"Mermaid runtime could not start; run `marker-mermaid doctor`: {exc}"
                         ),
                     )
             self._next_id += 1
@@ -304,9 +357,7 @@ class NodeMermaidRuntime(MermaidRuntime):
                             return RuntimeResult(
                                 False,
                                 False,
-                                error=(
-                                    "Mermaid runtime returned an invalid PNG omission reason"
-                                ),
+                                error=("Mermaid runtime returned an invalid PNG omission reason"),
                             )
                         encoded_png = payload.get("png")
                         if encoded_png is not None and png_omitted_reason is not None:
@@ -355,9 +406,7 @@ class NodeMermaidRuntime(MermaidRuntime):
                     for key, _ in events:
                         if key.data == "stdin":
                             try:
-                                written = os.write(
-                                    process.stdin.fileno(), request[request_offset:]
-                                )
+                                written = os.write(process.stdin.fileno(), request[request_offset:])
                             except (BrokenPipeError, OSError) as exc:
                                 try:
                                     stderr_chunk = os.read(process.stderr.fileno(), 65_536)
