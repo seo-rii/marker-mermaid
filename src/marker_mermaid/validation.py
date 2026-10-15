@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+import tinycss2
+
 from marker_mermaid.config import SecurityProfile
 from marker_mermaid.models import (
     MermaidCandidate,
@@ -53,15 +55,20 @@ class ValidationOutcome:
     certificate: ValidatedArtifactCertificate | None = None
 
 
+def normalize_runtime_dir(path: str | Path) -> Path:
+    """Bind a runtime directory to the caller's current directory once."""
+    return Path(path).expanduser().resolve()
+
+
 def default_runtime_dir() -> Path:
     override = os.environ.get("MARKER_MERMAID_RUNTIME_DIR")
     if override:
-        return Path(override).expanduser()
+        return normalize_runtime_dir(override)
     packaged = Path(__file__).resolve().parent / "runtime"
     if (packaged / "node_modules" / "mermaid").is_dir():
         return packaged
     cache_root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
-    return cache_root / "marker-mermaid" / "runtime"
+    return normalize_runtime_dir(cache_root / "marker-mermaid" / "runtime")
 
 
 def inspect_svg(
@@ -72,18 +79,60 @@ def inspect_svg(
 ) -> list[str]:
     findings: list[str] = []
     try:
-        root = ET.fromstring(svg)
+        parser = ET.XMLPullParser(events=("start", "pi"))
+        parser.feed(svg)
+        parser.close()
+        root = None
+        for event, element in parser.read_events():
+            if event == "pi":
+                findings.append("rendered SVG contains a processing instruction")
+            elif root is None:
+                root = element
+        assert root is not None
     except ET.ParseError as exc:
         return [f"rendered output is not XML: {exc}"]
-    if root.tag.rsplit("}", 1)[-1] != "svg":
+    if root.tag != "{http://www.w3.org/2000/svg}svg":
         findings.append("rendered output does not have an SVG root")
-    if not any(root.get(attribute) for attribute in ("viewBox", "width", "height")):
-        findings.append("rendered SVG has no dimensions")
+    if view_box := root.get("viewBox"):
+        try:
+            dimensions = [float(part) for part in re.split(r"[\s,]+", view_box.strip())]
+        except ValueError:
+            dimensions = []
+        if not (
+            len(dimensions) == 4
+            and all(math.isfinite(value) for value in dimensions)
+            and dimensions[2] > 0
+            and dimensions[3] > 0
+        ):
+            findings.append("rendered SVG has an invalid viewBox")
+    else:
+        length = re.compile(
+            r"(?P<number>\+?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
+            r"(?:%|px|pt|pc|mm|cm|in|em|ex|rem)?"
+        )
+        for attribute in ("width", "height"):
+            value = (root.get(attribute) or "").strip()
+            match = length.fullmatch(value)
+            if match is None or not 0 < float(match["number"]) < math.inf:
+                findings.append("rendered SVG has no positive dimensions")
+                break
     if diagram_type is None:
         is_gantt = (root.get("aria-roledescription") or "").strip().casefold() == "gantt"
     else:
         is_gantt = type(diagram_type) is str and diagram_type.strip().casefold() == "gantt"
-    forbidden = {"script", "iframe", "object", "embed", "link"}
+    forbidden = {
+        "script",
+        "iframe",
+        "object",
+        "embed",
+        "link",
+        "img",
+        "animate",
+        "animatemotion",
+        "animatetransform",
+        "set",
+        "discard",
+    }
     geometry_attributes = {
         "cx",
         "cy",
@@ -104,20 +153,40 @@ def inspect_svg(
         "y2",
     }
     if profile == SecurityProfile.STRICT:
-        forbidden.add("foreignObject")
+        forbidden.add("foreignobject")
 
     def has_external_css(value: str) -> bool:
-        lowered = value.casefold()
-        if "@import" in lowered:
-            return True
-        for match in re.finditer(r"url\s*\(\s*(['\"]?)(.*?)\1\s*\)", lowered):
-            if not match.group(2).strip().startswith("#"):
+        # CSS escapes are decoded by the tokenizer, including function names,
+        # quoted URLs and @import. Inspect nested blocks, not serialized text.
+        pending = list(tinycss2.parse_component_value_list(value, skip_comments=True))
+        while pending:
+            token = pending.pop()
+            if token.type == "at-keyword" and token.lower_value == "import":
                 return True
+            if token.type == "url" and not token.value.strip().startswith("#"):
+                return True
+            if token.type == "error" and token.kind in {"bad-url", "bad-string"}:
+                return True
+            if token.type == "function":
+                if token.lower_name == "url":
+                    args = [item for item in token.arguments if item.type != "whitespace"]
+                    if not (
+                        len(args) == 1
+                        and args[0].type == "string"
+                        and args[0].value.strip().startswith("#")
+                    ):
+                        return True
+                # These image-producing functions may load bare string URLs.
+                if token.lower_name in {"image", "image-set", "-webkit-image-set", "src"}:
+                    return True
+                pending.extend(token.arguments)
+            elif hasattr(token, "content"):
+                pending.extend(token.content)
         return False
 
     for element in root.iter():
         tag = element.tag.rsplit("}", 1)[-1]
-        if tag in forbidden:
+        if tag.casefold() in forbidden:
             findings.append(f"rendered SVG contains forbidden <{tag}>")
         if is_gantt and tag == "rect":
             classes = set((element.get("class") or "").split())
@@ -138,6 +207,8 @@ def inspect_svg(
                 findings.append(f"rendered SVG contains event handler {name}")
             if name == "href" and lowered and not lowered.startswith("#"):
                 findings.append("rendered SVG contains an external href")
+            if name in {"src", "srcset"} and lowered:
+                findings.append(f"rendered SVG contains external {name}")
             if has_external_css(lowered):
                 findings.append("rendered SVG contains external CSS")
             if name in geometry_attributes and ("nan" in lowered or "infinity" in lowered):
@@ -270,7 +341,11 @@ class NodeMermaidRuntime(MermaidRuntime):
             if sys.platform != "darwin":
                 raise RuntimeError("runtime cleanup requires non-reaping waitid with WNOWAIT")
             _darwin_waitid()
-        self.runtime_dir = Path(runtime_dir) if runtime_dir else default_runtime_dir()
+        self.runtime_dir = (
+            normalize_runtime_dir(runtime_dir)
+            if runtime_dir is not None
+            else default_runtime_dir()
+        )
         if render_limits is not None and type(render_limits) is not RenderArtifactLimits:
             raise TypeError("render_limits must be an exact RenderArtifactLimits")
         self.render_limits = render_limits or RenderArtifactLimits()

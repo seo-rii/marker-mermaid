@@ -1,7 +1,13 @@
 # Configuration Reference
 
 Marker JSON uses the `MermaidDiagramProcessor_` prefix. Python `MermaidConfig` accepts the
-unprefixed names directly. Prefixed settings override concise settings.
+unprefixed names directly. CLI configuration files accept both forms. If both forms specify
+the same setting, their values must agree; conflicting values are rejected.
+
+Standalone CLI commands validate every setting and reject unknown keys, including nested
+`score_weights` keys. Only `convert` and the Marker adapter accept unrelated Marker settings,
+because they consume a mixed Marker configuration. Unknown keys with the Mermaid prefix are
+always rejected.
 
 ## Mode Defaults
 

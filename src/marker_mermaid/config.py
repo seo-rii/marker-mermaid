@@ -100,6 +100,8 @@ class ScoreWeights(BaseModel):
     unavailable visual model does not turn a syntactically sound candidate into zero.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     syntax: float = 0.12
     render: float = 0.13
     ocr_recall: float = 0.14
@@ -293,6 +295,23 @@ class MermaidConfig(BaseModel):
 
     @classmethod
     def from_marker_config(cls, config: dict[str, Any] | BaseModel | None) -> MermaidConfig:
+        """Read Mermaid settings from a mixed Marker configuration."""
+
+        return cls._from_config(config, allow_marker_settings=True)
+
+    @classmethod
+    def from_cli_config(cls, config: dict[str, Any] | None) -> MermaidConfig:
+        """Validate every standalone CLI setting, including prefixed keys."""
+
+        return cls._from_config(config, allow_marker_settings=False)
+
+    @classmethod
+    def _from_config(
+        cls,
+        config: dict[str, Any] | BaseModel | None,
+        *,
+        allow_marker_settings: bool,
+    ) -> MermaidConfig:
         if config is None:
             return cls()
         raw = config.model_dump() if isinstance(config, BaseModel) else dict(config)
@@ -304,14 +323,17 @@ class MermaidConfig(BaseModel):
                 "single atomic output transaction"
             )
         known = set(cls.model_fields)
-        selected = {key: value for key, value in raw.items() if key in known}
-        selected.update(
-            {
-                key.removeprefix(prefix): value
-                for key, value in raw.items()
-                if key.startswith(prefix)
-            }
-        )
+        selected = {
+            key: value
+            for key, value in raw.items()
+            if not key.startswith(prefix) and (key in known or not allow_marker_settings)
+        }
+        for key, value in raw.items():
+            if key.startswith(prefix):
+                name = key.removeprefix(prefix)
+                if name in selected and selected[name] != value:
+                    raise ValueError(f"conflicting settings for {name}: {name} and {key}")
+                selected[name] = value
         return cls.model_validate(selected)
 
 

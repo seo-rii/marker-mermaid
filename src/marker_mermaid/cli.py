@@ -7,6 +7,7 @@ import importlib.metadata
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -19,12 +20,22 @@ from marker_mermaid.evaluation import (
     write_evaluation_report,
 )
 from marker_mermaid.review import serve_review
-from marker_mermaid.validation import CandidateValidator, NodeMermaidRuntime, default_runtime_dir
+from marker_mermaid.validation import (
+    CandidateValidator,
+    NodeMermaidRuntime,
+    default_runtime_dir,
+    normalize_runtime_dir,
+)
 
 
-def _load_config(path: str | None) -> tuple[dict, MermaidConfig]:
+def _load_config(path: str | None, *, marker: bool = False) -> tuple[dict, MermaidConfig]:
     raw = json.loads(Path(path).read_text(encoding="utf-8")) if path else {}
-    return raw, MermaidConfig.from_marker_config(raw)
+    if not isinstance(raw, dict):
+        raise ValueError("configuration file must contain a JSON object")
+    config = (
+        MermaidConfig.from_marker_config(raw) if marker else MermaidConfig.from_cli_config(raw)
+    )
+    return raw, config
 
 
 def resolve_runtime_dir(
@@ -35,12 +46,12 @@ def resolve_runtime_dir(
     """Resolve the Node runtime directory using the CLI-wide precedence order."""
 
     if cli_value is not None:
-        return Path(cli_value).expanduser()
+        return normalize_runtime_dir(cli_value)
     if config is not None and config.runtime_dir is not None:
-        return config.runtime_dir.expanduser()
+        return normalize_runtime_dir(config.runtime_dir)
     environment_value = os.environ.get("MARKER_MERMAID_RUNTIME_DIR")
     if environment_value:
-        return Path(environment_value).expanduser()
+        return normalize_runtime_dir(environment_value)
     return default_runtime_dir()
 
 
@@ -68,9 +79,25 @@ def _validator(runtime: NodeMermaidRuntime, config: MermaidConfig) -> CandidateV
 
 def command_validate(args) -> int:
     _, config = _load_config(args.config)
+    # Open nonblocking before inspecting the descriptor: opening a FIFO for
+    # reading can otherwise wait forever before the regular-file check.
+    descriptor = os.open(args.file, os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("Mermaid input must be a regular file")
+        if info.st_size > config.max_mermaid_chars * 4:
+            raise ValueError("Mermaid input exceeds max_mermaid_chars")
+        with os.fdopen(descriptor, "r", encoding="utf-8", closefd=False) as source:
+            code = source.read(config.max_mermaid_chars + 1)
+        if len(code) > config.max_mermaid_chars:
+            raise ValueError("Mermaid input exceeds max_mermaid_chars")
+        if code.count("\n") + 1 > config.max_mermaid_lines:
+            raise ValueError("Mermaid input exceeds max_mermaid_lines")
+    finally:
+        os.close(descriptor)
     runtime = _runtime(config)
     try:
-        code = Path(args.file).read_text(encoding="utf-8")
         outcome = _validator(runtime, config).validate(code, config.render_timeout_seconds)
     finally:
         runtime.close()
@@ -95,12 +122,22 @@ def command_reconstruct(args) -> int:
 
     from marker_mermaid.engines import JsonFixtureEngine
     from marker_mermaid.markdown import standalone_document_markdown
-    from marker_mermaid.output import save_document_output
+    from marker_mermaid.output import preflight_output_destination, save_document_output
     from marker_mermaid.pipeline import ReconstructionPipeline
     from marker_mermaid.semantic_repair import EvidenceBackedFlowchartRepair
 
     _, config = _load_config(args.config)
+    preflight_output_destination(output_dir=args.output, filename=args.name)
     with Image.open(args.image) as source_image:
+        width, height = source_image.size
+        if (
+            width <= 0
+            or height <= 0
+            or width > config.max_virtual_source_dimension
+            or height > config.max_virtual_source_dimension
+            or width * height > config.max_virtual_source_pixels
+        ):
+            raise ValueError("source image exceeds the configured dimension/pixel budget")
         source_image.load()
         image = (
             source_image.copy()
@@ -150,7 +187,10 @@ def command_reconstruct(args) -> int:
 
 
 def command_convert(args) -> int:
-    from marker_mermaid.output import save_document_output
+    from marker_mermaid.output import preflight_output_destination, save_document_output
+
+    filename = args.name or Path(args.pdf).stem
+    preflight_output_destination(output_dir=args.output, filename=filename)
 
     try:
         from marker.models import create_model_dict
@@ -161,7 +201,7 @@ def command_convert(args) -> int:
         )
     except ImportError as exc:
         raise SystemExit("Install the marker extra: pip install 'marker-mermaid[marker]'") from exc
-    raw, config = _load_config(args.config)
+    raw, config = _load_config(args.config, marker=True)
     raw["extract_images"] = True
     raw["use_llm"] = True
     models = create_model_dict()
@@ -173,7 +213,6 @@ def command_convert(args) -> int:
     rendered = converter(args.pdf)
     if not isinstance(rendered, MermaidMarkdownOutput):
         raise RuntimeError("unexpected Marker renderer output")
-    filename = args.name or Path(args.pdf).stem
     document = save_document_output(
         output_dir=args.output,
         filename=filename,
@@ -205,28 +244,35 @@ def command_doctor(args) -> int:
         "runtime_playwright": (runtime_dir / "node_modules" / "playwright").is_dir(),
     }
     browser_path = os.environ.get("MARKER_MERMAID_CHROMIUM_EXECUTABLE")
+    probe_error = None
     if not browser_path and checks["node"] and checks["runtime_playwright"]:
-        probe = subprocess.run(
-            [
-                "node",
-                "--input-type=module",
-                "--eval",
-                "import {chromium} from 'playwright'; console.log(chromium.executablePath())",
-            ],
-            cwd=runtime_dir,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if probe.returncode == 0:
-            browser_path = probe.stdout.strip()
+        try:
+            probe = subprocess.run(
+                [
+                    "node",
+                    "--input-type=module",
+                    "--eval",
+                    "import {chromium} from 'playwright'; console.log(chromium.executablePath())",
+                ],
+                cwd=runtime_dir,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=min(config.render_timeout_seconds, 10.0),
+            )
+            if probe.returncode == 0:
+                browser_path = probe.stdout.strip()
+            else:
+                probe_error = f"Playwright executable probe exited with status {probe.returncode}"
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            probe_error = f"Playwright executable probe failed: {exc}"
     checks["chromium_executable"] = browser_path
     checks["chromium_installed"] = bool(browser_path and Path(browser_path).is_file())
+    checks["chromium_probe_error"] = probe_error
     try:
         checks["marker_pdf"] = importlib.metadata.version("marker-pdf")
     except importlib.metadata.PackageNotFoundError:
         checks["marker_pdf"] = None
-    print(json.dumps(checks, indent=2))
     required = (
         checks["node"],
         checks["runtime_worker"],
@@ -235,7 +281,29 @@ def command_doctor(args) -> int:
         checks["runtime_playwright"],
         checks["chromium_installed"],
     )
-    return 0 if all(required) else 1
+    healthy = all(required)
+    checks["render_smoke"] = None
+    if args.deep:
+        smoke = {"passed": False, "error": "runtime prerequisites unavailable", "warnings": []}
+        if healthy:
+            runtime = NodeMermaidRuntime(runtime_dir)
+            try:
+                outcome = _validator(runtime, config).validate(
+                    "flowchart LR\n    A[Doctor] --> B[Ready]\n", config.render_timeout_seconds
+                )
+                smoke = {
+                    "passed": outcome.runtime.syntax_valid and outcome.runtime.render_valid,
+                    "error": outcome.runtime.error,
+                    "warnings": outcome.warnings,
+                }
+            except (OSError, RuntimeError) as exc:
+                smoke["error"] = f"render smoke failed: {exc}"
+            finally:
+                runtime.close()
+        checks["render_smoke"] = smoke
+        healthy = healthy and smoke["passed"]
+    print(json.dumps(checks, indent=2))
+    return 0 if healthy else 1
 
 
 def command_install_runtime(args) -> int:
@@ -335,6 +403,9 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = subparsers.add_parser("doctor", help="check optional Marker and Mermaid runtimes")
     doctor.add_argument("--config")
     doctor.add_argument("--runtime-dir")
+    doctor.add_argument(
+        "--deep", action="store_true", help="launch Chromium and render a smoke diagram"
+    )
     doctor.set_defaults(handler=command_doctor)
     install = subparsers.add_parser(
         "install-runtime", help="install pinned Node and Chromium runtime"

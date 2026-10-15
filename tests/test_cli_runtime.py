@@ -53,6 +53,26 @@ def test_runtime_dir_resolver_uses_cli_then_config_then_environment_then_default
     assert cli.resolve_runtime_dir(cli_value=None, config=MermaidConfig()) == fallback_path
 
 
+@pytest.mark.parametrize("source", ["cli", "config", "environment"])
+@pytest.mark.parametrize("runtime_path", ["runtime", "공백 있는 runtime", "~/runtime"])
+def test_runtime_dir_resolver_normalizes_all_override_sources(
+    monkeypatch, tmp_path, source, runtime_path
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("MARKER_MERMAID_RUNTIME_DIR", raising=False)
+    config = MermaidConfig(runtime_dir=runtime_path) if source == "config" else MermaidConfig()
+    if source == "environment":
+        monkeypatch.setenv("MARKER_MERMAID_RUNTIME_DIR", runtime_path)
+
+    resolved = cli.resolve_runtime_dir(
+        cli_value=runtime_path if source == "cli" else None,
+        config=config,
+    )
+
+    assert resolved == (tmp_path / runtime_path.removeprefix("~/")).resolve()
+
+
 @pytest.mark.parametrize("command", ["doctor", "install-runtime"])
 def test_runtime_commands_accept_config_and_runtime_dir_options(command):
     args = cli.build_parser().parse_args(

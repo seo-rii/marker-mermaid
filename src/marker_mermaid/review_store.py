@@ -15,7 +15,7 @@ import re
 import secrets
 import stat
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -1631,24 +1631,59 @@ class ReviewStore:
                 raise UnsafeReviewPathError("review artifact path escapes its bundle")
         return candidate
 
-    def _read_code(self, bundle: Path, relative: str) -> str:
-        path = self._artifact_path(bundle, relative)
+    def _read_artifact_bytes(
+        self, bundle: Path, relative: str, limit: int, *, kind: str
+    ) -> bytes:
+        """Read one bounded regular-file snapshot through anchored descriptors."""
+        self._artifact_path(bundle, relative)
+        parts = Path(relative).parts
         try:
-            size = path.stat().st_size
-            if size > MAX_MERMAID_BYTES:
-                raise ReviewValidationError(f"{relative} exceeds the Mermaid size limit")
-            code = path.read_text(encoding="utf-8")
+            with ExitStack() as stack:
+                directory_fd = self._open_bundle_directory(bundle)
+                stack.callback(os.close, directory_fd)
+                for part in parts[:-1]:
+                    directory_fd = os.open(
+                        part,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                        dir_fd=directory_fd,
+                    )
+                    stack.callback(os.close, directory_fd)
+                descriptor = os.open(
+                    parts[-1],
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                    dir_fd=directory_fd,
+                )
+                stack.callback(os.close, descriptor)
+                with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                    metadata = os.fstat(handle.fileno())
+                    if not stat.S_ISREG(metadata.st_mode):
+                        raise ReviewValidationError(f"{relative} must be a regular file")
+                    if metadata.st_size > limit:
+                        raise ReviewValidationError(f"{relative} exceeds the {kind} size limit")
+                    payload = handle.read(limit + 1)
+                if len(payload) > limit:
+                    raise ReviewValidationError(f"{relative} exceeds the {kind} size limit")
+                return payload
+        except OSError as exc:
+            raise ReviewValidationError(f"{relative} could not be read safely") from exc
+
+    def _read_code(self, bundle: Path, relative: str) -> str:
+        try:
+            code = self._read_artifact_bytes(
+                bundle, relative, MAX_MERMAID_BYTES, kind="Mermaid"
+            ).decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ReviewValidationError(f"{relative} is not UTF-8") from exc
         self._validate_code(code)
         return code
 
     def _read_json(self, bundle: Path, relative: str, *, expected: type) -> Any:
-        path = self._artifact_path(bundle, relative)
-        if path.stat().st_size > MAX_JSON_BYTES:
-            raise ReviewValidationError(f"{relative} exceeds the JSON size limit")
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(
+                self._read_artifact_bytes(bundle, relative, MAX_JSON_BYTES, kind="JSON").decode(
+                    "utf-8"
+                )
+            )
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ReviewValidationError(f"{relative} is not valid UTF-8 JSON") from exc
         if not isinstance(payload, expected):
@@ -1670,10 +1705,9 @@ class ReviewStore:
         payload = None
         raw_digest = None
         if path.exists():
-            with path.open("rb") as artifact:
-                raw_payload = artifact.read(MAX_JSON_BYTES + 1)
-            if len(raw_payload) > MAX_JSON_BYTES:
-                raise ReviewValidationError("provenance.json exceeds the JSON size limit")
+            raw_payload = self._read_artifact_bytes(
+                bundle, "provenance.json", MAX_JSON_BYTES, kind="JSON"
+            )
             raw_digest = _bytes_digest(raw_payload)
             try:
                 payload = json.loads(raw_payload.decode("utf-8"))
@@ -1694,10 +1728,18 @@ class ReviewStore:
         manifest: dict[str, Any],
     ) -> ReviewLayoutHints | None:
         path = self._artifact_path(bundle, "layout-hints.json", must_exist=False)
-        if path.exists() and path.stat().st_size > MAX_JSON_BYTES:
-            raise ReviewValidationError("layout-hints.json exceeds the JSON size limit")
-        raw_digest = _bytes_digest(path.read_bytes()) if path.exists() else None
-        payload = self._read_optional_json(bundle, "layout-hints.json", expected=dict)
+        raw_payload = (
+            self._read_artifact_bytes(bundle, "layout-hints.json", MAX_JSON_BYTES, kind="JSON")
+            if path.exists()
+            else None
+        )
+        raw_digest = _bytes_digest(raw_payload) if raw_payload is not None else None
+        try:
+            payload = json.loads(raw_payload.decode("utf-8")) if raw_payload is not None else None
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ReviewValidationError("layout-hints.json is not valid UTF-8 JSON") from exc
+        if raw_payload is not None and not isinstance(payload, dict):
+            raise ReviewValidationError("layout-hints.json must contain a JSON dict")
         layout = self._validate_layout_hints(payload)
         files = manifest.get("files")
         expected_digest = files.get("layout-hints.json") if isinstance(files, dict) else None
@@ -1711,10 +1753,7 @@ class ReviewStore:
         path = self._artifact_path(bundle, relative, must_exist=False)
         if not path.exists():
             return None
-        path = self._artifact_path(bundle, relative)
-        if path.stat().st_size > limit:
-            raise ReviewValidationError(f"{relative} exceeds the artifact size limit")
-        return path.read_bytes()
+        return self._read_artifact_bytes(bundle, relative, limit, kind="artifact")
 
     def _read_revision_ir(
         self, bundle: Path, revision: str, expected_digest: str | None
@@ -1831,7 +1870,7 @@ class ReviewStore:
         try:
             journal_fd = os.open(
                 _REVIEW_TRANSACTION_FILE,
-                os.O_RDONLY | os.O_NOFOLLOW,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                 dir_fd=bundle_fd,
             )
         except FileNotFoundError:
@@ -1942,7 +1981,7 @@ class ReviewStore:
                 try:
                     target_fd = os.open(
                         target_name,
-                        os.O_RDONLY | os.O_NOFOLLOW,
+                        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                         dir_fd=parent_fd,
                     )
                 except FileNotFoundError:
@@ -1982,7 +2021,7 @@ class ReviewStore:
                 try:
                     temporary_fd = os.open(
                         temporary_name,
-                        os.O_RDONLY | os.O_NOFOLLOW,
+                        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                         dir_fd=parent_fd,
                     )
                 except OSError as exc:
@@ -2124,7 +2163,7 @@ class ReviewStore:
                     try:
                         original_fd = os.open(
                             target_name,
-                            os.O_RDONLY | os.O_NOFOLLOW,
+                            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                             dir_fd=parent_fd,
                         )
                     except FileNotFoundError:

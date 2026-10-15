@@ -16,8 +16,12 @@ if (process.env.MARKER_MERMAID_CHROMIUM_EXECUTABLE) {
 }
 
 const browser = await chromium.launch(launchOptions);
-const context = await browser.newContext({ javaScriptEnabled: true });
+const context = await browser.newContext({
+  javaScriptEnabled: true,
+  serviceWorkers: "block",
+});
 await context.route("**/*", (route) => route.abort("blockedbyclient"));
+await context.routeWebSocket("**/*", (webSocket) => webSocket.close());
 const page = await context.newPage();
 await page.setContent("<!doctype html><html><body></body></html>");
 await page.addScriptTag({ path: mermaidBundle });
@@ -82,7 +86,9 @@ async function handle(request) {
       let textLength = 0;
       let pathCount = 0;
       let pathDataLength = 0;
-      let securityFinding = null;
+      let securityFinding = parsedSvg.createTreeWalker(
+        parsedSvg, NodeFilter.SHOW_PROCESSING_INSTRUCTION,
+      ).nextNode() === null ? null : "processing instruction";
       if (nodeCount <= limits.maxSvgNodes) {
         const textWalker = parsedSvg.createTreeWalker(
           parsedRoot,
@@ -101,6 +107,11 @@ async function handle(request) {
           "embed",
           "link",
           "foreignobject",
+          "animate",
+          "animatemotion",
+          "animatetransform",
+          "set",
+          "discard",
         ]);
         const geometryAttributes = new Set([
           "cx",
@@ -122,10 +133,27 @@ async function handle(request) {
           "y2",
         ]);
         const hasExternalCss = (value) => {
-          const lowered = value.toLocaleLowerCase("en-US");
+          // Decode CSS identifier/string escapes before conservative preflight.
+          // Python's tokenized inspection remains the final artifact gate.
+          const decoded = value.replace(
+            /\\(?:([0-9a-f]{1,6})(?:\r\n|[\t\n\r\f ])?|(\r\n|[\n\r\f])|([^\n\r\f]))/giu,
+            (_match, hex, continuation, escaped) => {
+              if (continuation !== undefined) return "";
+              if (hex === undefined) return escaped;
+              const code = Number.parseInt(hex, 16);
+              return code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)
+                ? "\ufffd" : String.fromCodePoint(code);
+            },
+          );
+          const lowered = decoded.toLocaleLowerCase("en-US");
           if (lowered.includes("@import")) return true;
+          if (/(?:image|image-set|-webkit-image-set|src)\s*\(/u.test(lowered)) return true;
           for (const match of lowered.matchAll(/url\s*\(\s*(['"]?)(.*?)\1\s*\)/gu)) {
             if (!match[2].trim().startsWith("#")) return true;
+          }
+          // An unterminated url() can still produce a CSS URL token at EOF.
+          if (/url\s*\(/u.test(lowered) && !/url\s*\(\s*(['"]?)#[^)]*/u.test(lowered)) {
+            return true;
           }
           return false;
         };

@@ -31,6 +31,63 @@ def _worker(tmp_path, source: str) -> None:
     (tmp_path / "worker.mjs").write_text(source, encoding="utf-8")
 
 
+@pytest.mark.parametrize("runtime_path", ["runtime", "공백 있는 runtime", "~/runtime"])
+def test_runtime_directory_is_resolved_before_worker_changes_directory(
+    monkeypatch, tmp_path, runtime_path
+):
+    runtime_dir = tmp_path / runtime_path.removeprefix("~/")
+    runtime_dir.mkdir()
+    _worker(
+        runtime_dir,
+        """
+import readline from "node:readline";
+const rl = readline.createInterface({input: process.stdin});
+rl.on("line", line => {
+  const request = JSON.parse(line);
+  process.stdout.write(JSON.stringify({id: request.id, ok: true,
+    svg: "<svg viewBox='0 0 1 1'/>"}) + "\\n");
+});
+""",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    runtime = NodeMermaidRuntime(runtime_path)
+    monkeypatch.chdir(tmp_path.parent)
+
+    try:
+        # This checks path resolution, so allow the first Node launch on a cold
+        # CI runner its own startup budget. Deadline tests use short limits below.
+        result = runtime.validate_and_render("flowchart LR\nA-->B", 10)
+    finally:
+        runtime.close()
+
+    assert runtime.runtime_dir == runtime_dir.resolve()
+    assert result.render_valid, result.error
+
+
+@pytest.mark.parametrize("source", ["override", "cache"])
+def test_default_runtime_directory_normalizes_environment_paths(
+    monkeypatch, tmp_path, source
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MARKER_MERMAID_RUNTIME_DIR", raising=False)
+    if source == "override":
+        monkeypatch.setenv("MARKER_MERMAID_RUNTIME_DIR", "relative runtime")
+        expected = tmp_path / "relative runtime"
+    else:
+        monkeypatch.setenv("XDG_CACHE_HOME", "relative cache")
+        # The fallback is used only when no packaged dependency installation exists.
+        original_is_dir = Path.is_dir
+        monkeypatch.setattr(
+            Path,
+            "is_dir",
+            lambda path: False if path.name == "mermaid" else original_is_dir(path),
+        )
+        expected = tmp_path / "relative cache" / "marker-mermaid" / "runtime"
+
+    assert validation.default_runtime_dir() == expected.resolve()
+
+
 def test_partial_runtime_response_respects_deadline_without_blocking_readline(tmp_path):
     _worker(
         tmp_path,

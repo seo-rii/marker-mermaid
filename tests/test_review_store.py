@@ -5,7 +5,6 @@ import json
 import os
 import threading
 from io import BytesIO
-from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -35,7 +34,10 @@ def _valid_render(code: str) -> ReviewValidationResult:
     digest = hashlib.sha256(code.encode("utf-8")).hexdigest()
     return ReviewValidationResult(
         valid=True,
-        svg=f"<svg viewBox='0 0 1 1'><title>{digest}</title></svg>",
+        svg=(
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'>"
+            f"<title>{digest}</title></svg>"
+        ),
     )
 
 
@@ -150,7 +152,7 @@ def test_review_store_fails_fast_on_unsupported_platform(monkeypatch, tmp_path):
 
 
 def write_v05_generation_manifest(bundle):
-    svg = b"<svg viewBox='0 0 1 1'/>"
+    svg = b"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/>"
     png = _png_bytes()
     (bundle / "final.svg").write_bytes(svg)
     (bundle / "final.png").write_bytes(png)
@@ -249,7 +251,7 @@ def test_list_and_load_bundle_without_mutating_legacy_sidecar(tmp_path):
     ("artifact", "replacement"),
     [
         ("final.mmd", b"flowchart LR\n  X --> Y\n"),
-        ("final.svg", b"<svg viewBox='0 0 2 2'/>"),
+        ("final.svg", b"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 2 2'/>"),
         ("final.png", _png_bytes() + b"tampered"),
     ],
 )
@@ -607,7 +609,7 @@ def test_approval_requires_validator_and_commits_fresh_render(tmp_path):
         tmp_path,
         validator=lambda code: ReviewValidationResult(
             valid=True,
-            svg="<svg viewBox='0 0 2 2'/>",
+            svg="<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 2 2'/>",
             png=_png_bytes(),
         ),
     )
@@ -618,31 +620,36 @@ def test_approval_requires_validator_and_commits_fresh_render(tmp_path):
     )
 
     assert approved.state.decision == "approved"
-    assert approved.svg == "<svg viewBox='0 0 2 2'/>"
+    assert approved.svg == "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 2 2'/>"
     assert approved.png == _png_bytes()
     assert (bundle_path / "final.svg").read_text() == approved.svg
 
 
 def test_review_validation_result_is_frozen():
-    result = ReviewValidationResult(valid=True, svg="<svg viewBox='0 0 1 1'/>")
+    result = ReviewValidationResult(
+        valid=True, svg="<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/>"
+    )
 
     with pytest.raises(ValidationError, match="frozen"):
-        result.svg = "<svg viewBox='0 0 2 2'/>"
+        result.svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 2 2'/>"
 
 
 @pytest.mark.parametrize(
     "update",
     [
         {"png": b"not-a-png"},
-        {"svg": "<svg viewBox='0 0 1 1'/>" + " " * MAX_RENDER_BYTES},
-        {"svg": "<svg viewBox='0 0 1 1'><script/></svg>"},
+        {
+            "svg": "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/>"
+            + " " * MAX_RENDER_BYTES
+        },
+        {"svg": "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'><script/></svg>"},
     ],
 )
 def test_commit_revalidates_model_copy_bypassed_render_artifacts(tmp_path, update):
     bundle = make_bundle(tmp_path)
     trusted_shape = ReviewValidationResult(
         valid=True,
-        svg="<svg viewBox='0 0 1 1'/>",
+        svg="<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/>",
         png=_png_bytes(),
     )
     bypassed = trusted_shape.model_copy(update=update)
@@ -1251,7 +1258,10 @@ def test_ir_and_render_artifacts_are_revisioned_and_restored_by_undo(tmp_path):
         tmp_path,
         validator=lambda code: ReviewValidationResult(
             valid=True,
-            svg="<svg viewBox='0 0 1 1'><title>new</title></svg>",
+            svg=(
+                "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'>"
+                "<title>new</title></svg>"
+            ),
             png=_png_bytes(),
         ),
     )
@@ -1271,7 +1281,9 @@ def test_ir_and_render_artifacts_are_revisioned_and_restored_by_undo(tmp_path):
     )
 
     assert edited.scene_ir == new_ir
-    assert edited.svg == "<svg viewBox='0 0 1 1'><title>new</title></svg>"
+    assert edited.svg == (
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'><title>new</title></svg>"
+    )
     assert edited.png == _png_bytes()
     assert edited.manifest["review_quality_status"] == "unscored_user_revision"
     assert (bundle_path / "versions/r000000.scene-ir.json").exists()
@@ -1343,7 +1355,8 @@ def test_provenance_load_digests_and_parses_one_bounded_byte_snapshot(
         json.dumps([evidence("replacement", "Replacement")]),
         encoding="utf-8",
     )
-    original_open = Path.open
+    original_open = os.fdopen
+    provenance_inode = provenance_path.stat().st_ino
     swapped = False
 
     class SwappingReader:
@@ -1357,6 +1370,9 @@ def test_provenance_load_digests_and_parses_one_bounded_byte_snapshot(
         def __exit__(self, *args):
             return self.artifact.__exit__(*args)
 
+        def fileno(self):
+            return self.artifact.fileno()
+
         def read(self, *args, **kwargs):
             nonlocal swapped
             payload = self.artifact.read(*args, **kwargs)
@@ -1364,13 +1380,13 @@ def test_provenance_load_digests_and_parses_one_bounded_byte_snapshot(
             swapped = True
             return payload
 
-    def swapping_open(self, mode="r", *args, **kwargs):
-        artifact = original_open(self, mode, *args, **kwargs)
-        if self == provenance_path and mode == "rb" and not swapped:
+    def swapping_open(descriptor, mode="r", *args, **kwargs):
+        artifact = original_open(descriptor, mode, *args, **kwargs)
+        if os.fstat(descriptor).st_ino == provenance_inode and mode == "rb" and not swapped:
             return SwappingReader(artifact)
         return artifact
 
-    monkeypatch.setattr(Path, "open", swapping_open)
+    monkeypatch.setattr(os, "fdopen", swapping_open)
 
     loaded = ReviewStore(tmp_path).load_bundle("diagram-a")
 

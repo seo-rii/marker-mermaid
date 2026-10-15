@@ -26,12 +26,15 @@ classifiers = [
 dependencies = [
   "Pillow>=10.0",
   "pydantic>=2.8,<3",
+  "tinycss2>=1.4,<2",
+  "cssselect2>=0.8,<1",
 ]
 
 [project.optional-dependencies]
 marker = ["marker-pdf==1.10.2", "PyMuPDF>=1.24,<2"]
 vision = ["numpy>=1.26", "opencv-python-headless>=4.8"]
 dev = [
+  "markdown-it-py>=3,<5",
   "pytest>=8.0",
   "pytest-cov>=5.0",
   "ruff>=0.9",
@@ -55,6 +58,7 @@ addopts = "-ra"
 testpaths = ["tests"]
 markers = [
   "integration: exercises Marker or a real Mermaid browser runtime",
+  "review_browser: exercises the review UI in real Chromium",
 ]
 
 [tool.ruff]

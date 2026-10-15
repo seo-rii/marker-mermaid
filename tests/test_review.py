@@ -48,7 +48,9 @@ def make_bundle(tmp_path, *, source_id="source-a", with_png=False):
         encoding="utf-8",
     )
     (diagram / "final.mmd").write_text("flowchart LR\n  A --> B\n", encoding="utf-8")
-    (diagram / "final.svg").write_text("<svg viewBox='0 0 1 1'/>", encoding="utf-8")
+    (diagram / "final.svg").write_text(
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/>", encoding="utf-8"
+    )
     if with_png:
         (diagram / "final.png").write_bytes(_png_bytes())
     (diagram / "scene-ir.json").write_text(
@@ -116,7 +118,10 @@ def running_server(tmp_path, *, token="test-token", validator=None):
     effective_validator = validator or (
         lambda code: ReviewValidationResult(
             valid="INVALID" not in code,
-            svg=f"<svg viewBox='0 0 1 1'><title>{len(code)}</title></svg>",
+            svg=(
+                "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'>"
+                f"<title>{len(code)}</title></svg>"
+            ),
             png=_png_bytes(),
         )
     )
@@ -548,7 +553,7 @@ def test_http_edit_rejects_model_copy_bypassed_render_before_writing(tmp_path):
     diagram = make_bundle(tmp_path)
     valid_shape = ReviewValidationResult(
         valid=True,
-        svg="<svg viewBox='0 0 1 1'/>",
+        svg="<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/>",
         png=_png_bytes(),
     )
     bypassed = valid_shape.model_copy(update={"png": b"not-a-png"})
@@ -587,7 +592,7 @@ def test_undo_atomically_restores_absent_optional_artifacts(tmp_path):
         tmp_path,
         validator=lambda code: ReviewValidationResult(
             valid=True,
-            svg="<svg viewBox='0 0 1 1'/>",
+            svg="<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/>",
             png=_png_bytes(),
         ),
     )
@@ -1035,7 +1040,7 @@ def test_structured_edge_add_render_failure_leaves_every_bundle_file_unchanged(t
     }
     validator = lambda code: ReviewValidationResult(  # noqa: E731
         valid="B --> A" not in code,
-        svg="<svg viewBox='0 0 1 1'/>",
+        svg="<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/>",
         error="injected render rejection",
     )
     with running_server(tmp_path, validator=validator) as (base, store):
@@ -1230,7 +1235,7 @@ def test_structured_edge_label_render_failure_leaves_bundle_unchanged(tmp_path):
     }
     validator = lambda code: ReviewValidationResult(  # noqa: E731
         valid="Rejected label" not in code,
-        svg="<svg viewBox='0 0 1 1'/>",
+        svg="<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/>",
         error="injected render rejection",
     )
     with running_server(tmp_path, validator=validator) as (base, store):
