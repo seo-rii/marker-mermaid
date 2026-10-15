@@ -21,7 +21,8 @@ from marker_mermaid.validation import NodeMermaidRuntime, default_runtime_dir
 pytestmark = pytest.mark.integration
 
 
-def test_native_launcher_preserves_required_resource_policy():
+@pytest.mark.parametrize("worker_exit_code", [0, 7])
+def test_native_launcher_preserves_required_resource_policy(worker_exit_code):
     launcher = Path(validation.__file__).with_name("runtime_launcher.py")
     observed_limits = ["RLIMIT_CORE", "RLIMIT_CPU", "RLIMIT_DATA", "RLIMIT_AS"]
     inherited_limits = {
@@ -37,14 +38,16 @@ def test_native_launcher_preserves_required_resource_policy():
             "-c",
             "import json, resource; "
             "print(json.dumps({name: resource.getrlimit(getattr(resource, name)) "
-            f"for name in {observed_limits!r}}}))",
+            f"for name in {observed_limits!r}}})); "
+            f"raise SystemExit({worker_exit_code})",
         ],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         timeout=15,
         start_new_session=True,
     )
+    assert probe.returncode == worker_exit_code, probe.stderr
     limits = json.loads(probe.stdout)
 
     assert limits["RLIMIT_CORE"] == [0, 0]
