@@ -65,11 +65,52 @@ the encoded field before decoding it. Newly returned Review validator PNGs use t
 checks, while compatibility for reading existing bundles is retained separately.
 
 The reusable worker starts through a small POSIX launcher that disables core dumps and applies
-hard `RLIMIT_DATA` (2 GiB per process) and `RLIMIT_CPU` (600 seconds per process) before replacing
-itself with Node; Chromium children inherit those limits. Per-request wall-clock timeout and
-process-group termination remain the primary cleanup boundary. POSIX rlimits are per process rather
-than an aggregate cgroup/container RSS budget, so deployments handling hostile multi-tenant input
-should still place the worker in a memory/CPU-limited container or service.
+a hard `RLIMIT_CPU` of 600 seconds per process. Linux additionally applies a hard per-process
+`RLIMIT_DATA` limit of 2 GiB before replacing the launcher with Node; Chromium inherits those
+limits. CPU limits accumulate over a reused process's lifetime, rather than resetting per request.
+
+Darwin cannot reliably lower DATA/AS below its existing sparse mappings. On macOS, the launcher
+preserves inherited DATA/AS limits and stays as an independent supervisor in its own session.
+It reads `proc_listpgrppids` and `proc_pid_rusage(RUSAGE_INFO_V0)` from libproc before starting
+Node, then samples the **sum of physical footprints** of its owned group every 50 ms (including
+the supervisor and browser children). A sum above 2 GiB, unavailable inspection, or an overfull
+256-member snapshot terminates the owned group. The threshold is passed through the same trusted
+launcher argument as Linux's DATA budget. This is a sampled group budget, not a kernel allocation
+cap: bursts between samples and scheduling delays can overshoot it. Physical footprint includes
+compressed memory and differs from Linux DATA accounting. Apple defines the APIs in
+[libproc.h](https://github.com/apple-oss-distributions/xnu/blob/main/libsyscall/wrappers/libproc/libproc.h)
+and the V0 fields in
+[resource.h](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/resource.h).
+
+The macOS supervisor keeps JSONL descriptors inherited by Node, cleans remaining children after
+Node exit, and terminates its group on TERM/INT. Fatal diagnostics are bounded and nonblocking so
+a full stderr pipe cannot prevent cleanup. The parent rejects responses from children whose
+supervisor has died and checks guardian exit every 50 ms during a request. Arbitrary SIGKILL of
+the supervisor while idle stops sampling; the next request or explicit close cleans that group.
+Processes that deliberately escape the session are outside this boundary. These controls isolate
+the pinned renderer; they do not sandbox hostile code running with the same account.
+
+On POSIX, the browser-launch helper temporarily overrides Node's child-process spawn options
+while the pinned Playwright Chromium launch is pending, setting `detached: false` and restoring
+the original spawn function in `finally`. Playwright otherwise detaches Chromium into a separate
+group, outside the owner's cleanup and memory accounting. Actual browser tests verify Chromium
+and its descendants retain the worker's group and are stopped after Node is forcibly killed.
+Playwright's own graceful browser-close protocol remains available; the parent owns final group
+termination if browser closure fails. Upgrading Playwright must preserve this tested launch contract.
+
+Per-request wall-clock timeout and process-group termination remain the primary cleanup boundary.
+Neither Linux's per-process rlimits nor macOS sampling provide a hard aggregate cgroup/container
+memory budget. Deployments requiring that guarantee should run the renderer in an externally
+memory/CPU-limited container or service.
+
+The Python parent observes worker exit without reaping the session leader until its final
+process-group signal has been sent. Keeping that PID reserved prevents a delayed close or garbage
+collection from signaling an unrelated session after PID reuse. Exit observation uses
+`waitid(WNOWAIT)`, with a zero-initialized Darwin libc adapter on macOS Python 3.11 and 3.12.
+When cleanup detects that the private child was externally reaped, it closes its pipes without
+signaling the stale numeric process-group ID. Applications must not independently reap the worker
+or install a SIGCHLD handler that reaps it concurrently with runtime cleanup; that breaks the
+runtime's ownership of the reserved PID.
 
 Validation/publication HMAC seals are process-local capabilities that prevent public model
 constructors, JSON round trips, and ordinary post-validation mutation from impersonating a

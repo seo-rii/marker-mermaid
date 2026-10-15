@@ -133,7 +133,9 @@ def test_real_worker_preflight_matches_svg_reference_policy(tmp_path, body, acce
         )
     )
     (tmp_path / "worker.mjs").write_text(worker)
-    (tmp_path / "render_limits.mjs").write_bytes((packaged / "render_limits.mjs").read_bytes())
+    for module in packaged.glob("*.mjs"):
+        if module.name != "worker.mjs":
+            (tmp_path / module.name).write_bytes(module.read_bytes())
     (tmp_path / "node_modules").symlink_to(dependencies, target_is_directory=True)
     runtime = NodeMermaidRuntime(tmp_path)
     try:

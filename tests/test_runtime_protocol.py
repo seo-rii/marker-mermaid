@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import ctypes
+import errno
+import gc
 import json
+import os
 import resource
 import shutil
+import signal
 import subprocess
 import sys
 import time
+import weakref
 from pathlib import Path
 
 import pytest
@@ -60,9 +66,7 @@ rl.on("line", line => {
 
 
 @pytest.mark.parametrize("source", ["override", "cache"])
-def test_default_runtime_directory_normalizes_environment_paths(
-    monkeypatch, tmp_path, source
-):
+def test_default_runtime_directory_normalizes_environment_paths(monkeypatch, tmp_path, source):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("MARKER_MERMAID_RUNTIME_DIR", raising=False)
     if source == "override":
@@ -208,6 +212,291 @@ process.stdin.on("end", () => {{
     assert marker.read_text(encoding="utf-8") == "closed"
 
 
+def _pid_is_running(pid: int) -> bool:
+    # An orphan may remain as an inert zombie until the system reaper collects it.
+    # The regression contract is that no owned descendant remains running.
+    status = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    return bool(status) and not status.startswith("Z")
+
+
+def _observe_worker_exit(process, timeout=5):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = validation._runtime_worker_exit_code(process)  # noqa: SLF001
+        if result is not None:
+            return result
+        time.sleep(0.01)
+    raise AssertionError("worker did not exit")
+
+
+@pytest.mark.parametrize("platform,exited", [("darwin", True), ("linux", True), ("darwin", False)])
+def test_zombie_only_group_permission_error_is_specific_to_darwin(monkeypatch, platform, exited):
+    source = "pass" if exited else "import time; time.sleep(30)"
+    process = subprocess.Popen([sys.executable, "-c", source], start_new_session=True)
+    if exited:
+        assert _observe_worker_exit(process) == 0
+    # Isolate signal policy from native-backend selection while mocking the OS.
+    # The complete suite separately exercises real Darwin waitid and child exit.
+    observed_exit = validation._runtime_worker_exit_code(process)  # noqa: SLF001
+    monkeypatch.setattr(validation, "_runtime_worker_exit_code", lambda _process: observed_exit)
+    monkeypatch.setattr(validation.sys, "platform", platform)
+
+    def deny_signal(*_args):
+        raise PermissionError(errno.EPERM, "mock Darwin zombie-only group")
+
+    monkeypatch.setattr(validation.os, "killpg", deny_signal)
+    try:
+        if platform == "darwin" and exited:
+            validation._signal_runtime_process(process, process.pid, signal.SIGTERM)  # noqa: SLF001
+        else:
+            with pytest.raises(PermissionError):
+                validation._signal_runtime_process(process, process.pid, signal.SIGTERM)  # noqa: SLF001
+        assert process.returncode is None
+    finally:
+        if not exited:
+            process.kill()
+        process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("reap_with_popen", [True, False])
+def test_runtime_close_never_signals_an_externally_reaped_worker(
+    monkeypatch, tmp_path, reap_with_popen
+):
+    _worker(tmp_path, "process.exit(0);")
+    runtime = NodeMermaidRuntime(tmp_path)
+    process = runtime._start()  # noqa: SLF001 - simulate lost private child ownership
+    if reap_with_popen:
+        assert process.wait(timeout=5) == 0
+    else:
+        assert os.waitpid(process.pid, 0) == (process.pid, 0)
+    signals = []
+    monkeypatch.setattr(validation.os, "killpg", lambda *args: signals.append(args))
+
+    runtime.close()
+
+    assert signals == []
+    assert process.stdin.closed
+    assert process.stdout.closed
+    assert process.stderr.closed
+
+
+@pytest.mark.parametrize("worker_exit", ["stdin_eof", "before_request", "response_eof"])
+def test_worker_identity_remains_waitable_until_the_last_group_signal(
+    monkeypatch, tmp_path, worker_exit
+):
+    sources = {
+        "stdin_eof": "process.stdin.resume();",
+        "before_request": "process.exit(0);",
+        "response_eof": "process.stdin.once('data', () => process.exit(7));",
+    }
+    _worker(tmp_path, sources[worker_exit])
+    runtime = NodeMermaidRuntime(tmp_path)
+    process = runtime._start()  # noqa: SLF001 - assert the owned PID cannot be reused
+    original_killpg = os.killpg
+    original_start = runtime._start  # noqa: SLF001 - observe replacement worker too
+    processes = {process.pid: process}
+    signals = []
+
+    def start_and_remember():
+        replacement = original_start()
+        processes[replacement.pid] = replacement
+        return replacement
+
+    def signal_still_owned_group(process_group_id, signum):
+        owned_process = processes[process_group_id]
+        # ECHILD here means the PID is already reusable: no signal is safe.
+        validation._runtime_worker_exit_code(owned_process)  # noqa: SLF001
+        signals.append(signum)
+        original_killpg(process_group_id, signum)
+
+    monkeypatch.setattr(runtime, "_start", start_and_remember)
+    monkeypatch.setattr(validation.os, "killpg", signal_still_owned_group)
+    try:
+        if worker_exit == "before_request":
+            assert _observe_worker_exit(process) == 0
+            # Restart the already-exited worker through the real request path.
+            _worker(tmp_path, "process.stdin.once('data', () => process.exit(7));")
+        if worker_exit != "stdin_eof":
+            result = runtime.validate_and_render("flowchart LR\nA-->B", 5)
+            assert not result.render_valid
+        else:
+            runtime.close()
+        assert signal.SIGTERM in signals
+        assert signal.SIGKILL in signals
+        assert process.poll() is not None
+    finally:
+        monkeypatch.setattr(validation.os, "killpg", original_killpg)
+        runtime.close()
+
+
+def test_runtime_requires_non_reaping_child_observation(monkeypatch, tmp_path):
+    monkeypatch.delattr(validation.os, "waitid", raising=False)
+    monkeypatch.setattr(validation.sys, "platform", "unsupported")
+
+    with pytest.raises(RuntimeError, match="WNOWAIT"):
+        NodeMermaidRuntime(tmp_path)
+
+
+@pytest.mark.parametrize("exit_status", [None, 0, -15, "reaped"])
+def test_darwin_waitid_fallback_preserves_exit_and_ownership_contract(
+    monkeypatch, tmp_path, exit_status
+):
+    # Exercise the macOS <=3.12 branch on every CI platform; the macOS job also
+    # calls the real libc adapter through the complete process regression suite.
+    calls = []
+
+    def native_waitid(id_type, pid, pointer, flags):
+        assert (id_type, flags) == (1, 0x25)
+        info = ctypes.cast(pointer, ctypes.POINTER(validation._DarwinSiginfo)).contents
+        assert info.si_pid == 0
+        calls.append(pid)
+        if exit_status == "reaped":
+            ctypes.set_errno(errno.ECHILD)
+            return -1
+        if exit_status is not None:
+            info.si_pid = pid
+            info.si_code = 1 if exit_status >= 0 else 2
+            info.si_status = abs(exit_status)
+        return 0
+
+    monkeypatch.delattr(validation.os, "waitid", raising=False)
+    monkeypatch.setattr(validation.sys, "platform", "darwin")
+    monkeypatch.setattr(validation, "_darwin_waitid", lambda: native_waitid)
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    try:
+        if exit_status == "reaped":
+            with pytest.raises(ChildProcessError):
+                validation._runtime_worker_exit_code(process)  # noqa: SLF001
+        else:
+            assert validation._runtime_worker_exit_code(process) == exit_status  # noqa: SLF001
+            assert process.returncode is None
+        assert calls == [process.pid]
+    finally:
+        # The stub reports ECHILD without actually reaping this fixture child.
+        process.returncode = None
+        process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("parent_exit", ["before_close", "stdin_eof", "sigterm"])
+@pytest.mark.parametrize("descendant_depth", [1, 2])
+def test_close_kills_term_ignoring_descendants_after_worker_exit(
+    tmp_path, parent_exit, descendant_depth
+):
+    marker = tmp_path / "child.pid"
+    child_source = (
+        "process.on('SIGTERM', () => {});"
+        f"require('node:fs').writeFileSync({json.dumps(str(marker))}, String(process.pid));"
+        "setInterval(() => {}, 1000);"
+    )
+    if descendant_depth == 2:
+        child_source = (
+            "require('node:child_process').spawn(process.execPath,"
+            f"['-e', {json.dumps(child_source)}], {{stdio: 'ignore'}}).unref();"
+        )
+    parent_action = {
+        "before_close": (
+            "process.stdin.resume();" if sys.platform == "darwin" else "process.exit(0);"
+        ),
+        "stdin_eof": "process.stdin.resume();",
+        "sigterm": "process.stdin.resume(); setInterval(() => {}, 1000);",
+    }[parent_exit]
+    _worker(
+        tmp_path,
+        f"""
+import {{spawn}} from "node:child_process";
+import fs from "node:fs";
+const child = spawn(process.execPath, ["-e", {json.dumps(child_source)}], {{stdio: "ignore"}});
+child.unref();
+const ready = setInterval(() => {{
+  if (fs.existsSync({json.dumps(str(marker))})) {{
+    clearInterval(ready);
+    {parent_action}
+  }}
+}}, 10);
+""",
+    )
+    runtime = NodeMermaidRuntime(tmp_path)
+    child_pid = None
+    try:
+        process = runtime._start()  # noqa: SLF001 - real worker lifetime regression
+        deadline = time.monotonic() + 5
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        child_pid = int(marker.read_text(encoding="utf-8"))
+        assert _pid_is_running(child_pid)
+        if parent_exit == "before_close":
+            if sys.platform == "darwin":
+                # Kill the guardian independently: the Node worker and its
+                # descendants still hold protocol pipes and require close().
+                os.kill(process.pid, signal.SIGKILL)
+                assert _observe_worker_exit(process) == -signal.SIGKILL
+            else:
+                assert _observe_worker_exit(process) == 0
+
+        runtime.close()
+
+        deadline = time.monotonic() + 2
+        while _pid_is_running(child_pid) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not _pid_is_running(child_pid)
+        assert runtime._process is None  # noqa: SLF001 - cleanup contract
+        assert runtime._process_group_id is None  # noqa: SLF001 - cleanup contract
+    finally:
+        runtime.close()
+        if child_pid is not None and _pid_is_running(child_pid):
+            os.kill(child_pid, signal.SIGKILL)
+
+
+@pytest.mark.parametrize("started", [True, False])
+def test_runtime_is_collectible_without_explicit_close(tmp_path, started):
+    _worker(tmp_path, "process.stdin.resume();")
+    runtime = NodeMermaidRuntime(tmp_path)
+    process = runtime._start() if started else None  # noqa: SLF001 - GC cleanup contract
+    reference = weakref.ref(runtime)
+
+    del runtime
+    gc.collect()
+
+    assert reference() is None
+    if process is not None:
+        assert process.poll() is not None
+        assert process.stdin.closed
+        assert process.stdout.closed
+        assert process.stderr.closed
+
+
+def test_runtime_close_is_idempotent_and_context_can_be_reused(tmp_path):
+    _worker(
+        tmp_path,
+        """
+import readline from "node:readline";
+const rl = readline.createInterface({input: process.stdin});
+rl.on("line", line => {
+  const request = JSON.parse(line);
+  process.stdout.write(JSON.stringify({id: request.id, ok: true,
+    svg: "<svg viewBox='0 0 1 1'/>"}) + "\\n");
+});
+""",
+    )
+    runtime = NodeMermaidRuntime(tmp_path)
+    processes = []
+
+    for _ in range(3):
+        with runtime:
+            assert runtime.validate_and_render("flowchart LR\nA-->B", 2).render_valid
+            processes.append(runtime._process)  # noqa: SLF001 - restart contract
+        runtime.close()
+        assert runtime._finalizer is None  # noqa: SLF001 - finalizer lifecycle contract
+
+    assert len({process.pid for process in processes}) == 3
+    assert all(process.poll() is not None for process in processes)
+
+
 def test_runtime_fails_fast_on_unsupported_platform(monkeypatch, tmp_path):
     monkeypatch.setattr(validation.os, "name", "nt")
 
@@ -312,9 +601,7 @@ rl.on("line", line => {{
     assert runtime._process is None  # noqa: SLF001 - invalid protocol cleanup contract
 
 
-def test_runtime_rejects_png_base64_before_decoding_when_over_budget(
-    monkeypatch, tmp_path
-):
+def test_runtime_rejects_png_base64_before_decoding_when_over_budget(monkeypatch, tmp_path):
     _worker(
         tmp_path,
         """
@@ -343,11 +630,7 @@ rl.on("line", line => {
 
 
 def _render_limits_module() -> Path:
-    return (
-        Path(validation.__file__).resolve().parent
-        / "runtime"
-        / "render_limits.mjs"
-    )
+    return Path(validation.__file__).resolve().parent / "runtime" / "render_limits.mjs"
 
 
 def test_preflight_omission_never_calls_screenshot() -> None:
@@ -527,7 +810,9 @@ def test_runtime_launcher_applies_limits_without_preexec_fn(monkeypatch) -> None
     import marker_mermaid.runtime_launcher as launcher
 
     calls: list[tuple[int, tuple[int, int]]] = []
-    monkeypatch.setattr(resource, "getrlimit", lambda _kind: (-1, -1))
+    monkeypatch.setattr(
+        resource, "getrlimit", lambda _kind: (resource.RLIM_INFINITY, resource.RLIM_INFINITY)
+    )
     monkeypatch.setattr(
         resource,
         "setrlimit",
@@ -536,11 +821,11 @@ def test_runtime_launcher_applies_limits_without_preexec_fn(monkeypatch) -> None
 
     launcher.apply_worker_process_limits(123_456, 78)
 
-    assert calls == [
-        (resource.RLIMIT_CORE, (0, 0)),
-        (resource.RLIMIT_DATA, (123_456, 123_456)),
-        (resource.RLIMIT_CPU, (78, 78)),
-    ]
+    expected = [(resource.RLIMIT_CORE, (0, 0))]
+    if sys.platform != "darwin":
+        expected.append((resource.RLIMIT_DATA, (123_456, 123_456)))
+    expected.append((resource.RLIMIT_CPU, (78, 78)))
+    assert calls == expected
 
 
 @pytest.mark.integration
@@ -569,9 +854,7 @@ def test_real_worker_inherits_os_memory_and_cpu_limits() -> None:
 
 @pytest.mark.integration
 def test_real_worker_omits_png_when_svg_exceeds_pre_screenshot_node_limit() -> None:
-    runtime = NodeMermaidRuntime(
-        render_limits=RenderArtifactLimits(max_svg_nodes=1)
-    )
+    runtime = NodeMermaidRuntime(render_limits=RenderArtifactLimits(max_svg_nodes=1))
     try:
         result = runtime.validate_and_render("flowchart LR\nA-->B\n", 20)
     finally:
@@ -586,9 +869,7 @@ def test_real_worker_omits_png_when_svg_exceeds_pre_screenshot_node_limit() -> N
 
 @pytest.mark.integration
 def test_real_worker_rejects_svg_bytes_before_dom_and_screenshot() -> None:
-    runtime = NodeMermaidRuntime(
-        render_limits=RenderArtifactLimits(max_svg_bytes=1)
-    )
+    runtime = NodeMermaidRuntime(render_limits=RenderArtifactLimits(max_svg_bytes=1))
     try:
         result = runtime.validate_and_render("flowchart LR\nA-->B\n", 20)
     finally:

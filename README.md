@@ -84,6 +84,12 @@ and report vulnerabilities according to [SECURITY.md](SECURITY.md).
   descriptor semantics and fail fast on unsupported platforms
 - Optional Marker and vision dependencies for end-to-end PDF reconstruction
 
+The browser runtime uses a Linux per-process DATA limit and a macOS process-group memory
+supervisor. On macOS, the supervisor samples the group's combined physical footprint every 50 ms
+and terminates the group above 2 GiB or if inspection fails. This is a sampled budget; memory can
+exceed the threshold between samples. See [runtime isolation](docs/security.md) for the platform
+contracts and limits.
+
 Atomic publication uses `renameat2(RENAME_NOREPLACE)` on Linux and
 `renameatx_np(RENAME_EXCL)` on macOS. On platforms without a safe no-replace primitive,
 marker-mermaid refuses to overwrite an existing sidecar bundle.

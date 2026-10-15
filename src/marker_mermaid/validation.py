@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import atexit
 import base64
+import ctypes
+import errno
 import json
 import math
 import os
@@ -14,9 +15,11 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
 import xml.etree.ElementTree as ET
 from contextlib import suppress
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import tinycss2
@@ -215,6 +218,119 @@ def inspect_svg(
     return sorted(set(findings))
 
 
+class _DarwinSiginfo(ctypes.Structure):
+    # Darwin's public siginfo_t ABI, shared by arm64 and x86_64.
+    # https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/signal.h
+    _fields_ = [
+        ("si_signo", ctypes.c_int),
+        ("si_errno", ctypes.c_int),
+        ("si_code", ctypes.c_int),
+        ("si_pid", ctypes.c_int),
+        ("si_uid", ctypes.c_uint),
+        ("si_status", ctypes.c_int),
+        ("si_addr", ctypes.c_void_p),
+        ("si_value", ctypes.c_void_p),
+        ("si_band", ctypes.c_long),
+        ("_pad", ctypes.c_ulong * 7),
+    ]
+
+
+@lru_cache(maxsize=1)
+def _darwin_waitid():
+    # Python exposes os.waitid on macOS only from 3.13. Earlier supported
+    # versions can use libc, provided siginfo_t is zeroed for WNOHANG.
+    waitid = ctypes.CDLL(None, use_errno=True).waitid
+    waitid.argtypes = [ctypes.c_int, ctypes.c_uint, ctypes.POINTER(_DarwinSiginfo), ctypes.c_int]
+    waitid.restype = ctypes.c_int
+    return waitid
+
+
+def _runtime_worker_exit_code(process: subprocess.Popen[bytes]) -> int | None:
+    """Observe exit without freeing the PID that owns the process group."""
+    if process.returncode is not None:
+        raise ChildProcessError("runtime worker was already reaped")
+    try:
+        if hasattr(os, "waitid"):
+            result = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            if result is None:
+                return None
+            return result.si_status if result.si_code == os.CLD_EXITED else -result.si_status
+        if sys.platform != "darwin":
+            raise RuntimeError("runtime cleanup requires non-reaping waitid with WNOWAIT")
+        info = _DarwinSiginfo()
+        # Darwin sys/wait.h: P_PID=1, WEXITED=4, WNOHANG=1, WNOWAIT=32.
+        while _darwin_waitid()(1, process.pid, ctypes.byref(info), 0x25) != 0:
+            error = ctypes.get_errno()
+            if error == errno.EINTR:
+                continue
+            raise OSError(error, os.strerror(error))
+        if info.si_pid == 0:
+            return None
+        return info.si_status if info.si_code == 1 else -info.si_status  # CLD_EXITED=1
+    except ChildProcessError:
+        # Match Popen's ECHILD convention. Prevent its later destructor from
+        # polling a PID that an external waitpid may already have made reusable.
+        process.returncode = 0
+        raise
+
+
+def _signal_runtime_process(
+    process: subprocess.Popen[bytes], process_group_id: int | None, signum: int
+) -> None:
+    """Signal only while the original leader still reserves this process-group ID."""
+    _runtime_worker_exit_code(process)
+    try:
+        if process_group_id is not None:
+            os.killpg(process_group_id, signum)
+        else:  # pragma: no cover - partial-start fallback
+            os.kill(process.pid, signum)
+    except PermissionError:
+        # Darwin killpg skips zombies and reports EPERM for a zombie-only group.
+        # Its unreaped leader must still pin the PGID until the final signal.
+        if sys.platform != "darwin" or _runtime_worker_exit_code(process) is None:
+            raise
+
+
+def _close_runtime_process(process: subprocess.Popen[bytes], process_group_id: int | None) -> None:
+    """Keep the leader waitable until every signal to its owned group is sent."""
+    owned = True
+
+    try:
+        if process.stdin is not None:
+            with suppress(OSError):
+                process.stdin.close()
+        graceful_deadline = time.monotonic() + 1
+        while _runtime_worker_exit_code(process) is None:
+            remaining = graceful_deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.02, remaining))
+
+        _signal_runtime_process(process, process_group_id, signal.SIGTERM)
+        terminate_deadline = time.monotonic() + 3
+        while time.monotonic() < terminate_deadline:
+            if _runtime_worker_exit_code(process) is not None:
+                # The exited leader still pins the PGID. Give surviving children
+                # a short TERM grace, then remove them before releasing that PID.
+                terminate_deadline = min(terminate_deadline, time.monotonic() + 0.1)
+            time.sleep(min(0.02, max(0, terminate_deadline - time.monotonic())))
+        _signal_runtime_process(process, process_group_id, signal.SIGKILL)
+    except ChildProcessError:
+        # A caller that reaped the private Popen surrendered group ownership.
+        # Never signal the numeric PGID, which may now belong to another session.
+        owned = False
+    except ProcessLookupError:
+        pass
+    finally:
+        if owned:
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=3)
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                with suppress(OSError):
+                    stream.close()
+
+
 class NodeMermaidRuntime(MermaidRuntime):
     """JSONL bridge to a reusable, network-isolated Playwright Chromium worker."""
 
@@ -226,13 +342,14 @@ class NodeMermaidRuntime(MermaidRuntime):
     ):
         if os.name != "posix":
             raise RuntimeError(
-                "the Mermaid browser runtime supports POSIX platforms only "
-                "(Linux and macOS)"
+                "the Mermaid browser runtime supports POSIX platforms only (Linux and macOS)"
             )
+        if not hasattr(os, "waitid"):
+            if sys.platform != "darwin":
+                raise RuntimeError("runtime cleanup requires non-reaping waitid with WNOWAIT")
+            _darwin_waitid()
         self.runtime_dir = (
-            normalize_runtime_dir(runtime_dir)
-            if runtime_dir is not None
-            else default_runtime_dir()
+            normalize_runtime_dir(runtime_dir) if runtime_dir is not None else default_runtime_dir()
         )
         if render_limits is not None and type(render_limits) is not RenderArtifactLimits:
             raise TypeError("render_limits must be an exact RenderArtifactLimits")
@@ -244,7 +361,13 @@ class NodeMermaidRuntime(MermaidRuntime):
         self._stderr_truncated = False
         self._lock = threading.RLock()
         self._next_id = 0
-        atexit.register(self.close)
+        self._finalizer: weakref.finalize | None = None
+
+    def __enter__(self) -> NodeMermaidRuntime:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
 
     def _start(self) -> subprocess.Popen[bytes]:
         worker = self.runtime_dir / "worker.mjs"
@@ -271,13 +394,14 @@ class NodeMermaidRuntime(MermaidRuntime):
         )
         self._process = process
         self._process_group_id = process.pid
+        # Neither the callback nor its arguments may retain the runtime instance.
+        # Each start gets a fresh finalizer so explicit close still permits reuse.
+        self._finalizer = weakref.finalize(self, _close_runtime_process, process, process.pid)
         self._stdout_buffer.clear()
         self._stderr_buffer.clear()
         self._stderr_truncated = False
         assert (
-            process.stdin is not None
-            and process.stdout is not None
-            and process.stderr is not None
+            process.stdin is not None and process.stdout is not None and process.stderr is not None
         )
         os.set_blocking(process.stdin.fileno(), False)
         os.set_blocking(process.stdout.fileno(), False)
@@ -293,7 +417,13 @@ class NodeMermaidRuntime(MermaidRuntime):
                     error="Mermaid runtime timeout must be finite and positive",
                 )
             process = self._process
-            if process is None or process.poll() is not None:
+            exited = process is None
+            if process is not None:
+                try:
+                    exited = _runtime_worker_exit_code(process) is not None
+                except ChildProcessError:
+                    exited = True
+            if exited:
                 if process is not None:
                     self.close()
                 try:
@@ -304,8 +434,7 @@ class NodeMermaidRuntime(MermaidRuntime):
                         False,
                         False,
                         error=(
-                            "Mermaid runtime could not start; run `marker-mermaid doctor`: "
-                            f"{exc}"
+                            f"Mermaid runtime could not start; run `marker-mermaid doctor`: {exc}"
                         ),
                     )
             self._next_id += 1
@@ -333,6 +462,34 @@ class NodeMermaidRuntime(MermaidRuntime):
             selector.register(process.stderr, selectors.EVENT_READ, "stderr")
             try:
                 while time.monotonic() < deadline:
+                    if sys.platform == "darwin":
+                        # Node inherits stdout from the Darwin memory guardian.
+                        # A surviving child must not supply a successful response
+                        # after that guardian has died and enforcement has stopped.
+                        try:
+                            guardian_exited = _runtime_worker_exit_code(process) is not None
+                        except ChildProcessError:
+                            guardian_exited = True
+                        if guardian_exited:
+                            try:
+                                stderr_chunk = os.read(process.stderr.fileno(), 65_536)
+                            except (BlockingIOError, OSError):
+                                stderr_chunk = b""
+                            remaining = MAX_RUNTIME_STDERR_BYTES - len(self._stderr_buffer)
+                            self._stderr_buffer.extend(stderr_chunk[: max(0, remaining)])
+                            detail = " ".join(
+                                self._stderr_buffer.decode("utf-8", errors="replace").split()
+                            )
+                            self.close()
+                            return RuntimeResult(
+                                False,
+                                False,
+                                error=(
+                                    "Mermaid runtime memory guardian exited unexpectedly; "
+                                    "run `marker-mermaid doctor`"
+                                    + (f": {detail}" if detail else "")
+                                ),
+                            )
                     while b"\n" in self._stdout_buffer:
                         raw_line, _, remainder = self._stdout_buffer.partition(b"\n")
                         self._stdout_buffer = bytearray(remainder)
@@ -379,9 +536,7 @@ class NodeMermaidRuntime(MermaidRuntime):
                             return RuntimeResult(
                                 False,
                                 False,
-                                error=(
-                                    "Mermaid runtime returned an invalid PNG omission reason"
-                                ),
+                                error=("Mermaid runtime returned an invalid PNG omission reason"),
                             )
                         encoded_png = payload.get("png")
                         if encoded_png is not None and png_omitted_reason is not None:
@@ -416,6 +571,12 @@ class NodeMermaidRuntime(MermaidRuntime):
                                 False,
                                 error=f"Mermaid runtime returned invalid PNG data: {exc}",
                             )
+                        if sys.platform == "darwin":
+                            try:
+                                if _runtime_worker_exit_code(process) is not None:
+                                    continue
+                            except ChildProcessError:
+                                continue
                         return RuntimeResult(
                             syntax_valid=True,
                             render_valid=True,
@@ -424,15 +585,18 @@ class NodeMermaidRuntime(MermaidRuntime):
                             png=png,
                             png_omitted_reason=png_omitted_reason,
                         )
-                    events = selector.select(max(0, deadline - time.monotonic()))
+                    remaining = max(0, deadline - time.monotonic())
+                    events = selector.select(
+                        min(0.05, remaining) if sys.platform == "darwin" else remaining
+                    )
                     if not events:
+                        if sys.platform == "darwin":
+                            continue
                         break
                     for key, _ in events:
                         if key.data == "stdin":
                             try:
-                                written = os.write(
-                                    process.stdin.fileno(), request[request_offset:]
-                                )
+                                written = os.write(process.stdin.fileno(), request[request_offset:])
                             except (BrokenPipeError, OSError) as exc:
                                 try:
                                     stderr_chunk = os.read(process.stderr.fileno(), 65_536)
@@ -488,7 +652,9 @@ class NodeMermaidRuntime(MermaidRuntime):
                                     self._stderr_truncated = True
                                 detail = self._stderr_buffer.decode("utf-8", errors="replace")
                                 detail = " ".join(detail.split())
-                                exit_code = process.poll()
+                                exit_code = None
+                                with suppress(ChildProcessError):
+                                    exit_code = _runtime_worker_exit_code(process)
                                 self.close()
                                 return RuntimeResult(
                                     False,
@@ -524,36 +690,12 @@ class NodeMermaidRuntime(MermaidRuntime):
             self._stdout_buffer.clear()
             self._stderr_buffer.clear()
             self._stderr_truncated = False
+            if self._finalizer is not None:
+                self._finalizer.detach()
+                self._finalizer = None
             if process is None:
                 return
-            try:
-                if process.stdin is not None:
-                    with suppress(OSError):
-                        process.stdin.close()
-                if process.poll() is None:
-                    try:
-                        process.wait(timeout=1)
-                    except subprocess.TimeoutExpired:
-                        if process_group_id is not None:
-                            with suppress(ProcessLookupError):
-                                os.killpg(process_group_id, signal.SIGTERM)
-                        else:  # pragma: no cover - defensive partial-start fallback
-                            process.terminate()
-                        try:
-                            process.wait(timeout=3)
-                        except subprocess.TimeoutExpired:
-                            if process_group_id is not None:
-                                with suppress(ProcessLookupError):
-                                    os.killpg(process_group_id, signal.SIGKILL)
-                            else:  # pragma: no cover - defensive partial-start fallback
-                                process.kill()
-                            with suppress(subprocess.TimeoutExpired):
-                                process.wait(timeout=3)
-            finally:
-                for stream in (process.stdout, process.stderr):
-                    if stream is not None:
-                        with suppress(OSError):
-                            stream.close()
+            _close_runtime_process(process, process_group_id)
 
 
 class CandidateValidator:
