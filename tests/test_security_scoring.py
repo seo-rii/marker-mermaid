@@ -454,7 +454,7 @@ def test_numeric_consistency_accepts_detached_source_token_counters() -> None:
     source = numeric_token_multiset(["-2 20% 0.5 0.5"])
     before = source.copy()
 
-    assert source == Counter({"0.5": 2, "-2": 1, "20%": 1})
+    assert source == Counter({"5e-1": 2, "-2e0": 1, "2e1%": 1})
     assert numeric_consistency(source, "xychart-beta\nline [-2, 20%, 0.5, 0.5]\n") == 1
     assert source == before
 

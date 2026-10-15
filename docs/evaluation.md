@@ -180,3 +180,12 @@ report's manifest SHA-256 exactly.
 Replacing an existing output directory requires an evaluator ownership marker. An ordinary
 directory, symlink, corpus root, or ancestor of the corpus root is rejected, preventing input such
 as `--output .` from deleting existing work.
+
+Runtime numeric-token scoring uses exact Decimal value normalization as well:
+`1`, `1.0`, and `1e0` match; scientific exponents and Unicode minus are preserved.
+Percent and immediately attached units remain distinct (`20%` is not `20`, and
+`5kg` is not `5ms`). Comma-formatted OCR numbers have no assumed locale: neither
+`1,000` nor `1,5` is silently converted or split, and ambiguous comma notation
+cannot earn consistency credit. Commas outside quoted Mermaid labels remain
+syntax separators, including in numeric arrays. Label–value correspondence gates
+remain separate from this token multiset metric.
