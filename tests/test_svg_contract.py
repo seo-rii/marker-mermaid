@@ -141,7 +141,9 @@ def test_real_worker_preflight_matches_svg_reference_policy(tmp_path, body, acce
             preflight = runtime.validate_and_render("flowchart LR\nA-->B\n", 20)
             assert preflight.render_valid
             assert preflight.png is None
-            assert "processing instruction" in (preflight.png_omitted_reason or "")
+            assert preflight.png_omitted_reason == (
+                "rendered SVG contains content that cannot be previewed safely"
+            )
         outcome = CandidateValidator(runtime, SecurityProfile.STRICT).validate(
             "flowchart LR\nA-->B\n",
             20,
