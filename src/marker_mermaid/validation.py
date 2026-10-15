@@ -275,6 +275,23 @@ def _runtime_worker_exit_code(process: subprocess.Popen[bytes]) -> int | None:
         raise
 
 
+def _signal_runtime_process(
+    process: subprocess.Popen[bytes], process_group_id: int | None, signum: int
+) -> None:
+    """Signal only while the original leader still reserves this process-group ID."""
+    _runtime_worker_exit_code(process)
+    try:
+        if process_group_id is not None:
+            os.killpg(process_group_id, signum)
+        else:  # pragma: no cover - partial-start fallback
+            os.kill(process.pid, signum)
+    except PermissionError:
+        # Darwin killpg skips zombies and reports EPERM for a zombie-only group.
+        # Its unreaped leader must still pin the PGID until the final signal.
+        if sys.platform != "darwin" or _runtime_worker_exit_code(process) is None:
+            raise
+
+
 def _close_runtime_process(
     process: subprocess.Popen[bytes],
     process_group_id: int | None,
@@ -287,13 +304,6 @@ def _close_runtime_process(
     def remaining_grace(seconds: float) -> float:
         return seconds if deadline is None else max(0, min(seconds, deadline - time.monotonic()))
 
-    def signal_owned(signum: int) -> None:
-        _runtime_worker_exit_code(process)
-        if process_group_id is not None:
-            os.killpg(process_group_id, signum)
-        else:  # pragma: no cover - partial-start fallback
-            os.kill(process.pid, signum)
-
     try:
         if process.stdin is not None:
             with suppress(OSError):
@@ -305,7 +315,7 @@ def _close_runtime_process(
                 break
             time.sleep(min(0.02, remaining))
 
-        signal_owned(signal.SIGTERM)
+        _signal_runtime_process(process, process_group_id, signal.SIGTERM)
         terminate_deadline = time.monotonic() + remaining_grace(3)
         while time.monotonic() < terminate_deadline:
             if _runtime_worker_exit_code(process) is not None:
@@ -313,7 +323,7 @@ def _close_runtime_process(
                 # a short TERM grace, then remove them before releasing that PID.
                 terminate_deadline = min(terminate_deadline, time.monotonic() + 0.1)
             time.sleep(min(0.02, max(0, terminate_deadline - time.monotonic())))
-        signal_owned(signal.SIGKILL)
+        _signal_runtime_process(process, process_group_id, signal.SIGKILL)
     except ChildProcessError:
         # A caller that reaped the private Popen surrendered group ownership.
         # Never signal the numeric PGID, which may now belong to another session.
