@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import weakref
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -495,6 +496,139 @@ rl.on("line", line => {
 
     assert len({process.pid for process in processes}) == 3
     assert all(process.poll() is not None for process in processes)
+
+
+def _responding_worker(tmp_path, *, delay_milliseconds: int) -> None:
+    _worker(
+        tmp_path,
+        f"""
+import readline from "node:readline";
+import fs from "node:fs";
+const rl = readline.createInterface({{input: process.stdin}});
+rl.on("line", line => {{
+  const request = JSON.parse(line);
+  fs.writeFileSync({json.dumps(str(tmp_path / "received"))}, request.id);
+  setTimeout(() => process.stdout.write(JSON.stringify({{
+    id: request.id, ok: true, svg: "<svg viewBox='0 0 1 1'/>"
+  }}) + "\\n"), {delay_milliseconds});
+}});
+""",
+    )
+
+
+def _wait_for_request(tmp_path) -> None:
+    deadline = time.monotonic() + 5
+    while not (tmp_path / "received").exists() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert (tmp_path / "received").exists()
+
+
+def test_lock_timeout_does_not_interrupt_another_callers_worker(tmp_path):
+    _responding_worker(tmp_path, delay_milliseconds=300)
+    with NodeMermaidRuntime(tmp_path) as runtime, ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(runtime.validate_and_render, "first", 2)
+        _wait_for_request(tmp_path)
+        process = runtime._process  # noqa: SLF001 - shared-worker ownership contract
+
+        started = time.monotonic()
+        waiting = runtime.validate_and_render("waiting", 0.05)
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 0.2
+        assert "waiting for an available worker" in (waiting.error or "")
+        assert runtime._process is process  # noqa: SLF001 - active call remains intact
+        assert process.poll() is None
+        assert first.result(timeout=2).render_valid
+        assert runtime.validate_and_render("after waiting", 2).render_valid
+
+
+def test_lock_wait_consumes_the_render_deadline(tmp_path):
+    _responding_worker(tmp_path, delay_milliseconds=250)
+    with NodeMermaidRuntime(tmp_path) as runtime, ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(runtime.validate_and_render, "first", 2)
+        _wait_for_request(tmp_path)
+
+        started = time.monotonic()
+        second = runtime.validate_and_render("second", 0.35)
+        elapsed = time.monotonic() - started
+
+        assert first.result(timeout=2).render_valid
+        assert not second.render_valid
+        assert "exceeded 0.35s" in (second.error or "")
+        assert elapsed < 0.55
+        assert runtime._process is None  # noqa: SLF001 - expired work is discarded
+
+
+def test_request_queue_rejects_overflow_and_recovers(monkeypatch, tmp_path):
+    monkeypatch.setattr(validation, "MAX_RUNTIME_PENDING_REQUESTS", 2)
+    _responding_worker(tmp_path, delay_milliseconds=0)
+    with NodeMermaidRuntime(tmp_path) as runtime, ThreadPoolExecutor(max_workers=2) as pool:
+        with runtime._lock:  # noqa: SLF001 - hold worker to fill pending slots
+            pending = [pool.submit(runtime.validate_and_render, "queued", 2) for _ in range(2)]
+            deadline = time.monotonic() + 1
+            while runtime._request_slots._value and time.monotonic() < deadline:  # noqa: SLF001
+                time.sleep(0.005)
+            assert runtime._request_slots._value == 0  # noqa: SLF001 - queue is full
+
+            started = time.monotonic()
+            overflow = runtime.validate_and_render("overflow", 2)
+
+            assert time.monotonic() - started < 0.1
+            assert overflow.error == "Mermaid runtime request queue is full"
+
+        assert all(future.result(timeout=2).render_valid for future in pending)
+        assert runtime.validate_and_render("capacity released", 2).render_valid
+
+
+def test_timeout_skips_shutdown_grace_for_term_ignoring_worker(monkeypatch, tmp_path):
+    _worker(
+        tmp_path,
+        """
+process.on("SIGTERM", () => {});
+process.stdin.resume();
+setInterval(() => {}, 1000);
+""",
+    )
+    runtime = NodeMermaidRuntime(tmp_path)
+    process = runtime._start()  # noqa: SLF001 - preserve identity through timed-out cleanup
+    original_killpg = os.killpg
+    signals = []
+
+    def signal_still_owned_group(process_group_id, signum):
+        assert process_group_id == process.pid
+        validation._runtime_worker_exit_code(process)  # noqa: SLF001 - must remain waitable
+        signals.append(signum)
+        original_killpg(process_group_id, signum)
+
+    monkeypatch.setattr(validation.os, "killpg", signal_still_owned_group)
+    started = time.monotonic()
+
+    result = runtime.validate_and_render("never answers", 0.15)
+
+    assert time.monotonic() - started < 0.4
+    assert "exceeded 0.15s" in (result.error or "")
+    assert runtime._process is None  # noqa: SLF001 - forced cleanup contract
+    assert signals == [signal.SIGTERM, signal.SIGKILL]
+    assert process.poll() is not None
+
+
+def test_worker_startup_consumes_the_request_deadline(monkeypatch, tmp_path):
+    _responding_worker(tmp_path, delay_milliseconds=100)
+    runtime = NodeMermaidRuntime(tmp_path)
+    original_start = runtime._start  # noqa: SLF001 - inject launcher latency
+
+    def slow_start():
+        time.sleep(0.1)
+        return original_start()
+
+    monkeypatch.setattr(runtime, "_start", slow_start)
+    started = time.monotonic()
+
+    result = runtime.validate_and_render("cold start", 0.15)
+
+    assert time.monotonic() - started < 0.35
+    assert "exceeded 0.15s" in (result.error or "")
+    assert runtime._process is None  # noqa: SLF001 - cold-start timeout cleanup
 
 
 def test_runtime_fails_fast_on_unsupported_platform(monkeypatch, tmp_path):
