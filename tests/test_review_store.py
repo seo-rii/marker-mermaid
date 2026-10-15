@@ -5,7 +5,6 @@ import json
 import os
 import threading
 from io import BytesIO
-from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -1356,7 +1355,8 @@ def test_provenance_load_digests_and_parses_one_bounded_byte_snapshot(
         json.dumps([evidence("replacement", "Replacement")]),
         encoding="utf-8",
     )
-    original_open = Path.open
+    original_open = os.fdopen
+    provenance_inode = provenance_path.stat().st_ino
     swapped = False
 
     class SwappingReader:
@@ -1370,6 +1370,9 @@ def test_provenance_load_digests_and_parses_one_bounded_byte_snapshot(
         def __exit__(self, *args):
             return self.artifact.__exit__(*args)
 
+        def fileno(self):
+            return self.artifact.fileno()
+
         def read(self, *args, **kwargs):
             nonlocal swapped
             payload = self.artifact.read(*args, **kwargs)
@@ -1377,13 +1380,13 @@ def test_provenance_load_digests_and_parses_one_bounded_byte_snapshot(
             swapped = True
             return payload
 
-    def swapping_open(self, mode="r", *args, **kwargs):
-        artifact = original_open(self, mode, *args, **kwargs)
-        if self == provenance_path and mode == "rb" and not swapped:
+    def swapping_open(descriptor, mode="r", *args, **kwargs):
+        artifact = original_open(descriptor, mode, *args, **kwargs)
+        if os.fstat(descriptor).st_ino == provenance_inode and mode == "rb" and not swapped:
             return SwappingReader(artifact)
         return artifact
 
-    monkeypatch.setattr(Path, "open", swapping_open)
+    monkeypatch.setattr(os, "fdopen", swapping_open)
 
     loaded = ReviewStore(tmp_path).load_bundle("diagram-a")
 
