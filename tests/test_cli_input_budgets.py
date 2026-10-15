@@ -67,8 +67,9 @@ def test_validate_rejects_fifo_without_waiting_for_a_writer(tmp_path):
         [sys.executable, "-c",
          "import sys; from types import SimpleNamespace; "
          "from marker_mermaid.cli import command_validate; "
+         "import signal; signal.alarm(2); "
          "command_validate(SimpleNamespace(config=None, file=sys.argv[1]))", str(source)],
-        capture_output=True, text=True, timeout=5, check=False,
+        capture_output=True, text=True, timeout=30, check=False,
     )
     assert probe.returncode != 0
     assert "Mermaid input must be a regular file" in probe.stderr
