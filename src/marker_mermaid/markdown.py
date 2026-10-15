@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import html
 import re
+from urllib.parse import quote
 
 from marker_mermaid.models import AuthorizedPublicationSnapshot, ReconstructionResult
 
@@ -65,6 +67,11 @@ def standalone_document_markdown(
     alt_text: str = "원본 다이어그램",
     show_score: bool = True,
 ) -> str:
-    original = f"![{alt_text}]({image_path})"
+    # This is a filesystem path, so literal %, #, and parentheses must not be
+    # interpreted as URL escapes, fragments, or Markdown delimiters.
+    destination = quote(image_path, safe="/")
+    label = html.escape(re.sub(r"([\\`*_\[\]])", r"\\\1", alt_text), quote=False)
+    label = label.replace("\r", "&#13;").replace("\n", "&#10;")
+    original = f"![{label}]({destination})"
     reconstruction = reconstruction_markdown(result, show_score=show_score)
     return original + (f"\n\n{reconstruction}" if reconstruction else "") + "\n"
