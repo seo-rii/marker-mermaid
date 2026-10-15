@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import stat
 import threading
 import urllib.parse
@@ -57,6 +58,7 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
     def __init__(
         self,
+        server_address,
         *args,
         max_workers: int = 8,
         request_timeout_seconds: float = 10.0,
@@ -70,7 +72,12 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
         self._request_slots = threading.BoundedSemaphore(max_workers)
         self.request_timeout_seconds = request_timeout_seconds
         self.allowed_hosts = {item.casefold() for item in (allowed_hosts or set())}
-        super().__init__(*args, **kwargs)
+        try:
+            if ipaddress.ip_address(server_address[0]).version == 6:
+                self.address_family = socket.AF_INET6
+        except ValueError:
+            pass  # Named hosts retain the standard IPv4 listener behavior.
+        super().__init__(server_address, *args, **kwargs)
 
     def process_request(self, request, client_address):
         if not self._request_slots.acquire(blocking=False):
@@ -865,7 +872,9 @@ def serve_review(
         handler,
         allowed_hosts=host_allowlist,
     )
-    url_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    url_host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+    if ":" in url_host:
+        url_host = f"[{urllib.parse.quote(url_host, safe=':')}]"
     url = f"http://{url_host}:{server.server_port}/"
     print(f"Review workspace: {url}")
     if host not in {"127.0.0.1", "localhost", "::1"}:
