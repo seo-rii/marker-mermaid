@@ -71,6 +71,15 @@ process-group termination remain the primary cleanup boundary. POSIX rlimits are
 than an aggregate cgroup/container RSS budget, so deployments handling hostile multi-tenant input
 should still place the worker in a memory/CPU-limited container or service.
 
+The Python parent observes worker exit without reaping the session leader until its final
+process-group signal has been sent. Keeping that PID reserved prevents a delayed close or garbage
+collection from signaling an unrelated session after PID reuse. Exit observation uses
+`waitid(WNOWAIT)`, with a zero-initialized Darwin libc adapter on macOS Python 3.11 and 3.12.
+When cleanup detects that the private child was externally reaped, it closes its pipes without
+signaling the stale numeric process-group ID. Applications must not independently reap the worker
+or install a SIGCHLD handler that reaps it concurrently with runtime cleanup; that breaks the
+runtime's ownership of the reserved PID.
+
 Validation/publication HMAC seals are process-local capabilities that prevent public model
 constructors, JSON round trips, and ordinary post-validation mutation from impersonating a
 validated result. Engines and plug-ins running in the same Python process are trusted code. The
