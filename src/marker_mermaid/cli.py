@@ -19,7 +19,12 @@ from marker_mermaid.evaluation import (
     write_evaluation_report,
 )
 from marker_mermaid.review import serve_review
-from marker_mermaid.validation import CandidateValidator, NodeMermaidRuntime, default_runtime_dir
+from marker_mermaid.validation import (
+    CandidateValidator,
+    NodeMermaidRuntime,
+    default_runtime_dir,
+    normalize_runtime_dir,
+)
 
 
 def _load_config(path: str | None) -> tuple[dict, MermaidConfig]:
@@ -35,12 +40,12 @@ def resolve_runtime_dir(
     """Resolve the Node runtime directory using the CLI-wide precedence order."""
 
     if cli_value is not None:
-        return Path(cli_value).expanduser()
+        return normalize_runtime_dir(cli_value)
     if config is not None and config.runtime_dir is not None:
-        return config.runtime_dir.expanduser()
+        return normalize_runtime_dir(config.runtime_dir)
     environment_value = os.environ.get("MARKER_MERMAID_RUNTIME_DIR")
     if environment_value:
-        return Path(environment_value).expanduser()
+        return normalize_runtime_dir(environment_value)
     return default_runtime_dir()
 
 
