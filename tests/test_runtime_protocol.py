@@ -236,6 +236,33 @@ def _observe_worker_exit(process, timeout=5):
     raise AssertionError("worker did not exit")
 
 
+@pytest.mark.parametrize("platform,exited", [("darwin", True), ("linux", True), ("darwin", False)])
+def test_zombie_only_group_permission_error_is_specific_to_darwin(
+    monkeypatch, platform, exited
+):
+    source = "pass" if exited else "import time; time.sleep(30)"
+    process = subprocess.Popen([sys.executable, "-c", source], start_new_session=True)
+    if exited:
+        assert _observe_worker_exit(process) == 0
+    monkeypatch.setattr(validation.sys, "platform", platform)
+
+    def deny_signal(*_args):
+        raise PermissionError(errno.EPERM, "mock Darwin zombie-only group")
+
+    monkeypatch.setattr(validation.os, "killpg", deny_signal)
+    try:
+        if platform == "darwin" and exited:
+            validation._signal_runtime_process(process, process.pid, signal.SIGTERM)  # noqa: SLF001
+        else:
+            with pytest.raises(PermissionError):
+                validation._signal_runtime_process(process, process.pid, signal.SIGTERM)  # noqa: SLF001
+        assert process.returncode is None
+    finally:
+        if not exited:
+            process.kill()
+        process.wait(timeout=5)
+
+
 @pytest.mark.parametrize("reap_with_popen", [True, False])
 def test_runtime_close_never_signals_an_externally_reaped_worker(
     monkeypatch, tmp_path, reap_with_popen
@@ -781,7 +808,9 @@ def test_runtime_launcher_applies_limits_without_preexec_fn(monkeypatch) -> None
     import marker_mermaid.runtime_launcher as launcher
 
     calls: list[tuple[int, tuple[int, int]]] = []
-    monkeypatch.setattr(resource, "getrlimit", lambda _kind: (-1, -1))
+    monkeypatch.setattr(
+        resource, "getrlimit", lambda _kind: (resource.RLIM_INFINITY, resource.RLIM_INFINITY)
+    )
     monkeypatch.setattr(
         resource,
         "setrlimit",
