@@ -964,48 +964,6 @@ def test_runtime_launcher_applies_limits_without_preexec_fn(monkeypatch) -> None
     ]
 
 
-@pytest.mark.parametrize("inherited", [None, (512 * 1024 * 1024, 1024 * 1024 * 1024)])
-@pytest.mark.parametrize("maximum", [2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024 + 123])
-def test_darwin_launcher_applies_data_limit_after_replacing_python(
-    monkeypatch, inherited, maximum
-):
-    import marker_mermaid.runtime_launcher as launcher
-
-    inherited = inherited or (resource.RLIM_INFINITY, resource.RLIM_INFINITY)
-    limits = []
-    executions = []
-    monkeypatch.setattr(launcher.sys, "platform", "darwin")
-    monkeypatch.setattr(
-        resource, "getrlimit",
-        lambda kind: inherited if kind == resource.RLIMIT_DATA else (30, 45),
-    )
-    monkeypatch.setattr(resource, "setrlimit", lambda kind, value: limits.append((kind, value)))
-    monkeypatch.setattr(launcher.os, "execv", lambda path, argv: executions.append((path, argv)))
-    command = ["node", "공백 worker.mjs", 'literal $HOME; $(echo unsafe) " quote']
-
-    assert launcher.main([str(maximum), "60", *command]) == 0
-
-    assert limits == [(resource.RLIMIT_CORE, (0, 0)), (resource.RLIMIT_CPU, (30, 45))]
-    path, argv = executions.pop()
-    assert path == "/bin/sh"
-    assert argv[:2] == ["/bin/sh", "-c"]
-    assert argv[4:6] == [
-        str(value // 1024)
-        for value in launcher._bounded_hard_limit(  # noqa: SLF001 - inherited policy contract
-            inherited, maximum, infinity=resource.RLIM_INFINITY
-        )
-    ]
-    assert argv[6:] == command
-    # Exercise the exact shell program: arguments remain literal and both DATA
-    # limits are installed before the requested command starts.
-    probe = subprocess.run(
-        [*argv[:6], "/bin/sh", "-c", 'ulimit -S -d; ulimit -H -d; printf "%s\\n" "$1"',
-         "probe", command[-1]],
-        capture_output=True, text=True, check=True, timeout=5,
-    )
-    assert probe.stdout.splitlines() == [*argv[4:6], command[-1]]
-
-
 @pytest.mark.integration
 @pytest.mark.skipif(
     not hasattr(resource, "prlimit") or sys.platform != "linux",

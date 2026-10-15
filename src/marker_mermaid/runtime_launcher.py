@@ -21,9 +21,7 @@ def _bounded_hard_limit(
     return soft, hard
 
 
-def apply_worker_process_limits(
-    max_data_bytes: int, max_cpu_seconds: int, *, defer_data_limit: bool = False
-) -> None:
+def apply_worker_process_limits(max_data_bytes: int, max_cpu_seconds: int) -> None:
     """Set hard limits before exec so Node and every Chromium child inherit them."""
 
     if os.name != "posix":
@@ -36,15 +34,14 @@ def apply_worker_process_limits(
     import resource
 
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-    if not defer_data_limit:
-        resource.setrlimit(
-            resource.RLIMIT_DATA,
-            _bounded_hard_limit(
-                resource.getrlimit(resource.RLIMIT_DATA),
-                max_data_bytes,
-                infinity=resource.RLIM_INFINITY,
-            ),
-        )
+    resource.setrlimit(
+        resource.RLIMIT_DATA,
+        _bounded_hard_limit(
+            resource.getrlimit(resource.RLIMIT_DATA),
+            max_data_bytes,
+            infinity=resource.RLIM_INFINITY,
+        ),
+    )
     resource.setrlimit(
         resource.RLIMIT_CPU,
         _bounded_hard_limit(
@@ -69,29 +66,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError as exc:
         raise SystemExit("runtime worker limits must be integers") from exc
     command = args[2:]
-    if sys.platform == "darwin":
-        import resource
-
-        # Darwin rejects RLIMIT_DATA below the current Python launcher's data
-        # mapping. Replace Python with a small shell before lowering the limit.
-        # Keep the inherited soft/hard policy and round down to shell KiB units.
-        apply_worker_process_limits(max_data_bytes, max_cpu_seconds, defer_data_limit=True)
-        soft, hard = _bounded_hard_limit(
-            resource.getrlimit(resource.RLIMIT_DATA),
-            max_data_bytes,
-            infinity=resource.RLIM_INFINITY,
-        )
-        os.execv(
-            "/bin/sh",
-            [
-                "/bin/sh", "-c",
-                'set -e; ulimit -S -d "$1"; ulimit -H -d "$2"; shift 2; exec "$@"',
-                "marker-mermaid-runtime", str(soft // 1024), str(hard // 1024), *command,
-            ],
-        )
-    else:
-        apply_worker_process_limits(max_data_bytes, max_cpu_seconds)
-        os.execvp(command[0], command)
+    apply_worker_process_limits(max_data_bytes, max_cpu_seconds)
+    os.execvp(command[0], command)
     return 0  # pragma: no cover - os.execvp replaces the process
 
 
