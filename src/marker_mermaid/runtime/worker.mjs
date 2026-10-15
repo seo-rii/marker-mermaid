@@ -16,8 +16,12 @@ if (process.env.MARKER_MERMAID_CHROMIUM_EXECUTABLE) {
 }
 
 const browser = await chromium.launch(launchOptions);
-const context = await browser.newContext({ javaScriptEnabled: true });
+const context = await browser.newContext({
+  javaScriptEnabled: true,
+  serviceWorkers: "block",
+});
 await context.route("**/*", (route) => route.abort("blockedbyclient"));
+await context.routeWebSocket("**/*", (webSocket) => webSocket.close());
 const page = await context.newPage();
 await page.setContent("<!doctype html><html><body></body></html>");
 await page.addScriptTag({ path: mermaidBundle });

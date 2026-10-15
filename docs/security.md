@@ -686,7 +686,9 @@ elements, event-handler attributes, external hrefs, and external CSS in style at
 
 ## Chromium isolation and lifecycle
 
-Every network route in the Playwright context is aborted. No remote font or icon is registered.
+Every HTTP route in the Playwright context is aborted. Service Worker registration is blocked,
+and WebSocket routes close before connecting to a server. Both policies are installed before
+creating the page. No remote font or icon is registered.
 The worker reuses one browser, but resets the DOM and uses a deterministic ID seed for every
 candidate. Worker stdout is read through a nonblocking JSONL buffer with a 64 MB response limit. A
 partial response without a newline cannot exceed the Python deadline. On timeout, malformed or
