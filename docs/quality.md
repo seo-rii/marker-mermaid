@@ -712,12 +712,15 @@ Direct Mermaid OCR recall projects static SVG text with a CSS cascade for
 `display`, `visibility`, and `opacity`. It uses tokenized declarations and selector
 specificity, presentation attributes, inline styles and `!important`; nested
 `tspan` content and tails follow their own inherited visibility. Numeric zero
-opacity spellings all suppress the subtree. Accessibility metadata and definition
+opacity spellings all suppress the subtree. Fill/stroke alpha and paint opacity,
+zero text size, zero stroke width, and hidden content visibility are also checked. Accessibility metadata and definition
 containers do not contribute OCR tokens.
 
 Conditional stylesheets, visibility-changing animations, variables/calculations
-in visibility values, dynamic SVG elements, and projection-budget exhaustion make
-text evidence unavailable and require review. Mermaid's static stroke-dashoffset
-keyframes remain supported. This is a bounded static visibility projection, not
+in visibility values, text clipping/masking/filter effects, CSS `all`, dynamic SVG
+elements, and projection-budget exhaustion make
+text evidence unavailable and require review. Dynamic selector states are
+expanded conservatively; any potentially affected text or ancestor is unavailable.
+Shape-only hover rules and Mermaid's static stroke-dashoffset keyframes remain supported. This is a bounded static visibility projection, not
 an assertion about glyph layout, clipping, occlusion, or contrast in the rendered
 image; those require browser geometry or image evaluation.

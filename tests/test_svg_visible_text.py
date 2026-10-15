@@ -206,3 +206,96 @@ def test_direct_pipeline_uses_visibility_evidence_or_reports_unavailable(body, e
         assert any("projection is unavailable" in message for message in candidate.warnings)
     else:
         assert candidate.scores["ocr_recall"] == expected_recall
+
+
+@pytest.mark.parametrize(
+    "attribute,value",
+    [
+        ("fill-opacity", "0.00"),
+        ("font-size", "0px"),
+        ("font-size", "0%"),
+        ("fill", "transparent"),
+        ("fill", "rgba(0,0,0,0)"),
+        ("fill", "none"),
+        ("content-visibility", "hidden"),
+    ],
+)
+def test_simple_inherited_paint_cues_do_not_credit_hidden_text(attribute, value):
+    assert svg_visible_texts(svg(f'<g {attribute}="{value}"><text>hidden</text></g>')) == []
+
+
+def test_transparent_fill_does_not_hide_a_visible_text_stroke():
+    assert svg_visible_texts(
+        svg(
+            '<text fill="none" stroke="black">visible</text>'
+            '<text fill="none" stroke="black" stroke-width="0">hidden</text>',
+        )
+    ) == ["visible"]
+
+
+def test_zero_inherited_font_can_be_restored_with_an_absolute_child_size():
+    assert svg_visible_texts(
+        svg(
+            '<g font-size="0"><text>hidden</text><text font-size="12px">visible</text></g>',
+        )
+    ) == ["visible"]
+
+
+@pytest.mark.parametrize(
+    "attribute,value",
+    [
+        ("clip-path", "url(#clip)"),
+        ("mask", "url(#mask)"),
+        ("filter", "url(#blur)"),
+        ("content-visibility", "auto"),
+        ("fill", "var(--paint)"),
+        ("font-size", "calc(1px - 1px)"),
+    ],
+)
+def test_unsupported_text_paint_on_ancestor_is_unavailable(attribute, value):
+    assert svg_visible_texts(svg(f'<g {attribute}="{value}"><text>uncertain</text></g>')) is None
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        "text:hover{display:none}",
+        "text:not(:focus){opacity:0}",
+        "text:target{visibility:hidden}",
+        r"text:\68 over{display:none}",
+    ],
+)
+def test_dynamic_visibility_selectors_are_not_silently_ignored(rule):
+    assert svg_visible_texts(svg(f"<style>{rule}</style><text>uncertain</text>")) is None
+
+
+def test_all_shorthand_is_unavailable_instead_of_assuming_independent_properties():
+    assert (
+        svg_visible_texts(
+            svg(
+                '<g visibility="hidden">'
+                '<text visibility="visible" style="all:inherit">hidden</text></g>',
+            )
+        )
+        is None
+    )
+
+
+def test_shape_only_hover_opacity_does_not_invalidate_mermaid_pie_text():
+    assert svg_visible_texts(
+        svg("""
+        <style>.pieCircle:hover { opacity:1 }</style>
+        <circle class="pieCircle" r="5"/><text>visible</text>
+    """)
+    ) == ["visible"]
+
+
+def test_negated_dynamic_selector_cannot_hide_text_without_unavailable_evidence():
+    assert (
+        svg_visible_texts(
+            svg("""
+        <style>g:has(text:hover) { opacity:0 }</style><g><text>uncertain</text></g>
+    """)
+        )
+        is None
+    )
