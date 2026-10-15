@@ -43,6 +43,7 @@ def test_native_launcher_preserves_required_resource_policy():
         capture_output=True,
         text=True,
         timeout=15,
+        start_new_session=True,
     )
     limits = json.loads(probe.stdout)
 
