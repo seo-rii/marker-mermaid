@@ -22,9 +22,14 @@ from marker_mermaid.review import serve_review
 from marker_mermaid.validation import CandidateValidator, NodeMermaidRuntime, default_runtime_dir
 
 
-def _load_config(path: str | None) -> tuple[dict, MermaidConfig]:
+def _load_config(path: str | None, *, marker: bool = False) -> tuple[dict, MermaidConfig]:
     raw = json.loads(Path(path).read_text(encoding="utf-8")) if path else {}
-    return raw, MermaidConfig.from_marker_config(raw)
+    if not isinstance(raw, dict):
+        raise ValueError("configuration file must contain a JSON object")
+    config = (
+        MermaidConfig.from_marker_config(raw) if marker else MermaidConfig.from_cli_config(raw)
+    )
+    return raw, config
 
 
 def resolve_runtime_dir(
@@ -161,7 +166,7 @@ def command_convert(args) -> int:
         )
     except ImportError as exc:
         raise SystemExit("Install the marker extra: pip install 'marker-mermaid[marker]'") from exc
-    raw, config = _load_config(args.config)
+    raw, config = _load_config(args.config, marker=True)
     raw["extract_images"] = True
     raw["use_llm"] = True
     models = create_model_dict()
