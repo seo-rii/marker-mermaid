@@ -109,6 +109,7 @@ from marker_mermaid.scoring import (
     decide_publication,
     numeric_consistency,
     numeric_token_multiset,
+    numeric_token_spellings,
     ocr_recall,
     ocr_token_multiset,
     semantic_score,
@@ -3147,9 +3148,9 @@ class ReconstructionPipeline:
                                     association_available = False
                                     break
                                 expected_numbers = numeric_token_multiset((field.label,))
-                                expected_numbers.update((str(field.start),))
+                                expected_numbers.update(numeric_token_multiset((str(field.start),)))
                                 if field.end != field.start:
-                                    expected_numbers.update((str(field.end),))
+                                    expected_numbers.update(numeric_token_multiset((str(field.end),)))
                                 if observed_numbers != expected_numbers:
                                     association_matches = False
                             if association_available:
@@ -3408,7 +3409,9 @@ class ReconstructionPipeline:
                                         )
                                     )
                                 allowed_observations: set[str] = set()
-                                for observed_number in observed_numbers:
+                                for observed_number in numeric_token_spellings(
+                                    observation_texts[key] for key in ordered_observation_keys
+                                ):
                                     canonical_number = _normalized_label(observed_number)
                                     allowed_observations.update(
                                         {
