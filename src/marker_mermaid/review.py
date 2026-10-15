@@ -719,7 +719,7 @@ class ReviewHandler(SimpleHTTPRequestHandler):
         return len(parts) == 4 and parts[1] == "diagrams" and parts[3] in {"final.svg", "final.png"}
 
     def _open_static_artifact(self, path: str) -> tuple[int, str, int] | None:
-        """Open an allowlisted artifact by descriptor without following symlinks."""
+        """Open a regular allowlisted artifact without blocking or following symlinks."""
 
         if not self._allowed_static_path(path):
             return None
@@ -727,33 +727,38 @@ class ReviewHandler(SimpleHTTPRequestHandler):
         relative_parts = PurePosixPath(decoded).parts[1:]
         nofollow = getattr(os, "O_NOFOLLOW", 0)
         directory_flag = getattr(os, "O_DIRECTORY", 0)
+        nonblock = getattr(os, "O_NONBLOCK", 0)
         directory_descriptor: int | None = None
+        descriptor: int | None = None
         try:
             directory_descriptor = os.open(
                 self.review_root,
-                os.O_RDONLY | directory_flag | nofollow,
+                os.O_RDONLY | directory_flag | nofollow | nonblock,
             )
             for part in relative_parts[:-1]:
                 next_descriptor = os.open(
                     part,
-                    os.O_RDONLY | directory_flag | nofollow,
+                    os.O_RDONLY | directory_flag | nofollow | nonblock,
                     dir_fd=directory_descriptor,
                 )
                 os.close(directory_descriptor)
                 directory_descriptor = next_descriptor
             descriptor = os.open(
                 relative_parts[-1],
-                os.O_RDONLY | nofollow,
+                os.O_RDONLY | nofollow | nonblock,
                 dir_fd=directory_descriptor,
             )
             metadata = os.fstat(descriptor)
             if not stat.S_ISREG(metadata.st_mode):
-                os.close(descriptor)
                 return None
-            return descriptor, relative_parts[-1], metadata.st_size
+            result = descriptor, relative_parts[-1], metadata.st_size
+            descriptor = None  # Ownership transfers to the response writer.
+            return result
         except OSError:
             return None
         finally:
+            if descriptor is not None:
+                os.close(descriptor)
             if directory_descriptor is not None:
                 os.close(directory_descriptor)
 
