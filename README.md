@@ -79,7 +79,7 @@ and report vulnerabilities according to [SECURITY.md](SECURITY.md).
 ## Requirements
 
 - Python 3.11 or newer
-- Node.js 20 or newer
+- Node.js 24 LTS (Node.js 22 LTS is also tested)
 - Linux or macOS; the browser runtime, atomic output, and review store require POSIX process and
   descriptor semantics and fail fast on unsupported platforms
 - Optional Marker and vision dependencies for end-to-end PDF reconstruction

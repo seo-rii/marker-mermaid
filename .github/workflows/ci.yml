@@ -96,18 +96,22 @@ jobs:
             tests/test_pipeline_sidecars.py::test_repair_image_snapshot_checks_exact_mode_before_equality_hooks
 
   mermaid-integration:
-    name: Mermaid and Chromium integration
+    name: Mermaid and Chromium (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["24", "22"]
 
     steps:
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Set up Node 20
+      - name: Set up Node ${{ matrix.node-version }}
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: ${{ matrix.node-version }}
           cache: npm
           cache-dependency-path: src/marker_mermaid/runtime/package-lock.json
 
@@ -209,10 +213,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Set up Node 20
+      - name: Set up Node 24
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: src/marker_mermaid/runtime/package-lock.json
 
