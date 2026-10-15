@@ -244,28 +244,35 @@ def command_doctor(args) -> int:
         "runtime_playwright": (runtime_dir / "node_modules" / "playwright").is_dir(),
     }
     browser_path = os.environ.get("MARKER_MERMAID_CHROMIUM_EXECUTABLE")
+    probe_error = None
     if not browser_path and checks["node"] and checks["runtime_playwright"]:
-        probe = subprocess.run(
-            [
-                "node",
-                "--input-type=module",
-                "--eval",
-                "import {chromium} from 'playwright'; console.log(chromium.executablePath())",
-            ],
-            cwd=runtime_dir,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if probe.returncode == 0:
-            browser_path = probe.stdout.strip()
+        try:
+            probe = subprocess.run(
+                [
+                    "node",
+                    "--input-type=module",
+                    "--eval",
+                    "import {chromium} from 'playwright'; console.log(chromium.executablePath())",
+                ],
+                cwd=runtime_dir,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=min(config.render_timeout_seconds, 10.0),
+            )
+            if probe.returncode == 0:
+                browser_path = probe.stdout.strip()
+            else:
+                probe_error = f"Playwright executable probe exited with status {probe.returncode}"
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            probe_error = f"Playwright executable probe failed: {exc}"
     checks["chromium_executable"] = browser_path
     checks["chromium_installed"] = bool(browser_path and Path(browser_path).is_file())
+    checks["chromium_probe_error"] = probe_error
     try:
         checks["marker_pdf"] = importlib.metadata.version("marker-pdf")
     except importlib.metadata.PackageNotFoundError:
         checks["marker_pdf"] = None
-    print(json.dumps(checks, indent=2))
     required = (
         checks["node"],
         checks["runtime_worker"],
@@ -274,7 +281,29 @@ def command_doctor(args) -> int:
         checks["runtime_playwright"],
         checks["chromium_installed"],
     )
-    return 0 if all(required) else 1
+    healthy = all(required)
+    checks["render_smoke"] = None
+    if args.deep:
+        smoke = {"passed": False, "error": "runtime prerequisites unavailable", "warnings": []}
+        if healthy:
+            runtime = NodeMermaidRuntime(runtime_dir)
+            try:
+                outcome = _validator(runtime, config).validate(
+                    "flowchart LR\n    A[Doctor] --> B[Ready]\n", config.render_timeout_seconds
+                )
+                smoke = {
+                    "passed": outcome.runtime.syntax_valid and outcome.runtime.render_valid,
+                    "error": outcome.runtime.error,
+                    "warnings": outcome.warnings,
+                }
+            except (OSError, RuntimeError) as exc:
+                smoke["error"] = f"render smoke failed: {exc}"
+            finally:
+                runtime.close()
+        checks["render_smoke"] = smoke
+        healthy = healthy and smoke["passed"]
+    print(json.dumps(checks, indent=2))
+    return 0 if healthy else 1
 
 
 def command_install_runtime(args) -> int:
@@ -374,6 +403,9 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = subparsers.add_parser("doctor", help="check optional Marker and Mermaid runtimes")
     doctor.add_argument("--config")
     doctor.add_argument("--runtime-dir")
+    doctor.add_argument(
+        "--deep", action="store_true", help="launch Chromium and render a smoke diagram"
+    )
     doctor.set_defaults(handler=command_doctor)
     install = subparsers.add_parser(
         "install-runtime", help="install pinned Node and Chromium runtime"
