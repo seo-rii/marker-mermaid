@@ -50,15 +50,20 @@ class ValidationOutcome:
     certificate: ValidatedArtifactCertificate | None = None
 
 
+def normalize_runtime_dir(path: str | Path) -> Path:
+    """Bind a runtime directory to the caller's current directory once."""
+    return Path(path).expanduser().resolve()
+
+
 def default_runtime_dir() -> Path:
     override = os.environ.get("MARKER_MERMAID_RUNTIME_DIR")
     if override:
-        return Path(override).expanduser()
+        return normalize_runtime_dir(override)
     packaged = Path(__file__).resolve().parent / "runtime"
     if (packaged / "node_modules" / "mermaid").is_dir():
         return packaged
     cache_root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
-    return cache_root / "marker-mermaid" / "runtime"
+    return normalize_runtime_dir(cache_root / "marker-mermaid" / "runtime")
 
 
 def inspect_svg(
@@ -158,7 +163,11 @@ class NodeMermaidRuntime(MermaidRuntime):
                 "the Mermaid browser runtime supports POSIX platforms only "
                 "(Linux and macOS)"
             )
-        self.runtime_dir = Path(runtime_dir) if runtime_dir else default_runtime_dir()
+        self.runtime_dir = (
+            normalize_runtime_dir(runtime_dir)
+            if runtime_dir is not None
+            else default_runtime_dir()
+        )
         if render_limits is not None and type(render_limits) is not RenderArtifactLimits:
             raise TypeError("render_limits must be an exact RenderArtifactLimits")
         self.render_limits = render_limits or RenderArtifactLimits()
