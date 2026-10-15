@@ -55,6 +55,7 @@ addopts = "-ra"
 testpaths = ["tests"]
 markers = [
   "integration: exercises Marker or a real Mermaid browser runtime",
+  "review_browser: exercises the review UI in real Chromium",
 ]
 
 [tool.ruff]
