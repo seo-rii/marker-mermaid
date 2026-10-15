@@ -14,9 +14,10 @@ from marker_mermaid.accessibility import supports_accessibility_directives
 from marker_mermaid.config import MermaidConfig, PublishPolicy, quality_grade
 from marker_mermaid.models import MermaidCandidate
 
+_NUMERIC_UNIT = r"(?:%|[^\W\d_]|[°$€£¥₩])+(?:[*/·^][+\-]?(?:[^\W_]|[°$€£¥₩])+|[+\-]?\d+)*"
 _NUMERIC_TOKEN_PATTERN = re.compile(
     r"(?<!\w)[+\-−]?(?:\d+(?:\.\d*)?|\.\d+)"
-    r"(?:[eE][+\-−]?\d+)?(?:%|[^\W\d_]+)?"
+    rf"(?:[eE][+\-−]?\d+)?(?:{_NUMERIC_UNIT})?"
 )
 _AMBIGUOUS_NUMBER_PATTERN = re.compile(r"(?<!\w)[+\-−]?\d+(?:[.,]\d+)*,\d+(?:[.,]\d+)*")
 _SCORABLE_GRAMMAR_BY_HEADER = {
@@ -89,7 +90,7 @@ def _numeric_tokens(text: str) -> Iterator[tuple[tuple[int, int], str]]:
         raw = match.group()
         number_match = re.fullmatch(
             r"(?P<number>[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
-            r"(?P<unit>%|[^\W\d_]+)?",
+            rf"(?P<unit>{_NUMERIC_UNIT})?",
             raw,
         )
         assert number_match is not None
