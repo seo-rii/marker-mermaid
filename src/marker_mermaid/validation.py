@@ -71,7 +71,16 @@ def inspect_svg(
 ) -> list[str]:
     findings: list[str] = []
     try:
-        root = ET.fromstring(svg)
+        parser = ET.XMLPullParser(events=("start", "pi"))
+        parser.feed(svg)
+        parser.close()
+        root = None
+        for event, element in parser.read_events():
+            if event == "pi":
+                findings.append("rendered SVG contains a processing instruction")
+            elif root is None:
+                root = element
+        assert root is not None
     except ET.ParseError as exc:
         return [f"rendered output is not XML: {exc}"]
     if root.tag != "{http://www.w3.org/2000/svg}svg":

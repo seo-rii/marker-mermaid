@@ -707,5 +707,6 @@ Validated artifacts require the SVG namespace, a finite positive-area viewBox or
 both positive intrinsic dimensions, and static content. SVG `set`, `animate`,
 `animateMotion`, `animateTransform`, and `discard` are forbidden under every
 profile, because later attribute mutations would invalidate inspection of the
-original artifact. These checks address validator discrepancies; they do not
+original artifact. Processing instructions (including `xml-stylesheet` before
+an SVG root) are rejected; an ordinary XML declaration remains allowed. These checks address validator discrepancies; they do not
 claim an exploit through Mermaid's source scan and isolated browser.

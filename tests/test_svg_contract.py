@@ -98,6 +98,11 @@ def test_svg_without_viewbox_rejects_missing_or_zero_dimensions(dimensions):
         (r'<rect fill="\75rl(https://example.invalid/a)" width="1" height="1"/>', False),
         (r'<style>@\69mport "https://example.invalid/a";</style>', False),
         ('<set attributeName="href" to="https://example.invalid/a"/>', False),
+        (
+            '<?xml-stylesheet type="text/css" href="https://example.invalid/a.css"?>'
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><text>x</text></svg>',
+            False,
+        ),
         ('<defs><linearGradient id="local"/></defs><rect fill="url(#local)"/>', True),
     ],
 )
@@ -116,12 +121,15 @@ def test_real_worker_preflight_matches_svg_reference_policy(tmp_path, body, acce
     assert dependencies.is_dir(), "browser CI requires installed runtime dependencies"
     # Fault-inject renderer output while retaining the real worker parser,
     # preflight, Chromium context and Python artifact validator.
+    injected_svg = body if body.startswith("<?") else svg(body)
     worker = (
         (packaged / "worker.mjs")
         .read_text()
         .replace(
             "const rendered = await mermaid.render(`mmx-${id}`, code);",
-            "const rendered = " + json.dumps({"svg": svg(body), "diagramType": "flowchart"}) + ";",
+            "const rendered = "
+            + json.dumps({"svg": injected_svg, "diagramType": "flowchart"})
+            + ";",
         )
     )
     (tmp_path / "worker.mjs").write_text(worker)
@@ -129,6 +137,11 @@ def test_real_worker_preflight_matches_svg_reference_policy(tmp_path, body, acce
     (tmp_path / "node_modules").symlink_to(dependencies, target_is_directory=True)
     runtime = NodeMermaidRuntime(tmp_path)
     try:
+        if body.startswith("<?"):
+            preflight = runtime.validate_and_render("flowchart LR\nA-->B\n", 20)
+            assert preflight.render_valid
+            assert preflight.png is None
+            assert "processing instruction" in (preflight.png_omitted_reason or "")
         outcome = CandidateValidator(runtime, SecurityProfile.STRICT).validate(
             "flowchart LR\nA-->B\n",
             20,
@@ -138,3 +151,21 @@ def test_real_worker_preflight_matches_svg_reference_policy(tmp_path, body, acce
     assert outcome.runtime.render_valid is accepted, outcome.runtime.error
     if not accepted:
         assert any("SVG" in warning for warning in outcome.warnings)
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        '<?xml-stylesheet type="text/css" href="https://example.invalid/a.css"?>',
+        "<?unknown data?>",
+    ],
+)
+def test_svg_processing_instructions_are_rejected_even_before_root(instruction):
+    assert "rendered SVG contains a processing instruction" in inspect_svg(
+        instruction + svg("<text>hello</text>"),
+        SecurityProfile.STRICT,
+    )
+
+
+def test_xml_declaration_is_not_a_processing_instruction():
+    assert inspect_svg('<?xml version="1.0"?>' + svg(), SecurityProfile.STRICT) == []

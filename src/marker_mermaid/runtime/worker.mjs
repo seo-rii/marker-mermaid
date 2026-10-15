@@ -82,7 +82,9 @@ async function handle(request) {
       let textLength = 0;
       let pathCount = 0;
       let pathDataLength = 0;
-      let securityFinding = null;
+      let securityFinding = parsedSvg.createTreeWalker(
+        parsedSvg, NodeFilter.SHOW_PROCESSING_INSTRUCTION,
+      ).nextNode() === null ? null : "processing instruction";
       if (nodeCount <= limits.maxSvgNodes) {
         const textWalker = parsedSvg.createTreeWalker(
           parsedRoot,
