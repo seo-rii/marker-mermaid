@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import ctypes
+import errno
 import json
 import math
 import os
@@ -17,6 +19,7 @@ import weakref
 import xml.etree.ElementTree as ET
 from contextlib import suppress
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from marker_mermaid.config import SecurityProfile
@@ -145,51 +148,112 @@ def inspect_svg(
     return sorted(set(findings))
 
 
+class _DarwinSiginfo(ctypes.Structure):
+    # Darwin's public siginfo_t ABI, shared by arm64 and x86_64.
+    # https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/signal.h
+    _fields_ = [
+        ("si_signo", ctypes.c_int),
+        ("si_errno", ctypes.c_int),
+        ("si_code", ctypes.c_int),
+        ("si_pid", ctypes.c_int),
+        ("si_uid", ctypes.c_uint),
+        ("si_status", ctypes.c_int),
+        ("si_addr", ctypes.c_void_p),
+        ("si_value", ctypes.c_void_p),
+        ("si_band", ctypes.c_long),
+        ("_pad", ctypes.c_ulong * 7),
+    ]
+
+
+@lru_cache(maxsize=1)
+def _darwin_waitid():
+    # Python exposes os.waitid on macOS only from 3.13. Earlier supported
+    # versions can use libc, provided siginfo_t is zeroed for WNOHANG.
+    waitid = ctypes.CDLL(None, use_errno=True).waitid
+    waitid.argtypes = [ctypes.c_int, ctypes.c_uint, ctypes.POINTER(_DarwinSiginfo), ctypes.c_int]
+    waitid.restype = ctypes.c_int
+    return waitid
+
+
+def _runtime_worker_exit_code(process: subprocess.Popen[bytes]) -> int | None:
+    """Observe exit without freeing the PID that owns the process group."""
+    if process.returncode is not None:
+        raise ChildProcessError("runtime worker was already reaped")
+    try:
+        if hasattr(os, "waitid"):
+            result = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            if result is None:
+                return None
+            return result.si_status if result.si_code == os.CLD_EXITED else -result.si_status
+        if sys.platform != "darwin":
+            raise RuntimeError("runtime cleanup requires non-reaping waitid with WNOWAIT")
+        info = _DarwinSiginfo()
+        # Darwin sys/wait.h: P_PID=1, WEXITED=4, WNOHANG=1, WNOWAIT=32.
+        while _darwin_waitid()(1, process.pid, ctypes.byref(info), 0x25) != 0:
+            error = ctypes.get_errno()
+            if error == errno.EINTR:
+                continue
+            raise OSError(error, os.strerror(error))
+        if info.si_pid == 0:
+            return None
+        return info.si_status if info.si_code == 1 else -info.si_status  # CLD_EXITED=1
+    except ChildProcessError:
+        # Match Popen's ECHILD convention. Prevent its later destructor from
+        # polling a PID that an external waitpid may already have made reusable.
+        process.returncode = 0
+        raise
+
+
 def _close_runtime_process(
     process: subprocess.Popen[bytes],
     process_group_id: int | None,
     *,
     deadline: float | None = None,
 ) -> None:
-    """Reap the worker and stop its owned group even if the leader exited first."""
+    """Keep the leader waitable until every signal to its owned group is sent."""
+    owned = True
+
     def remaining_grace(seconds: float) -> float:
         return seconds if deadline is None else max(0, min(seconds, deadline - time.monotonic()))
+
+    def signal_owned(signum: int) -> None:
+        _runtime_worker_exit_code(process)
+        if process_group_id is not None:
+            os.killpg(process_group_id, signum)
+        else:  # pragma: no cover - partial-start fallback
+            os.kill(process.pid, signum)
 
     try:
         if process.stdin is not None:
             with suppress(OSError):
                 process.stdin.close()
-        if process.poll() is None:
-            with suppress(subprocess.TimeoutExpired):
-                process.wait(timeout=remaining_grace(1))
+        graceful_deadline = time.monotonic() + remaining_grace(1)
+        while _runtime_worker_exit_code(process) is None:
+            remaining = graceful_deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.02, remaining))
 
-        if process_group_id is not None:
-            try:
-                os.killpg(process_group_id, signal.SIGTERM)
-            except ProcessLookupError:
-                return
-            # Waiting only on the leader misses children that outlive it or ignore TERM.
-            terminate_deadline = time.monotonic() + remaining_grace(3)
-            while time.monotonic() < terminate_deadline:
-                process.poll()
-                try:
-                    os.killpg(process_group_id, 0)
-                except ProcessLookupError:
-                    return
-                time.sleep(min(0.02, max(0, terminate_deadline - time.monotonic())))
-            with suppress(ProcessLookupError):
-                os.killpg(process_group_id, signal.SIGKILL)
-        elif process.poll() is None:  # pragma: no cover - partial-start fallback
-            process.terminate()
-            try:
-                process.wait(timeout=remaining_grace(3))
-            except subprocess.TimeoutExpired:
-                process.kill()
+        signal_owned(signal.SIGTERM)
+        terminate_deadline = time.monotonic() + remaining_grace(3)
+        while time.monotonic() < terminate_deadline:
+            if _runtime_worker_exit_code(process) is not None:
+                # The exited leader still pins the PGID. Give surviving children
+                # a short TERM grace, then remove them before releasing that PID.
+                terminate_deadline = min(terminate_deadline, time.monotonic() + 0.1)
+            time.sleep(min(0.02, max(0, terminate_deadline - time.monotonic())))
+        signal_owned(signal.SIGKILL)
+    except ChildProcessError:
+        # A caller that reaped the private Popen surrendered group ownership.
+        # Never signal the numeric PGID, which may now belong to another session.
+        owned = False
+    except ProcessLookupError:
+        pass
     finally:
-        with suppress(subprocess.TimeoutExpired):
-            # SIGKILL is asynchronous. Allow a bounded scheduler/reaping margin
-            # after the request budget so the direct child does not become a zombie.
-            process.wait(timeout=max(0.1, remaining_grace(3)))
+        if owned:
+            with suppress(subprocess.TimeoutExpired):
+                # A final direct-child reap may use a 100 ms scheduler margin.
+                process.wait(timeout=max(0.1, remaining_grace(3)))
         for stream in (process.stdout, process.stderr):
             if stream is not None:
                 with suppress(OSError):
@@ -210,6 +274,10 @@ class NodeMermaidRuntime(MermaidRuntime):
                 "the Mermaid browser runtime supports POSIX platforms only "
                 "(Linux and macOS)"
             )
+        if not hasattr(os, "waitid"):
+            if sys.platform != "darwin":
+                raise RuntimeError("runtime cleanup requires non-reaping waitid with WNOWAIT")
+            _darwin_waitid()
         self.runtime_dir = Path(runtime_dir) if runtime_dir else default_runtime_dir()
         if render_limits is not None and type(render_limits) is not RenderArtifactLimits:
             raise TypeError("render_limits must be an exact RenderArtifactLimits")
@@ -301,7 +369,13 @@ class NodeMermaidRuntime(MermaidRuntime):
                     ),
                 )
             process = self._process
-            if process is None or process.poll() is not None:
+            exited = process is None
+            if process is not None:
+                try:
+                    exited = _runtime_worker_exit_code(process) is not None
+                except ChildProcessError:
+                    exited = True
+            if exited:
                 if process is not None:
                     self._close(deadline=deadline)
                 if time.monotonic() >= deadline:
@@ -499,7 +573,9 @@ class NodeMermaidRuntime(MermaidRuntime):
                                     self._stderr_truncated = True
                                 detail = self._stderr_buffer.decode("utf-8", errors="replace")
                                 detail = " ".join(detail.split())
-                                exit_code = process.poll()
+                                exit_code = None
+                                with suppress(ChildProcessError):
+                                    exit_code = _runtime_worker_exit_code(process)
                                 self._close(deadline=deadline)
                                 return RuntimeResult(
                                     False,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ctypes
+import errno
 import gc
 import json
 import os
@@ -168,6 +170,135 @@ def _pid_is_running(pid: int) -> bool:
     return bool(status) and not status.startswith("Z")
 
 
+def _observe_worker_exit(process, timeout=5):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = validation._runtime_worker_exit_code(process)  # noqa: SLF001
+        if result is not None:
+            return result
+        time.sleep(0.01)
+    raise AssertionError("worker did not exit")
+
+
+@pytest.mark.parametrize("reap_with_popen", [True, False])
+def test_runtime_close_never_signals_an_externally_reaped_worker(
+    monkeypatch, tmp_path, reap_with_popen
+):
+    _worker(tmp_path, "process.exit(0);")
+    runtime = NodeMermaidRuntime(tmp_path)
+    process = runtime._start()  # noqa: SLF001 - simulate lost private child ownership
+    if reap_with_popen:
+        assert process.wait(timeout=5) == 0
+    else:
+        assert os.waitpid(process.pid, 0) == (process.pid, 0)
+    signals = []
+    monkeypatch.setattr(validation.os, "killpg", lambda *args: signals.append(args))
+
+    runtime.close()
+
+    assert signals == []
+    assert process.stdin.closed
+    assert process.stdout.closed
+    assert process.stderr.closed
+
+
+@pytest.mark.parametrize("worker_exit", ["stdin_eof", "before_request", "response_eof"])
+def test_worker_identity_remains_waitable_until_the_last_group_signal(
+    monkeypatch, tmp_path, worker_exit
+):
+    sources = {
+        "stdin_eof": "process.stdin.resume();",
+        "before_request": "process.exit(0);",
+        "response_eof": "process.stdin.once('data', () => process.exit(7));",
+    }
+    _worker(tmp_path, sources[worker_exit])
+    runtime = NodeMermaidRuntime(tmp_path)
+    process = runtime._start()  # noqa: SLF001 - assert the owned PID cannot be reused
+    original_killpg = os.killpg
+    original_start = runtime._start  # noqa: SLF001 - observe replacement worker too
+    processes = {process.pid: process}
+    signals = []
+
+    def start_and_remember():
+        replacement = original_start()
+        processes[replacement.pid] = replacement
+        return replacement
+
+    def signal_still_owned_group(process_group_id, signum):
+        owned_process = processes[process_group_id]
+        # ECHILD here means the PID is already reusable: no signal is safe.
+        validation._runtime_worker_exit_code(owned_process)  # noqa: SLF001
+        signals.append(signum)
+        original_killpg(process_group_id, signum)
+
+    monkeypatch.setattr(runtime, "_start", start_and_remember)
+    monkeypatch.setattr(validation.os, "killpg", signal_still_owned_group)
+    try:
+        if worker_exit == "before_request":
+            assert _observe_worker_exit(process) == 0
+            # Restart the already-exited worker through the real request path.
+            _worker(tmp_path, "process.stdin.once('data', () => process.exit(7));")
+        if worker_exit != "stdin_eof":
+            result = runtime.validate_and_render("flowchart LR\nA-->B", 5)
+            assert not result.render_valid
+        else:
+            runtime.close()
+        assert signal.SIGTERM in signals
+        assert signal.SIGKILL in signals
+        assert process.poll() is not None
+    finally:
+        monkeypatch.setattr(validation.os, "killpg", original_killpg)
+        runtime.close()
+
+
+def test_runtime_requires_non_reaping_child_observation(monkeypatch, tmp_path):
+    monkeypatch.delattr(validation.os, "waitid", raising=False)
+    monkeypatch.setattr(validation.sys, "platform", "unsupported")
+
+    with pytest.raises(RuntimeError, match="WNOWAIT"):
+        NodeMermaidRuntime(tmp_path)
+
+
+@pytest.mark.parametrize("exit_status", [None, 0, -15, "reaped"])
+def test_darwin_waitid_fallback_preserves_exit_and_ownership_contract(
+    monkeypatch, tmp_path, exit_status
+):
+    # Exercise the macOS <=3.12 branch on every CI platform; the macOS job also
+    # calls the real libc adapter through the complete process regression suite.
+    calls = []
+
+    def native_waitid(id_type, pid, pointer, flags):
+        assert (id_type, flags) == (1, 0x25)
+        info = ctypes.cast(pointer, ctypes.POINTER(validation._DarwinSiginfo)).contents
+        assert info.si_pid == 0
+        calls.append(pid)
+        if exit_status == "reaped":
+            ctypes.set_errno(errno.ECHILD)
+            return -1
+        if exit_status is not None:
+            info.si_pid = pid
+            info.si_code = 1 if exit_status >= 0 else 2
+            info.si_status = abs(exit_status)
+        return 0
+
+    monkeypatch.delattr(validation.os, "waitid", raising=False)
+    monkeypatch.setattr(validation.sys, "platform", "darwin")
+    monkeypatch.setattr(validation, "_darwin_waitid", lambda: native_waitid)
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    try:
+        if exit_status == "reaped":
+            with pytest.raises(ChildProcessError):
+                validation._runtime_worker_exit_code(process)  # noqa: SLF001
+        else:
+            assert validation._runtime_worker_exit_code(process) == exit_status  # noqa: SLF001
+            assert process.returncode is None
+        assert calls == [process.pid]
+    finally:
+        # The stub reports ECHILD without actually reaping this fixture child.
+        process.returncode = None
+        process.wait(timeout=5)
+
+
 @pytest.mark.parametrize("parent_exit", ["before_close", "stdin_eof", "sigterm"])
 @pytest.mark.parametrize("descendant_depth", [1, 2])
 def test_close_kills_term_ignoring_descendants_after_worker_exit(
@@ -214,7 +345,7 @@ const ready = setInterval(() => {{
         child_pid = int(marker.read_text(encoding="utf-8"))
         assert _pid_is_running(child_pid)
         if parent_exit == "before_close":
-            assert process.wait(timeout=5) == 0
+            assert _observe_worker_exit(process) == 0
 
         runtime.close()
 
@@ -357,7 +488,7 @@ def test_request_queue_rejects_overflow_and_recovers(monkeypatch, tmp_path):
         assert runtime.validate_and_render("capacity released", 2).render_valid
 
 
-def test_timeout_skips_shutdown_grace_for_term_ignoring_worker(tmp_path):
+def test_timeout_skips_shutdown_grace_for_term_ignoring_worker(monkeypatch, tmp_path):
     _worker(
         tmp_path,
         """
@@ -367,6 +498,17 @@ setInterval(() => {}, 1000);
 """,
     )
     runtime = NodeMermaidRuntime(tmp_path)
+    process = runtime._start()  # noqa: SLF001 - preserve identity through timed-out cleanup
+    original_killpg = os.killpg
+    signals = []
+
+    def signal_still_owned_group(process_group_id, signum):
+        assert process_group_id == process.pid
+        validation._runtime_worker_exit_code(process)  # noqa: SLF001 - must remain waitable
+        signals.append(signum)
+        original_killpg(process_group_id, signum)
+
+    monkeypatch.setattr(validation.os, "killpg", signal_still_owned_group)
     started = time.monotonic()
 
     result = runtime.validate_and_render("never answers", 0.15)
@@ -374,6 +516,8 @@ setInterval(() => {}, 1000);
     assert time.monotonic() - started < 0.4
     assert "exceeded 0.15s" in (result.error or "")
     assert runtime._process is None  # noqa: SLF001 - forced cleanup contract
+    assert signals == [signal.SIGTERM, signal.SIGKILL]
+    assert process.poll() is not None
 
 
 def test_worker_startup_consumes_the_request_deadline(monkeypatch, tmp_path):
