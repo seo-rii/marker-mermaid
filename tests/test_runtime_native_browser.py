@@ -83,9 +83,21 @@ def test_native_browser_renders_png_and_restarts_under_process_budget():
 @pytest.mark.skipif(sys.platform != "darwin", reason="Darwin group footprint supervisor")
 def test_darwin_group_memory_budget_stops_worker_and_descendants(monkeypatch, tmp_path):
     marker = tmp_path / "owned-processes.json"
-    child_code = (
-        "process.on('SIGTERM', () => {}); process.send('ready'); setInterval(() => {}, 1000);"
-    )
+    # Each Node process allocates at most 192 MiB, below the 256 MiB group
+    # budget even with its normal heap. Their combined growth must stop the
+    # whole group; a per-process limit would miss this case.
+    child_code = """
+process.on('SIGTERM', () => {});
+const allocations = [];
+process.on('message', () => {
+  const allocate = setInterval(() => {
+    allocations.push(Buffer.alloc(32 * 1024 * 1024, 1));
+    if (allocations.length === 6) clearInterval(allocate);
+  }, 50);
+});
+process.send('ready');
+setInterval(() => allocations.length, 1000);
+"""
     (tmp_path / "worker.mjs").write_text(
         f"""
 import {{spawn}} from 'node:child_process';
@@ -95,10 +107,11 @@ const child = spawn(process.execPath, ['-e', {json.dumps(child_code)}], {{
 }});
 child.once('message', () => {{
   fs.writeFileSync({json.dumps(str(marker))}, JSON.stringify([process.pid, child.pid]));
+  child.send('allocate');
   const allocations = [];
   const allocate = setInterval(() => {{
     allocations.push(Buffer.alloc(32 * 1024 * 1024, 1));
-    if (allocations.length === 16) clearInterval(allocate);
+    if (allocations.length === 6) clearInterval(allocate);
   }}, 50);
   setInterval(() => allocations.length, 1000);
 }});
