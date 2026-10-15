@@ -151,6 +151,16 @@ def test_real_mermaid_styles_keep_visible_labels_available(code, expected):
             0.5,
         ),
         ('<text style="opacity:var(--amount)">Start forged</text>', None),
+        ('<text style="font:0px sans-serif">Start forged</text>', None),
+        ('<g style="font-size-adjust:0"><text>Start forged</text></g>', None),
+        (
+            '<style>:link{display:none}</style><a href="#label"><text>Start forged</text></a>',
+            None,
+        ),
+        (
+            '<style>:any-link{display:none}</style><a href="#label"><text>Start forged</text></a>',
+            None,
+        ),
     ],
 )
 def test_direct_pipeline_uses_visibility_evidence_or_reports_unavailable(body, expected_recall):
@@ -202,7 +212,9 @@ def test_direct_pipeline_uses_visibility_evidence_or_reports_unavailable(body, e
     candidate = candidates[0]
     if expected_recall is None:
         assert "ocr_recall" not in candidate.scores
+        assert candidate.aggregate_score is None
         assert not result.publish
+        assert result.review_required
         assert any("projection is unavailable" in message for message in candidate.warnings)
     else:
         assert candidate.scores["ocr_recall"] == expected_recall
@@ -299,3 +311,84 @@ def test_negated_dynamic_selector_cannot_hide_text_without_unavailable_evidence(
         )
         is None
     )
+
+
+@pytest.mark.parametrize("declaration", ["font:0px sans-serif", "font-size-adjust:0"])
+@pytest.mark.parametrize(
+    "template",
+    [
+        '<text style="{declaration}">hidden</text>',
+        '<g style="{declaration}"><text>hidden</text></g>',
+        '<style>text{{{declaration}}}</style><text>hidden</text>',
+    ],
+)
+def test_unsupported_font_properties_do_not_claim_painted_text(declaration, template):
+    assert svg_visible_texts(svg(template.format(declaration=declaration))) is None
+
+
+@pytest.mark.parametrize("selector", [":link", ":any-link", r":\61ny-link"])
+@pytest.mark.parametrize("attribute", ['href="#label"', 'xlink:href="#label"'])
+def test_svg_link_visibility_selectors_do_not_silently_miss_svg_anchors(selector, attribute):
+    body = (
+        f'<style>{selector}{{display:none}}</style>'
+        '<a xmlns:xlink="http://www.w3.org/1999/xlink" '
+        f'{attribute}><text>hidden</text></a>'
+    )
+    assert svg_visible_texts(svg(body)) is None
+
+
+def test_link_or_font_rules_on_shapes_do_not_invalidate_unrelated_text():
+    assert svg_visible_texts(
+        svg(
+            '<style>:any-link{display:none}.shape{font:0px sans-serif}</style>'
+            '<a href="#shape"><circle r="2"/></a>'
+            '<circle class="shape" r="2"/><text>visible</text>'
+        )
+    ) == ["visible"]
+
+
+@pytest.mark.integration
+def test_chromium_hidden_font_and_link_counterexamples_withhold_ocr_evidence():
+    import json
+    import subprocess
+
+    from marker_mermaid.validation import default_runtime_dir
+
+    bodies = [
+        '<text style="font:0px sans-serif">hidden</text>',
+        '<g style="font-size-adjust:0"><text>hidden</text></g>',
+        '<style>:link{display:none}</style><a href="#label"><text>hidden</text></a>',
+        '<style>:any-link{display:none}</style><a href="#label"><text>hidden</text></a>',
+    ]
+    script = """
+        import { pathToFileURL } from 'node:url';
+        const { chromium } = await import(pathToFileURL(process.argv[1]));
+        const browser = await chromium.launch({headless:true, args:['--no-sandbox']});
+        try {
+            const page = await browser.newPage();
+            const boxes = [];
+            for (const svg of JSON.parse(process.argv[2])) {
+                await page.setContent(svg);
+                boxes.push(await page.locator('text').evaluate(element => {
+                    const box = element.getBBox();
+                    return [box.width, box.height];
+                }));
+            }
+            console.log(JSON.stringify(boxes));
+        } finally { await browser.close(); }
+    """
+    rendered_svgs = [svg(body) for body in bodies]
+    result = subprocess.run(
+        [
+            "node", "--input-type=module", "-e", script,
+            str(default_runtime_dir().resolve() / "node_modules/playwright/index.mjs"),
+            json.dumps(rendered_svgs),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [[0, 0]] * len(bodies)
+    assert all(svg_visible_texts(rendered) is None for rendered in rendered_svgs)

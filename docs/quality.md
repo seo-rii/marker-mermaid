@@ -717,10 +717,12 @@ zero text size, zero stroke width, and hidden content visibility are also checke
 containers do not contribute OCR tokens.
 
 Conditional stylesheets, visibility-changing animations, variables/calculations
-in visibility values, text clipping/masking/filter effects, CSS `all`, dynamic SVG
-elements, and projection-budget exhaustion make
+in visibility values, text clipping/masking/filter effects, CSS `all`, unsupported
+`font` shorthand and `font-size-adjust`, dynamic SVG elements, and projection-budget exhaustion make
 text evidence unavailable and require review. Dynamic selector states are
 expanded conservatively; any potentially affected text or ancestor is unavailable.
+This includes SVG anchors matched by `:link` or `:any-link`, with either `href` or
+the legacy XLink attribute; XML selector defaults cannot silently hide these rules.
 Shape-only hover rules and Mermaid's static stroke-dashoffset keyframes remain supported. This is a bounded static visibility projection, not
 an assertion about glyph layout, clipping, occlusion, or contrast in the rendered
 image; those require browser geometry or image evaluation.

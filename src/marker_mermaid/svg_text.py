@@ -25,7 +25,10 @@ _PAINT_DEFAULTS = {
     "font-size": "16px",
     "stroke-width": "1px",
 }
-_PAINT_EFFECTS = {"clip-path", "mask", "filter", "content-visibility", "all"}
+_UNSUPPORTED_FONT_PROPERTIES = {"font", "font-size-adjust"}
+_PAINT_EFFECTS = {
+    "clip-path", "mask", "filter", "content-visibility", "all",
+} | _UNSUPPORTED_FONT_PROPERTIES
 _PROPERTIES = _VISIBILITY_PROPERTIES | _PAINT_DEFAULTS.keys() | _PAINT_EFFECTS
 _NON_PAINTED = {"defs", "clippath", "mask", "marker", "pattern", "symbol", "title", "desc", "style"}
 _DYNAMIC = {
@@ -42,7 +45,7 @@ _MAX_SELECTORS = 2_000
 _DYNAMIC_PSEUDO = re.compile(
     r":(?:hover|active|focus(?:-within|-visible)?|visited|target|checked|enabled|"
     r"disabled|indeterminate|valid|invalid|in-range|out-of-range|placeholder-shown|"
-    r"autofill|open|modal|fullscreen|playing|paused)\b",
+    r"autofill|open|modal|fullscreen|playing|paused|link|any-link)\b",
     re.IGNORECASE,
 )
 
@@ -58,12 +61,22 @@ def _projection_selectors(prelude):
         fragments = []
         offset = 0
         for match, state in zip(dynamic, states, strict=True):
+            # cssselect2's XML wrapper does not recognize SVG links. Limit the
+            # possible matching state to anchors with an SVG href instead of
+            # treating :link / :any-link as never matching or as any element.
+            candidate = (
+                ":is(a[href], a[mmx-xlink|href])"
+                if match.group().casefold() in {":link", ":any-link"}
+                else ":is(*)"
+            )
             fragments.extend(
-                (selector_text[offset : match.start()], ":is(*)" if state else ":not(*)")
+                (selector_text[offset : match.start()], candidate if state else ":not(*)")
             )
             offset = match.end()
         fragments.append(selector_text[offset:])
-        for selector in cssselect2.compile_selector_list("".join(fragments)):
+        for selector in cssselect2.compile_selector_list(
+            "".join(fragments), namespaces={"mmx-xlink": "http://www.w3.org/1999/xlink"}
+        ):
             yield selector, bool(dynamic)
 
 
@@ -295,7 +308,11 @@ def svg_visible_texts(svg: str) -> list[str] | None:
                             suppressed = True
                         elif value not in {"visible", "initial"}:
                             uncertain = True
-                    elif name == "all" or value not in {"none", "initial", "unset"}:
+                    elif (
+                        name == "all"
+                        or name in _UNSUPPORTED_FONT_PROPERTIES
+                        or value not in {"none", "initial", "unset"}
+                    ):
                         uncertain = True
             states[element] = (suppressed, visibility, opacity, uncertain)
             paints[element] = (paint, font_size, stroke_width)
