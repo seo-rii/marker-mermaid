@@ -79,7 +79,7 @@ and report vulnerabilities according to [SECURITY.md](SECURITY.md).
 ## Requirements
 
 - Python 3.11 or newer
-- Node.js 20 or newer
+- Node.js 24 LTS (Node.js 22 LTS is also tested)
 - Linux or macOS; the browser runtime, atomic output, and review store require POSIX process and
   descriptor semantics and fail fast on unsupported platforms
 - Optional Marker and vision dependencies for end-to-end PDF reconstruction
@@ -104,7 +104,12 @@ python -m venv .venv
 pip install -e '.[vision,dev]'
 marker-mermaid install-runtime
 marker-mermaid doctor
+marker-mermaid doctor --deep
 ```
+
+`doctor` checks runtime files and the Chromium executable. `doctor --deep` also launches
+Chromium and validates a small Mermaid render using `render_timeout_seconds`; its JSON
+`render_smoke` result distinguishes an installed runtime from a working renderer.
 
 The optional `marker` extra is intentionally pinned to the compatibility baseline:
 

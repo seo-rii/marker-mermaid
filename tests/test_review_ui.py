@@ -2,18 +2,19 @@ import html
 import json
 import os
 import subprocess
-from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from marker_mermaid.review_ui import build_review_workspace_assets
+from marker_mermaid.validation import default_runtime_dir
 
 
 def _run_review_browser(node_script: str, payload: dict) -> object:
-    runtime_dir = Path(__file__).parents[1] / "src" / "marker_mermaid" / "runtime"
+    runtime_dir = default_runtime_dir().resolve()
     playwright = runtime_dir / "node_modules" / "playwright"
     if not playwright.is_dir():
-        pytest.skip("packaged Playwright runtime is unavailable")
+        pytest.skip(f"Playwright runtime is unavailable at {runtime_dir}")
     completed = subprocess.run(
         ["node", "--input-type=module", "-e", node_script],
         input=json.dumps(payload),
@@ -301,6 +302,8 @@ def test_review_workspace_edge_label_controls_send_only_structured_label_operati
             assert forbidden not in handler
 
 
+@pytest.mark.integration
+@pytest.mark.review_browser
 def test_review_workspace_renders_bounded_safe_audit_history_and_refreshes_mutations():
     attack = '<img id="history-xss" src=x onerror="alert(1)"><script>alert(2)</script>'
     history = [
@@ -514,6 +517,8 @@ try {
     ]
 
 
+@pytest.mark.integration
+@pytest.mark.review_browser
 def test_review_workspace_preserves_drafts_and_recovers_revision_conflicts():
     base_scene = {
         "coordinate_space": "normalized",
@@ -896,6 +901,8 @@ try {
         assert body["scene_ir"] == draft_scene
 
 
+@pytest.mark.integration
+@pytest.mark.review_browser
 def test_review_workspace_locks_failed_summary_load_until_explicit_retry():
     summary = {
         "id": "diagram-a",
@@ -1033,6 +1040,8 @@ try {
     assert result["getCount"] == 2
 
 
+@pytest.mark.integration
+@pytest.mark.review_browser
 def test_source_overlay_matches_centered_image_and_scene_coordinate_spaces():
     node_script = r"""
 import fs from "node:fs";
@@ -1147,6 +1156,8 @@ try {
         assert measurement["node"]["height"] == pytest.approx(60, abs=0.5)
 
 
+@pytest.mark.integration
+@pytest.mark.review_browser
 def test_source_overlay_rejects_stale_failed_and_empty_images_and_keeps_selection():
     diagrams = [
         {
@@ -1347,6 +1358,8 @@ try {
     }
 
 
+@pytest.mark.integration
+@pytest.mark.review_browser
 def test_review_workspace_selects_and_submits_only_linked_source_label_ids():
     summary = {
         "id": "diagram-a",
@@ -1634,3 +1647,19 @@ def test_asset_base_must_be_same_origin_path():
 def test_bootstrap_rejects_non_standard_json_numbers():
     with pytest.raises(ValueError):
         build_review_workspace_assets({"score": float("nan")})
+
+
+def test_review_browser_helper_uses_shared_runtime_override(monkeypatch, tmp_path):
+    runtime = tmp_path / "external runtime"
+    playwright = runtime / "node_modules" / "playwright"
+    playwright.mkdir(parents=True)
+    monkeypatch.setenv("MARKER_MERMAID_RUNTIME_DIR", str(runtime))
+    calls = []
+
+    def run_browser(*args, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run_browser)
+    assert _run_review_browser("", {}) == {}
+    assert calls[0]["env"]["MMX_PLAYWRIGHT"] == str(playwright)

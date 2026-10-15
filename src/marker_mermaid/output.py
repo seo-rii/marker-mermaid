@@ -27,6 +27,25 @@ class _OutputSnapshot:
     markdown: bytes
 
 
+def preflight_output_destination(*, output_dir: str | Path, filename: str) -> None:
+    """Reject known destination conflicts before costly conversion work.
+
+    This check does not reserve the path. The output transaction still checks
+    again when it opens and atomically publishes the completed document.
+    """
+
+    if Path(filename).name != filename or filename in {"", ".", ".."}:
+        raise ValueError("filename must be a single safe path component")
+    root = OutputTransaction(output_dir).destination
+    if root.exists() or root.is_symlink():
+        raise FileExistsError(f"output directory already exists: {root}")
+    parent = root.parent
+    while not parent.exists() and not parent.is_symlink():
+        parent = parent.parent
+    if not parent.is_dir() or parent.is_symlink():
+        raise ValueError("output parent must be a real directory")
+
+
 def _preflight_output(
     root: Path,
     filename: str,
@@ -131,6 +150,7 @@ def _preflight_output(
         (row, row.get("source_id"))
         for row in metadata_rows
     )
+    preflight_output_destination(output_dir=root, filename=filename)
     return _OutputSnapshot(
         reconstruction_pairs=tuple(reconstruction_pairs),
         images=tuple(image_snapshots),

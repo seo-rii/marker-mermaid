@@ -16,6 +16,7 @@ def test_reconstruct_closes_the_source_image_before_pipeline_output(monkeypatch,
 
     class OpenedImage:
         mode = "RGB"
+        size = (2, 2)
         exited = False
 
         def __enter__(self):
@@ -73,7 +74,7 @@ def test_reconstruct_closes_the_source_image_before_pipeline_output(monkeypatch,
         image="source.png",
         fixture="fixture.json",
         source_id=None,
-        output=tmp_path,
+        output=tmp_path / "output",
         name="document",
     )
 
@@ -82,6 +83,6 @@ def test_reconstruct_closes_the_source_image_before_pipeline_output(monkeypatch,
     assert exit_code == 1
     assert runtime.closed
     assert saved["images"] == {"source.png": copied_image}
-    assert saved["output_dir"] == tmp_path
+    assert saved["output_dir"] == tmp_path / "output"
     assert saved["filename"] == "document"
-    assert Path(saved["output_dir"]) == tmp_path
+    assert Path(saved["output_dir"]) == tmp_path / "output"

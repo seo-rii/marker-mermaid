@@ -96,18 +96,22 @@ jobs:
             tests/test_pipeline_sidecars.py::test_repair_image_snapshot_checks_exact_mode_before_equality_hooks
 
   mermaid-integration:
-    name: Mermaid and Chromium integration
+    name: Mermaid and Chromium (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["24", "22"]
 
     steps:
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Set up Node 20
+      - name: Set up Node ${{ matrix.node-version }}
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: ${{ matrix.node-version }}
           cache: npm
           cache-dependency-path: src/marker_mermaid/runtime/package-lock.json
 
@@ -130,7 +134,7 @@ jobs:
         env:
           MARKER_MERMAID_RUNTIME_DIR: ${{ runner.temp }}/marker-mermaid-runtime
         run: |
-          pytest -q -m integration \
+          pytest -q -m "integration and not review_browser" \
             --ignore=tests/test_marker_compat.py \
             --ignore=tests/test_publication_receipt.py \
             --ignore=tests/test_publication_snapshot.py \
@@ -138,6 +142,21 @@ jobs:
             --ignore=tests/test_render_artifact_limits.py
           pytest -q \
             tests/test_publication_snapshot.py::test_markdown_uses_a_longer_fence_for_backtick_lines_inside_mermaid_labels
+
+      - name: Run every review browser fixture without skips or deselection
+        env:
+          MARKER_MERMAID_RUNTIME_DIR: ${{ runner.temp }}/marker-mermaid-runtime
+        run: >-
+          pytest -q -m review_browser --require-review-browser
+          --junitxml=review-browser-results.xml
+
+      - name: Upload review browser results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-browser-results-node-${{ matrix.node-version || 'default' }}
+          path: review-browser-results.xml
+          if-no-files-found: error
 
   marker-compatibility:
     name: Marker 1.10.2 compatibility
@@ -217,10 +236,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Set up Node 20
+      - name: Set up Node 24
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: src/marker_mermaid/runtime/package-lock.json
 

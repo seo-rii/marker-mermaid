@@ -4,16 +4,22 @@ from __future__ import annotations
 
 import re
 import unicodedata
-import xml.etree.ElementTree as ET
 from collections import Counter, deque
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 
 from marker_mermaid.accessibility import supports_accessibility_directives
 from marker_mermaid.config import MermaidConfig, PublishPolicy, quality_grade
 from marker_mermaid.models import MermaidCandidate
+from marker_mermaid.svg_text import svg_visible_texts  # noqa: F401 - public scoring API
 
-_NUMERIC_TOKEN_PATTERN = re.compile(r"(?<!\w)[+-]?(?:\d+(?:\.\d+)?|\.\d+)%?")
+_NUMERIC_UNIT = r"(?:%|[^\W\d_]|[°$€£¥₩])+(?:[*/·^][+\-]?(?:[^\W_]|[°$€£¥₩])+|[+\-]?\d+)*"
+_NUMERIC_TOKEN_PATTERN = re.compile(
+    r"(?<!\w)[+\-−]?(?:\d+(?:\.\d*)?|\.\d+)"
+    rf"(?:[eE][+\-−]?\d+)?(?:{_NUMERIC_UNIT})?"
+)
+_SEPARATOR_NUMBER_PATTERN = re.compile(r"(?<!\w)[+\-−]?\d+(?:[.,]\d+)+")
 _SCORABLE_GRAMMAR_BY_HEADER = {
     # Numeric serializers can emit these portable fallbacks after runtime rejection.
     "flowchart": "flowchart",
@@ -50,9 +56,64 @@ def ocr_token_multiset(texts: Iterable[str]) -> Counter[str]:
 
 
 def numeric_token_multiset(texts: Iterable[str]) -> Counter[str]:
-    """Return exact numeric tokens for source-channel occurrence accounting."""
+    """Return exact value/unit tokens; comma notation has no implicit locale.
 
-    return Counter(_NUMERIC_TOKEN_PATTERN.findall(" ".join(texts)))
+    Ambiguous comma forms stay opaque so they cannot match split integers or a
+    silently assumed thousands/decimal convention. They never earn consistency
+    credit, even when the same spelling occurs in generated source.
+    """
+
+    return Counter(token for text in texts for _span, token in _numeric_tokens(text))
+
+
+def numeric_token_spellings(texts: Iterable[str]) -> Iterator[str]:
+    """Yield source spellings for label binding without undoing value normalization."""
+    for text in texts:
+        normalized = unicodedata.normalize("NFKC", text)
+        for (start, end), _token in _numeric_tokens(normalized):
+            yield normalized[start:end]
+
+
+def _numeric_tokens(text: str) -> Iterator[tuple[tuple[int, int], str]]:
+    normalized = unicodedata.normalize("NFKC", text).replace("−", "-")
+    ambiguous = [
+        match for match in _SEPARATOR_NUMBER_PATTERN.finditer(normalized) if "," in match.group()
+    ]
+    for match in ambiguous:
+        yield match.span(), f"ambiguous:{match.group()}"
+    ambiguous_index = 0
+    for match in _NUMERIC_TOKEN_PATTERN.finditer(normalized):
+        while (
+            ambiguous_index < len(ambiguous) and ambiguous[ambiguous_index].end() <= match.start()
+        ):
+            ambiguous_index += 1
+        if ambiguous_index < len(ambiguous) and ambiguous[ambiguous_index].start() <= match.start():
+            continue
+        raw = match.group()
+        number_match = re.fullmatch(
+            r"(?P<number>[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
+            rf"(?P<unit>{_NUMERIC_UNIT})?",
+            raw,
+        )
+        assert number_match is not None
+        try:
+            number = Decimal(number_match["number"])
+        except InvalidOperation:
+            yield match.span(), f"ambiguous:{raw}"
+            continue
+        sign, digits, exponent = number.as_tuple()
+        if not number.is_finite():
+            yield match.span(), f"ambiguous:{raw}"
+            continue
+        # Decimal.normalize() uses the current precision and can round long
+        # labels. Canonicalize the tuple without allocating enormous powers.
+        coefficient = "".join(map(str, digits)).rstrip("0")
+        if coefficient:
+            exponent += len(digits) - len(coefficient)
+            canonical = f"{'-' if sign else ''}{coefficient}e{exponent}"
+        else:
+            canonical = "0e0"
+        yield match.span(), canonical + (number_match["unit"] or "")
 
 
 def bounded_ocr_token_multiset(
@@ -127,70 +188,6 @@ def _direct_mermaid_label_texts(code: str) -> list[str]:
             if suffix.strip():
                 labels.append(suffix.strip())
     return labels
-
-
-def svg_visible_texts(svg: str) -> list[str] | None:
-    """Return painted SVG text terminals, excluding accessibility-only metadata."""
-
-    if type(svg) is not str:
-        return None
-    try:
-        root = ET.fromstring(svg)
-    except (ET.ParseError, RecursionError):
-        return None
-    if root.tag.rsplit("}", 1)[-1].casefold() != "svg":
-        return None
-
-    texts: list[str] = []
-    stack: list[tuple[ET.Element, bool]] = [(root, False)]
-    non_painted_containers = {"defs", "clippath", "mask", "marker", "pattern", "symbol"}
-    while stack:
-        element, ancestor_hidden = stack.pop()
-        tag = element.tag.rsplit("}", 1)[-1].casefold()
-        hidden = ancestor_hidden or tag in non_painted_containers
-        if not hidden:
-            display = (element.get("display") or "").strip().casefold()
-            visibility = (element.get("visibility") or "").strip().casefold()
-            opacity = (element.get("opacity") or "").strip().casefold()
-            hidden = (
-                display == "none"
-                or visibility in {"hidden", "collapse"}
-                or opacity in {"0", "0.0", "0%"}
-            )
-            if not hidden and (style := element.get("style")):
-                for declaration in style.split(";"):
-                    name, separator, value = declaration.partition(":")
-                    if not separator:
-                        continue
-                    normalized_name = name.strip().casefold()
-                    normalized_value = value.strip().casefold()
-                    if normalized_value.endswith("!important"):
-                        normalized_value = normalized_value[: -len("!important")].rstrip()
-                    if (
-                        (normalized_name == "display" and normalized_value == "none")
-                        or (
-                            normalized_name == "visibility"
-                            and normalized_value in {"hidden", "collapse"}
-                        )
-                        or (
-                            normalized_name == "opacity"
-                            and normalized_value in {"0", "0.0", "0%"}
-                        )
-                    ):
-                        hidden = True
-                        break
-
-        if tag == "text":
-            if not hidden:
-                text = "".join(element.itertext()).replace("\u200b", "")
-                if text.strip():
-                    texts.append(text)
-            # A text subtree is one painted terminal. Walking nested tspans would
-            # count the same token once per ancestor.
-            continue
-        for child in reversed(element):
-            stack.append((child, hidden))
-    return texts
 
 
 def ocr_recall(
@@ -356,10 +353,26 @@ def numeric_consistency(
         ignored_slot_span = None
         if is_quadrant_chart and (slot_match := quadrant_slot_pattern.match(line)):
             ignored_slot_span = slot_match.span("slot")
-        for match in _NUMERIC_TOKEN_PATTERN.finditer(line):
-            if match.span() != ignored_slot_span:
-                generated[match.group(0)] += 1
+        # Commas outside quoted labels are Mermaid syntax, not locale hints.
+        # Keep offsets by blanking only those separators before tokenization.
+        in_quote = escaped = False
+        numeric_line = list(line)
+        for index, character in enumerate(line):
+            if escaped:
+                escaped = False
+            elif in_quote and character == "\\":
+                escaped = True
+            elif character == '"':
+                in_quote = not in_quote
+            elif character == "," and not in_quote:
+                numeric_line[index] = " "
+        for span, token in _numeric_tokens("".join(numeric_line)):
+            if span != ignored_slot_span:
+                generated[token] += 1
     if not generated:
+        return 0.0
+    # Locale-ambiguous notation must not create an automatic agreement.
+    if any(token.startswith("ambiguous:") for token in source | generated):
         return 0.0
     overlap = sum((source & generated).values())
     precision = overlap / generated.total()

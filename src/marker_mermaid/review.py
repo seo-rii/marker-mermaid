@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import stat
 import threading
 import urllib.parse
@@ -57,6 +58,7 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
     def __init__(
         self,
+        server_address,
         *args,
         max_workers: int = 8,
         request_timeout_seconds: float = 10.0,
@@ -70,7 +72,12 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
         self._request_slots = threading.BoundedSemaphore(max_workers)
         self.request_timeout_seconds = request_timeout_seconds
         self.allowed_hosts = {item.casefold() for item in (allowed_hosts or set())}
-        super().__init__(*args, **kwargs)
+        try:
+            if ipaddress.ip_address(server_address[0]).version == 6:
+                self.address_family = socket.AF_INET6
+        except ValueError:
+            pass  # Named hosts retain the standard IPv4 listener behavior.
+        super().__init__(server_address, *args, **kwargs)
 
     def process_request(self, request, client_address):
         if not self._request_slots.acquire(blocking=False):
@@ -188,7 +195,7 @@ class ReviewHandler(SimpleHTTPRequestHandler):
                     )
                     return
                 expected_digest = digest_values[0] if len(digest_values) == 1 else ""
-                if filename != "final.png" or not re.fullmatch(
+                if filename not in {"final.svg", "final.png"} or not re.fullmatch(
                     r"[0-9a-f]{64}", expected_digest
                 ):
                     os.close(descriptor)
@@ -197,25 +204,37 @@ class ReviewHandler(SimpleHTTPRequestHandler):
                         status=HTTPStatus.BAD_REQUEST,
                     )
                     return
-                actual_digest = hashlib.sha256()
                 try:
-                    while chunk := os.read(descriptor, 64 * 1024):
-                        actual_digest.update(chunk)
-                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    try:
+                        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                            payload = handle.read(MAX_RENDER_BYTES + 1)
+                    finally:
+                        os.close(descriptor)
                 except OSError:
-                    os.close(descriptor)
                     self._send_json(
                         {"error": "static artifact became unavailable"},
                         status=HTTPStatus.NOT_FOUND,
                     )
                     return
-                if not hmac.compare_digest(actual_digest.hexdigest(), expected_digest):
-                    os.close(descriptor)
+                if len(payload) > MAX_RENDER_BYTES:
+                    self._send_json(
+                        {"error": "static render exceeds the artifact size limit"},
+                        status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    )
+                    return
+                if not hmac.compare_digest(hashlib.sha256(payload).hexdigest(), expected_digest):
                     self._send_json(
                         {"error": "static artifact digest changed"},
                         status=HTTPStatus.CONFLICT,
                     )
                     return
+                # Send the exact bytes checked above, even if a concurrent edit
+                # replaces or rewrites the current artifact before the response.
+                self._send_bytes(
+                    payload,
+                    mimetypes.guess_type(filename)[0] or "application/octet-stream",
+                )
+                return
             self._send_static_file(descriptor, filename, size)
             return
         self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
@@ -624,7 +643,9 @@ class ReviewHandler(SimpleHTTPRequestHandler):
             "source_url": source_url,
             "rendered_url": (
                 f"/diagrams/{urllib.parse.quote(bundle.bundle_id, safe='')}/final.svg"
-                f"?v={bundle.state.version}"
+                f"?digest={bundle.state.svg_digest}"
+                if bundle.state.svg_digest is not None
+                else None
             ),
             "status": str(manifest.get("status", "unknown")),
             "grade": str(manifest.get("grade", "U")),
@@ -719,7 +740,7 @@ class ReviewHandler(SimpleHTTPRequestHandler):
         return len(parts) == 4 and parts[1] == "diagrams" and parts[3] in {"final.svg", "final.png"}
 
     def _open_static_artifact(self, path: str) -> tuple[int, str, int] | None:
-        """Open an allowlisted artifact by descriptor without following symlinks."""
+        """Open a regular allowlisted artifact without blocking or following symlinks."""
 
         if not self._allowed_static_path(path):
             return None
@@ -727,33 +748,38 @@ class ReviewHandler(SimpleHTTPRequestHandler):
         relative_parts = PurePosixPath(decoded).parts[1:]
         nofollow = getattr(os, "O_NOFOLLOW", 0)
         directory_flag = getattr(os, "O_DIRECTORY", 0)
+        nonblock = getattr(os, "O_NONBLOCK", 0)
         directory_descriptor: int | None = None
+        descriptor: int | None = None
         try:
             directory_descriptor = os.open(
                 self.review_root,
-                os.O_RDONLY | directory_flag | nofollow,
+                os.O_RDONLY | directory_flag | nofollow | nonblock,
             )
             for part in relative_parts[:-1]:
                 next_descriptor = os.open(
                     part,
-                    os.O_RDONLY | directory_flag | nofollow,
+                    os.O_RDONLY | directory_flag | nofollow | nonblock,
                     dir_fd=directory_descriptor,
                 )
                 os.close(directory_descriptor)
                 directory_descriptor = next_descriptor
             descriptor = os.open(
                 relative_parts[-1],
-                os.O_RDONLY | nofollow,
+                os.O_RDONLY | nofollow | nonblock,
                 dir_fd=directory_descriptor,
             )
             metadata = os.fstat(descriptor)
             if not stat.S_ISREG(metadata.st_mode):
-                os.close(descriptor)
                 return None
-            return descriptor, relative_parts[-1], metadata.st_size
+            result = descriptor, relative_parts[-1], metadata.st_size
+            descriptor = None  # Ownership transfers to the response writer.
+            return result
         except OSError:
             return None
         finally:
+            if descriptor is not None:
+                os.close(descriptor)
             if directory_descriptor is not None:
                 os.close(directory_descriptor)
 
@@ -860,7 +886,9 @@ def serve_review(
         handler,
         allowed_hosts=host_allowlist,
     )
-    url_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    url_host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+    if ":" in url_host:
+        url_host = f"[{urllib.parse.quote(url_host, safe=':')}]"
     url = f"http://{url_host}:{server.server_port}/"
     print(f"Review workspace: {url}")
     if host not in {"127.0.0.1", "localhost", "::1"}:

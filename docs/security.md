@@ -695,7 +695,9 @@ elements, event-handler attributes, external hrefs, and external CSS in style at
 
 ## Chromium isolation and lifecycle
 
-Every network route in the Playwright context is aborted. No remote font or icon is registered.
+Every HTTP route in the Playwright context is aborted. Service Worker registration is blocked,
+and WebSocket routes close before connecting to a server. Both policies are installed before
+creating the page. No remote font or icon is registered.
 The worker reuses one browser, but resets the DOM and uses a deterministic ID seed for every
 candidate. Worker stdout is read through a nonblocking JSONL buffer with a 64 MB response limit. A
 partial response without a newline cannot exceed the Python deadline. On timeout, malformed or
@@ -704,3 +706,18 @@ follows after the grace period. `bindFunctions` is never called.
 
 `sandbox-experimental` is reserved in the configuration enum but has no separate OS-sandbox
 implementation yet. The current runtime maintains the same network isolation under every profile.
+
+SVG artifact inspection tokenizes CSS with tinycss2 instead of matching the raw
+spelling of `url()` or `@import`. Escaped function names and escaped URL values
+receive the same external-reference policy; fragment-only paint servers remain
+allowed. Image functions that can load bare string URLs are outside the static
+output contract. Chromium preflight also normalizes CSS escapes before its early
+reference check; the Python token inspection remains publication authority.
+
+Validated artifacts require the SVG namespace, a finite positive-area viewBox or
+both positive intrinsic dimensions, and static content. SVG `set`, `animate`,
+`animateMotion`, `animateTransform`, and `discard` are forbidden under every
+profile, because later attribute mutations would invalidate inspection of the
+original artifact. Processing instructions (including `xml-stylesheet` before
+an SVG root) are rejected; an ordinary XML declaration remains allowed. These checks address validator discrepancies; they do not
+claim an exploit through Mermaid's source scan and isolated browser.

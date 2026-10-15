@@ -707,3 +707,22 @@ Mermaid-only Treemap cannot self-create owner binding. If terminal-effective exp
 proof is unavailable, aggregate is `None` even when node/value and global numbers are exact. A
 repair that adds or changes metadata recomputes the gate with newly resolved output roles and
 scoped evidence.
+
+Direct Mermaid OCR recall projects static SVG text with a CSS cascade for
+`display`, `visibility`, and `opacity`. It uses tokenized declarations and selector
+specificity, presentation attributes, inline styles and `!important`; nested
+`tspan` content and tails follow their own inherited visibility. Numeric zero
+opacity spellings all suppress the subtree. Fill/stroke alpha and paint opacity,
+zero text size, zero stroke width, and hidden content visibility are also checked. Accessibility metadata and definition
+containers do not contribute OCR tokens.
+
+Conditional stylesheets, visibility-changing animations, variables/calculations
+in visibility values, text clipping/masking/filter effects, CSS `all`, unsupported
+`font` shorthand and `font-size-adjust`, dynamic SVG elements, and projection-budget exhaustion make
+text evidence unavailable and require review. Dynamic selector states are
+expanded conservatively; any potentially affected text or ancestor is unavailable.
+This includes SVG anchors matched by `:link` or `:any-link`, with either `href` or
+the legacy XLink attribute; XML selector defaults cannot silently hide these rules.
+Shape-only hover rules and Mermaid's static stroke-dashoffset keyframes remain supported. This is a bounded static visibility projection, not
+an assertion about glyph layout, clipping, occlusion, or contrast in the rendered
+image; those require browser geometry or image evaluation.
