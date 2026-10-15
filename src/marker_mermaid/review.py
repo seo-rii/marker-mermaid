@@ -198,8 +198,11 @@ class ReviewHandler(SimpleHTTPRequestHandler):
                     )
                     return
                 try:
-                    with os.fdopen(descriptor, "rb") as handle:
-                        payload = handle.read(MAX_RENDER_BYTES + 1)
+                    try:
+                        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                            payload = handle.read(MAX_RENDER_BYTES + 1)
+                    finally:
+                        os.close(descriptor)
                 except OSError:
                     self._send_json(
                         {"error": "static artifact became unavailable"},

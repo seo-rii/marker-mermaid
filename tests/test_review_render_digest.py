@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import contextlib
+import errno
 import hashlib
+import os
 import urllib.error
 import urllib.request
 from http import HTTPStatus
@@ -72,3 +75,28 @@ def test_digest_response_sends_the_bytes_that_were_hashed(monkeypatch, tmp_path)
         ) as response:
             assert response.read() == original_svg
     assert svg_path.read_bytes() != original_svg
+
+
+def test_digest_response_closes_descriptor_if_stream_wrapping_fails(monkeypatch, tmp_path):
+    make_bundle(tmp_path)
+    descriptors = []
+
+    def fail_fdopen(descriptor, *args, **kwargs):
+        descriptors.append(descriptor)
+        raise OSError("stream wrapping failed")
+
+    with running_server(tmp_path) as (base, _):
+        loaded, _ = read_json(f"{base}/api/diagrams/diagram-a")
+        monkeypatch.setattr(os, "fdopen", fail_fdopen)
+        with pytest.raises(urllib.error.HTTPError) as unavailable:
+            urllib.request.urlopen(f"{base}{loaded['diagram']['rendered_url']}", timeout=3)
+        assert unavailable.value.code == HTTPStatus.NOT_FOUND
+        assert len(descriptors) == 1
+        descriptor = descriptors[0]
+        try:
+            with pytest.raises(OSError) as closed:
+                os.fstat(descriptor)
+            assert closed.value.errno == errno.EBADF
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
