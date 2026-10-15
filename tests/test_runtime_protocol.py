@@ -49,7 +49,9 @@ rl.on("line", line => {
     monkeypatch.chdir(tmp_path.parent)
 
     try:
-        result = runtime.validate_and_render("flowchart LR\nA-->B", 2)
+        # This checks path resolution, so allow the first Node launch on a cold
+        # CI runner its own startup budget. Deadline tests use short limits below.
+        result = runtime.validate_and_render("flowchart LR\nA-->B", 10)
     finally:
         runtime.close()
 
