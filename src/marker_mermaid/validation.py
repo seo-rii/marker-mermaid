@@ -41,6 +41,7 @@ from marker_mermaid.security import MermaidSecurityScanner
 MAX_RUNTIME_RESPONSE_BYTES = 64_000_000
 MAX_RUNTIME_STDERR_BYTES = 64_000
 MAX_PNG_OMITTED_REASON_CHARS = 256
+MAX_RUNTIME_PENDING_REQUESTS = 16
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,16 +146,22 @@ def inspect_svg(
 
 
 def _close_runtime_process(
-    process: subprocess.Popen[bytes], process_group_id: int | None
+    process: subprocess.Popen[bytes],
+    process_group_id: int | None,
+    *,
+    deadline: float | None = None,
 ) -> None:
     """Reap the worker and stop its owned group even if the leader exited first."""
+    def remaining_grace(seconds: float) -> float:
+        return seconds if deadline is None else max(0, min(seconds, deadline - time.monotonic()))
+
     try:
         if process.stdin is not None:
             with suppress(OSError):
                 process.stdin.close()
         if process.poll() is None:
             with suppress(subprocess.TimeoutExpired):
-                process.wait(timeout=1)
+                process.wait(timeout=remaining_grace(1))
 
         if process_group_id is not None:
             try:
@@ -162,25 +169,27 @@ def _close_runtime_process(
             except ProcessLookupError:
                 return
             # Waiting only on the leader misses children that outlive it or ignore TERM.
-            deadline = time.monotonic() + 3
-            while time.monotonic() < deadline:
+            terminate_deadline = time.monotonic() + remaining_grace(3)
+            while time.monotonic() < terminate_deadline:
                 process.poll()
                 try:
                     os.killpg(process_group_id, 0)
                 except ProcessLookupError:
                     return
-                time.sleep(min(0.02, max(0, deadline - time.monotonic())))
+                time.sleep(min(0.02, max(0, terminate_deadline - time.monotonic())))
             with suppress(ProcessLookupError):
                 os.killpg(process_group_id, signal.SIGKILL)
         elif process.poll() is None:  # pragma: no cover - partial-start fallback
             process.terminate()
             try:
-                process.wait(timeout=3)
+                process.wait(timeout=remaining_grace(3))
             except subprocess.TimeoutExpired:
                 process.kill()
     finally:
         with suppress(subprocess.TimeoutExpired):
-            process.wait(timeout=3)
+            # SIGKILL is asynchronous. Allow a bounded scheduler/reaping margin
+            # after the request budget so the direct child does not become a zombie.
+            process.wait(timeout=max(0.1, remaining_grace(3)))
         for stream in (process.stdout, process.stderr):
             if stream is not None:
                 with suppress(OSError):
@@ -211,6 +220,7 @@ class NodeMermaidRuntime(MermaidRuntime):
         self._stderr_buffer = bytearray()
         self._stderr_truncated = False
         self._lock = threading.RLock()
+        self._request_slots = threading.BoundedSemaphore(MAX_RUNTIME_PENDING_REQUESTS)
         self._next_id = 0
         self._finalizer: weakref.finalize | None = None
 
@@ -262,21 +272,46 @@ class NodeMermaidRuntime(MermaidRuntime):
         return process
 
     def validate_and_render(self, code: str, timeout_seconds: float) -> RuntimeResult:
-        with self._lock:
-            if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        """Spend one deadline on queueing, startup, I/O and forced shutdown.
+
+        At most 16 callers may be active or waiting per runtime. A final direct-child
+        reap can take up to 100 ms beyond the deadline after forced termination.
+        """
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            return RuntimeResult(
+                False,
+                False,
+                error="Mermaid runtime timeout must be finite and positive",
+            )
+        deadline = time.monotonic() + timeout_seconds
+        if not self._request_slots.acquire(blocking=False):
+            return RuntimeResult(False, False, error="Mermaid runtime request queue is full")
+        acquired = False
+        try:
+            acquired = self._lock.acquire(
+                timeout=min(threading.TIMEOUT_MAX, max(0, deadline - time.monotonic()))
+            )
+            if not acquired or time.monotonic() >= deadline:
                 return RuntimeResult(
                     False,
                     False,
-                    error="Mermaid runtime timeout must be finite and positive",
+                    error=(
+                        f"Mermaid runtime exceeded {timeout_seconds}s "
+                        "waiting for an available worker"
+                    ),
                 )
             process = self._process
             if process is None or process.poll() is not None:
                 if process is not None:
-                    self.close()
+                    self._close(deadline=deadline)
+                if time.monotonic() >= deadline:
+                    return RuntimeResult(
+                        False, False, error=f"Mermaid runtime exceeded {timeout_seconds}s"
+                    )
                 try:
                     process = self._start()
                 except (OSError, RuntimeError) as exc:
-                    self.close()
+                    self._close(deadline=deadline)
                     return RuntimeResult(
                         False,
                         False,
@@ -304,7 +339,6 @@ class NodeMermaidRuntime(MermaidRuntime):
             ).encode()
             request_offset = 0
             selector = selectors.DefaultSelector()
-            deadline = time.monotonic() + timeout_seconds
             selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
             selector.register(process.stdout, selectors.EVENT_READ, "stdout")
             selector.register(process.stderr, selectors.EVENT_READ, "stderr")
@@ -316,14 +350,14 @@ class NodeMermaidRuntime(MermaidRuntime):
                         try:
                             payload = json.loads(raw_line)
                         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                            self.close()
+                            self._close(deadline=deadline)
                             return RuntimeResult(
                                 False,
                                 False,
                                 error=f"Mermaid runtime returned invalid JSON: {exc}",
                             )
                         if type(payload) is not dict:
-                            self.close()
+                            self._close(deadline=deadline)
                             return RuntimeResult(
                                 False,
                                 False,
@@ -331,7 +365,7 @@ class NodeMermaidRuntime(MermaidRuntime):
                             )
                         if payload.get("id") != request_id:
                             detail = payload.get("error")
-                            self.close()
+                            self._close(deadline=deadline)
                             return RuntimeResult(
                                 False,
                                 False,
@@ -352,7 +386,7 @@ class NodeMermaidRuntime(MermaidRuntime):
                             and bool(png_omitted_reason.strip())
                             and len(png_omitted_reason) <= MAX_PNG_OMITTED_REASON_CHARS
                         ):
-                            self.close()
+                            self._close(deadline=deadline)
                             return RuntimeResult(
                                 False,
                                 False,
@@ -362,7 +396,7 @@ class NodeMermaidRuntime(MermaidRuntime):
                             )
                         encoded_png = payload.get("png")
                         if encoded_png is not None and png_omitted_reason is not None:
-                            self.close()
+                            self._close(deadline=deadline)
                             return RuntimeResult(
                                 False,
                                 False,
@@ -374,7 +408,7 @@ class NodeMermaidRuntime(MermaidRuntime):
                             type(encoded_png) is not str
                             or len(encoded_png) > MAX_RENDER_BASE64_CHARS
                         ):
-                            self.close()
+                            self._close(deadline=deadline)
                             return RuntimeResult(
                                 False,
                                 False,
@@ -387,7 +421,7 @@ class NodeMermaidRuntime(MermaidRuntime):
                                 else None
                             )
                         except (ValueError, TypeError) as exc:
-                            self.close()
+                            self._close(deadline=deadline)
                             return RuntimeResult(
                                 False,
                                 False,
@@ -422,7 +456,7 @@ class NodeMermaidRuntime(MermaidRuntime):
                                     self._stderr_truncated = True
                                 detail = self._stderr_buffer.decode("utf-8", errors="replace")
                                 detail = " ".join(detail.split())
-                                self.close()
+                                self._close(deadline=deadline)
                                 return RuntimeResult(
                                     False,
                                     False,
@@ -466,7 +500,7 @@ class NodeMermaidRuntime(MermaidRuntime):
                                 detail = self._stderr_buffer.decode("utf-8", errors="replace")
                                 detail = " ".join(detail.split())
                                 exit_code = process.poll()
-                                self.close()
+                                self._close(deadline=deadline)
                                 return RuntimeResult(
                                     False,
                                     False,
@@ -483,7 +517,7 @@ class NodeMermaidRuntime(MermaidRuntime):
                                 )
                             self._stdout_buffer.extend(chunk)
                             if len(self._stdout_buffer) > MAX_RUNTIME_RESPONSE_BYTES:
-                                self.close()
+                                self._close(deadline=deadline)
                                 return RuntimeResult(
                                     False,
                                     False,
@@ -491,10 +525,17 @@ class NodeMermaidRuntime(MermaidRuntime):
                                 )
             finally:
                 selector.close()
-            self.close()
+            self._close(deadline=deadline)
             return RuntimeResult(False, False, error=f"Mermaid runtime exceeded {timeout_seconds}s")
+        finally:
+            if acquired:
+                self._lock.release()
+            self._request_slots.release()
 
     def close(self) -> None:
+        self._close()
+
+    def _close(self, *, deadline: float | None = None) -> None:
         with self._lock:
             process, self._process = self._process, None
             process_group_id, self._process_group_id = self._process_group_id, None
@@ -506,7 +547,7 @@ class NodeMermaidRuntime(MermaidRuntime):
                 self._finalizer = None
             if process is None:
                 return
-            _close_runtime_process(process, process_group_id)
+            _close_runtime_process(process, process_group_id, deadline=deadline)
 
 
 class CandidateValidator:
