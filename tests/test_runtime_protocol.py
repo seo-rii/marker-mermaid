@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import gc
 import json
+import os
 import resource
 import shutil
+import signal
 import subprocess
 import sys
 import time
+import weakref
 from pathlib import Path
 
 import pytest
@@ -149,6 +153,125 @@ process.stdin.on("end", () => {{
     runtime.close()
 
     assert marker.read_text(encoding="utf-8") == "closed"
+
+
+def _pid_is_running(pid: int) -> bool:
+    # An orphan may remain as an inert zombie until the system reaper collects it.
+    # The regression contract is that no owned descendant remains running.
+    status = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    return bool(status) and not status.startswith("Z")
+
+
+@pytest.mark.parametrize("parent_exit", ["before_close", "stdin_eof", "sigterm"])
+@pytest.mark.parametrize("descendant_depth", [1, 2])
+def test_close_kills_term_ignoring_descendants_after_worker_exit(
+    tmp_path, parent_exit, descendant_depth
+):
+    marker = tmp_path / "child.pid"
+    child_source = (
+        "process.on('SIGTERM', () => {});"
+        f"require('node:fs').writeFileSync({json.dumps(str(marker))}, String(process.pid));"
+        "setInterval(() => {}, 1000);"
+    )
+    if descendant_depth == 2:
+        child_source = (
+            "require('node:child_process').spawn(process.execPath,"
+            f"['-e', {json.dumps(child_source)}], {{stdio: 'ignore'}}).unref();"
+        )
+    parent_action = {
+        "before_close": "process.exit(0);",
+        "stdin_eof": "process.stdin.resume();",
+        "sigterm": "process.stdin.resume(); setInterval(() => {}, 1000);",
+    }[parent_exit]
+    _worker(
+        tmp_path,
+        f"""
+import {{spawn}} from "node:child_process";
+import fs from "node:fs";
+const child = spawn(process.execPath, ["-e", {json.dumps(child_source)}], {{stdio: "ignore"}});
+child.unref();
+const ready = setInterval(() => {{
+  if (fs.existsSync({json.dumps(str(marker))})) {{
+    clearInterval(ready);
+    {parent_action}
+  }}
+}}, 10);
+""",
+    )
+    runtime = NodeMermaidRuntime(tmp_path)
+    child_pid = None
+    try:
+        process = runtime._start()  # noqa: SLF001 - real worker lifetime regression
+        deadline = time.monotonic() + 5
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        child_pid = int(marker.read_text(encoding="utf-8"))
+        assert _pid_is_running(child_pid)
+        if parent_exit == "before_close":
+            assert process.wait(timeout=5) == 0
+
+        runtime.close()
+
+        deadline = time.monotonic() + 2
+        while _pid_is_running(child_pid) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not _pid_is_running(child_pid)
+        assert runtime._process is None  # noqa: SLF001 - cleanup contract
+        assert runtime._process_group_id is None  # noqa: SLF001 - cleanup contract
+    finally:
+        runtime.close()
+        if child_pid is not None and _pid_is_running(child_pid):
+            os.kill(child_pid, signal.SIGKILL)
+
+
+@pytest.mark.parametrize("started", [True, False])
+def test_runtime_is_collectible_without_explicit_close(tmp_path, started):
+    _worker(tmp_path, "process.stdin.resume();")
+    runtime = NodeMermaidRuntime(tmp_path)
+    process = runtime._start() if started else None  # noqa: SLF001 - GC cleanup contract
+    reference = weakref.ref(runtime)
+
+    del runtime
+    gc.collect()
+
+    assert reference() is None
+    if process is not None:
+        assert process.poll() is not None
+        assert process.stdin.closed
+        assert process.stdout.closed
+        assert process.stderr.closed
+
+
+def test_runtime_close_is_idempotent_and_context_can_be_reused(tmp_path):
+    _worker(
+        tmp_path,
+        """
+import readline from "node:readline";
+const rl = readline.createInterface({input: process.stdin});
+rl.on("line", line => {
+  const request = JSON.parse(line);
+  process.stdout.write(JSON.stringify({id: request.id, ok: true,
+    svg: "<svg viewBox='0 0 1 1'/>"}) + "\\n");
+});
+""",
+    )
+    runtime = NodeMermaidRuntime(tmp_path)
+    processes = []
+
+    for _ in range(3):
+        with runtime:
+            assert runtime.validate_and_render("flowchart LR\nA-->B", 2).render_valid
+            processes.append(runtime._process)  # noqa: SLF001 - restart contract
+        runtime.close()
+        assert runtime._finalizer is None  # noqa: SLF001 - finalizer lifecycle contract
+
+    assert len({process.pid for process in processes}) == 3
+    assert all(process.poll() is not None for process in processes)
 
 
 def test_runtime_fails_fast_on_unsupported_platform(monkeypatch, tmp_path):

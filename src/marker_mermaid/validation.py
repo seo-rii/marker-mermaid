@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import atexit
 import base64
 import json
 import math
@@ -14,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
 import xml.etree.ElementTree as ET
 from contextlib import suppress
 from dataclasses import dataclass
@@ -144,6 +144,49 @@ def inspect_svg(
     return sorted(set(findings))
 
 
+def _close_runtime_process(
+    process: subprocess.Popen[bytes], process_group_id: int | None
+) -> None:
+    """Reap the worker and stop its owned group even if the leader exited first."""
+    try:
+        if process.stdin is not None:
+            with suppress(OSError):
+                process.stdin.close()
+        if process.poll() is None:
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=1)
+
+        if process_group_id is not None:
+            try:
+                os.killpg(process_group_id, signal.SIGTERM)
+            except ProcessLookupError:
+                return
+            # Waiting only on the leader misses children that outlive it or ignore TERM.
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                process.poll()
+                try:
+                    os.killpg(process_group_id, 0)
+                except ProcessLookupError:
+                    return
+                time.sleep(min(0.02, max(0, deadline - time.monotonic())))
+            with suppress(ProcessLookupError):
+                os.killpg(process_group_id, signal.SIGKILL)
+        elif process.poll() is None:  # pragma: no cover - partial-start fallback
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+    finally:
+        with suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=3)
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                with suppress(OSError):
+                    stream.close()
+
+
 class NodeMermaidRuntime(MermaidRuntime):
     """JSONL bridge to a reusable, network-isolated Playwright Chromium worker."""
 
@@ -169,7 +212,13 @@ class NodeMermaidRuntime(MermaidRuntime):
         self._stderr_truncated = False
         self._lock = threading.RLock()
         self._next_id = 0
-        atexit.register(self.close)
+        self._finalizer: weakref.finalize | None = None
+
+    def __enter__(self) -> NodeMermaidRuntime:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
 
     def _start(self) -> subprocess.Popen[bytes]:
         worker = self.runtime_dir / "worker.mjs"
@@ -196,6 +245,9 @@ class NodeMermaidRuntime(MermaidRuntime):
         )
         self._process = process
         self._process_group_id = process.pid
+        # Neither the callback nor its arguments may retain the runtime instance.
+        # Each start gets a fresh finalizer so explicit close still permits reuse.
+        self._finalizer = weakref.finalize(self, _close_runtime_process, process, process.pid)
         self._stdout_buffer.clear()
         self._stderr_buffer.clear()
         self._stderr_truncated = False
@@ -449,36 +501,12 @@ class NodeMermaidRuntime(MermaidRuntime):
             self._stdout_buffer.clear()
             self._stderr_buffer.clear()
             self._stderr_truncated = False
+            if self._finalizer is not None:
+                self._finalizer.detach()
+                self._finalizer = None
             if process is None:
                 return
-            try:
-                if process.stdin is not None:
-                    with suppress(OSError):
-                        process.stdin.close()
-                if process.poll() is None:
-                    try:
-                        process.wait(timeout=1)
-                    except subprocess.TimeoutExpired:
-                        if process_group_id is not None:
-                            with suppress(ProcessLookupError):
-                                os.killpg(process_group_id, signal.SIGTERM)
-                        else:  # pragma: no cover - defensive partial-start fallback
-                            process.terminate()
-                        try:
-                            process.wait(timeout=3)
-                        except subprocess.TimeoutExpired:
-                            if process_group_id is not None:
-                                with suppress(ProcessLookupError):
-                                    os.killpg(process_group_id, signal.SIGKILL)
-                            else:  # pragma: no cover - defensive partial-start fallback
-                                process.kill()
-                            with suppress(subprocess.TimeoutExpired):
-                                process.wait(timeout=3)
-            finally:
-                for stream in (process.stdout, process.stderr):
-                    if stream is not None:
-                        with suppress(OSError):
-                            stream.close()
+            _close_runtime_process(process, process_group_id)
 
 
 class CandidateValidator:
